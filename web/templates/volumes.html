@@ -38,6 +38,29 @@
   <p>没有找到启动盘</p>
 </div>
 
+{# 已删除的启动盘：TERMINATED 是墓碑记录，不占额度也不能操作，
+   默认折叠收起来，不跟在用的盘混在一起（2026-11-24 用户反馈） #}
+<details class="card" id="terminated-volumes" style="margin-top: 16px;" hidden>
+  <summary style="cursor: pointer; padding: 12px 16px; font-size: 14px; color: var(--text-muted);">
+    已删除的启动盘（<span id="terminated-count">0</span> 块，点击展开）
+  </summary>
+  <div class="table-wrap">
+    <table class="data" id="terminated-table">
+      <thead>
+        <tr>
+          <th>名称</th>
+          <th>大小</th>
+          <th>VPU</th>
+          <th>状态</th>
+          <th>挂载实例</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody id="terminated-tbody"></tbody>
+    </table>
+  </div>
+</details>
+
 {# 孤儿盘：未挂载到任何实例的盘 #}
 <h2 style="font-size: 16px; margin: 26px 0 12px;">孤儿盘（未挂载）</h2>
 <div class="card">

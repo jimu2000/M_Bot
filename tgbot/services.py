@@ -213,6 +213,43 @@ def sort_instances_by_group(instances):
     return indexed
 
 
+# 启动盘列表分组：组顺序与组头（fmt_volume_list 与
+# volume_list_keyboard 共用，保证文字与按钮顺序一致）。
+# TERMINATED 的盘是已删除的墓碑记录（不占额度、不能操作），
+# 必须和可用盘分开，否则 11 块旧测试盘会把 3 块在用的盘淹没
+# （2026-11-24 用户截图反馈）。
+VOLUME_GROUP_ORDER = ("AVAILABLE", "TERMINATING", "TERMINATED")
+VOLUME_GROUP_TITLES = {
+    "AVAILABLE": "🟢 可用",
+    "TERMINATING": "🟡 删除中",
+    "TERMINATED": "⚫ 已删除",
+}
+VOLUME_GROUP_OTHER_TITLE = "❓ 其他"
+
+
+def volume_group_title(state):
+    """状态对应的分组标题（不含数量）；未知状态归入“其他”。"""
+    state = (state or "").upper()
+    return VOLUME_GROUP_TITLES.get(state, VOLUME_GROUP_OTHER_TITLE)
+
+
+def sort_volumes_by_group(volumes):
+    """按状态分组排序：返回 [(原下标, 启动盘)]。
+
+    组顺序：AVAILABLE → TERMINATING → TERMINATED → 其他状态；
+    组内保持原列表顺序。下标是启动盘在原列表里的下标（回调按
+    它取回，见 store_volumes，绝对不能用分组后的下标）。
+    """
+    order = {state: i for i, state in enumerate(VOLUME_GROUP_ORDER)}
+    fallback = len(VOLUME_GROUP_ORDER)
+    indexed = list(enumerate(volumes))
+    indexed.sort(key=lambda pair: (
+        order.get((pair[1].get("lifecycle-state") or "").upper(),
+                  fallback),
+        pair[0]))
+    return indexed
+
+
 def fmt_instance_list(instances, profile):
     """实例列表的文字部分：只剩标题 + 各组数量 + 操作提示。
 

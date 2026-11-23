@@ -1242,9 +1242,12 @@ class TestIpIpv6ResumeResizeVolumes(HandlersExtraTestCase):
             context = make_context()
             await he.handle_volumes(update, context)
         text = reply_text_of(update)
-        self.assertIn("共 150GB", text)
-        self.assertIn("boot-a", text)
-        self.assertIn("孤儿盘", text)
+        # v1.8.1：文字只留标题 + 各组数量，容量标在可用组后面；
+        # 盘名与孤儿盘标记移到按钮上。
+        self.assertIn("🟢 可用 2 块（150GB）", text)
+        self.assertNotIn("boot-a", text)
+        self.assertIn("⚠️ 孤儿盘 1 块（共 100GB）", text)
+        self.assertIn("boot-b（100GB） 🗑️", reply_button_texts_of(update))
         self.assertEqual(len(context.user_data["volumes"]), 2)
 
     async def test_volume_detail_and_resize_flow(self):
@@ -2402,6 +2405,104 @@ class TestMessageCleanup(HandlersExtraTestCase):
         handled = await he.handle_confirm("explode", "0", update, context)
         self.assertFalse(handled)
         context.bot.delete_message.assert_not_awaited()
+
+
+class TestVolumeGrouping(HandlersExtraTestCase):
+    """磁盘列表分组（v1.8.1）：可用在前、已删除在后单独分组；
+    文字只留标题 + 各组数量，按钮是唯一的列表。"""
+
+    VOLUMES = [
+        {"id": "ocid1.bootvolume.oc1..dead1", "display-name": "old-test-1",
+         "size-in-gbs": 47, "lifecycle-state": "TERMINATED"},
+        {"id": "ocid1.bootvolume.oc1..live1", "display-name": "prod-1",
+         "size-in-gbs": 47, "lifecycle-state": "AVAILABLE"},
+        {"id": "ocid1.bootvolume.oc1..dead2", "display-name": "old-test-2",
+         "size-in-gbs": 50, "lifecycle-state": "TERMINATED"},
+        {"id": "ocid1.bootvolume.oc1..live2", "display-name": "prod-2",
+         "size-in-gbs": 47, "lifecycle-state": "AVAILABLE"},
+    ]
+
+    def test_sort_volumes_by_group_order_and_indices(self):
+        ordered = he.sort_volumes_by_group(self.VOLUMES)
+        self.assertEqual(
+            [name for _i, v in ordered for name in [v["display-name"]]],
+            ["prod-1", "prod-2", "old-test-1", "old-test-2"])
+        # 下标是原列表下标（回调按它取回），不是分组后的下标。
+        self.assertEqual([i for i, _v in ordered], [1, 3, 0, 2])
+
+    def test_volume_group_title_unknown_is_other(self):
+        self.assertEqual(he.volume_group_title("AVAILABLE"), "🟢 可用")
+        self.assertEqual(he.volume_group_title("TERMINATED"), "⚫ 已删除")
+        self.assertEqual(he.volume_group_title("WEIRD"), "❓ 其他")
+
+    def test_fmt_volume_list_counts_only_no_per_volume_lines(self):
+        text = he.fmt_volume_list(self.VOLUMES, [], 94)
+        self.assertIn("🟢 可用 2 块（94GB）", text)
+        self.assertIn("⚫ 已删除 2 块", text)
+        # 文字不再逐块重复盘名（盘名只在按钮上）。
+        self.assertNotIn("prod-1", text)
+        self.assertNotIn("old-test-1", text)
+
+    def test_fmt_volume_list_empty_and_orphan_warning(self):
+        self.assertIn("无启动盘", he.fmt_volume_list([], [], 0))
+        orphans = [{"id": "ocid1.bootvolume.oc1..live2", "size-in-gbs": 47}]
+        text = he.fmt_volume_list(self.VOLUMES, orphans, 94)
+        self.assertIn("⚠️ 孤儿盘 1 块（共 47GB）", text)
+
+    def test_volume_list_keyboard_grouped_with_original_indices(self):
+        markup = he.volume_list_keyboard(self.VOLUMES)
+        texts = [b.text for row in markup.inline_keyboard for b in row]
+        datas = [b.callback_data
+                 for row in markup.inline_keyboard for b in row]
+        self.assertEqual(texts[0], "🟢 可用（2 块）：")
+        self.assertEqual(datas[0], "v:noop")
+        # 可用组在前、已删除组在后；按钮 callback 带原列表下标。
+        self.assertIn("v:detail:1", datas)
+        self.assertIn("v:detail:0", datas)
+        self.assertLess(datas.index("v:detail:1"),
+                        datas.index("v:detail:0"))
+        self.assertIn("bb:list", datas)
+
+    def test_volume_list_keyboard_marks_orphan(self):
+        orphans = [{"id": "ocid1.bootvolume.oc1..live2", "size-in-gbs": 47}]
+        markup = he.volume_list_keyboard(self.VOLUMES, orphans)
+        texts = [b.text for row in markup.inline_keyboard for b in row]
+        self.assertIn("prod-2（47GB） 🗑️", texts)
+        self.assertNotIn("prod-1（47GB） 🗑️", texts)
+
+    def test_volume_actions_keyboard_terminated_has_no_actions(self):
+        markup = he.volume_actions_keyboard("0", "TERMINATED")
+        datas = [b.callback_data
+                 for row in markup.inline_keyboard for b in row]
+        self.assertEqual(datas, ["o:volumes"])
+        markup = he.volume_actions_keyboard("0", "AVAILABLE")
+        datas = [b.callback_data
+                 for row in markup.inline_keyboard for b in row]
+        self.assertIn("v:resize:0", datas)
+        self.assertIn("v:backup:0", datas)
+        self.assertIn("v:delete:0", datas)
+
+    async def test_volume_detail_callback_terminated_no_actions(self):
+        update = make_update(callback_data="v:detail:0")
+        context = make_context()
+        context.user_data["volumes"] = list(self.VOLUMES)
+        detail = dict(self.VOLUMES[0])
+        with patch.object(he, "get_boot_volume", return_value=detail):
+            await he.volume_detail_callback(update, context)
+        datas = reply_callback_data_of(update)
+        self.assertNotIn("v:resize:0", datas)
+        self.assertNotIn("v:backup:0", datas)
+        self.assertNotIn("v:delete:0", datas)
+        self.assertIn("o:volumes", datas)
+
+    async def test_volume_resize_callback_terminated_blocked(self):
+        update = make_update(callback_data="v:resize:0")
+        context = make_context()
+        context.user_data["volumes"] = list(self.VOLUMES)
+        await he.volume_resize_callback(update, context)
+        self.assertIn("已删除", reply_text_of(update))
+
+
 
 
 if __name__ == "__main__":

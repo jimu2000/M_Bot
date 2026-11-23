@@ -57,6 +57,15 @@
     var vpusCell = showInstance
       ? "<td>" + esc(v.vpus != null ? v.vpus : "—") + "</td>"
       : "";
+    // 已删除的盘是墓碑记录，扩容/改 VPU/备份/删除都无效，不给操作按钮。
+    var actionsCell = (v.state || "").toUpperCase() === "TERMINATED"
+      ? '<td><span style="color: var(--text-faint);">已删除</span></td>'
+      : '<td><div class="row-actions">' +
+          '<button type="button" class="btn btn-sm" data-act="resize">扩容</button>' +
+          '<button type="button" class="btn btn-sm" data-act="vpus">改 VPU</button>' +
+          '<button type="button" class="btn btn-sm" data-act="backup">备份</button>' +
+          '<button type="button" class="btn btn-sm btn-danger" data-act="delete">删除</button>' +
+        "</div></td>";
     return (
       "<tr data-volume-id=\"" + esc(v.id) + "\">" +
         "<td><b>" + esc(v.name) + "</b></td>" +
@@ -64,12 +73,7 @@
         vpusCell +
         "<td>" + stateBadge(v.state) + "</td>" +
         instanceCell +
-        '<td><div class="row-actions">' +
-          '<button type="button" class="btn btn-sm" data-act="resize">扩容</button>' +
-          '<button type="button" class="btn btn-sm" data-act="vpus">改 VPU</button>' +
-          '<button type="button" class="btn btn-sm" data-act="backup">备份</button>' +
-          '<button type="button" class="btn btn-sm btn-danger" data-act="delete">删除</button>' +
-        "</div></td>" +
+        actionsCell +
       "</tr>"
     );
   }
@@ -142,10 +146,29 @@
   }
 
   function render() {
+    // 主表只放未删除的盘（AVAILABLE 在前），已删除的盘收进下面
+    // 默认折叠的分区，不跟在用的盘混在一起。
+    var live = [];
+    var dead = [];
+    volumes.forEach(function (v) {
+      if ((norm(v).state || "").toUpperCase() === "TERMINATED") dead.push(v);
+      else live.push(v);
+    });
+    live.sort(function (a, b) {
+      var sa = (norm(a).state || "").toUpperCase() === "AVAILABLE" ? 0 : 1;
+      var sb = (norm(b).state || "").toUpperCase() === "AVAILABLE" ? 0 : 1;
+      return sa - sb;
+    });
     var tbody = document.getElementById("volume-tbody");
     var empty = document.getElementById("volume-empty");
-    empty.hidden = volumes.length !== 0;
-    tbody.innerHTML = volumes.map(function (v) { return volumeRow(v, true); }).join("");
+    empty.hidden = live.length !== 0;
+    tbody.innerHTML = live.map(function (v) { return volumeRow(v, true); }).join("");
+
+    var termSection = document.getElementById("terminated-volumes");
+    termSection.hidden = dead.length === 0;
+    document.getElementById("terminated-count").textContent = dead.length;
+    document.getElementById("terminated-tbody").innerHTML =
+      dead.map(function (v) { return volumeRow(v, true); }).join("");
 
     var orphanTbody = document.getElementById("orphan-tbody");
     if (orphans.length === 0) {
@@ -163,6 +186,9 @@
     document.getElementById("volume-tbody").innerHTML =
       '<tr><td colspan="6" style="text-align: center; color: var(--text-muted);">加载中…</td></tr>';
     document.getElementById("volume-empty").hidden = true;
+    document.getElementById("terminated-volumes").hidden = true;
+    document.getElementById("terminated-count").textContent = "0";
+    document.getElementById("terminated-tbody").innerHTML = "";
     document.getElementById("orphan-tbody").innerHTML =
       '<tr><td colspan="4" style="text-align: center; color: var(--text-muted);">加载中…</td></tr>';
     document.getElementById("backup-tbody").innerHTML =
@@ -217,6 +243,7 @@
       document.getElementById("volume-tbody").innerHTML =
         '<tr><td colspan="6" style="text-align: center; color: var(--danger);">加载失败：' +
         RBot.escapeHtml(err.message) + "</td></tr>";
+      document.getElementById("terminated-volumes").hidden = true;
     }
     try {
       var o = await RBot.cachedApi("vol:orphans:" + prof,

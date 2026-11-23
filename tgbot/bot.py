@@ -181,6 +181,8 @@ def build_application():
     application.add_handler(CallbackQueryHandler(
         handlers_extra.resize_preset_callback, pattern=r"^r:"))
     application.add_handler(CallbackQueryHandler(
+        handlers.noop_callback, pattern=r"^v:noop$"))
+    application.add_handler(CallbackQueryHandler(
         handlers_extra.volume_detail_callback, pattern=r"^v:detail:"))
     application.add_handler(CallbackQueryHandler(
         handlers_extra.volume_resize_callback, pattern=r"^v:resize:"))

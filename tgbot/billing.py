@@ -199,7 +199,7 @@ def collect_billing_alerts(results, prev_state):
     - 免费额度超限；
     - 某账号检查失败。
     注意：不单独对“超预算”告警——本月费用已超预算但无新增时
-    （如 tenant-singapore 本月已知的 13.46 历史账单）不重复打扰；
+    （如 某账号本月已知的 13.46 历史账单）不重复打扰；
     有新增收费时 delta 告警会带上当前费用与预算。
     """
     alerts = []

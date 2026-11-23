@@ -48,9 +48,9 @@
 | 概览页登录后 200 | 通过 |
 | 页面 /instances /quota /volumes /create /tasks /terminal 均 200 | 通过 |
 | /api/system 返回真实数据 | 通过 |
-| 实例列表 DEFAULT = 3 台（26-11-14 13:55、instance-example-1、instance-example-2） | 通过 |
+| 实例列表 DEFAULT = 3 台（实例 A、实例 B、实例 C） | 通过 |
 | 实例列表 ACCOUNT2：返回 3 台，其中 1 台 TERMINATED | 预期差异（见下） |
-| 实例列表 ACCOUNT3 = 1 台（24-1-19 17:38） | 通过 |
+| 实例列表 ACCOUNT3 = 1 台（实例 D） | 通过 |
 | 配额 DEFAULT：A1 4/4 核、18/24GB | 通过 |
 | 配额 ACCOUNT2：A1 4/4 核、24/24GB | 通过 |
 | 配额 ACCOUNT3：A1 2/4 核、10/24GB | 通过 |

@@ -167,6 +167,11 @@ from tgbot.services import (
     store_boot_backups,
     store_instances,
     store_volumes,
+    sort_volumes_by_group,
+    volume_group_title,
+    VOLUME_GROUP_ORDER,
+    VOLUME_GROUP_TITLES,
+    VOLUME_GROUP_OTHER_TITLE,
 )
 from oci.boot_backup import (
     DEFAULT_RESTORE_MEMORY_GB,
@@ -820,17 +825,33 @@ def fmt_ip_overview(reserved_ips, instance_ips):
 
 
 def fmt_volume_list(volumes, orphans, total_gb):
-    """磁盘管理全文。"""
-    lines = [f"💾 启动盘（{len(volumes)} 块，共 {total_gb}GB）：", ""]
+    """磁盘管理全文：只剩标题 + 各组数量 + 孤儿盘提示。
+
+    每块盘的名字与容量都在按钮上（见 volume_list_keyboard），
+    文字不再逐块重复，否则文字列表和按钮列表会同时出现两份
+    （2026-11-24 用户截图反馈）。total_gb 只统计未删除的盘
+    （见 oci.volume.total_boot_volume_gb），所以容量标在可用组
+    后面，不跟总数混在一起。空组不显示。
+    """
     if not volumes:
-        lines.append("• 无启动盘")
-    orphan_ids = {v.get("id") for v in orphans}
-    for vol in volumes:
-        name = vol.get("display-name") or "?"
-        size = vol.get("size-in-gbs", "?")
-        state = vol.get("lifecycle-state", "?")
-        mark = " 🗑️孤儿盘" if vol.get("id") in orphan_ids else ""
-        lines.append(f"• {name}：{size}GB（{state}）{mark}")
+        return "💾 启动盘：\n\n• 无启动盘"
+    ordered = sort_volumes_by_group(volumes)
+    counts = {}
+    for _idx, vol in ordered:
+        title = volume_group_title(vol.get("lifecycle-state"))
+        counts[title] = counts.get(title, 0) + 1
+    # 按组顺序排数量，如“🟢 可用 3 块（141GB）· ⚫ 已删除 11 块”。
+    parts = []
+    for state in VOLUME_GROUP_ORDER:
+        title = VOLUME_GROUP_TITLES[state]
+        if title not in counts:
+            continue
+        suffix = f"（{total_gb}GB）" if state == "AVAILABLE" else ""
+        parts.append(f"{title} {counts[title]} 块{suffix}")
+    other = counts.get(VOLUME_GROUP_OTHER_TITLE)
+    if other:
+        parts.append(f"{VOLUME_GROUP_OTHER_TITLE} {other} 块")
+    lines = ["💾 启动盘：", " · ".join(parts)]
     if orphans:
         orphan_gb = sum(v.get("size-in-gbs") or 0 for v in orphans)
         lines.append("")
@@ -962,21 +983,50 @@ def resize_preset_keyboard(idx):
     return InlineKeyboardMarkup(rows)
 
 
-def volume_list_keyboard(volumes):
-    """磁盘列表键盘：每块盘一个详情按钮 + 启动卷备份入口。"""
+def volume_list_keyboard(volumes, orphans=None):
+    """磁盘列表键盘：按状态分组，每组一行标题按钮 + 每块盘一个按钮。
+
+    分组顺序与 fmt_volume_list 一致（AVAILABLE → TERMINATING →
+    TERMINATED → 其他），共用 sort_volumes_by_group。标题按钮的
+    callback_data 是 "v:noop"（点它只应答，不做任何事）；磁盘按钮
+    的 callback_data 带原列表下标（不是分组后的下标），因为
+    store_volumes 存的是原始顺序列表，回调按原下标取回。
+    孤儿盘（在 orphans 里）的按钮带 🗑️ 标记。
+    """
+    orphan_ids = {v.get("id") for v in (orphans or [])}
+    ordered = sort_volumes_by_group(volumes)
+    counts = {}
+    for _idx, vol in ordered:
+        title = volume_group_title(vol.get("lifecycle-state"))
+        counts[title] = counts.get(title, 0) + 1
     rows = []
-    for idx, vol in enumerate(volumes):
+    current_group = None
+    for idx, vol in ordered:
+        group = volume_group_title(vol.get("lifecycle-state"))
+        if group != current_group:
+            current_group = group
+            rows.append([InlineKeyboardButton(
+                f"{group}（{counts[group]} 块）：", callback_data="v:noop")])
         name = vol.get("display-name") or (vol.get("id") or "")[-4:]
+        mark = " 🗑️" if vol.get("id") in orphan_ids else ""
         rows.append([InlineKeyboardButton(
-            f"{name}（{vol.get('size-in-gbs')}GB）",
+            f"{name}（{vol.get('size-in-gbs')}GB）{mark}",
             callback_data=f"v:detail:{idx}")])
     rows.append([InlineKeyboardButton("💾 启动卷备份", callback_data="bb:list")])
     rows.append([InlineKeyboardButton("◀ Oracle 菜单", callback_data="o:menu")])
     return InlineKeyboardMarkup(rows)
 
 
-def volume_actions_keyboard(idx):
-    """单个磁盘的操作键盘：扩容 / 备份 / 删除。"""
+def volume_actions_keyboard(idx, state=None):
+    """单个磁盘的操作键盘：扩容 / 备份 / 删除。
+
+    已删除（TERMINATED）或删除中（TERMINATING）的盘是墓碑记录，
+    扩容/备份/删除都无效，只给返回按钮。
+    """
+    if (state or "").upper() in ("TERMINATED", "TERMINATING"):
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("◀ 磁盘列表", callback_data="o:volumes")],
+        ])
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📐 扩容", callback_data=f"v:resize:{idx}"),
          InlineKeyboardButton("💾 备份启动卷", callback_data=f"v:backup:{idx}"),
@@ -2257,7 +2307,7 @@ async def handle_volumes(update, context):
         return
     store_volumes(context, volumes)
     await _reply(update, fmt_volume_list(volumes, orphans, total),
-                 reply_markup=volume_list_keyboard(volumes))
+                 reply_markup=volume_list_keyboard(volumes, orphans))
 
 
 @require_allowed
@@ -2273,8 +2323,10 @@ async def volume_detail_callback(update, context):
     except Exception as exc:  # noqa: BLE001
         await _reply(update, fmt_error(exc))
         return
+    state = (detail.get("lifecycle-state") if isinstance(detail, dict)
+             else None) or vol.get("lifecycle-state")
     await _reply(update, fmt_volume_detail(detail),
-                 reply_markup=volume_actions_keyboard(idx))
+                 reply_markup=volume_actions_keyboard(idx, state))
 
 
 @require_allowed
@@ -2284,6 +2336,9 @@ async def volume_resize_callback(update, context):
     vol = resolve_volume(context, idx)
     if vol is None:
         await _reply(update, "磁盘不存在或已过期，请重新打开磁盘列表。")
+        return
+    if (vol.get("lifecycle-state") or "").upper() in ("TERMINATED", "TERMINATING"):
+        await _reply(update, "该启动盘已删除，无法操作。")
         return
     name = vol.get("display-name") or "?"
     await _reply(update,
@@ -2339,6 +2394,9 @@ async def volume_delete_callback(update, context):
     if vol is None:
         await _reply(update, "磁盘不存在或已过期，请重新打开磁盘列表。")
         return
+    if (vol.get("lifecycle-state") or "").upper() in ("TERMINATED", "TERMINATING"):
+        await _reply(update, "该启动盘已删除，无法操作。")
+        return
     name = vol.get("display-name") or "?"
     await _reply(
         update,
@@ -2378,6 +2436,9 @@ async def volume_backup_callback(update, context):
     vol = resolve_volume(context, idx)
     if vol is None:
         await _reply(update, "磁盘不存在或已过期，请重新打开磁盘列表。")
+        return
+    if (vol.get("lifecycle-state") or "").upper() in ("TERMINATED", "TERMINATING"):
+        await _reply(update, "该启动盘已删除，无法操作。")
         return
     cli = get_cli(context)
     compartment = get_compartment(context)
