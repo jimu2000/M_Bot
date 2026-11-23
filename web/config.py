@@ -118,6 +118,7 @@ PROFILES = _build_profiles()
 # 账号/区域切换就是切换 profile，没有独立的区域选择器。
 REGION_LABELS = {
     "ap-singapore-1": "新加坡",
+    "ap-seoul-1": "首尔",
     "us-sanjose-1": "圣何塞",
     "us-chicago-1": "芝加哥",
 }
@@ -169,3 +170,17 @@ def get_region(profile=None):
 def get_region_label(region):
     """返回区域的中文名；未列出的区域返回原始区域代码。"""
     return REGION_LABELS.get(region, region)
+
+
+def profile_display_name(name, region_count=None):
+    """账号（profile）的显示名：主区中文名；订阅了多个区域时后缀（N 个区）。
+
+    与 tgbot/config.py 的同名函数保持一致（机器人切换菜单与面板
+    下拉用同一套显示名；用户要求 2026-11-24：bot 改完的网页版也要
+    相应调整）。region_count 为 None 或 <=1 时不加后缀。
+    """
+    region = get_profile_config(name)["region"]
+    label = get_region_label(region)
+    if region_count and region_count > 1:
+        label += f"（{region_count} 个区）"
+    return label

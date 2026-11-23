@@ -31,6 +31,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tgbot import config as bot_config  # noqa: E402
 from tgbot import handlers, handlers_client, handlers_extra  # noqa: E402
 from tgbot import handlers_menu  # noqa: E402
+from tgbot.services import run_sync  # noqa: E402
 
 # ================= 配置区（改这里） =================
 # 实例状态监控间隔（分钟）：check_instances_job 每隔这么久检查一次。
@@ -65,7 +66,9 @@ async def _post_init(application):
     """启动后注册命令菜单（Telegram 客户端"菜单"按钮显示全部命令）。
 
     菜单内容见 tgbot/handlers_menu.py 的 BOT_COMMANDS；测试保证
-    菜单列表与已注册的 CommandHandler 一致。
+    菜单列表与已注册的 CommandHandler 一致。同时后台预热订阅区域
+    缓存（菜单顶行与切换菜单的“（N 个区）”后缀读缓存，预热后首次
+    打开菜单就能带区数；失败只记日志）。
     """
     await application.bot.set_my_commands(
         [BotCommand(command, description)
@@ -73,6 +76,15 @@ async def _post_init(application):
     logging.getLogger(__name__).info(
         "已注册 %d 个机器人命令到 Telegram 菜单",
         len(handlers_menu.BOT_COMMANDS))
+
+    async def _warm_region_cache():
+        try:
+            await run_sync(handlers_extra.get_profile_regions)
+        except Exception as exc:  # noqa: BLE001 - 预热失败不影响启动
+            logging.getLogger(__name__).warning(
+                "预热订阅区域缓存失败：%s", exc)
+
+    application.create_task(_warm_region_cache())
 
 
 def build_application():
@@ -156,6 +168,8 @@ def build_application():
         handlers_extra.task_cancel_callback, pattern=r"^t:cancel:"))
     application.add_handler(CallbackQueryHandler(
         handlers_extra.profile_callback, pattern=r"^p:"))
+    application.add_handler(CallbackQueryHandler(
+        handlers_extra.quota_callback, pattern=r"^q:"))
     application.add_handler(CallbackQueryHandler(
         handlers_extra.resize_preset_callback, pattern=r"^r:"))
     application.add_handler(CallbackQueryHandler(

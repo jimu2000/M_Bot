@@ -200,6 +200,18 @@ class TestOracleMenuDynamicStates(MonitoringBotTestCase):
         self.assertIn("o:keepalive", data)
         self.assertIn("o:sslwatch", data)
 
+    def test_account_switch_row(self):
+        """v1.7.1：传 current_account 时菜单顶行有切换账号按钮。"""
+        kb = oracle_menu_keyboard(0, current_account="新加坡（3 个区）")
+        first = kb.inline_keyboard[0][0]
+        self.assertEqual(first.text, "🔄 切换账号：新加坡（3 个区）")
+        self.assertEqual(first.callback_data, "o:profiles")
+        # 不传时没有切换行（第一行是菜单项）
+        kb2 = oracle_menu_keyboard(0)
+        texts2 = button_texts(kb2)
+        self.assertTrue(all(not t.startswith("🔄 切换账号")
+                            for t in texts2))
+
 
 class TestMonitorToggleRefresh(MonitoringBotTestCase):
 

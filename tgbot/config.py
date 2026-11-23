@@ -68,6 +68,35 @@ def _build_profiles():
 
 PROFILES = _build_profiles()
 
+# 区域中文名（与 web/config.py 的 REGION_LABELS 保持同步；未知区域显示原代码）。
+# 账号切换菜单（菜单 13）按主区中文名显示账号，不再显示 DEFAULT/ACCOUNT2
+# 这类 profile 名（用户反馈 2026-11-24：看着乱，分不清是哪个账号）。
+REGION_LABELS = {
+    "ap-singapore-1": "新加坡",
+    "ap-seoul-1": "首尔",
+    "us-sanjose-1": "圣何塞",
+    "us-chicago-1": "芝加哥",
+}
+
+
+def get_region_label(region):
+    """区域代码 -> 中文名；未知区域返回原代码。"""
+    return REGION_LABELS.get(region, region)
+
+
+def profile_display_name(name, region_count=None):
+    """账号（profile）的显示名：主区中文名；订阅了多个区域时后缀（N 个区）。
+
+    例：DEFAULT（新加坡，订阅 3 个区）-> "新加坡（3 个区）"；
+    ACCOUNT2（圣何塞，1 个区）-> "圣何塞"。region_count 为 None 或 <=1
+    时不加后缀（查不到区数时只显示主区名，不阻塞切换菜单）。
+    """
+    region = get_profile_config(name)["region"]
+    label = get_region_label(region)
+    if region_count and region_count > 1:
+        label += f"（{region_count} 个区）"
+    return label
+
 # 机器人日志文件（查询最新日志命令读这个文件）。
 LOG_FILE = os.path.expanduser("~/workspace/rbot-clone/telegram-bot.log")
 # 快捷开机配置保存文件（JSON）。

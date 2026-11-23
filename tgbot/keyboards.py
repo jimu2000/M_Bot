@@ -44,6 +44,10 @@ callback_data 规范（Telegram 限制 64 字节，OCID 约 100 字节放不下�
   - "t:list"         任务列表
   - "t:cancel:<id>"  取消任务（id 是任务注册表里的短 ID，如 "g1"）
   - "p:<profile>"    切换 profile
+  - "q:list"         免费额度：回账号列表
+  - "q:acct:<name>"  免费额度：点开某账号（多区账号出二级区域菜单，
+    单区账号直接显示该区额度）
+  - "q:region:<name>:<region>" 免费额度：显示某账号在某区域的额度
   - "v:<act>:<idx>"  磁盘操作：detail/resize/delete（idx 是 volumes 列表下标）
   - "os:objects:<idx>" 对象存储：列某 Bucket 的对象（idx 是 os_buckets 下标）
   - "os:delbucket:<idx>" 对象存储：删除 Bucket 确认提示
@@ -137,14 +141,20 @@ def _menu_page(page):
     return ORACLE_MENU_ITEMS[start:start + MENU_PAGE_SIZE], page, total_pages
 
 
-def oracle_menu_keyboard(page=0, states=None):
+def oracle_menu_keyboard(page=0, states=None, current_account=None):
     """`/oracle` 菜单键盘：2 列排列，带上一页/下一页。
 
     states：可选的开关状态字典（键见 DYNAMIC_STATE_ITEMS），
     传了之后监控类按钮会带上“(开启)”/“(关闭)”后缀。
+    current_account：当前账号显示名（如“新加坡（3 个区）”），传了之
+    后菜单顶行多一条“🔄 切换账号：<当前账号>”按钮（点开菜单 13 切换）。
     """
     items, page, total_pages = _menu_page(page)
     rows = []
+    if current_account:
+        rows.append([InlineKeyboardButton(
+            f"🔄 切换账号：{current_account}",
+            callback_data="o:profiles")])
     for i in range(0, len(items), 2):
         row = []
         for key, text in items[i:i + 2]:
@@ -341,14 +351,54 @@ def task_list_keyboard(tasks):
     return InlineKeyboardMarkup(rows)
 
 
-def profile_keyboard(profiles, current):
-    """profile 切换键盘：profiles 是 profile 名列表，current 是当前 profile。"""
+def profile_keyboard(profiles, current, labels=None):
+    """profile 切换键盘：profiles 是 profile 名列表，current 是当前 profile。
+
+    labels 是 {profile: 显示名}（主区中文名，多区账号后缀区数，如
+    "新加坡（3 个区）"）；不传时显示 profile 名（兼容旧调用）。
+    callback_data 始终是 profile 名（p:<name>），显示名只影响按钮文本。
+    """
     rows = []
     for name in profiles:
         mark = "✅ " if name == current else ""
-        rows.append([InlineKeyboardButton(f"{mark}{name}",
+        text = (labels or {}).get(name, name)
+        rows.append([InlineKeyboardButton(f"{mark}{text}",
                                           callback_data=f"p:{name}")])
     rows.append([InlineKeyboardButton("◀ Oracle 菜单", callback_data="o:menu")])
+    return InlineKeyboardMarkup(rows)
+
+
+def quota_accounts_keyboard(labels):
+    """额度页账号列表键盘：labels 是 {profile: 显示名}（主区中文名，
+    多区账号后缀区数，如“新加坡（3 个区）”，与切换菜单一致）。
+
+    每行一个账号按钮（q:acct:<profile>），最后一行回 Oracle 菜单。
+    """
+    rows = [[InlineKeyboardButton(label, callback_data=f"q:acct:{name}")]
+            for name, label in labels.items()]
+    rows.append([InlineKeyboardButton("◀ Oracle 菜单", callback_data="o:menu")])
+    return InlineKeyboardMarkup(rows)
+
+
+def quota_regions_keyboard(profile, regions):
+    """额度页二级菜单：某账号的订阅区域列表。
+
+    regions 是 list_regions 的返回（region-name / is-home-region）。
+    每行一个区域按钮（q:region:<profile>:<region>），Home 区域后缀
+    “（Home）”；最后一行回账号列表。
+    """
+    from tgbot.config import get_region_label
+
+    rows = []
+    for region in regions:
+        code = region.get("region-name") or region.get("region-key") or "?"
+        label = get_region_label(code)
+        if region.get("is-home-region"):
+            label += "（Home）"
+        rows.append([InlineKeyboardButton(
+            label, callback_data=f"q:region:{profile}:{code}")])
+    rows.append([InlineKeyboardButton("◀ 返回账号列表",
+                                     callback_data="q:list")])
     return InlineKeyboardMarkup(rows)
 
 

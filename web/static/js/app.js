@@ -113,7 +113,9 @@
     return _profiles;
   }
 
-  // 填充 profile 下拉：选项显示"名字 · 区域中文名"；恢复保存的选择，
+  // 填充 profile 下拉：选项显示 displayName（主区中文名，多区账号
+  // 后缀区数，如“新加坡（3 个区）”，与机器人切换菜单一致；旧接口
+  // 没有 displayName 时回退到“名字 · 区域中文名”）；恢复保存的选择，
   // 返回选中的名字（列表为空时返回 null，调用方按默认账号加载）。
   async function fillProfileSelect(selectEl) {
     var profiles = await loadProfiles();
@@ -121,7 +123,8 @@
     profiles.forEach(function (p) {
       var opt = document.createElement("option");
       opt.value = p.name;
-      opt.textContent = p.name + " · " + (p.regionLabel || p.region || "");
+      opt.textContent = p.displayName ||
+        (p.name + " · " + (p.regionLabel || p.region || ""));
       selectEl.appendChild(opt);
     });
     var saved = getProfile();

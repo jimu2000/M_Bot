@@ -85,6 +85,8 @@ from tgbot.keyboards import (
     keepalive_keyboard,
     oracle_menu_keyboard,
     profile_keyboard,
+    quota_accounts_keyboard,
+    quota_regions_keyboard,
     ssl_add_cancel_keyboard,
     ssl_watch_keyboard,
     task_list_keyboard,
@@ -355,7 +357,11 @@ def _unwrap(result):
 
 
 async def _reply(update, text, reply_markup=None, parse_mode=None):
-    """统一回复：回调时先 answer（防按钮转圈），再用消息回复。"""
+    """统一回复：回调时先 answer（防按钮转圈），再用消息回复。
+
+    返回新发送的消息（Message），供调用方记录 ID 以便后续清理；
+    没有可回复的消息时返回 None。
+    """
     query = update.callback_query
     if query is not None:
         try:
@@ -364,8 +370,51 @@ async def _reply(update, text, reply_markup=None, parse_mode=None):
             pass
     message = update.effective_message
     if message is not None:
-        await message.reply_text(text, reply_markup=reply_markup,
-                                 parse_mode=parse_mode)
+        return await message.reply_text(text, reply_markup=reply_markup,
+                                        parse_mode=parse_mode)
+    return None
+
+
+# 流程中间消息清理（用户要求 2026-11-24：改完了只留这一条结果信息）。
+# 文字输入提示消息的 ID 存在 user_data["pending_prompt_ids"]；
+# 用户回复文字后提示已无用，text_input_callback 收到文字即删；
+# 二次确认框由 handle_confirm 包装在操作完成后删除。
+_PROMPT_IDS_KEY = "pending_prompt_ids"
+
+
+async def _delete_message_safe(context, chat_id, message_id):
+    """删一条消息；已删/无权限等失败时只记 debug 日志，不影响主流程。"""
+    if not message_id:
+        return
+    try:
+        await context.bot.delete_message(chat_id=chat_id,
+                                         message_id=message_id)
+    except Exception as exc:  # noqa: BLE001 - 清理失败不影响主流程
+        logger.debug("删除消息 %s 失败：%s", message_id, exc)
+
+
+async def _delete_tracked_prompts(context, chat_id):
+    """删除本次流程攒下的全部文字输入提示消息，并清空记录。"""
+    ids = context.user_data.pop(_PROMPT_IDS_KEY, None) or []
+    for message_id in ids:
+        await _delete_message_safe(context, chat_id, message_id)
+
+
+async def _reply_prompt(update, context, text, reply_markup=None):
+    """发一条文字输入提示：先删掉之前未清理的旧提示（防重复点按钮
+    攒出多条），再发新的并记录 ID（用户回复后由 text_input_callback
+    删除；开机表单的提示不走这里——表单自己编辑提示消息）。
+
+    返回新发送的消息。
+    """
+    chat_id = update.effective_chat.id if update.effective_chat else None
+    if chat_id is not None:
+        await _delete_tracked_prompts(context, chat_id)
+    msg = await _reply(update, text, reply_markup=reply_markup)
+    if msg is not None and getattr(msg, "message_id", None):
+        context.user_data.setdefault(_PROMPT_IDS_KEY, []).append(
+            msg.message_id)
+    return msg
 
 
 def _callback_data(update):
@@ -501,6 +550,29 @@ def fmt_tenancy(data):
     return "\n".join(lines)
 
 
+def fmt_tenancies(entries):
+    """多账号订阅信息全文：entries 是 [(显示名, tenancy dict 或 None)]。
+
+    显示名是账号的主区中文名（多区账号后缀区数），与切换菜单一致；
+    查失败的账号（data 为 None）显示“查询失败”，不影响其他账号。
+    有几个账号就显示几个（用户要求 2026-11-24）。
+    """
+    if not entries:
+        return "没有配置任何账号。"
+    sections = [f"📄 订阅信息（{len(entries)} 个账号）："]
+    for label, data in entries:
+        if not isinstance(data, dict) or not data:
+            body = "查询失败。"
+        else:
+            parts = [f"名称：{data.get('name', '?')}",
+                     f"Home 区域：{data.get('home-region-key', '?')}"]
+            if data.get("description"):
+                parts.append(f"描述：{data['description']}")
+            body = "\n".join(parts)
+        sections.append(f"{label}\n{body}")
+    return "\n\n".join(sections)
+
+
 def list_users(cli, compartment_id):
     """只读列出租户下的 IAM 用户（iam user list）。"""
     result = cli.run(["iam", "user", "list",
@@ -509,15 +581,28 @@ def list_users(cli, compartment_id):
 
 
 def fmt_user_list(users):
-    """用户列表全文（只显示名字/邮箱/状态，不显示 OCID）。"""
+    """用户列表标题（只剩标题 + 数量；逐个用户信息在按钮里，详情页看邮箱）。
+
+    与实例列表同款：按钮是唯一的列表，文字不再逐条重复（用户反馈
+    2026-11-24：原来文字列表和按钮列表同时出现，邮箱换行看着乱）。
+    """
     if not users:
         return "该租户下没有 IAM 用户。"
-    lines = [f"👥 云账户（{len(users)} 个用户）：", ""]
-    for user in users:
-        email = user.get("email") or "无邮箱"
-        state = user.get("lifecycle-state", "?")
-        lines.append(f"• {user.get('name', '?')}（{email}，{state}）")
-    return "\n".join(lines)
+    return (f"👥 云账户（{len(users)} 个用户）：\n\n"
+            "点下面按钮查看详情或操作。")
+
+
+def _user_button_text(user):
+    """用户按钮文本：👤 用户名；非 ACTIVE 状态后缀中文状态词。
+
+    邮箱不在按钮里（太长会换行），点进详情页看。
+    """
+    name = user.get("name", "?")
+    state = user.get("lifecycle-state", "ACTIVE")
+    if state == "ACTIVE":
+        return f"👤 {name}"
+    label = {"INACTIVE": "已停用"}.get(state, state)
+    return f"👤 {name} · {label}"
 
 
 def fmt_email_list(users):
@@ -570,6 +655,58 @@ def fmt_regions(regions):
         status = region.get("status", "?")
         lines.append(f"• {name}{home}：{status}")
     return "\n".join(lines)
+
+
+# 账号订阅区域缓存：region-subscription 很少变，缓存 1 小时，避免
+# 每次打开切换菜单/额度页都对每个账号调一次 OCI。存完整列表，
+# 区数（切换菜单后缀）与区域名（额度页二级菜单）都从这里派生。
+PROFILE_REGION_COUNT_TTL = timedelta(hours=1)
+_profile_regions = {}
+_profile_regions_at = None
+
+
+def get_profile_regions():
+    """返回 {profile: [region-subscription dict, ...]}；单个账号查失败时跳过。
+
+    结果缓存 1 小时；缓存命中时直接返回副本（调用方不要改原 dict）。
+    """
+    global _profile_regions, _profile_regions_at
+    now = datetime.now(timezone.utc)
+    if (_profile_regions and _profile_regions_at is not None
+            and now - _profile_regions_at < PROFILE_REGION_COUNT_TTL):
+        return {k: list(v) for k, v in _profile_regions.items()}
+    regions = {}
+    for name in bot_config.PROFILES:
+        try:
+            cli = bot_config.get_oci_client(profile=name)
+            cfg = bot_config.get_profile_config(name)
+            regions[name] = list_regions(cli, cfg["compartment_id"])
+        except Exception:  # noqa: BLE001 - 单账号失败不影响其他账号
+            continue
+    _profile_regions = regions
+    _profile_regions_at = now
+    return {k: list(v) for k, v in regions.items()}
+
+
+def get_profile_region_counts():
+    """返回 {profile: 订阅区域数}；由 get_profile_regions 派生，共享缓存。"""
+    return {name: len(regs)
+            for name, regs in get_profile_regions().items()}
+
+
+def get_cached_profile_display_name(profile):
+    """返回账号显示名，只读缓存，不调 OCI。
+
+    缓存里有该账号的订阅列表时带“（N 个区）”后缀，否则只有主区名。
+    供 /oracle 菜单顶行用（菜单每次翻页都调，调 OCI 太慢）；缓存由
+    切换菜单/额度页填充，机器人启动时也会后台预热一次。
+    """
+    count = None
+    if _profile_regions:
+        regs = _profile_regions.get(profile)
+        if regs is not None:
+            count = len(regs)
+    return bot_config.profile_display_name(profile, count)
 
 
 # ---------------- IPv6 ----------------
@@ -1283,15 +1420,86 @@ async def boot_go_callback(update, context):
 
 @require_allowed
 async def handle_quota(update, context):
-    """菜单 20：免费额度汇总。"""
+    """菜单 20：免费额度汇总——先出账号列表，每个账号点开看详情。"""
+    counts = await run_sync(get_profile_region_counts)
+    labels = {name: bot_config.profile_display_name(name, counts.get(name))
+              for name in bot_config.PROFILES}
+    await _reply(update, "免费额度：点下面账号查看：",
+                 reply_markup=quota_accounts_keyboard(labels))
+
+
+@require_allowed
+async def quota_callback(update, context):
+    """回调 q:list / q:acct:<profile> / q:region:<profile>:<region>。
+
+    额度页三级导航：账号列表 ->（多区账号）区域二级菜单 -> 额度详情。
+    单区账号点开直接显示该区额度，不出二级菜单。
+    """
+    parts = _callback_data(update).split(":")
+    action = parts[1] if len(parts) > 1 else ""
+    if action == "list":
+        await handle_quota(update, context)
+        return
+    if action == "acct" and len(parts) == 3:
+        await _quota_account(update, context, parts[2])
+        return
+    if action == "region" and len(parts) == 4:
+        await _quota_region(update, context, parts[2], parts[3])
+        return
+    await _reply(update, "无效的额度操作。",
+                 reply_markup=back_to_oracle_keyboard())
+
+
+async def _quota_account(update, context, profile):
+    """点开账号：多区订阅出二级区域菜单；单区直接显示该区额度。"""
+    if profile not in bot_config.PROFILES:
+        await _reply(update, "账号不存在，请重新打开免费额度。",
+                     reply_markup=back_to_oracle_keyboard())
+        return
+    regions = (await run_sync(get_profile_regions)).get(profile)
+    if not regions:
+        # 查不到订阅列表（API 失败）：直接按主区显示额度。
+        cfg = bot_config.get_profile_config(profile)
+        await _show_quota(update, context, profile, cfg["region"],
+                          multi=False)
+        return
+    if len(regions) == 1:
+        code = regions[0].get("region-name") or regions[0].get("region-key")
+        await _show_quota(update, context, profile, code, multi=False)
+        return
+    label = bot_config.profile_display_name(profile, len(regions))
+    await _reply(update, f"{label} 的订阅区域：点下面区域查看额度：",
+                 reply_markup=quota_regions_keyboard(profile, regions))
+
+
+async def _quota_region(update, context, profile, region):
+    """点开区域：显示该账号在该区域的免费额度。"""
+    if profile not in bot_config.PROFILES:
+        await _reply(update, "账号不存在，请重新打开免费额度。",
+                     reply_markup=back_to_oracle_keyboard())
+        return
+    await _show_quota(update, context, profile, region, multi=True)
+
+
+async def _show_quota(update, context, profile, region, multi):
+    """查并显示某账号在某区域的免费额度（multi 时返回按钮回区域菜单）。"""
     try:
-        summary = await run_sync(get_free_tier_summary,
-                                 get_cli(context), get_compartment(context))
+        cfg = bot_config.get_profile_config(profile)
+        cli = bot_config.get_oci_client(profile=profile, region=region)
+        summary = await run_sync(get_free_tier_summary, cli,
+                                 cfg["compartment_id"])
     except Exception as exc:  # noqa: BLE001 - 任何 OCI 异常都转成中文提示
         await _reply(update, fmt_error(exc))
         return
-    await _reply(update, fmt_quota_summary(summary, get_current_profile(context)),
-                 reply_markup=back_to_oracle_keyboard())
+    label = bot_config.get_region_label(cfg["region"])
+    if region != cfg["region"]:
+        label = f"{label} · {bot_config.get_region_label(region)}"
+    rows = [[InlineKeyboardButton(
+        "◀ 返回" + ("区域菜单" if multi else "账号列表"),
+        callback_data=(f"q:acct:{profile}" if multi else "q:list"))],
+        [InlineKeyboardButton("◀ Oracle 菜单", callback_data="o:menu")]]
+    await _reply(update, fmt_quota_summary(summary, label),
+                 reply_markup=InlineKeyboardMarkup(rows))
 
 
 # ---- 19. 近 3 月流量查询 / 25. 近 3 月花费查询 ----
@@ -1328,14 +1536,20 @@ async def handle_cost(update, context):
 
 @require_allowed
 async def handle_subscription(update, context):
-    """菜单 18：租户名称 / Home 区域 / 描述。"""
-    try:
-        tenancy = await run_sync(get_tenancy,
-                                 get_cli(context), get_compartment(context))
-    except Exception as exc:  # noqa: BLE001
-        await _reply(update, fmt_error(exc))
-        return
-    await _reply(update, fmt_tenancy(tenancy),
+    """菜单 18：全部账号的租户名称 / Home 区域 / 描述（有几个账号显示几个）。"""
+    counts = await run_sync(get_profile_region_counts)
+    entries = []
+    for name in bot_config.PROFILES:
+        label = bot_config.profile_display_name(name, counts.get(name))
+        try:
+            cfg = bot_config.get_profile_config(name)
+            cli = bot_config.get_oci_client(profile=name)
+            tenancy = await run_sync(get_tenancy, cli,
+                                     cfg["compartment_id"])
+            entries.append((label, tenancy))
+        except Exception:  # noqa: BLE001 - 单账号失败不影响其他账号
+            entries.append((label, None))
+    await _reply(update, fmt_tenancies(entries),
                  reply_markup=back_to_oracle_keyboard())
 
 
@@ -1386,11 +1600,14 @@ async def task_cancel_callback(update, context):
 
 @require_allowed
 async def handle_profiles(update, context):
-    """菜单 13：profile 切换键盘。"""
+    """菜单 13：profile 切换键盘（按主区中文名显示，多区账号后缀区数）。"""
     current = get_current_profile(context)
-    await _reply(update, f"当前账号（profile）：{current}\n点下面切换账号：",
+    counts = await run_sync(get_profile_region_counts)
+    labels = {name: bot_config.profile_display_name(name, counts.get(name))
+              for name in bot_config.PROFILES}
+    await _reply(update, f"当前账号：{labels.get(current, current)}\n点下面切换账号：",
                  reply_markup=profile_keyboard(list(bot_config.PROFILES),
-                                               current))
+                                               current, labels))
 
 
 @require_allowed
@@ -1403,7 +1620,8 @@ async def profile_callback(update, context):
     except ValueError as exc:
         await _reply(update, f"❌ 切换失败：{exc}")
         return
-    await _reply(update, f"✅ 已切换到账号（profile）：{name}")
+    label = get_cached_profile_display_name(name)
+    await _reply(update, f"✅ 已切换到账号：{label}")
 
 
 # ---- 2. ip 管理 ----
@@ -1914,8 +2132,8 @@ async def boot_backup_restore_callback(update, context):
                      "只有 AVAILABLE 状态的备份才能恢复。")
         return
     context.user_data["pending_input"] = {"kind": "restore_name", "idx": idx}
-    await _reply(
-        update,
+    await _reply_prompt(
+        update, context,
         f"♻️ 从备份「{backup.get('display-name') or '?'}」恢复出一台"
         "新实例（原机不动）。\n"
         "请回复新实例名，或直接发送“默认”使用 "
@@ -1959,7 +2177,7 @@ async def handle_users(update, context):
         await _reply(update, fmt_error(exc))
         return
     context.user_data["iam_users"] = users
-    rows = [[InlineKeyboardButton(f"👤 {u.get('name', '?')}",
+    rows = [[InlineKeyboardButton(_user_button_text(u),
                                   callback_data=f"u:detail:{idx}")]
             for idx, u in enumerate(users)]
     rows.append([InlineKeyboardButton("◀ Oracle 菜单",
@@ -2052,17 +2270,17 @@ async def user_callback(update, context):
     elif action == "desc":
         context.user_data["pending_input"] = {"kind": "user_desc",
                                               "idx": idx}
-        await _reply(update,
-                     f"✏️ 请回复这条消息，输入用户「{user.get('name', '?')}」"
-                     f"的新描述（最多 {MAX_DESCRIPTION_LEN} 字符）：\n"
-                     "（直接发文字即可，不用加任何命令）")
+        await _reply_prompt(update, context,
+                            f"✏️ 请回复这条消息，输入用户「{user.get('name', '?')}」"
+                            f"的新描述（最多 {MAX_DESCRIPTION_LEN} 字符）：\n"
+                            "（直接发文字即可，不用加任何命令）")
     elif action == "email":
         context.user_data["pending_input"] = {"kind": "user_email",
                                               "idx": idx}
-        await _reply(update,
-                     f"📧 请回复这条消息，输入用户「{user.get('name', '?')}」"
-                     "的新邮箱：\n"
-                     "（直接发文字即可，不用加任何命令）")
+        await _reply_prompt(update, context,
+                            f"📧 请回复这条消息，输入用户「{user.get('name', '?')}」"
+                            "的新邮箱：\n"
+                            "（直接发文字即可，不用加任何命令）")
     elif action == "keys":
         await _user_keys_list(update, context, user, idx)
     elif action == "del":
@@ -2150,10 +2368,10 @@ async def _user_delete_prompt(update, context, user, idx):
                      reply_markup=back_to_oracle_keyboard())
         return
     context.user_data["pending_input"] = {"kind": "deluser", "idx": idx}
-    await _reply(update,
-                 f"⚠️ 删除用户「{name}」将同时删除它的全部 API 密钥与 "
-                 "MFA 设备，不可恢复。\n\n"
-                 f"请回复这条消息，完整输入用户名「{name}」确认删除：")
+    await _reply_prompt(update, context,
+                        f"⚠️ 删除用户「{name}」将同时删除它的全部 API 密钥与 "
+                        "MFA 设备，不可恢复。\n\n"
+                        f"请回复这条消息，完整输入用户名「{name}」确认删除：")
 
 
 @require_allowed
@@ -2558,13 +2776,17 @@ async def ssl_watch_callback(update, context):
     action = parts[1] if len(parts) > 1 else ""
     if action == "add":
         context.user_data["pending_input"] = {"kind": "ssl_domain"}
-        await _reply(update,
-                     "请发送要监控的域名（例如 example.com）：\n"
-                     "直接发文字消息即可。",
-                     reply_markup=ssl_add_cancel_keyboard())
+        await _reply_prompt(update, context,
+                            "请发送要监控的域名（例如 example.com）：\n"
+                            "直接发文字消息即可。",
+                            reply_markup=ssl_add_cancel_keyboard())
         return
     if action == "add_cancel":
         context.user_data.pop("pending_input", None)
+        chat_id = update.effective_chat.id \
+            if update.effective_chat else None
+        if chat_id is not None:
+            await _delete_tracked_prompts(context, chat_id)
         await handle_sslwatch(update, context)
         return
     if action == "del" and len(parts) == 3:
@@ -2794,9 +3016,9 @@ async def handle_rename_prompt(update, context):
         return
     name = inst.get("display-name") or "?"
     context.user_data["pending_input"] = {"kind": "rename", "idx": idx}
-    await _reply(update,
-                 f"✏️ 请回复这条消息，输入实例「{name}」的新名字：\n"
-                 "（直接发文字即可，不用加任何命令）")
+    await _reply_prompt(update, context,
+                        f"✏️ 请回复这条消息，输入实例「{name}」的新名字：\n"
+                        "（直接发文字即可，不用加任何命令）")
 
 
 @require_allowed
@@ -2814,10 +3036,10 @@ async def handle_reinstall_prompt(update, context):
         return
     name = inst.get("display-name") or "?"
     context.user_data["pending_input"] = {"kind": "reinstall", "idx": idx}
-    await _reply(update,
-                 f"⚠️ 重装系统将清空实例「{name}」系统盘的全部数据，"
-                 "不可恢复；实例 OCID 与 IP 地址保留不变。\n\n"
-                 f"请回复这条消息，完整输入实例名「{name}」确认重装：")
+    await _reply_prompt(update, context,
+                        f"⚠️ 重装系统将清空实例「{name}」系统盘的全部数据，"
+                        "不可恢复；实例 OCID 与 IP 地址保留不变。\n\n"
+                        f"请回复这条消息，完整输入实例名「{name}」确认重装：")
 
 
 @require_allowed
@@ -2887,6 +3109,11 @@ async def text_input_callback(update, context):
         context.user_data.pop("pending_input", None)
         await _handle_boot_form_input(update, context, kind, text)
         return
+    # 非开机表单的文字输入：用户已回复，提示消息已无用，删掉
+    # （只留结果消息；开机表单的提示由表单自己编辑，不走这里）。
+    chat_id = update.effective_chat.id if update.effective_chat else None
+    if chat_id is not None:
+        await _delete_tracked_prompts(context, chat_id)
     if kind == "ssl_domain":
         # SSL 监控添加域名：不关联实例，直接处理。
         context.user_data.pop("pending_input", None)
@@ -3052,6 +3279,28 @@ def fmt_a1_health(result, profile):
 # ================= 二次确认执行（"c:<action>:<idx>"） =================
 
 async def handle_confirm(action, idx, update, context):
+    """执行二次确认后的危险操作（包装）。
+
+    操作完成后删除确认消息本身（只留结果消息；用户要求
+    2026-11-24：改完了只留这一条信息）。确认消息是回调消息，
+    结果消息是 _reply 新发的，两条是独立消息，删确认不影响结果。
+    重启类操作（restartsvc/restartbot/upgrade）执行时进程可能被杀，
+    清理跑不到，确认消息会残留——可接受的小例外。
+    """
+    handled = await _handle_confirm_inner(action, idx, update, context)
+    if not handled:
+        return False
+    query = update.callback_query
+    chat_id = update.effective_chat.id if update.effective_chat else None
+    if chat_id is not None:
+        if query is not None and query.message is not None:
+            await _delete_message_safe(
+                context, chat_id, query.message.message_id)
+        await _delete_tracked_prompts(context, chat_id)
+    return True
+
+
+async def _handle_confirm_inner(action, idx, update, context):
     """执行二次确认后的危险操作。
 
     由 handlers.py 的 "c:<action>:<idx>" 回调转发（该回调已过白名单，
@@ -4290,11 +4539,11 @@ async def handle_email(update, context):
     SMTP 凭据只在 Web 面板生成（密码只显示一次，不适合发聊天记录里）。
     """
     context.user_data["pending_input"] = {"kind": "email_sender"}
-    await _reply(update,
-                 "📧 创建 Email Delivery 发件人：\n\n"
-                 "请直接发送发件人邮箱地址（例如 noreply@example.com）。\n"
-                 "创建后需点击 OCI 发到该邮箱的验证链接，发件人才能使用。\n"
-                 "SMTP 凭据请到 Web 面板 Email 页生成（密码只显示一次）。")
+    await _reply_prompt(update, context,
+                        "📧 创建 Email Delivery 发件人：\n\n"
+                        "请直接发送发件人邮箱地址（例如 noreply@example.com）。\n"
+                        "创建后需点击 OCI 发到该邮箱的验证链接，发件人才能使用。\n"
+                        "SMTP 凭据请到 Web 面板 Email 页生成（密码只显示一次）。")
 
 
 # ---- 42. 抢机计划 ----

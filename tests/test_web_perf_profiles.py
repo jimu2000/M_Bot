@@ -128,19 +128,23 @@ class TestProfilesApi(_Base):
     """GET /api/profiles：账号列表接口。"""
 
     def test_list_profiles(self):
-        with patch("web.config.PROFILES", FAKE_PROFILES):
+        with patch("web.config.PROFILES", FAKE_PROFILES), \
+                patch("web.routes.profiles.get_region_counts",
+                      return_value={"DEFAULT": 3, "ACCOUNT2": 1}):
             resp = self.client.get("/api/profiles")
         self.assertEqual(resp.status_code, 200)
         body = resp.json()
         self.assertTrue(body["ok"])
         self.assertEqual(body["default"], "DEFAULT")
         self.assertEqual(
-            [(p["name"], p["region"], p["regionLabel"])
+            [(p["name"], p["region"], p["regionLabel"], p["regionCount"],
+              p["displayName"])
              for p in body["profiles"]],
-            [("DEFAULT", "ap-singapore-1", "新加坡"),
-             ("ACCOUNT2", "us-sanjose-1", "圣何塞"),
-             # 未列出的区域回退显示原始区域代码
-             ("ACCOUNT3", "us-ashburn-1", "us-ashburn-1")])
+            [("DEFAULT", "ap-singapore-1", "新加坡", 3, "新加坡（3 个区）"),
+             ("ACCOUNT2", "us-sanjose-1", "圣何塞", 1, "圣何塞"),
+             # 未列出的区域回退显示原始区域代码；查不到区数时不加后缀
+             ("ACCOUNT3", "us-ashburn-1", "us-ashburn-1", None,
+              "us-ashburn-1")])
 
     def test_list_profiles_anonymous_401(self):
         resp = self.anon.get("/api/profiles")
@@ -152,6 +156,16 @@ class TestProfilesApi(_Base):
         self.assertEqual(config.get_region_label("us-chicago-1"), "芝加哥")
         self.assertEqual(config.get_region_label("eu-frankfurt-1"),
                          "eu-frankfurt-1")
+
+    def test_profile_display_name(self):
+        """账号显示名：主区中文名；多区账号后缀（N 个区），与机器人一致。"""
+        with patch("web.config.PROFILES", FAKE_PROFILES):
+            self.assertEqual(config.profile_display_name("DEFAULT", 3),
+                             "新加坡（3 个区）")
+            self.assertEqual(config.profile_display_name("ACCOUNT2", 1),
+                             "圣何塞")
+            self.assertEqual(config.profile_display_name("ACCOUNT3", None),
+                             "us-ashburn-1")
 
 
 class TestInstancesParallelAndCache(_Base):

@@ -200,6 +200,18 @@ class TestCommands(HandlersTestCase):
         self.assertIn("o:instances", data)
         self.assertIn("o:page:1", data)
 
+    async def test_oracle_command_has_account_switch_row(self):
+        """v1.7.1：/oracle 菜单顶行有切换账号按钮，点开菜单 13 切换。"""
+        update = make_message_update()
+        self.extra.get_cached_profile_display_name = (
+            lambda profile: "新加坡（3 个区）")
+        await handlers.oracle_command(update, make_context())
+        keyboard = update.effective_message.reply_text.call_args.kwargs[
+            "reply_markup"]
+        first_row = keyboard.inline_keyboard[0]
+        self.assertEqual(first_row[0].text, "🔄 切换账号：新加坡（3 个区）")
+        self.assertEqual(first_row[0].callback_data, "o:profiles")
+
     async def test_instances_command(self):
         update = make_message_update()
         context = make_context()

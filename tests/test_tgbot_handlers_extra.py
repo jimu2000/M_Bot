@@ -20,6 +20,8 @@ import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from tgbot import config as bot_config
+from tgbot.keyboards import (profile_keyboard, quota_accounts_keyboard,
+                             quota_regions_keyboard)
 from tgbot.services import TaskRegistry
 import tgbot.handlers_extra as he
 from oci.grabber import GrabCancelledError, GrabResult
@@ -114,6 +116,19 @@ def reply_button_texts_of(update):
     if keyboard is None:
         return []
     return [btn.text
+            for row in keyboard.inline_keyboard for btn in row]
+
+
+def reply_callback_data_of(update):
+    """取 update 上 reply_text 最后一次调用的键盘 callback_data。"""
+    mock = update.effective_message.reply_text
+    if not mock.await_args_list:
+        return []
+    _args, kwargs = mock.await_args_list[-1]
+    keyboard = kwargs.get("reply_markup")
+    if keyboard is None:
+        return []
+    return [btn.callback_data
             for row in keyboard.inline_keyboard for btn in row]
 
 
@@ -224,24 +239,26 @@ class TestDispatch(HandlersExtraTestCase):
 
 class TestQuotaTrafficCost(HandlersExtraTestCase):
 
-    async def test_quota_formats_summary(self):
-        update = make_update()
-        context = make_context()
-        with patch.object(he, "get_free_tier_summary",
-                          return_value=FAKE_SUMMARY):
+    async def test_quota_shows_account_list(self):
+        """菜单 20 改版（v1.7.1）：先出账号列表，每个账号点开看详情。"""
+        profiles = {
+            "DEFAULT": {"region": "ap-singapore-1",
+                        "compartment_id": "ocid1.tenancy.oc1..aaa"},
+            "ACCOUNT2": {"region": "us-sanjose-1",
+                         "compartment_id": "ocid1.tenancy.oc1..bbb"},
+        }
+        with patch.object(bot_config, "PROFILES", profiles), \
+                patch.object(he, "get_profile_region_counts",
+                             return_value={"DEFAULT": 3, "ACCOUNT2": 1}):
+            update = make_update()
+            context = make_context()
             await he.handle_quota(update, context)
-        text = reply_text_of(update)
-        self.assertIn("A1.Flex：3/4 核，12/24GB", text)
-        self.assertIn("E2.1.Micro：1/2 台", text)
-        self.assertIn("启动盘：100/200GB", text)
-
-    async def test_quota_error_shows_friendly_message(self):
-        update = make_update()
-        context = make_context()
-        with patch.object(he, "get_free_tier_summary",
-                          side_effect=RuntimeError("boom")):
-            await he.handle_quota(update, context)
-        self.assertIn("出错了", reply_text_of(update))
+        self.assertIn("点下面账号查看", reply_text_of(update))
+        texts = reply_button_texts_of(update)
+        self.assertIn("新加坡（3 个区）", texts)
+        self.assertIn("圣何塞", texts)
+        self.assertIn("q:acct:DEFAULT", reply_callback_data_of(update))
+        self.assertIn("q:acct:ACCOUNT2", reply_callback_data_of(update))
 
     async def test_traffic_formats_monthly(self):
         items = [
@@ -384,16 +401,25 @@ class TestHealthTasksProfiles(HandlersExtraTestCase):
             "ACCOUNT2": {"region": "us-sanjose-1",
                          "compartment_id": "ocid1.tenancy.oc1..bbb"},
         }
-        with patch.object(bot_config, "PROFILES", profiles):
+        counts = {"DEFAULT": 3, "ACCOUNT2": 1}
+        with patch.object(bot_config, "PROFILES", profiles), \
+                patch.object(he, "get_profile_region_counts",
+                             return_value=counts):
             update = make_update()
             context = make_context()
             await he.handle_profiles(update, context)
-            self.assertIn("DEFAULT", reply_text_of(update))
+            # 按主区中文名显示，多区账号后缀区数，不再显示 profile 名
+            self.assertIn("新加坡（3 个区）", reply_text_of(update))
+            self.assertNotIn("DEFAULT", reply_text_of(update))
+            buttons = reply_button_texts_of(update)
+            self.assertIn("✅ 新加坡（3 个区）", buttons)
+            self.assertIn("圣何塞", buttons)
 
             update2 = make_update(callback_data="p:ACCOUNT2")
             await he.profile_callback(update2, context)
             self.assertEqual(context.user_data["profile"], "ACCOUNT2")
             self.assertIn("已切换到账号", reply_text_of(update2))
+            self.assertIn("圣何塞", reply_text_of(update2))
 
             # 未知 profile 切换失败
             update3 = make_update(callback_data="p:NOPE")
@@ -1118,7 +1144,7 @@ class TestIpv6Buttons(HandlersExtraTestCase):
         text = reply_text_of(update)
         self.assertIn("web-server：无 IPv6", text)
         self.assertIn("2001:db8::1", text)
-        callbacks = self._callbacks_of(update)
+        callbacks = reply_callback_data_of(update)
         self.assertIn("ipv6_create:0", callbacks)
         self.assertIn("ipv6_delete:0", callbacks)
         self.assertIn("o:menu", callbacks)
@@ -1164,7 +1190,7 @@ class TestIpv6Buttons(HandlersExtraTestCase):
         text = reply_text_of(update)
         self.assertIn("2001:db8::1", text)
         self.assertIn("确认删除", text)
-        self.assertIn("c:delipv6:0", self._callbacks_of(update))
+        self.assertIn("c:delipv6:0", reply_callback_data_of(update))
 
     async def test_ipv6_delete_callback_expired(self):
         update = make_update(callback_data="ipv6_delete:0")
@@ -1238,7 +1264,7 @@ class TestIpManagementButtons(HandlersExtraTestCase):
         self.assertIn("203.0.113.1", text)
         self.assertIn("203.0.113.2", text)
         self.assertIn("换 IP：请在实例列表里选一台实例", text)
-        callbacks = self._callbacks_of(update)
+        callbacks = reply_callback_data_of(update)
         self.assertIn("ip_create", callbacks)
         # 只有 AVAILABLE 且未绑定的那条挂删除按钮。
         self.assertIn("ip_delete:0", callbacks)
@@ -1278,7 +1304,7 @@ class TestIpManagementButtons(HandlersExtraTestCase):
         text = reply_text_of(update)
         self.assertIn("203.0.113.1", text)
         self.assertIn("确认删除", text)
-        self.assertIn("c:delpubip:0", self._callbacks_of(update))
+        self.assertIn("c:delpubip:0", reply_callback_data_of(update))
 
     async def test_ip_delete_callback_expired(self):
         update = make_update(callback_data="ip_delete:0")
@@ -1355,10 +1381,14 @@ class TestUserManagement(HandlersExtraTestCase):
             update = make_update()
             context = make_context()
             await he.handle_users(update, context)
+        # v1.7.1：文字只剩标题，名字在按钮里
         text = reply_text_of(update)
-        self.assertIn("alice", text)
-        self.assertIn("bob", text)
-        callbacks = self._callbacks_of(update)
+        self.assertIn("云账户（2 个用户）", text)
+        self.assertNotIn("alice", text)
+        buttons = reply_button_texts_of(update)
+        self.assertIn("👤 alice", buttons)
+        self.assertIn("👤 bob", buttons)
+        callbacks = reply_callback_data_of(update)
         self.assertIn("u:detail:0", callbacks)
         self.assertIn("u:detail:1", callbacks)
         self.assertIn("o:menu", callbacks)
@@ -1372,7 +1402,7 @@ class TestUserManagement(HandlersExtraTestCase):
         self.assertIn("alice", text)
         self.assertIn("alice@example.com", text)
         self.assertIn("测试用户", text)
-        callbacks = self._callbacks_of(update)
+        callbacks = reply_callback_data_of(update)
         self.assertIn("u:desc:0", callbacks)
         self.assertIn("u:email:0", callbacks)
         self.assertIn("u:keys:0", callbacks)
@@ -1413,7 +1443,7 @@ class TestUserManagement(HandlersExtraTestCase):
         self.assertNotIn("pending_input", context.user_data)
         self.assertIn("确认把用户「alice」的描述改为",
                       reply_text_of(update))
-        self.assertIn("c:userdesc:0", self._callbacks_of(update))
+        self.assertIn("c:userdesc:0", reply_callback_data_of(update))
 
     async def test_text_input_user_desc_empty_cancels(self):
         update = make_update()
@@ -1446,7 +1476,7 @@ class TestUserManagement(HandlersExtraTestCase):
                          "new@example.com")
         self.assertIn("确认把用户「bob」的邮箱改为",
                       reply_text_of(update))
-        self.assertIn("c:useremail:1", self._callbacks_of(update))
+        self.assertIn("c:useremail:1", reply_callback_data_of(update))
 
     async def test_text_input_user_email_invalid(self):
         update = make_update()
@@ -1501,7 +1531,7 @@ class TestUserManagement(HandlersExtraTestCase):
         self.assertIn("11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11",
                       text)
         self.assertIn("暂不支持上传", text)
-        callbacks = self._callbacks_of(update)
+        callbacks = reply_callback_data_of(update)
         self.assertIn("u:keydel:0", callbacks)
         self.assertIn("u:keydel:1", callbacks)
         self.assertIn("u:detail:0", callbacks)
@@ -1529,7 +1559,7 @@ class TestUserManagement(HandlersExtraTestCase):
         self.assertIn("alice", text)
         self.assertIn("aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99",
                       text)
-        self.assertIn("c:delapikey:0", self._callbacks_of(update))
+        self.assertIn("c:delapikey:0", reply_callback_data_of(update))
 
     async def test_confirm_delapikey(self):
         update = make_update(callback_data="c:delapikey:1")
@@ -1589,7 +1619,7 @@ class TestUserManagement(HandlersExtraTestCase):
                                               "idx": "0"}
         await he.text_input_callback(update, context)
         self.assertIn("最后确认：删除用户「alice」", reply_text_of(update))
-        self.assertIn("c:deluser:0", self._callbacks_of(update))
+        self.assertIn("c:deluser:0", reply_callback_data_of(update))
 
     async def test_text_input_deluser_mismatch(self):
         update = make_update()
@@ -1636,10 +1666,12 @@ class TestUserManagement(HandlersExtraTestCase):
                           return_value=[dict(u)
                                         for u in self.FAKE_USERS]):
             await he.user_callback(update, context)
+        # v1.7.1：文字只剩标题，名字在按钮里
         text = reply_text_of(update)
-        self.assertIn("alice", text)
-        self.assertIn("bob", text)
-        self.assertIn("u:detail:0", self._callbacks_of(update))
+        self.assertIn("云账户（2 个用户）", text)
+        self.assertNotIn("alice", text)
+        self.assertIn("👤 alice", reply_button_texts_of(update))
+        self.assertIn("u:detail:0", reply_callback_data_of(update))
 
 
 class TestUsersWorkflowsRegionsSubscriptionMfa(HandlersExtraTestCase):
@@ -1654,10 +1686,14 @@ class TestUsersWorkflowsRegionsSubscriptionMfa(HandlersExtraTestCase):
         update = make_update()
         context = make_context()
         await he.handle_users(update, context)
+        # v1.7.1：文字只剩标题，名字在按钮里，邮箱在详情页
         text = reply_text_of(update)
-        self.assertIn("alice", text)
-        self.assertIn("alice@example.com", text)
-        self.assertIn("bob", text)
+        self.assertIn("云账户（2 个用户）", text)
+        self.assertNotIn("alice", text)
+        self.assertNotIn("alice@example.com", text)
+        buttons = reply_button_texts_of(update)
+        self.assertIn("👤 alice", buttons)
+        self.assertIn("👤 bob", buttons)
 
     async def test_handle_emails(self):
         self.cli.run.return_value = {"data": [
@@ -1701,16 +1737,39 @@ class TestUsersWorkflowsRegionsSubscriptionMfa(HandlersExtraTestCase):
         self.assertIn("us-sanjose-1", text)
 
     async def test_handle_subscription(self):
-        self.cli.run.return_value = {"data": {
-            "name": "my-tenancy", "home-region-key": "SIN",
-            "description": "test tenancy"}}
-        update = make_update()
-        context = make_context()
-        await he.handle_subscription(update, context)
+        """菜单 18：有几个账号就显示几个（v1.7.1）。"""
+        profiles = {
+            "DEFAULT": {"region": "ap-singapore-1",
+                        "compartment_id": "ocid1.tenancy.oc1..aaa"},
+            "ACCOUNT2": {"region": "us-sanjose-1",
+                         "compartment_id": "ocid1.tenancy.oc1..bbb"},
+        }
+
+        def fake_run(args, **kwargs):
+            tenancy_id = args[args.index("--tenancy-id") + 1]
+            if tenancy_id.endswith("aaa"):
+                return {"data": {"name": "my-tenancy",
+                                 "home-region-key": "SIN",
+                                 "description": "test tenancy"}}
+            return {"data": {"name": "other-tenancy",
+                             "home-region-key": "SJC"}}
+
+        self.cli.run.side_effect = fake_run
+        with patch.object(bot_config, "PROFILES", profiles), \
+                patch.object(he, "get_profile_region_counts",
+                             return_value={"DEFAULT": 3, "ACCOUNT2": 1}):
+            update = make_update()
+            context = make_context()
+            await he.handle_subscription(update, context)
         text = reply_text_of(update)
+        self.assertIn("订阅信息（2 个账号）", text)
+        self.assertIn("新加坡（3 个区）", text)
         self.assertIn("my-tenancy", text)
         self.assertIn("SIN", text)
         self.assertIn("test tenancy", text)
+        self.assertIn("圣何塞", text)
+        self.assertIn("other-tenancy", text)
+        self.assertIn("SJC", text)
 
     async def test_handle_mfa_lists_devices(self):
         def fake_run(args, **kwargs):
@@ -1775,6 +1834,373 @@ class TestMonitorToggles(HandlersExtraTestCase):
         state = context.bot_data["daily_report"]
         self.assertTrue(state["on"])
         self.assertEqual(state["chat_id"], TEST_CHAT_ID)
+
+
+class TestDisplayNames(HandlersExtraTestCase):
+    """v1.7.1 显示修复：用户列表标题化、账号按主区中文名显示。"""
+
+    def setUp(self):
+        super().setUp()
+        # 每次测试前清空订阅区域缓存，避免测试间互相干扰
+        he._profile_regions = {}
+        he._profile_regions_at = None
+
+    def test_fmt_user_list_header_only(self):
+        """用户列表文字只剩标题 + 数量，不再逐条列邮箱（与实例列表同款）。"""
+        users = [
+            {"name": "api-user", "email": "a@example.com",
+             "lifecycle-state": "ACTIVE"},
+            {"name": "api_user", "email": "api@example.com",
+             "lifecycle-state": "ACTIVE"},
+            {"name": "root", "email": "root@example.com",
+             "lifecycle-state": "INACTIVE"},
+        ]
+        text = he.fmt_user_list(users)
+        self.assertIn("云账户（3 个用户）", text)
+        self.assertIn("点下面按钮查看详情或操作", text)
+        self.assertNotIn("a@example.com", text)
+        self.assertNotIn("api-user", text)
+        self.assertEqual(he.fmt_user_list([]), "该租户下没有 IAM 用户。")
+
+    def test_user_button_text(self):
+        """用户按钮：ACTIVE 只显示名；非 ACTIVE 后缀中文状态词。"""
+        self.assertEqual(
+            he._user_button_text({"name": "api-user",
+                                  "lifecycle-state": "ACTIVE"}),
+            "👤 api-user")
+        self.assertEqual(
+            he._user_button_text({"name": "old-user",
+                                  "lifecycle-state": "INACTIVE"}),
+            "👤 old-user · 已停用")
+        self.assertEqual(
+            he._user_button_text({"name": "x", "lifecycle-state": "WEIRD"}),
+            "👤 x · WEIRD")
+
+    async def test_handle_users_buttons_are_the_only_list(self):
+        """菜单 8：文字是标题，按钮是唯一的列表（邮箱在详情页）。"""
+        users = [
+            {"id": "ocid1.user.oc1..aaa", "name": "api-user",
+             "email": "a@example.com", "lifecycle-state": "ACTIVE"},
+            {"id": "ocid1.user.oc1..bbb", "name": "old-user",
+             "email": "b@example.com", "lifecycle-state": "INACTIVE"},
+        ]
+        with patch.object(he, "list_users", return_value=users):
+            update = make_update()
+            context = make_context()
+            await he.handle_users(update, context)
+        self.assertIn("云账户（2 个用户）", reply_text_of(update))
+        self.assertNotIn("a@example.com", reply_text_of(update))
+        buttons = reply_button_texts_of(update)
+        self.assertIn("👤 api-user", buttons)
+        self.assertIn("👤 old-user · 已停用", buttons)
+
+    def test_profile_display_name(self):
+        """账号显示名：主区中文名；多区账号后缀（N 个区）。"""
+        profiles = {
+            "DEFAULT": {"region": "ap-singapore-1",
+                        "compartment_id": "ocid1.tenancy.oc1..aaa"},
+            "ACCOUNT2": {"region": "us-sanjose-1",
+                         "compartment_id": "ocid1.tenancy.oc1..bbb"},
+            "ACCOUNT3": {"region": "us-chicago-1",
+                         "compartment_id": "ocid1.tenancy.oc1..ccc"},
+        }
+        with patch.object(bot_config, "PROFILES", profiles):
+            self.assertEqual(
+                bot_config.profile_display_name("DEFAULT", 3),
+                "新加坡（3 个区）")
+            self.assertEqual(
+                bot_config.profile_display_name("ACCOUNT2", 1), "圣何塞")
+            self.assertEqual(
+                bot_config.profile_display_name("ACCOUNT3", None), "芝加哥")
+            self.assertEqual(
+                bot_config.profile_display_name("DEFAULT", 0), "新加坡")
+
+    def test_profile_display_name_unknown_region(self):
+        """未知区域显示原代码，不崩。"""
+        profiles = {"X": {"region": "ap-tokyo-1",
+                          "compartment_id": "ocid1.tenancy.oc1..xxx"}}
+        with patch.object(bot_config, "PROFILES", profiles):
+            self.assertEqual(bot_config.profile_display_name("X", 2),
+                             "ap-tokyo-1（2 个区）")
+
+    def test_profile_keyboard_labels(self):
+        """切换键盘：按钮显示显示名，回调仍是 profile 名。"""
+        kb = profile_keyboard(["DEFAULT", "ACCOUNT2"], "DEFAULT",
+                              {"DEFAULT": "新加坡（3 个区）",
+                               "ACCOUNT2": "圣何塞"})
+        texts = [btn.text for row in kb.inline_keyboard for btn in row]
+        self.assertIn("✅ 新加坡（3 个区）", texts)
+        self.assertIn("圣何塞", texts)
+        datas = [btn.callback_data
+                 for row in kb.inline_keyboard for btn in row]
+        self.assertIn("p:DEFAULT", datas)
+        self.assertIn("p:ACCOUNT2", datas)
+        # 不传 labels 时回退到 profile 名（兼容旧调用）
+        kb2 = profile_keyboard(["DEFAULT"], "DEFAULT")
+        self.assertEqual(kb2.inline_keyboard[0][0].text, "✅ DEFAULT")
+
+    def test_get_profile_region_counts_caches(self):
+        """区域数查一次后缓存 1 小时，第二次不再调 OCI。"""
+        profiles = {
+            "DEFAULT": {"region": "ap-singapore-1",
+                        "compartment_id": "ocid1.tenancy.oc1..aaa"},
+            "ACCOUNT2": {"region": "us-sanjose-1",
+                         "compartment_id": "ocid1.tenancy.oc1..bbb"},
+        }
+        fake_cli = MagicMock()
+        with patch.object(bot_config, "PROFILES", profiles), \
+                patch.object(bot_config, "get_oci_client",
+                             return_value=fake_cli) as get_cli, \
+                patch.object(he, "list_regions",
+                             return_value=[{}, {}, {}]) as list_regions:
+            counts = he.get_profile_region_counts()
+            self.assertEqual(counts, {"DEFAULT": 3, "ACCOUNT2": 3})
+            self.assertEqual(get_cli.call_count, 2)
+            counts2 = he.get_profile_region_counts()
+            self.assertEqual(counts2, counts)
+            # 缓存命中：不再调 OCI
+            self.assertEqual(get_cli.call_count, 2)
+            self.assertEqual(list_regions.call_count, 2)
+
+    def test_get_profile_region_counts_skips_failed_profile(self):
+        """单个账号查失败时跳过，不影响其他账号。"""
+        profiles = {
+            "DEFAULT": {"region": "ap-singapore-1",
+                        "compartment_id": "ocid1.tenancy.oc1..aaa"},
+            "ACCOUNT2": {"region": "us-sanjose-1",
+                         "compartment_id": "ocid1.tenancy.oc1..bbb"},
+        }
+
+        def _list_regions(cli, compartment_id):
+            if compartment_id.endswith("aaa"):
+                raise RuntimeError("boom")
+            return [{}]
+
+        with patch.object(bot_config, "PROFILES", profiles), \
+                patch.object(bot_config, "get_oci_client",
+                             return_value=MagicMock()), \
+                patch.object(he, "list_regions",
+                             side_effect=_list_regions):
+            counts = he.get_profile_region_counts()
+            self.assertEqual(counts, {"ACCOUNT2": 1})
+
+    def test_fmt_tenancies(self):
+        """多账号订阅信息：有几个账号显示几个，失败的账号单列。"""
+        text = he.fmt_tenancies([
+            ("新加坡（3 个区）",
+             {"name": "tenant-singapore", "home-region-key": "SIN",
+              "description": "tenant-singapore"}),
+            ("圣何塞", {"name": "tenant-sanjose", "home-region-key": "SJC"}),
+            ("芝加哥", None),
+        ])
+        self.assertIn("订阅信息（3 个账号）", text)
+        self.assertIn("新加坡（3 个区）", text)
+        self.assertIn("tenant-singapore", text)
+        self.assertIn("圣何塞", text)
+        self.assertIn("tenant-sanjose", text)
+        self.assertIn("芝加哥", text)
+        self.assertIn("查询失败", text)
+        self.assertEqual(he.fmt_tenancies([]), "没有配置任何账号。")
+
+
+class TestQuotaDrillDown(HandlersExtraTestCase):
+    """v1.7.1 额度页三级导航：账号列表 ->（多区）区域菜单 -> 额度详情。"""
+
+    _PROFILES = {
+        "DEFAULT": {"region": "ap-singapore-1",
+                    "compartment_id": "ocid1.tenancy.oc1..aaa"},
+        "ACCOUNT2": {"region": "us-sanjose-1",
+                     "compartment_id": "ocid1.tenancy.oc1..bbb"},
+    }
+    _REGIONS_3 = [
+        {"region-name": "ap-singapore-1", "is-home-region": True,
+         "status": "READY"},
+        {"region-name": "ap-seoul-1", "is-home-region": False,
+         "status": "READY"},
+        {"region-name": "us-sanjose-1", "is-home-region": False,
+         "status": "READY"},
+    ]
+
+    def setUp(self):
+        super().setUp()
+        he._profile_regions = {}
+        he._profile_regions_at = None
+
+    async def test_quota_account_single_region_shows_summary(self):
+        """单区账号点开直接显示该区额度，不出二级菜单。"""
+        with patch.object(bot_config, "PROFILES", self._PROFILES), \
+                patch.object(he, "get_profile_regions", return_value={
+                    "ACCOUNT2": [{"region-name": "us-sanjose-1",
+                                  "is-home-region": True,
+                                  "status": "READY"}]}), \
+                patch.object(he, "get_free_tier_summary",
+                             return_value=FAKE_SUMMARY):
+            update = make_update(callback_data="q:acct:ACCOUNT2")
+            context = make_context()
+            await he.quota_callback(update, context)
+        text = reply_text_of(update)
+        self.assertIn("[圣何塞] 免费额度", text)
+        self.assertIn("A1.Flex：3/4 核，12/24GB", text)
+        self.assertIn("E2.1.Micro：1/2 台", text)
+        self.assertIn("启动盘：100/200GB", text)
+        self.assertIn("q:list", reply_callback_data_of(update))
+
+    async def test_quota_account_multi_region_shows_region_menu(self):
+        """多区账号点开出二级区域菜单，Home 区域标（Home）。"""
+        with patch.object(bot_config, "PROFILES", self._PROFILES), \
+                patch.object(he, "get_profile_regions", return_value={
+                    "DEFAULT": self._REGIONS_3}):
+            update = make_update(callback_data="q:acct:DEFAULT")
+            context = make_context()
+            await he.quota_callback(update, context)
+        self.assertIn("新加坡（3 个区）", reply_text_of(update))
+        texts = reply_button_texts_of(update)
+        self.assertIn("新加坡（Home）", texts)
+        self.assertIn("首尔", texts)
+        self.assertIn("圣何塞", texts)
+        callbacks = reply_callback_data_of(update)
+        self.assertIn("q:region:DEFAULT:ap-singapore-1", callbacks)
+        self.assertIn("q:region:DEFAULT:ap-seoul-1", callbacks)
+        self.assertIn("q:region:DEFAULT:us-sanjose-1", callbacks)
+        self.assertIn("q:list", callbacks)
+
+    async def test_quota_region_shows_summary_with_region_label(self):
+        """点开非主区：标题带“主区 · 该区”，OCI 客户端用该区域。"""
+        with patch.object(bot_config, "PROFILES", self._PROFILES), \
+                patch.object(bot_config, "get_oci_client",
+                             return_value=self.cli) as mock_get_cli, \
+                patch.object(he, "get_free_tier_summary",
+                             return_value=FAKE_SUMMARY):
+            update = make_update(
+                callback_data="q:region:DEFAULT:ap-seoul-1")
+            context = make_context()
+            await he.quota_callback(update, context)
+        text = reply_text_of(update)
+        self.assertIn("[新加坡 · 首尔] 免费额度", text)
+        self.assertIn("A1.Flex：3/4 核，12/24GB", text)
+        mock_get_cli.assert_called_once_with(profile="DEFAULT",
+                                             region="ap-seoul-1")
+        # 多区详情的返回按钮回区域菜单
+        self.assertIn("q:acct:DEFAULT", reply_callback_data_of(update))
+
+    async def test_quota_region_error_shows_friendly_message(self):
+        """额度查询失败时显示中文错误提示。"""
+        with patch.object(bot_config, "PROFILES", self._PROFILES), \
+                patch.object(he, "get_free_tier_summary",
+                             side_effect=RuntimeError("boom")):
+            update = make_update(callback_data="q:region:DEFAULT:ap-seoul-1")
+            context = make_context()
+            await he.quota_callback(update, context)
+        self.assertIn("出错了", reply_text_of(update))
+
+    async def test_quota_list_back_to_accounts(self):
+        """q:list 回到账号列表。"""
+        with patch.object(bot_config, "PROFILES", self._PROFILES), \
+                patch.object(he, "get_profile_region_counts",
+                             return_value={"DEFAULT": 3, "ACCOUNT2": 1}):
+            update = make_update(callback_data="q:list")
+            context = make_context()
+            await he.quota_callback(update, context)
+        self.assertIn("点下面账号查看", reply_text_of(update))
+        self.assertIn("q:acct:DEFAULT", reply_callback_data_of(update))
+
+    def test_get_cached_profile_display_name(self):
+        """菜单顶行显示名：缓存有订阅数时带后缀，否则只有主区名。"""
+        he._profile_regions = {"DEFAULT": self._REGIONS_3}
+        self.assertEqual(he.get_cached_profile_display_name("DEFAULT"),
+                         "新加坡（3 个区）")
+        he._profile_regions = {}
+        self.assertEqual(he.get_cached_profile_display_name("DEFAULT"),
+                         "新加坡")
+
+    def test_quota_keyboards(self):
+        """额度页键盘：账号列表与区域二级菜单的按钮文本与回调。"""
+        kb = quota_accounts_keyboard({"DEFAULT": "新加坡（3 个区）",
+                                      "ACCOUNT2": "圣何塞"})
+        texts = [b.text for row in kb.inline_keyboard for b in row]
+        datas = [b.callback_data for row in kb.inline_keyboard for b in row]
+        self.assertEqual(texts[0], "新加坡（3 个区）")
+        self.assertEqual(datas[0], "q:acct:DEFAULT")
+        self.assertIn("o:menu", datas)
+        kb2 = quota_regions_keyboard("DEFAULT", self._REGIONS_3)
+        texts2 = [b.text for row in kb2.inline_keyboard for b in row]
+        datas2 = [b.callback_data for row in kb2.inline_keyboard
+                  for b in row]
+        self.assertIn("新加坡（Home）", texts2)
+        self.assertIn("首尔", texts2)
+        self.assertIn("q:region:DEFAULT:ap-seoul-1", datas2)
+        self.assertIn("q:list", datas2)
+
+
+class TestMessageCleanup(HandlersExtraTestCase):
+    """v1.7.1 消息清理：改完了只留结果这一条信息。"""
+
+    async def test_reply_returns_message(self):
+        """_reply 返回新发送的消息（供调用方记录 ID 以便清理）。"""
+        update = make_update()
+        sent = MagicMock(message_id=555)
+        update.effective_message.reply_text = AsyncMock(
+            return_value=sent)
+        result = await he._reply(update, "hi")
+        self.assertIs(result, sent)
+
+    async def test_reply_prompt_deletes_old_and_tracks_new(self):
+        """发新提示前先删旧提示（防重复点按钮攒多条），新提示记 ID。"""
+        update = make_update()
+        update.effective_message.reply_text = AsyncMock(
+            return_value=MagicMock(message_id=777))
+        context = make_context()
+        context.bot.delete_message = AsyncMock()
+        context.user_data["pending_prompt_ids"] = [111, 222]
+        msg = await he._reply_prompt(update, context, "请输入：")
+        deleted = [kwargs["message_id"] for _a, kwargs
+                   in context.bot.delete_message.await_args_list]
+        self.assertEqual(deleted, [111, 222])
+        self.assertEqual(context.user_data["pending_prompt_ids"], [777])
+        self.assertEqual(msg.message_id, 777)
+
+    async def test_text_input_deletes_tracked_prompts(self):
+        """用户回复文字后，提示消息被删除，只留确认/结果消息。"""
+        update = make_update()
+        update.effective_message.text = "new-name"
+        context = make_context()
+        context.bot.delete_message = AsyncMock()
+        context.user_data["instances"] = [FAKE_INSTANCES[0]]
+        context.user_data["pending_input"] = {"kind": "rename", "idx": "0"}
+        context.user_data["pending_prompt_ids"] = [111, 222]
+        await he.text_input_callback(update, context)
+        deleted = [kwargs["message_id"] for _a, kwargs
+                   in context.bot.delete_message.await_args_list]
+        self.assertEqual(deleted, [111, 222])
+        self.assertNotIn("pending_prompt_ids", context.user_data)
+        self.assertIn("确认把实例", reply_text_of(update))
+
+    async def test_handle_confirm_deletes_confirmation_message(self):
+        """确认执行后，确认消息被删除，只留结果消息。"""
+        update = make_update(callback_data="c:changeip:0")
+        update.callback_query.message.message_id = 999
+        context = make_context()
+        context.bot.delete_message = AsyncMock()
+        context.user_data["instances"] = [FAKE_INSTANCES[0]]
+        with patch.object(he, "change_public_ip",
+                          return_value="203.0.113.10"):
+            handled = await he.handle_confirm("changeip", "0",
+                                              update, context)
+        self.assertTrue(handled)
+        self.assertIn("203.0.113.10", reply_text_of(update))
+        deleted = [(kwargs.get("chat_id"), kwargs.get("message_id"))
+                   for _a, kwargs
+                   in context.bot.delete_message.await_args_list]
+        self.assertIn((TEST_CHAT_ID, 999), deleted)
+
+    async def test_handle_confirm_unknown_action_no_delete(self):
+        """未知 action 不处理，也不删消息。"""
+        update = make_update(callback_data="c:explode:0")
+        context = make_context()
+        context.bot.delete_message = AsyncMock()
+        handled = await he.handle_confirm("explode", "0", update, context)
+        self.assertFalse(handled)
+        context.bot.delete_message.assert_not_awaited()
 
 
 if __name__ == "__main__":

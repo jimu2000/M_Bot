@@ -160,6 +160,25 @@ def _menu_states(context):
     return states if isinstance(states, dict) else None
 
 
+def _current_account_label(context):
+    """当前账号显示名（/oracle 菜单顶行“切换账号”按钮用）。
+
+    只读缓存，不调 OCI；handlers_extra 未就绪时回退到 profile 名。
+    """
+    try:
+        from tgbot import handlers_extra
+    except ImportError:
+        return get_current_profile(context)
+    get_label = getattr(handlers_extra, "get_cached_profile_display_name",
+                        None)
+    if not callable(get_label):
+        return get_current_profile(context)
+    try:
+        return get_label(get_current_profile(context))
+    except Exception:  # noqa: BLE001 - 读失败不影响菜单显示
+        return get_current_profile(context)
+
+
 def _unwrap(data):
     """OCI CLI 的 get 响应通常包一层 {"data": ...}，这里解包。"""
     if isinstance(data, dict) and "data" in data:
@@ -209,7 +228,9 @@ async def oracle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """处理 /oracle：发送 Oracle 菜单（第 1 页，监控按钮带开关状态）。"""
     await update.effective_message.reply_text(
         ORACLE_MENU_TEXT,
-        reply_markup=oracle_menu_keyboard(0, states=_menu_states(context)))
+        reply_markup=oracle_menu_keyboard(
+            0, states=_menu_states(context),
+            current_account=_current_account_label(context)))
 
 
 @require_allowed
@@ -233,7 +254,9 @@ async def oracle_menu_callback(update: Update,
     if data == "o:menu":
         await query.edit_message_text(
             ORACLE_MENU_TEXT,
-            reply_markup=oracle_menu_keyboard(0, states=_menu_states(context)))
+            reply_markup=oracle_menu_keyboard(
+                0, states=_menu_states(context),
+                current_account=_current_account_label(context)))
         return
 
     if len(parts) == 3 and parts[1] == "page":
@@ -243,7 +266,9 @@ async def oracle_menu_callback(update: Update,
             page = 0
         await query.edit_message_text(
             ORACLE_MENU_TEXT,
-            reply_markup=oracle_menu_keyboard(page, states=_menu_states(context)))
+            reply_markup=oracle_menu_keyboard(
+                page, states=_menu_states(context),
+                current_account=_current_account_label(context)))
         return
 
     if data == "o:instances":
