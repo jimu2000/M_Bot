@@ -133,6 +133,9 @@ class Grabber:
             创建实例所需的 OCID / AD / 形状（调用方传真实值，不要写进本文件）。
         display_name: 实例显示名；创建前按它查已有实例，防重复建。
         ssh_keys_file: SSH 公钥文件路径（传给 --ssh-authorized-keys-file）。
+            None / 空字符串时不传该参数（不用公钥时配合 root 密码登录，
+            见 tgbot/boot_form.py 的 root 登录选项；OCI launch 本身不强制
+            要求 SSH 公钥）。
         target_cpu: 目标 CPU 型号子串（如 "7J13"），None 表示不查 CPU、抢到就留。
         on_event: 可选回调 on_event(event_type, message)，事件类型：
             "attempt"（每次尝试）、"launched"（抢到）、"wrong_cpu"（CPU 不对已释放）、
@@ -297,6 +300,8 @@ class Grabber:
         """构造 launch 命令参数列表（不含开头的 oci，由 OCIClient 补）。
 
         可选参数按构造时的值决定是否出现：
+          - ssh_keys_file 为 None/空时不传 --ssh-authorized-keys-file
+            （不用公钥时配合 root 密码登录）。
           - Flex 形状（shape 以 .Flex 结尾）且 ocpus/memory_gb 都传了：
             --shape-config '{"ocpus":N,"memoryInGBs":M}'；固定规格形状
             （如 E2.1.Micro）永远不传。
@@ -315,8 +320,11 @@ class Grabber:
             "--assign-public-ip",
             "true" if self.assign_public_ip else "false",
             "--display-name", self.display_name,
-            "--ssh-authorized-keys-file", self.ssh_keys_file,
         ]
+        # 不用公钥时（ssh_keys_file 为 None/空）不传该参数；OCI launch
+        # 本身不强制要求 SSH 公钥，配合 root 密码登录即可进实例。
+        if self.ssh_keys_file:
+            args += ["--ssh-authorized-keys-file", self.ssh_keys_file]
         if (self.shape.endswith(".Flex") and self.ocpus is not None
                 and self.memory_gb is not None):
             shape_config = json.dumps({"ocpus": self.ocpus,

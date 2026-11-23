@@ -420,6 +420,25 @@ class TestLaunchOptions(unittest.TestCase):
             _, args = _launch_once_with(user_data=empty)
             self.assertNotIn("--user-data-file", args)
 
+    def test_no_ssh_keys_file_omits_parameter(self):
+        # ssh_keys_file=None 时不传 --ssh-authorized-keys-file
+        # （表单里"不用公钥" + root 密码登录的组合）。
+        _, args = _launch_once_with(ssh_keys_file=None)
+        self.assertNotIn("--ssh-authorized-keys-file", args)
+
+    def test_empty_ssh_keys_file_omits_parameter(self):
+        # ssh_keys_file="" 同样不传该参数。
+        _, args = _launch_once_with(ssh_keys_file="")
+        self.assertNotIn("--ssh-authorized-keys-file", args)
+
+    def test_ssh_keys_file_present_by_default(self):
+        # 默认（传了公钥文件）时照常传该参数。
+        _, args = _launch_once_with()
+        self.assertIn("--ssh-authorized-keys-file", args)
+        self.assertEqual(
+            args[args.index("--ssh-authorized-keys-file") + 1],
+            "/tmp/fake_keys.pub")
+
     @patch("oci.grabber.time.sleep")
     def test_run_cleans_up_user_data_file(self, mock_sleep):
         # run() 结束（正常返回）后启动脚本临时文件被删除。

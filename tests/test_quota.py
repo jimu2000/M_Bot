@@ -11,8 +11,9 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from oci.client import OCIClient
-from oci.quota import (can_launch, get_a1_usage, get_boot_volume_usage,
-                       get_e2_usage, get_free_tier_summary)
+from oci.quota import (can_launch, can_launch_batch, get_a1_usage,
+                       get_boot_volume_usage, get_e2_usage,
+                       get_free_tier_summary)
 
 # 占位符（测试里不出现真实 OCID）
 FAKE_COMPARTMENT = "ocid1.tenancy.oc1..xxxxxxxx"
@@ -214,6 +215,101 @@ class TestCanLaunch(unittest.TestCase):
         cli = _make_cli(DEFAULT_INSTANCES, DEFAULT_BOOT_VOLUMES)
         ok, reason = can_launch(cli, FAKE_COMPARTMENT,
                                 "VM.Standard.E5.Flex")
+        self.assertFalse(ok)
+        self.assertIn("不支持的规格", reason)
+
+
+class TestCanLaunchBatch(unittest.TestCase):
+    """批量开机配额预检：单台规则 × 数量。"""
+
+    def test_single_matches_can_launch(self):
+        # count=1 与 can_launch 结论一致。
+        instances = [_a1("a1-1", "a1-main", 3, 12)]
+        cli = _make_cli(instances, DEFAULT_BOOT_VOLUMES)
+        ok, reason = can_launch_batch(cli, FAKE_COMPARTMENT,
+                                      "VM.Standard.A1.Flex", ocpus=1,
+                                      memory_gb=6, count=1)
+        self.assertTrue(ok)
+        self.assertEqual(reason, "可以创建")
+
+    def test_batch_a1_ok(self):
+        # A1 用了 2 核/12GB，剩 2 核/12GB，开 2 台 1 核/6GB 刚好够；
+        # 启动盘只用了 47GB（剩 153GB），2 台 × 47GB 也够。
+        instances = [_a1("a1-1", "a1-main", 2, 12)]
+        volumes = [_boot_volume("bv-1", "boot-1", 47)]
+        cli = _make_cli(instances, volumes)
+        ok, _ = can_launch_batch(cli, FAKE_COMPARTMENT,
+                                 "VM.Standard.A1.Flex", ocpus=1,
+                                 memory_gb=6, count=2)
+        self.assertTrue(ok)
+
+    def test_batch_a1_ocpu_insufficient(self):
+        # 剩 1 核，2 台各要 1 核 -> 不足（单台能开，批量不能）。
+        instances = [_a1("a1-1", "a1-main", 3, 12)]
+        cli = _make_cli(instances, DEFAULT_BOOT_VOLUMES)
+        ok, reason = can_launch_batch(cli, FAKE_COMPARTMENT,
+                                      "VM.Standard.A1.Flex", ocpus=1,
+                                      memory_gb=6, count=2)
+        self.assertFalse(ok)
+        self.assertIn("OCPU 不足", reason)
+        self.assertIn("2 台需要 2 核", reason)
+
+    def test_batch_a1_memory_insufficient(self):
+        # OCPU 够（剩 2 核），内存剩 12GB，2 台各要 12GB -> 不足。
+        instances = [_a1("a1-1", "a1-main", 2, 12)]
+        cli = _make_cli(instances, DEFAULT_BOOT_VOLUMES)
+        ok, reason = can_launch_batch(cli, FAKE_COMPARTMENT,
+                                      "VM.Standard.A1.Flex", ocpus=1,
+                                      memory_gb=12, count=2)
+        self.assertFalse(ok)
+        self.assertIn("内存不足", reason)
+        self.assertIn("2 台需要 24GB", reason)
+
+    def test_batch_e2_ok(self):
+        # E2 剩 1 台，开 1 台够。
+        cli = _make_cli(DEFAULT_INSTANCES, DEFAULT_BOOT_VOLUMES)
+        ok, _ = can_launch_batch(cli, FAKE_COMPARTMENT,
+                                 "VM.Standard.E2.1.Micro", count=1)
+        self.assertTrue(ok)
+
+    def test_batch_e2_count_insufficient(self):
+        # E2 剩 1 台，要开 2 台 -> 不足。
+        cli = _make_cli(DEFAULT_INSTANCES, DEFAULT_BOOT_VOLUMES)
+        ok, reason = can_launch_batch(cli, FAKE_COMPARTMENT,
+                                      "VM.Standard.E2.1.Micro", count=2)
+        self.assertFalse(ok)
+        self.assertIn("E2 余量不足", reason)
+        self.assertIn("需要 2 台", reason)
+
+    def test_batch_boot_volume_multiplied(self):
+        # 启动盘剩 59GB，2 台各 47GB（默认）需要 94GB -> 不足。
+        cli = _make_cli([], DEFAULT_BOOT_VOLUMES)
+        ok, reason = can_launch_batch(cli, FAKE_COMPARTMENT,
+                                      "VM.Standard.E2.1.Micro", count=2)
+        self.assertFalse(ok)
+        self.assertIn("启动盘余量不足", reason)
+        self.assertIn("2 台需要 94GB", reason)
+
+    def test_batch_boot_volume_custom_size(self):
+        # 自定义 100GB/台，1 台就需要 100GB > 59GB 余量 -> 不足。
+        cli = _make_cli([], DEFAULT_BOOT_VOLUMES)
+        ok, reason = can_launch_batch(cli, FAKE_COMPARTMENT,
+                                      "VM.Standard.E2.1.Micro", count=1,
+                                      boot_volume_size_gbs=100)
+        self.assertFalse(ok)
+        self.assertIn("启动盘余量不足", reason)
+        self.assertIn("需要 100GB", reason)
+
+    def test_batch_count_below_one_treated_as_one(self):
+        cli = _make_cli(DEFAULT_INSTANCES, DEFAULT_BOOT_VOLUMES)
+        ok, _ = can_launch_batch(cli, FAKE_COMPARTMENT,
+                                 "VM.Standard.E2.1.Micro", count=0)
+        self.assertTrue(ok)
+
+    def test_batch_unknown_shape(self):
+        cli = _make_cli([], DEFAULT_BOOT_VOLUMES)
+        ok, reason = can_launch_batch(cli, FAKE_COMPARTMENT,
+                                      "VM.Standard.E5.Flex", count=2)
         self.assertFalse(ok)
         self.assertIn("不支持的规格", reason)
 

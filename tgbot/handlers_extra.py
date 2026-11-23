@@ -20,10 +20,14 @@
     handle_confirm(action, idx, update, context)。
   - 其余回调（b:/t:/p:/r:/v:/ba:/g:/k:/s:/os:/pl:/cl:/ip_create/ip_delete:/u:）
     由 bot.py 直接注册到本模块的对应函数，不经过 handlers.py。
+    开机表单矩阵的回调（bf: 前缀）与快捷开机一键启动（b:load:）也在
+    本模块，表单状态机与键盘在 tgbot/boot_form.py 里。
   - 改名 / 重装 / SSL 添加域名 / Email 发件人 / 用户改描述 / 用户改邮箱 /
     用户删除需要用户回复文字：bot.py
     注册 text_input_callback（MessageHandler，filters.TEXT & ~filters.COMMAND），
     只在 user_data["pending_input"] 存在时处理，否则忽略。
+    开机表单的自定义值（boot_*）与开机脚本粘贴也走这里；
+    开机脚本文件上传走 boot_form_document_callback（Document 消息）。
   - 顶层命令 /domain（Cloudflare DNS 管理）也在本模块：
     bot.py 直接注册 handle_domain 与 domain_callback（"domain:" 前缀）。
   - bot.py 在启动时无条件注册 check_instances_job（每 10 分钟）、
@@ -54,6 +58,20 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from tgbot import config as bot_config
 from tgbot import handlers_client  # 菜单 23/24（内存占用/清除）由该模块实现
+from tgbot.boot_form import (
+    SCRIPT_MAX_CHARS,
+    boot_form_keyboard,
+    build_preset,
+    build_user_data,
+    fmt_boot_form_summary,
+    fmt_form_text,
+    generate_root_password,
+    new_form,
+    set_custom,
+    set_script,
+    toggle_option,
+    validate_form,
+)
 from tgbot.keyboards import (
     back_to_oracle_keyboard,
     batch_action_keyboard,
@@ -150,7 +168,7 @@ from oci.objectstorage import (
     list_buckets,
     list_objects,
 )
-from oci.quota import a1_health_check, can_launch, get_free_tier_summary
+from oci.quota import a1_health_check, can_launch, can_launch_batch, get_free_tier_summary
 from oci.volume import (
     delete_boot_volume,
     get_boot_volume,
@@ -283,6 +301,22 @@ PANEL_SECURITY_LIST_ID = os.environ.get(
 # （机器人与面板跑在同一台服务器上，部署现状如此），直接执行 ufw；
 # 否则 ssh 到该主机执行（端口 14422，root 密钥登录，见 client_ops）。
 PANEL_SSH_HOST = ""
+# ---- 开机表单矩阵（菜单 1，tgbot/boot_form.py） ----
+# 点"自定义"后提示用户回复的文字（kind 是 pending_input 的 kind）。
+_BOOT_CUSTOM_PROMPTS = {
+    "boot_cpu": "请输入形状名（例如 VM.Standard.A1.Flex）：",
+    "boot_os": "请输入镜像 OCID（例如 ocid1.image.oc1.ap-singapore-1.……）：",
+    "boot_ocpus": "请输入核心数（1–80 的整数）：",
+    "boot_mem": "请输入内存 GB 数（1–1024 的整数）：",
+    "boot_disk": "请输入硬盘 GB 数（47–200 的整数）：",
+    "boot_count": "请输入要创建的台数（1–10 的整数）：",
+    "boot_delay": "请输入延迟秒数（1–3600 的整数）：",
+    "boot_script": ("请直接粘贴开机脚本内容，或发送 .sh/.txt 文件"
+                    f"（{SCRIPT_MAX_CHARS // 1024}KB 以内）。\n"
+                    "脚本以 #! 开头会被当作 Shell 脚本执行；以 #cloud-config "
+                    "开头会被当作 cloud-init 配置（此时不能同时开 root "
+                    "密码登录）。"),
+}
 # =====================================================
 
 
@@ -778,9 +812,276 @@ def fmt_boot_preset(preset, ok, reason):
 
 @require_allowed
 async def handle_boot(update, context):
-    """菜单 1：发开机预设选择键盘。"""
-    await _reply(update, "🚀 开机（刷机）：选一个预设配置：",
-                 reply_markup=boot_preset_keyboard())
+    """菜单 1：R-Bot 风格按钮矩阵创建表单（见 tgbot/boot_form.py）。
+
+    旧的预设选择键盘（boot_preset_keyboard / b:boot:）仍保留注册，
+    仅供旧消息上的按钮回退使用；菜单 1 入口已改成表单。
+    """
+    context.user_data["boot_form"] = new_form()
+    form = context.user_data["boot_form"]
+    await _reply(update, fmt_form_text(form),
+                 reply_markup=boot_form_keyboard(form))
+
+
+async def _edit_boot_form(update, context, notice=None):
+    """就地刷新开机表单（编辑当前消息，不刷屏）。
+
+    notice 非空时用弹窗提示（例如延迟最多选两个）。编辑失败时静默
+    （例如内容没变），下次点选时再刷新。
+    """
+    form = context.user_data.get("boot_form")
+    query = update.callback_query
+    if form is None or query is None:
+        return
+    try:
+        await query.answer(text=notice or "", show_alert=bool(notice))
+    except Exception:
+        pass
+    try:
+        await query.edit_message_text(
+            fmt_form_text(form), reply_markup=boot_form_keyboard(form))
+    except Exception:
+        pass
+
+
+async def _boot_form_confirm(update, context, form):
+    """表单"确定开机"：校验 -> 配额预检 -> 配置摘要确认页。"""
+    errors = validate_form(form)
+    if errors:
+        await _reply(update,
+                     "❌ 配置还没填完：\n"
+                     + "\n".join(f"• {error}" for error in errors)
+                     + "\n\n请继续点选表单。",
+                     reply_markup=boot_form_keyboard(form))
+        return
+    try:
+        preset = build_preset(form)
+    except ValueError as exc:
+        await _reply(update, f"❌ {exc}", reply_markup=boot_form_keyboard(form))
+        return
+    context.user_data["pending_boot"] = preset
+    try:
+        ok, reason = await run_sync(
+            can_launch_batch, get_cli(context), get_compartment(context),
+            preset["shape"], preset["ocpus"], preset["memory_gb"],
+            preset.get("count", 1), preset.get("boot_volume_size_gbs"))
+    except Exception as exc:  # noqa: BLE001 - 预检失败也要让用户看到
+        ok, reason = False, fmt_error(exc)
+    await _reply(update, fmt_boot_form_summary(preset, ok, reason),
+                 reply_markup=boot_confirm_keyboard())
+
+
+async def _boot_form_save(update, context, form):
+    """表单"保存为快捷开机"：校验通过后存进 presets.json，菜单 17 可用。"""
+    errors = validate_form(form)
+    if errors:
+        await _reply(update,
+                     "❌ 配置还没填完：\n"
+                     + "\n".join(f"• {error}" for error in errors)
+                     + "\n\n请继续点选表单。",
+                     reply_markup=boot_form_keyboard(form))
+        return
+    try:
+        preset = build_preset(form)
+    except ValueError as exc:
+        await _reply(update, f"❌ {exc}", reply_markup=boot_form_keyboard(form))
+        return
+    save_preset(preset)
+    shape = preset["shape"].replace("VM.Standard.", "")
+    await _reply(update,
+                 f"💾 已保存为快捷开机：{preset['display_name']}（{shape}，"
+                 f"{preset['ocpus']} 核 / {preset['memory_gb']}GB）。\n"
+                 "菜单 17（快捷开机）里可以一键用它开机。",
+                 reply_markup=back_to_oracle_keyboard())
+
+
+@require_allowed
+async def boot_form_callback(update, context):
+    """回调 "bf:..."：开机表单矩阵点选 / 自定义输入 / 确认 / 保存。
+
+    点选切换就地刷新表单消息；"自定义"与"上传脚本"设 pending_input
+    等用户回复文字/文件；"确定开机"进摘要确认页；"保存为快捷开机"
+    存进 presets.json。
+    """
+    data = _callback_data(update)
+    parts = data.split(":")
+    action = parts[1] if len(parts) > 1 else ""
+    if action == "noop":
+        # 行标签按钮：只消掉转圈。
+        if update.callback_query is not None:
+            try:
+                await update.callback_query.answer()
+            except Exception:
+                pass
+        return
+    if action == "cancel_input":
+        # 取消自定义输入：清 pending_input，编辑提示消息。
+        context.user_data.pop("pending_input", None)
+        query = update.callback_query
+        if query is not None:
+            try:
+                await query.answer()
+                await query.edit_message_text("已取消输入，表单未变。")
+            except Exception:
+                pass
+        return
+    form = context.user_data.get("boot_form")
+    if form is None:
+        await _reply(update, "表单已过期，请重新打开菜单 1（开机）。",
+                     reply_markup=back_to_oracle_keyboard())
+        return
+    if action == "confirm":
+        await _boot_form_confirm(update, context, form)
+        return
+    if action == "save":
+        await _boot_form_save(update, context, form)
+        return
+    if action == "script" and len(parts) >= 3 and parts[2] == "upload":
+        context.user_data["pending_input"] = {"kind": "boot_script"}
+        await _reply(update, _BOOT_CUSTOM_PROMPTS["boot_script"],
+                     reply_markup=InlineKeyboardMarkup([[
+                         InlineKeyboardButton("❌ 取消",
+                                              callback_data="bf:cancel_input")]]))
+        return
+    if len(parts) >= 3 and parts[2] == "custom":
+        kind = f"boot_{action}"
+        prompt = _BOOT_CUSTOM_PROMPTS.get(kind)
+        if prompt is None:
+            await _reply(update, "未知的自定义项。")
+            return
+        context.user_data["pending_input"] = {"kind": kind}
+        await _reply(update, prompt,
+                     reply_markup=InlineKeyboardMarkup([[
+                         InlineKeyboardButton("❌ 取消",
+                                              callback_data="bf:cancel_input")]]))
+        return
+    if len(parts) < 3:
+        await _reply(update, "无效的表单操作。")
+        return
+    changed, notice = toggle_option(form, action, parts[2])
+    if changed or notice:
+        await _edit_boot_form(update, context, notice=notice)
+    elif update.callback_query is not None:
+        try:
+            await update.callback_query.answer()
+        except Exception:
+            pass
+
+
+@require_allowed
+async def boot_preset_load_callback(update, context):
+    """回调 "b:load:<idx>"：菜单 17 里一键用已保存的配置开机。
+
+    读 presets.json 第 idx 条进 pending_boot，配额预检后显示
+    配置摘要确认页（点"开始抢机"后走 boot_go_callback）。
+    旧版保存的预设缺新字段时补默认值（兼容）。
+    """
+    data = _callback_data(update)
+    try:
+        idx = int(data.split(":")[-1])
+    except ValueError:
+        idx = -1
+    presets = load_presets()
+    if idx < 0 or idx >= len(presets):
+        await _reply(update, "该配置已不存在，请重新打开菜单 17。",
+                     reply_markup=back_to_oracle_keyboard())
+        return
+    preset = dict(presets[idx])
+    preset.setdefault("count", 1)
+    preset.setdefault("assign_public_ip", True)
+    preset.setdefault("assign_ipv6", False)
+    preset.setdefault("root_login", False)
+    context.user_data["pending_boot"] = preset
+    try:
+        ok, reason = await run_sync(
+            can_launch_batch, get_cli(context), get_compartment(context),
+            preset["shape"], preset.get("ocpus", 0),
+            preset.get("memory_gb", 0), preset.get("count", 1),
+            preset.get("boot_volume_size_gbs"))
+    except Exception as exc:  # noqa: BLE001 - 预检失败也要让用户看到
+        ok, reason = False, fmt_error(exc)
+    await _reply(update, fmt_boot_form_summary(preset, ok, reason),
+                 reply_markup=boot_confirm_keyboard())
+
+
+async def _handle_boot_form_input(update, context, kind, text):
+    """开机表单的自定义值输入（text_input_callback 转发来）。
+
+    kind 是 boot_cpu / boot_os / boot_ocpus / boot_mem / boot_disk /
+    boot_count / boot_delay / boot_script。校验通过后更新表单并
+    重新发送表单消息；失败时提示并同样重发表单（可重新点"自定义"）。
+    """
+    form = context.user_data.get("boot_form")
+    if form is None:
+        await _reply(update, "表单已过期，请重新打开菜单 1（开机）。",
+                     reply_markup=back_to_oracle_keyboard())
+        return
+    if kind == "boot_script":
+        if not text:
+            await _reply(update, "脚本内容为空，已取消上传。",
+                         reply_markup=boot_form_keyboard(form))
+            return
+        if len(text) > SCRIPT_MAX_CHARS:
+            await _reply(update,
+                         f"脚本太长（{len(text)} 字符，上限 "
+                         f"{SCRIPT_MAX_CHARS}），已取消上传。",
+                         reply_markup=boot_form_keyboard(form))
+            return
+        set_script(form, text, name="粘贴的脚本")
+        await _reply(update, fmt_form_text(form),
+                     reply_markup=boot_form_keyboard(form))
+        return
+    row = kind[len("boot_"):]
+    ok, error = set_custom(form, row, text)
+    if not ok:
+        await _reply(update, f"❌ {error}\n请重新点“自定义”再输入。",
+                     reply_markup=boot_form_keyboard(form))
+        return
+    await _reply(update, fmt_form_text(form),
+                 reply_markup=boot_form_keyboard(form))
+
+
+@require_allowed
+async def boot_form_document_callback(update, context):
+    """开机表单的脚本文件上传（Document 消息）。
+
+    只在 pending_input 是 boot_script 时处理，否则静默忽略
+    （与 handlers_client.handle_client_document 共存，各自只认
+    自己的状态）。文件超过上限或读取失败时取消上传。
+    """
+    pending = context.user_data.get("pending_input") or {}
+    if pending.get("kind") != "boot_script":
+        return
+    message = update.effective_message
+    document = message.document if message is not None else None
+    if document is None:
+        return
+    form = context.user_data.get("boot_form")
+    if form is None:
+        context.user_data.pop("pending_input", None)
+        await _reply(update, "表单已过期，请重新打开菜单 1（开机）。",
+                     reply_markup=back_to_oracle_keyboard())
+        return
+    if (document.file_size or 0) > SCRIPT_MAX_CHARS:
+        context.user_data.pop("pending_input", None)
+        await _reply(update,
+                     f"文件太大（上限 {SCRIPT_MAX_CHARS // 1024}KB），"
+                     "已取消上传。",
+                     reply_markup=boot_form_keyboard(form))
+        return
+    try:
+        tg_file = await document.get_file()
+        data = await tg_file.download_as_bytearray()
+        content = bytes(data).decode("utf-8")
+    except Exception as exc:  # noqa: BLE001 - 下载/解码失败都要提示
+        context.user_data.pop("pending_input", None)
+        await _reply(update, f"❌ 读取文件失败：{exc}",
+                     reply_markup=boot_form_keyboard(form))
+        return
+    context.user_data.pop("pending_input", None)
+    set_script(form, content, name=document.file_name or "上传的脚本")
+    await _reply(update, fmt_form_text(form),
+                 reply_markup=boot_form_keyboard(form))
 
 
 @require_allowed
@@ -807,47 +1108,100 @@ def _run_grabber_thread(task_id, cli, compartment_id, preset):
     """抢机线程体（daemon 线程里跑，不要在线程里直接调 Telegram API）。
 
     进度通过 on_event 回调写进任务 detail；结束时更新任务状态。
-    成功后把本次配置追加保存到快捷开机（presets.json）。
+    成功后把本次配置追加保存到快捷开机（presets.json），保存前去掉
+    user_data / root_password（user-data 里含 root 密码，绝不落盘）。
+    count > 1 时逐台抢，实例名加 -1、-2… 后缀；中途配额不足或取消时
+    停下并在详情里写已抢到的台数。
+    新参数（表单/快捷开机的新字段）一律用 .get 兜底，旧版预设照常跑。
+    注意：target_cpu 只有在 cpu_check_hook 注入时才筛 CPU，机器人
+    目前未注入 hook（SSH 查 CPU 的逻辑在编排器里），E2 抢到即留。
     """
     def on_event(_event_type, message):
         TASKS.update(task_id, detail=message)
 
-    grabber = Grabber(
-        cli, compartment_id,
-        preset["availability_domain"], preset["shape"],
-        preset["image_id"], preset["subnet_id"],
-        preset["display_name"], preset["ssh_keys_file"],
-        target_cpu=preset.get("target_cpu"),
-        on_event=on_event,
-        stop_event=TASKS.stop_event(task_id))
+    count = preset.get("count", 1) or 1
+    base_name = preset["display_name"]
+    successes = []
+    total_attempts = 0
+    total_releases = 0
+    total_elapsed = 0.0
     try:
-        result = grabber.run()
+        for i in range(count):
+            display_name = base_name if count == 1 else f"{base_name}-{i + 1}"
+            grabber = Grabber(
+                cli, compartment_id,
+                preset["availability_domain"], preset["shape"],
+                preset["image_id"], preset["subnet_id"],
+                display_name, preset.get("ssh_keys_file"),
+                target_cpu=preset.get("target_cpu"),
+                on_event=on_event,
+                stop_event=TASKS.stop_event(task_id),
+                ocpus=preset.get("ocpus"),
+                memory_gb=preset.get("memory_gb"),
+                boot_volume_size_gbs=preset.get("boot_volume_size_gbs"),
+                assign_public_ip=preset.get("assign_public_ip", True),
+                assign_ipv6=preset.get("assign_ipv6", False),
+                user_data=preset.get("user_data"),
+                min_delay=preset.get("min_delay"),
+                max_delay=preset.get("max_delay"))
+            result = grabber.run()
+            successes.append(result)
+            total_attempts += result.attempts
+            total_releases += result.releases
+            total_elapsed += result.elapsed_seconds
     except GrabCancelledError:
         TASKS.update(task_id, status="cancelled", detail="抢机已取消。")
         return
     except QuotaExceededError as exc:
-        TASKS.update(task_id, status="failed",
-                     detail=f"配额不足，停止抢机：{exc}")
+        detail = f"配额不足，停止抢机：{exc}"
+        if successes:
+            detail += f"（已抢到 {len(successes)}/{count} 台）"
+        TASKS.update(task_id, status="failed", detail=detail)
         return
     except Exception as exc:  # noqa: BLE001 - 线程里任何异常都要落到任务状态
         TASKS.update(task_id, status="failed", detail=f"抢机失败：{exc}")
         return
-    TASKS.update(
-        task_id, status="done",
-        detail=(f"抢到实例 …{result.instance_id[-4:]}，"
-                f"尝试 {result.attempts} 次，"
-                f"释放 {result.releases} 台 CPU 不符，"
-                f"总耗时 {fmt_duration(result.elapsed_seconds)}。"))
-    save_preset(preset)
+    if count == 1:
+        result = successes[0]
+        detail = (f"抢到实例 …{result.instance_id[-4:]}，"
+                  f"尝试 {result.attempts} 次，"
+                  f"释放 {result.releases} 台 CPU 不符，"
+                  f"总耗时 {fmt_duration(result.elapsed_seconds)}。")
+    else:
+        ids = "、".join(f"…{r.instance_id[-4:]}" for r in successes)
+        detail = (f"抢到 {len(successes)} 台实例：{ids}，"
+                  f"共尝试 {total_attempts} 次，"
+                  f"释放 {total_releases} 台 CPU 不符，"
+                  f"总耗时 {fmt_duration(total_elapsed)}。")
+    TASKS.update(task_id, status="done", detail=detail)
+    saved = {key: value for key, value in preset.items()
+             if key not in ("user_data", "root_password")}
+    save_preset(saved)
 
 
 @require_allowed
 async def boot_go_callback(update, context):
-    """回调 "b:go"：注册抢机任务，开 daemon 线程跑 Grabber.run。"""
+    """回调 "b:go"：注册抢机任务，开 daemon 线程跑 Grabber.run。
+
+    root 密码在启动时才生成（每台/每批一次），经 user-data 设进实例；
+    密码只在启动回复里显示一次，随后 pending_boot 即被清除，
+    不进任务详情、不进日志、不进 presets.json（见 _run_grabber_thread
+    的保存脱敏）。
+    """
     preset = context.user_data.get("pending_boot")
     if not preset:
-        await _reply(update, "请先选一个开机预设（菜单 1）。")
+        await _reply(update, "请先在菜单 1 里配好开机表单。")
         return
+    root_password = None
+    if preset.get("root_login"):
+        root_password = generate_root_password()
+    script = preset.get("startup_script")
+    if root_password or script:
+        try:
+            preset["user_data"] = build_user_data(root_password, script)
+        except ValueError as exc:
+            await _reply(update, f"❌ {exc}")
+            return
     task_id = TASKS.register(
         "grab", detail=f"抢机准备中：{preset['display_name']}…")
     thread = threading.Thread(
@@ -855,10 +1209,18 @@ async def boot_go_callback(update, context):
         args=(task_id, get_cli(context), get_compartment(context), preset),
         daemon=True)
     thread.start()
-    await _reply(
-        update,
-        f"🚀 抢机已启动，任务 ID {task_id}，"
-        "用菜单 21（查看运行中的任务）查看进度。")
+    # 启动后立即清除 pending_boot（里面含带密码的 user-data，不留内存）。
+    context.user_data.pop("pending_boot", None)
+    text = (f"🚀 抢机已启动，任务 ID {task_id}，"
+            "用菜单 21（查看运行中的任务）查看进度。")
+    parse_mode = None
+    if root_password:
+        # 密码字符集不含反引号，可安全放进 Markdown 代码段。
+        text += ("\n\n🔑 root 登录密码（只显示这一次，请立即记下）：\n"
+                 f"`{root_password}`\n"
+                 "实例创建完成后用 root + 该密码登录。")
+        parse_mode = "Markdown"
+    await _reply(update, text, parse_mode=parse_mode)
 
 
 # ---- 20. 查询配额 ----
@@ -1710,25 +2072,35 @@ async def handle_logs(update, context):
 
 @require_allowed
 async def handle_presets(update, context):
-    """菜单 17：列出已保存的快捷开机配置。
+    """菜单 17：列出已保存的快捷开机配置，每条一个一键开机按钮。
 
-    抢机成功后自动保存本次配置（见 _run_grabber_thread）。
+    抢机成功后自动保存本次配置（见 _run_grabber_thread）；菜单 1
+    的表单也可点"保存为快捷开机"主动保存。点某条的开机按钮后进
+    配置摘要确认页（boot_preset_load_callback），确认才开始抢机。
     """
     presets = load_presets()
     if not presets:
         await _reply(update,
                      "还没有保存的快捷开机配置。\n"
-                     "抢机成功后会自动保存本次配置到这里。",
+                     "抢机成功后会自动保存本次配置到这里，"
+                     "也可以在菜单 1 的表单里点“保存为快捷开机”。",
                      reply_markup=back_to_oracle_keyboard())
         return
     lines = [f"⚡ 快捷开机配置（{len(presets)} 条）：", ""]
-    for preset in presets:
+    rows = []
+    for idx, preset in enumerate(presets):
         shape = (preset.get("shape") or "?").replace("VM.Standard.", "")
+        count = preset.get("count", 1) or 1
+        count_text = f" ×{count}台" if count > 1 else ""
         lines.append(f"• {preset.get('display_name', '?')}：{shape} "
                      f"（{preset.get('ocpus')} 核 / "
-                     f"{preset.get('memory_gb')}GB）")
+                     f"{preset.get('memory_gb')}GB）{count_text}")
+        rows.append([InlineKeyboardButton(
+            f"🚀 {preset.get('display_name', '?')}",
+            callback_data=f"b:load:{idx}")])
+    rows.append([InlineKeyboardButton("◀ Oracle 菜单", callback_data="o:menu")])
     await _reply(update, "\n".join(lines),
-                 reply_markup=back_to_oracle_keyboard())
+                 reply_markup=InlineKeyboardMarkup(rows))
 
 
 # ---- 9. 实例状态监控通知 / 10. 实例状态监控自启 / 29. 每日报告 ----
@@ -2325,7 +2697,8 @@ def fmt_serial_console(name, console):
 @require_allowed
 async def text_input_callback(update, context):
     """处理用户回复的纯文字输入（改名 / 重装确认 / SSL 添加域名 /
-    Email 发件人 / 用户改描述 / 用户改邮箱 / 用户删除确认）。
+    Email 发件人 / 用户改描述 / 用户改邮箱 / 用户删除确认 /
+    开机表单自定义值 / 开机脚本粘贴）。
 
     只在 user_data["pending_input"] 存在时处理；否则忽略
     （机器人平时不处理自由文字）。改名：校验后弹二次确认；
@@ -2334,12 +2707,20 @@ async def text_input_callback(update, context):
     Email 发件人：校验邮箱格式后弹二次确认；
     用户改描述 / 改邮箱：校验后弹二次确认；
     用户删除：输入必须与用户名完全一致，否则取消。
+    开机表单自定义值：校验后写回表单并重发表单消息；
+    开机脚本：粘贴的文本存进表单（文件上传走
+    boot_form_document_callback）。
     """
     pending = context.user_data.get("pending_input")
     if not pending:
         return
     text = (update.effective_message.text or "").strip()
     kind = pending.get("kind")
+    if kind and kind.startswith("boot_"):
+        # 开机表单自定义值 / 开机脚本粘贴：不关联实例，直接处理。
+        context.user_data.pop("pending_input", None)
+        await _handle_boot_form_input(update, context, kind, text)
+        return
     if kind == "ssl_domain":
         # SSL 监控添加域名：不关联实例，直接处理。
         context.user_data.pop("pending_input", None)

@@ -390,14 +390,22 @@ class TestHealthTasksProfiles(HandlersExtraTestCase):
 
 class TestBoot(HandlersExtraTestCase):
 
-    async def test_handle_boot_sends_preset_keyboard(self):
+    async def test_handle_boot_sends_form_keyboard(self):
+        """菜单 1 入口已改成按钮矩阵表单（不再是预设选择键盘）。"""
         update = make_update()
         context = make_context()
         await he.handle_boot(update, context)
         mock = update.effective_message.reply_text
         mock.assert_awaited_once()
         _, kwargs = mock.await_args
-        self.assertIsNotNone(kwargs.get("reply_markup"))
+        markup = kwargs.get("reply_markup")
+        self.assertIsNotNone(markup)
+        callbacks = [b.callback_data for row in markup.inline_keyboard
+                     for b in row]
+        self.assertIn("bf:cpu:arm", callbacks)
+        self.assertIn("bf:confirm", callbacks)
+        self.assertIn("bf:save", callbacks)
+        self.assertIsNotNone(context.user_data.get("boot_form"))
 
     async def test_boot_preset_callback_stores_preset_and_prechecks(self):
         update = make_update(callback_data="b:boot:e2")
@@ -429,7 +437,7 @@ class TestBoot(HandlersExtraTestCase):
         update = make_update(callback_data="b:go")
         context = make_context()
         await he.boot_go_callback(update, context)
-        self.assertIn("请先选一个开机预设", reply_text_of(update))
+        self.assertIn("请先在菜单 1 里配好开机表单", reply_text_of(update))
         self.assertEqual(self.tasks.list_all(), [])
 
     async def test_boot_go_starts_thread_and_registers_task(self):

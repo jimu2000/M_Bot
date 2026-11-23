@@ -30,7 +30,16 @@ callback_data 规范（Telegram 限制 64 字节，OCID 约 100 字节放不下�
   - "x"              取消 / 关闭
   - "o:menu"         回 /oracle 菜单
   - "b:boot:<preset>" 开机预设选择：e2 / a1small / a1full
+    （旧菜单 1 的回退路径，菜单 1 入口已改成 bf: 表单）
   - "b:go"           确认开始抢机
+  - "b:load:<idx>"   快捷开机：用 presets.json 第 idx 条配置开机
+  - "bf:<row>:<value>" 开机表单矩阵点选（row：cpu/os/ocpus/mem/disk/
+    count/delay/key/root/pubip/ipv6/script；value 是预设值或 custom；
+    延迟可多选两个；点已选值取消选择）
+  - "bf:confirm"     开机表单：显示配置摘要确认页
+  - "bf:save"        开机表单：保存为快捷开机
+  - "bf:noop"        开机表单：行标签按钮（无操作）
+  - "bf:cancel_input" 开机表单：取消自定义输入
   - "t:list"         任务列表
   - "t:cancel:<id>"  取消任务（id 是任务注册表里的短 ID，如 "g1"）
   - "p:<profile>"    切换 profile

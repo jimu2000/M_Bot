@@ -106,6 +106,10 @@ def build_application():
     application.add_handler(CallbackQueryHandler(
         handlers_extra.boot_go_callback, pattern=r"^b:go$"))
     application.add_handler(CallbackQueryHandler(
+        handlers_extra.boot_preset_load_callback, pattern=r"^b:load:"))
+    application.add_handler(CallbackQueryHandler(
+        handlers_extra.boot_form_callback, pattern=r"^bf:"))
+    application.add_handler(CallbackQueryHandler(
         handlers_extra.task_cancel_callback, pattern=r"^t:cancel:"))
     application.add_handler(CallbackQueryHandler(
         handlers_extra.profile_callback, pattern=r"^p:"))
@@ -178,6 +182,11 @@ def build_application():
         handlers_client.handle_client_text_input))
     application.add_handler(MessageHandler(
         filters.Document.ALL, handlers_client.handle_client_document))
+    # ---- 开机表单的脚本文件上传（菜单 1 表单） ----
+    # 只在 pending_input 是 boot_script 时处理，与上面的
+    # handle_client_document 共存（各自只认自己的状态）。
+    application.add_handler(MessageHandler(
+        filters.Document.ALL, handlers_extra.boot_form_document_callback))
 
     # ---- 未知命令 / 未知消息 ----
     application.add_handler(MessageHandler(filters.COMMAND,

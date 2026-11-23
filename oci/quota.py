@@ -338,3 +338,63 @@ def can_launch(cli, compartment_id, shape, ocpus=0, memory_gb=0):
         return True, "可以创建"
 
     return False, f"不支持的规格：{shape}（仅支持 E2.1.Micro 与 A1.Flex）"
+
+
+def can_launch_batch(cli, compartment_id, shape, ocpus=0, memory_gb=0,
+                     count=1, boot_volume_size_gbs=None):
+    """判断能不能再开 count 台指定规格的实例（批量开机配额预检）。
+
+    Args:
+        shape: 规格名，如 "VM.Standard.E2.1.Micro" 或 "VM.Standard.A1.Flex"
+            （不带 VM.Standard. 前缀的简写也接受）。
+        ocpus / memory_gb: A1.Flex 每台的 OCPU 数与内存（GB），E2 不用传
+            （E2.1.Micro 是固定 1 核 1GB）。
+        count: 要创建的台数（< 1 时按 1 算）。
+        boot_volume_size_gbs: 每台的启动盘大小（GB），None 时按镜像默认
+            BOOT_VOLUME_DEFAULT_GB（47GB）算。
+
+    检查规则（单台规则 × 数量）：
+        E2.1.Micro：E2 余量 >= count，且启动盘余量 >= 每台盘大小 × count。
+        A1.Flex：OCPU 余量 >= ocpus × count，内存余量 >= memory_gb × count，
+            且启动盘余量 >= 每台盘大小 × count。
+
+    返回 (bool, reason) 元组，reason 是中文说明。
+    """
+    count = max(1, int(count or 1))
+    boot_each = boot_volume_size_gbs or BOOT_VOLUME_DEFAULT_GB
+    boot_need = boot_each * count
+    summary = get_free_tier_summary(cli, compartment_id)
+    boot_remaining = summary["boot_volume"]["remaining_gb"]
+    short = _normalize_shape(shape)
+
+    if short == "E2.1.Micro":
+        e2 = summary["e2"]
+        if e2["remaining"] < count:
+            return (False,
+                    f"E2 余量不足（剩 {_fmt(e2['remaining'])} 台，"
+                    f"需要 {count} 台）")
+        if boot_remaining < boot_need:
+            return (False,
+                    f"启动盘余量不足（剩 {_fmt(boot_remaining)}GB，"
+                    f"{count} 台需要 {boot_need}GB）")
+        return True, "可以创建"
+
+    if short == "A1.Flex":
+        a1 = summary["a1"]
+        if a1["ocpu_remaining"] < ocpus * count:
+            return (False,
+                    f"A1 OCPU 不足（已用 {_fmt(a1['ocpu_used'])}/"
+                    f"{_fmt(a1['ocpu_limit'])} 核，{count} 台需要 "
+                    f"{_fmt(ocpus * count)} 核）")
+        if a1["memory_remaining_gb"] < memory_gb * count:
+            return (False,
+                    f"A1 内存不足（已用 {_fmt(a1['memory_used_gb'])}/"
+                    f"{_fmt(a1['memory_limit_gb'])}GB，{count} 台需要 "
+                    f"{_fmt(memory_gb * count)}GB）")
+        if boot_remaining < boot_need:
+            return (False,
+                    f"启动盘余量不足（剩 {_fmt(boot_remaining)}GB，"
+                    f"{count} 台需要 {boot_need}GB）")
+        return True, "可以创建"
+
+    return False, f"不支持的规格：{shape}（仅支持 E2.1.Micro 与 A1.Flex）"
