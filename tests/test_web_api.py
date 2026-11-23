@@ -255,7 +255,8 @@ class TestInstancesApi(WebApiTestCase):
         self.assertIsNone(r.json()["instances"][0]["publicIp"])
 
     @patch("web.routes.instances.get_boot_volume",
-           return_value={"size-in-gbs": 47})
+           return_value={"id": FAKE_VOLUME, "size-in-gbs": 47,
+                         "vpus-per-gb": 10, "lifecycle-state": "AVAILABLE"})
     @patch("web.routes.instances.list_boot_volume_attachments",
            return_value=[{"boot-volume-id": FAKE_VOLUME,
                           "instance-id": FAKE_INSTANCE,
@@ -284,6 +285,10 @@ class TestInstancesApi(WebApiTestCase):
         self.assertEqual(body["ipv6_addresses"],
                          ["2603:c024:c021:1d01::1"])
         self.assertEqual(body["boot_volume_size_gbs"], 47)
+        self.assertEqual(body["boot_volume_id"], FAKE_VOLUME)
+        self.assertEqual(body["boot_volume_vpus_per_gb"], 10)
+        self.assertEqual(body["boot_volume_state"], "AVAILABLE")
+        self.assertEqual(body["boot_volume_attachment_state"], "ATTACHED")
 
     @patch("web.routes.instances.get_instance",
            side_effect=NotFoundError("not found"))
@@ -343,7 +348,30 @@ class TestInstancesApi(WebApiTestCase):
                              json={"confirm": True})
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()["action"], "terminate")
-        mock_terminate.assert_called_once_with(ANY, FAKE_INSTANCE)
+        self.assertFalse(r.json()["preserve_boot_volume"])
+        mock_terminate.assert_called_once_with(
+            ANY, FAKE_INSTANCE, preserve_boot_volume=False)
+
+    @patch("web.routes.instances.terminate_instance")
+    def test_terminate_preserve_boot_volume(self, mock_terminate):
+        """preserve_boot_volume=true 时终止并保留引导卷
+        （前端“删除（保留启动盘）”用）。"""
+        r = self.client.post(f"/api/instances/{FAKE_INSTANCE}/terminate",
+                             json={"confirm": True,
+                                   "preserve_boot_volume": True})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["action"], "terminate")
+        self.assertTrue(r.json()["preserve_boot_volume"])
+        mock_terminate.assert_called_once_with(
+            ANY, FAKE_INSTANCE, preserve_boot_volume=True)
+
+    @patch("web.routes.instances.terminate_instance")
+    def test_terminate_preserve_without_confirm_400(self, mock_terminate):
+        """保留引导卷也要 confirm=true，缺确认返回 400 且不调用终止。"""
+        r = self.client.post(f"/api/instances/{FAKE_INSTANCE}/terminate",
+                             json={"preserve_boot_volume": True})
+        self.assertEqual(r.status_code, 400)
+        mock_terminate.assert_not_called()
 
     @patch("web.routes.instances.terminate_instance",
            side_effect=NotFoundError("not found"))

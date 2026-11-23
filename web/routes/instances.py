@@ -7,13 +7,15 @@
     各实例的公网 IP 并行取（线程池）；列表结果服务端缓存 30 秒，
     手动刷新时传 refresh=1 绕过缓存；写操作成功后清对应账号的缓存。
   - GET /api/instances/{id}：详情（含公网 IP、内网 IP、IPv6 列表、
-    启动盘大小；附加字段尽力而为，查不到时为 None）。
+    启动盘大小 / OCID / VPU / 状态；附加字段尽力而为，查不到时为 None）。
   - GET /api/instances/{id}/console：串行控制台连接信息。
   - POST /api/instances/batch：批量开机/关机/重启/删除
     （body {action, instance_ids, confirm}，删除必须 confirm=true）。
   - POST /api/instances/{id}/start|stop|restart。
   - POST /api/instances/{id}/terminate：body 必须含 confirm=true，
-    终止时默认永久删除引导卷（terminate_instance 的默认值，不要改）。
+    终止时默认永久删除引导卷（terminate_instance 的默认值，不要改）；
+    传 preserve_boot_volume=true 时保留引导卷（前端“删除（保留启动
+    盘）”用，引导卷会占用 200GB 免费额度，之后可在启动盘页面删除）。
   - POST /api/instances/{id}/rename：body {name}，更改实例显示名。
   - POST /api/instances/{id}/reinstall：body 必须含 confirm=true 且
     confirm_name 等于实例当前显示名（防误点）；重装清空系统盘，
@@ -110,9 +112,14 @@ def clear_instance_list_cache(profile=None):
 
 
 class TerminateBody(BaseModel):
-    """终止请求体：必须显式确认。"""
+    """终止请求体：必须显式确认。
+
+    preserve_boot_volume 默认 False（永久删除引导卷，保持原有行为）；
+    传 True 时保留引导卷（前端“删除（保留启动盘）”用）。
+    """
 
     confirm: bool = False
+    preserve_boot_volume: bool = False
 
 
 class BatchBody(BaseModel):
@@ -170,13 +177,19 @@ def _safe_public_ip(cli, instance_id):
 
 
 def _detail_extras(cli, compartment_id, instance_id, availability_domain):
-    """详情页的附加字段：内网 IP / IPv6 地址列表 / 启动盘大小（GB）。
+    """详情页的附加字段：内网 IP / IPv6 地址列表 / 启动盘信息。
+
+    启动盘信息含大小（GB）、OCID、VPU（vpus-per-gb）、状态
+    （lifecycle-state）与挂载状态（attachment-state，供前端启动盘
+    弹窗与卡片显示“已附加”）。
 
     全部尽力而为：任一查询失败（包括 OCI CLI 不可用）时该字段为 None，
     不影响详情主体的返回。IPv6 无地址时为空列表（与“查不到”区分）。
     """
     extras = {"private_ip": None, "ipv6_addresses": None,
-              "boot_volume_size_gbs": None}
+              "boot_volume_size_gbs": None, "boot_volume_id": None,
+              "boot_volume_vpus_per_gb": None, "boot_volume_state": None,
+              "boot_volume_attachment_state": None}
     try:
         vnics = list_vnics(cli, instance_id)
         primary = next((v for v in vnics if v.get("is-primary")), None)
@@ -198,6 +211,12 @@ def _detail_extras(cli, compartment_id, instance_id, availability_domain):
                 if att.get("instance-id") == instance_id:
                     vol = get_boot_volume(cli, att["boot-volume-id"]) or {}
                     extras["boot_volume_size_gbs"] = vol.get("size-in-gbs")
+                    extras["boot_volume_id"] = att.get("boot-volume-id")
+                    extras["boot_volume_vpus_per_gb"] = vol.get(
+                        "vpus-per-gb")
+                    extras["boot_volume_state"] = vol.get("lifecycle-state")
+                    extras["boot_volume_attachment_state"] = att.get(
+                        "lifecycle-state")
                     break
     except Exception:  # noqa: BLE001 - 同上
         pass
@@ -351,7 +370,12 @@ def detail(instance_id: str,
     return {"ok": True, "instance": detail_data, "public_ip": public_ip,
             "private_ip": extras["private_ip"],
             "ipv6_addresses": extras["ipv6_addresses"],
-            "boot_volume_size_gbs": extras["boot_volume_size_gbs"]}
+            "boot_volume_size_gbs": extras["boot_volume_size_gbs"],
+            "boot_volume_id": extras["boot_volume_id"],
+            "boot_volume_vpus_per_gb": extras["boot_volume_vpus_per_gb"],
+            "boot_volume_state": extras["boot_volume_state"],
+            "boot_volume_attachment_state":
+                extras["boot_volume_attachment_state"]}
 
 
 def _action(instance_id, profile, func, action_name):
@@ -463,20 +487,27 @@ def terminate(instance_id: str,
               body: TerminateBody,
               profile: str = Query(default=None),
               username: str = Depends(get_current_user)):
-    """终止实例（必须 confirm=true；默认永久删除引导卷，不留着扣钱）。"""
+    """终止实例（必须 confirm=true；默认永久删除引导卷，不留着扣钱）。
+
+    preserve_boot_volume=true 时保留引导卷（前端“删除（保留启动盘）”
+    用）：引导卷会变成孤儿盘，占用 200GB 免费额度，之后可在启动盘
+    页面删除。
+    """
     if not body.confirm:
         return error_response("终止实例需要确认：请求体须含 confirm=true",
                               status_code=400)
     try:
         cli, _compartment_id = resolve_profile(profile)
         # 默认 preserve_boot_volume=False：终止时永久删除引导卷。
-        terminate_instance(cli, instance_id)
+        terminate_instance(cli, instance_id,
+                           preserve_boot_volume=body.preserve_boot_volume)
     except ValueError as exc:
         return error_response(str(exc), status_code=400)
     except OCIError as exc:
         return oci_error_response(exc)
     clear_instance_list_cache(profile or config.DEFAULT_PROFILE)
-    return {"ok": True, "instance_id": instance_id, "action": "terminate"}
+    return {"ok": True, "instance_id": instance_id, "action": "terminate",
+            "preserve_boot_volume": body.preserve_boot_volume}
 
 
 @router.post("/api/instances/{instance_id}/change-ip")

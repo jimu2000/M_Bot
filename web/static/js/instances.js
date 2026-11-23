@@ -1,15 +1,22 @@
-/* 实例管理逻辑：加载实例表格、启动/停止/重启/终止、批量操作、改名、重装、串行控制台、
-   换 IP、IPv6 附加/删除、升降配、尝试修复、实例详情弹窗 */
+/* 实例管理逻辑：R-Bot 风格卡片布局（每台实例一张卡片）、启动/停止/重启/
+   终止（含保留启动盘）、批量操作、改名、重装、串行控制台、IP 管理弹窗
+   （换 IP / 附加 IPv6 / 删除 IPv6）、启动盘弹窗（详情 + 扩容）、
+   升降配、尝试修复、实例详情弹窗 */
 (function () {
   "use strict";
   var RBot = window.RBot;
   var instances = [];
+  var volumesByInstance = {}; // 启动盘：实例 id -> /api/volumes 条目（卡片显示用）
   var selected = {}; // 选中实例的 id 集合（对象当集合用）
   var currentProfile = null; // 当前账号（profile），由 fillProfileSelect 恢复
+  var loading = true; // 加载中时卡片区显示占位，不闪旧数据
   var terminateTarget = null; // 待终止的实例
+  var terminatePreserve = false; // 终止时是否保留引导卷
   var renameTarget = null; // 待改名的实例
   var reinstallTarget = null; // 待重装的实例
   var changeIpTarget = null; // 待换 IP 的实例
+  var ipTarget = null; // IP 管理弹窗当前实例
+  var bootVolumeTarget = null; // 启动盘弹窗当前实例 {instance, volumeId, size}
   var resizeTarget = null; // 待升降配的实例
   var consoleCommand = ""; // 当前串行控制台连接命令（供复制）
 
@@ -48,6 +55,26 @@
     return '<span class="badge badge-amber">' + RBot.escapeHtml(state || "—") + "</span>";
   }
 
+  // 启动盘格子：大小 · VPU + 状态徽标 + 已附加徽标；无数据时显示 "—"
+  function bootVolumeCell(inst) {
+    var esc = RBot.escapeHtml;
+    var vol = volumesByInstance[String(inst.id)];
+    if (!vol) return "—";
+    var size = vol.sizeInGBs != null ? vol.sizeInGBs + " GB" : "—";
+    var vpu = vol.vpusPerGB != null ? " · VPU " + vol.vpusPerGB : "";
+    var state = (vol.lifecycleState || vol["lifecycle-state"] || "").toUpperCase();
+    var stateHtml = "";
+    if (state === "AVAILABLE") {
+      stateHtml = '<span class="badge badge-green">AVAILABLE</span>';
+    } else if (state) {
+      stateHtml = '<span class="badge badge-amber">' + esc(state) + "</span>";
+    }
+    var attachedHtml = vol.attached
+      ? '<span class="badge badge-blue">已附加</span>' : "";
+    return '<span class="tag-chip">' + esc(size + vpu) + "</span> "
+      + stateHtml + " " + attachedHtml;
+  }
+
   function selectedIds() {
     return Object.keys(selected);
   }
@@ -70,15 +97,21 @@
   }
 
   function render() {
-    var tbody = document.getElementById("instance-tbody");
+    var grid = document.getElementById("instance-grid");
     var empty = document.getElementById("instance-empty");
-    empty.hidden = instances.length !== 0;
-    if (instances.length === 0) {
-      tbody.innerHTML = "";
+    if (loading) {
+      grid.innerHTML = '<p class="instance-loading">加载中…</p>';
+      empty.hidden = true;
       updateBatchBar();
       return;
     }
-    tbody.innerHTML = instances.map(function (raw) {
+    empty.hidden = instances.length !== 0;
+    if (instances.length === 0) {
+      grid.innerHTML = "";
+      updateBatchBar();
+      return;
+    }
+    grid.innerHTML = instances.map(function (raw) {
       var esc = RBot.escapeHtml;
       var inst = norm(raw);
       var state = (inst.state || "").toUpperCase();
@@ -89,40 +122,48 @@
         ? '<span class="mono">' + esc(ip) + '</span> ' +
           '<button type="button" class="copy-btn" data-copy="' + esc(ip) + '" title="复制 IP">⧉</button>'
         : "—";
+      var spec = (inst.ocpus != null && inst.memory_gb != null)
+        ? inst.ocpus + " OCPU / " + inst.memory_gb + " GB" : "—";
+      var created = inst.created ? esc(RBot.formatTime(inst.created)) : "—";
+      // 按钮矩阵（R-Bot 顺序）：关机/启动、重启、串行控制台、重命名、
+      // 升降级、修复、重置镜像、IP 管理、启动盘、删除、删除（保留启动盘）。
+      // 启停/重启按状态显示；升降级只对 A1.Flex 显示。
       var actions = "";
       if (stopped) actions += '<button type="button" class="btn btn-sm btn-primary" data-act="start">启动</button>';
       if (running) {
-        actions += '<button type="button" class="btn btn-sm" data-act="stop">停止</button>';
+        actions += '<button type="button" class="btn btn-sm" data-act="stop">关机</button>';
         actions += '<button type="button" class="btn btn-sm" data-act="restart">重启</button>';
       }
-      actions += '<button type="button" class="btn btn-sm" data-act="rename">改名</button>';
-      actions += '<button type="button" class="btn btn-sm" data-act="reinstall">重装</button>';
-      actions += '<button type="button" class="btn btn-sm" data-act="console">控制台</button>';
-      actions += '<button type="button" class="btn btn-sm" data-act="change-ip">换 IP</button>';
-      actions += '<button type="button" class="btn btn-sm" data-act="add-ipv6">加 IPv6</button>';
-      actions += '<button type="button" class="btn btn-sm" data-act="delete-ipv6">删 IPv6</button>';
+      actions += '<button type="button" class="btn btn-sm" data-act="console">串行控制台</button>';
+      actions += '<button type="button" class="btn btn-sm" data-act="rename">重命名</button>';
       if (inst.shape === "VM.Standard.A1.Flex") {
-        actions += '<button type="button" class="btn btn-sm" data-act="resize">升降配</button>';
+        actions += '<button type="button" class="btn btn-sm" data-act="resize">升降级</button>';
       }
       actions += '<button type="button" class="btn btn-sm" data-act="repair">修复</button>';
-      actions += '<button type="button" class="btn btn-sm btn-danger" data-act="terminate">终止</button>';
-      // OCPU/内存：后端列表接口目前不返回 shape-config，缺失时显示 "—"
-      var created = inst.created
-        ? '<br><span style="color: var(--text-faint); font-size: 12px;">' + esc(RBot.formatTime(inst.created)) + "</span>"
-        : "";
+      actions += '<button type="button" class="btn btn-sm" data-act="reinstall">重置镜像</button>';
+      actions += '<button type="button" class="btn btn-sm" data-act="ip-manage">IP 管理</button>';
+      actions += '<button type="button" class="btn btn-sm" data-act="boot-volume">启动盘</button>';
+      actions += '<button type="button" class="btn btn-sm btn-danger" data-act="terminate">删除</button>';
+      actions += '<button type="button" class="btn btn-sm" data-act="terminate-keep">删除（保留启动盘）</button>';
       var checked = Object.prototype.hasOwnProperty.call(selected, String(inst.id))
         ? " checked" : "";
       return (
-        "<tr data-instance-id=\"" + esc(inst.id) + "\">" +
-          '<td><input type="checkbox" class="row-select" data-select="' + esc(inst.id) + '"' + checked + ' aria-label="选择实例"></td>' +
-          '<td><button type="button" class="name-btn" data-act="detail" title="查看详情">' + esc(inst.name) + "</button>" + created + "</td>" +
-          "<td class=\"mono\">" + esc(inst.shape) + "</td>" +
-          "<td>" + stateBadge(inst.state) + "</td>" +
-          "<td>" + esc(inst.ocpus != null ? inst.ocpus : "—") + "</td>" +
-          "<td>" + esc(inst.memory_gb != null ? inst.memory_gb + " GB" : "—") + "</td>" +
-          "<td>" + ipCell + "</td>" +
-          '<td><div class="row-actions">' + actions + "</div></td>" +
-        "</tr>"
+        '<article class="card instance-card" data-instance-id="' + esc(inst.id) + '">' +
+          '<div class="instance-card-head">' +
+            '<input type="checkbox" class="row-select" data-select="' + esc(inst.id) + '"' + checked + ' aria-label="选择实例">' +
+            '<button type="button" class="name-btn instance-card-name" data-act="detail" title="查看详情">' + esc(inst.name) + "</button>" +
+            stateBadge(inst.state) +
+          "</div>" +
+          '<div class="instance-meta">' +
+            '<div class="instance-meta-row"><span class="instance-meta-label">公网 IP</span><span class="instance-meta-value">' + ipCell + "</span></div>" +
+            '<div class="instance-meta-row"><span class="instance-meta-label">Shape</span><span class="instance-meta-value mono">' + esc(inst.shape) + "</span></div>" +
+            '<div class="instance-meta-row"><span class="instance-meta-label">规格</span><span class="instance-meta-value">' + esc(spec) + "</span></div>" +
+            '<div class="instance-meta-row"><span class="instance-meta-label">启动盘</span><span class="instance-meta-value">' + bootVolumeCell(inst) + "</span></div>" +
+            '<div class="instance-meta-row"><span class="instance-meta-label">创建时间</span><span class="instance-meta-value">' + created + "</span></div>" +
+          "</div>" +
+          '<button type="button" class="btn btn-primary instance-ssh" data-act="ssh">⌨️ SSH</button>' +
+          '<div class="instance-actions">' + actions + "</div>" +
+        "</article>"
       );
     }).join("");
     updateBatchBar();
@@ -130,23 +171,50 @@
 
   // 加载实例列表（走前端缓存；force=true 时跳过前端缓存并带 refresh=1
   // 绕过服务端缓存）。后端并行取公网 IP + 30 秒服务端缓存，首次约 3-5 秒。
+  // 同时并行拉启动盘列表（复用 volumes 页的 "vol:list:" 缓存键），按
+  // instanceId 拼到卡片上；启动盘拉取失败时降级（卡片显示"—"），
+  // 不影响实例列表。切账号期间旧请求的结果直接丢弃，不覆盖新账号数据。
   async function loadInstances(force) {
+    var profileAtStart = currentProfile;
+    if (force) {
+      loading = true;
+      render();
+    }
     try {
       var url = RBot.withProfile("/api/instances", currentProfile);
       if (force) url += (url.indexOf("?") === -1 ? "?" : "&") + "refresh=1";
       var data = await RBot.cachedApi("inst:" + (currentProfile || "DEFAULT"), url, !!force);
+      if (profileAtStart !== currentProfile) return;
       instances = data.instances || [];
+      try {
+        var volUrl = RBot.withProfile("/api/volumes", currentProfile);
+        var volData = await RBot.cachedApi("vol:list:" + (currentProfile || "DEFAULT"), volUrl, !!force);
+        if (profileAtStart !== currentProfile) return;
+        volumesByInstance = {};
+        (volData.volumes || []).forEach(function (v) {
+          var iid = v.instanceId || v["instance-id"];
+          if (iid && !volumesByInstance[String(iid)]) {
+            volumesByInstance[String(iid)] = v;
+          }
+        });
+      } catch (volErr) {
+        volumesByInstance = {};
+      }
       // 刷新后清理已不存在实例的选中状态
       var alive = {};
       instances.forEach(function (raw) { alive[String(raw.id)] = true; });
       Object.keys(selected).forEach(function (id) {
         if (!alive[id]) delete selected[id];
       });
+      loading = false;
       render();
     } catch (err) {
-      document.getElementById("instance-tbody").innerHTML =
-        '<tr><td colspan="8" style="text-align: center; color: var(--danger);">加载失败：' +
-        RBot.escapeHtml(err.message) + "</td></tr>";
+      if (profileAtStart !== currentProfile) return;
+      loading = false;
+      document.getElementById("instance-grid").innerHTML =
+        '<p class="instance-error">加载失败：' +
+        RBot.escapeHtml(err.message) + "</p>";
+      document.getElementById("instance-empty").hidden = true;
     }
   }
 
@@ -167,7 +235,6 @@
     try {
       var res = await RBot.api(RBot.withProfile("/api/instances/" + encodeURIComponent(instId), currentProfile));
       var inst = res.instance || {};
-      var esc = RBot.escapeHtml;
       var cfg = inst["shape-config"] || {};
       document.getElementById("detail-name").textContent = inst["display-name"] || "—";
       document.getElementById("detail-shape").textContent = inst.shape || "—";
@@ -180,14 +247,101 @@
       document.getElementById("detail-ipv6").textContent =
         (ipv6 && ipv6.length ? ipv6.join(", ") : "无");
       document.getElementById("detail-ad").textContent = inst["availability-domain"] || "—";
-      document.getElementById("detail-boot-volume").textContent =
-        (res.boot_volume_size_gbs != null ? res.boot_volume_size_gbs + " GB" : "—");
+      var bootText = "—";
+      if (res.boot_volume_size_gbs != null) {
+        bootText = res.boot_volume_size_gbs + " GB";
+        if (res.boot_volume_vpus_per_gb != null) {
+          bootText += " · VPU " + res.boot_volume_vpus_per_gb;
+        }
+      }
+      document.getElementById("detail-boot-volume").textContent = bootText;
       document.getElementById("detail-created").textContent =
         inst["time-created"] ? RBot.formatTime(inst["time-created"]) : "—";
       RBot.openModal("detail-modal");
     } catch (err) {
       RBot.toast("加载实例详情失败：" + err.message, "error");
     }
+  }
+
+  // IP 管理弹窗：显示当前公网 IPv4 / 内网 IP / IPv6，三个操作按钮
+  // 复用已有的换 IP 弹窗与 addIpv6/deleteIpv6 流程
+  async function showIpManage(inst) {
+    ipTarget = inst;
+    document.getElementById("ip-name").textContent = norm(inst).name;
+    document.getElementById("ip-public").textContent = norm(inst).public_ip || "—";
+    document.getElementById("ip-private").textContent = "加载中…";
+    document.getElementById("ip-ipv6").textContent = "加载中…";
+    RBot.openModal("ip-modal");
+    try {
+      var res = await RBot.api(RBot.withProfile("/api/instances/" + encodeURIComponent(inst.id), currentProfile));
+      if (ipTarget !== inst) return; // 弹窗期间切了实例，丢弃旧结果
+      document.getElementById("ip-public").textContent = res.public_ip || "—";
+      document.getElementById("ip-private").textContent = res.private_ip || "—";
+      var ipv6 = res.ipv6_addresses;
+      document.getElementById("ip-ipv6").textContent =
+        (ipv6 && ipv6.length ? ipv6.join(", ") : "无");
+    } catch (err) {
+      if (ipTarget !== inst) return;
+      document.getElementById("ip-private").textContent = "—";
+      document.getElementById("ip-ipv6").textContent = "加载失败：" + err.message;
+    }
+  }
+
+  // 启动盘弹窗：详情优先用详情接口的启动盘字段（现查，最新），
+  // 查不到时退回卡片拼好的启动盘数据；都没有时报错不打开。
+  // 扩容复用 POST /api/volumes/{id}/resize。
+  async function showBootVolume(inst) {
+    var n = norm(inst);
+    var vol = null;
+    try {
+      var res = await RBot.api(RBot.withProfile("/api/instances/" + encodeURIComponent(inst.id), currentProfile));
+      if (res.boot_volume_id) {
+        vol = {
+          volumeId: res.boot_volume_id,
+          sizeInGBs: res.boot_volume_size_gbs,
+          vpusPerGB: res.boot_volume_vpus_per_gb,
+          lifecycleState: res.boot_volume_state,
+          attachmentState: res.boot_volume_attachment_state,
+          attached: res.boot_volume_attachment_state === "ATTACHED"
+            || res.boot_volume_attachment_state === "ATTACHING",
+        };
+      }
+    } catch (err) {
+      // 详情失败时退回列表里拼好的启动盘数据
+    }
+    if (!vol) {
+      var joined = volumesByInstance[String(inst.id)];
+      if (joined && (joined.volumeId || joined.id)) {
+        vol = {
+          volumeId: joined.volumeId || joined.id,
+          sizeInGBs: joined.sizeInGBs != null ? joined.sizeInGBs : joined["size-in-gbs"],
+          vpusPerGB: joined.vpusPerGB != null ? joined.vpusPerGB : joined["vpus-per-gb"],
+          lifecycleState: joined.lifecycleState || joined["lifecycle-state"],
+          attachmentState: joined.attachmentState,
+          attached: !!joined.attached,
+        };
+      }
+    }
+    if (!vol || !vol.volumeId) {
+      RBot.toast("未找到该实例的启动盘", "error");
+      return;
+    }
+    bootVolumeTarget = { instance: inst, volumeId: vol.volumeId, size: vol.sizeInGBs };
+    document.getElementById("boot-volume-instance").textContent = n.name;
+    document.getElementById("boot-volume-size").textContent =
+      vol.sizeInGBs != null ? vol.sizeInGBs + " GB" : "—";
+    document.getElementById("boot-volume-vpus").textContent =
+      vol.vpusPerGB != null ? vol.vpusPerGB : "—";
+    document.getElementById("boot-volume-state").textContent =
+      vol.lifecycleState || "—";
+    document.getElementById("boot-volume-attached").textContent =
+      vol.attached ? "已附加" : (vol.attachmentState || "—");
+    document.getElementById("boot-volume-ocid").textContent =
+      "…" + String(vol.volumeId).slice(-12);
+    document.getElementById("boot-volume-ocid").title = vol.volumeId;
+    document.getElementById("boot-volume-new-size").value =
+      vol.sizeInGBs != null ? vol.sizeInGBs + 10 : "";
+    RBot.openModal("boot-volume-modal");
   }
 
   // 附加 IPv6：确认后直接执行，成功后回显新地址
@@ -260,6 +414,25 @@
     }
   }
 
+  // 终止确认弹窗：删除与删除（保留启动盘）共用，按模式切换标题/警告/按钮文案
+  function openTerminateModal(inst, preserve) {
+    terminateTarget = inst;
+    terminatePreserve = !!preserve;
+    document.getElementById("terminate-name").textContent = norm(inst).name;
+    if (preserve) {
+      document.getElementById("terminate-title").textContent = "终止实例（保留启动盘）";
+      document.getElementById("terminate-warning").textContent =
+        "实例将终止，引导卷会保留下来（占用 200GB 免费额度），之后可在启动盘页面查看或删除；实例上的数据仍保存在该引导卷里。";
+      document.getElementById("btn-confirm-terminate").textContent = "确认终止（保留启动盘）";
+    } else {
+      document.getElementById("terminate-title").textContent = "终止实例";
+      document.getElementById("terminate-warning").textContent =
+        "此操作不可撤销，将永久删除引导卷，实例上的数据会全部丢失。";
+      document.getElementById("btn-confirm-terminate").textContent = "确认终止";
+    }
+    RBot.openModal("terminate-modal");
+  }
+
   // 批量操作：调 POST /api/instances/batch，汇报每台结果
   async function batchAction(action, label, confirm) {
     var ids = selectedIds();
@@ -301,11 +474,17 @@
       currentProfile = e.target.value;
       RBot.setProfile(currentProfile);
       selected = {};
+      // 切账号时先清空列表并显示加载占位，再加载新账号数据，
+      // 避免旧账号卡片闪一帧（v1.3.0 留下的小瑕疵）。
+      instances = [];
+      volumesByInstance = {};
+      loading = true;
+      render();
       loadInstances();
     });
     document.getElementById("btn-refresh-instances").addEventListener("click", function () { loadInstances(true); });
 
-    // 全选 / 取消全选
+    // 全选 / 取消全选（批量栏里的复选框）
     document.getElementById("select-all").addEventListener("change", function (e) {
       if (e.target.checked) {
         instances.forEach(function (raw) { selected[String(raw.id)] = true; });
@@ -340,7 +519,8 @@
       });
     });
 
-    document.getElementById("instance-tbody").addEventListener("click", function (e) {
+    // 卡片区事件委托：勾选 / 复制 IP / 各操作按钮
+    document.getElementById("instance-grid").addEventListener("click", function (e) {
       var checkbox = e.target.closest("[data-select]");
       if (checkbox) {
         var id = checkbox.getAttribute("data-select");
@@ -356,8 +536,8 @@
       }
       var btn = e.target.closest("[data-act]");
       if (!btn) return;
-      var row = btn.closest("[data-instance-id]");
-      var instId = row.getAttribute("data-instance-id");
+      var card = btn.closest("[data-instance-id]");
+      var instId = card.getAttribute("data-instance-id");
       var inst = instances.find(function (x) { return String(x.id) === instId; });
       if (!inst) return;
       var act = btn.getAttribute("data-act");
@@ -365,12 +545,11 @@
       else if (act === "stop") instanceAction(instId, "stop", "停止");
       else if (act === "restart") instanceAction(instId, "restart", "重启");
       else if (act === "detail") showDetail(instId);
-      else if (act === "change-ip") {
-        changeIpTarget = inst;
-        document.getElementById("change-ip-name").textContent = norm(inst).name;
-        RBot.openModal("change-ip-modal");
-      } else if (act === "add-ipv6") addIpv6(inst);
-      else if (act === "delete-ipv6") deleteIpv6(inst);
+      else if (act === "ssh") {
+        // 终端页目前不接受 ?host=/?instance= 参数，直接跳终端页
+        window.location.href = "/terminal";
+      } else if (act === "ip-manage") showIpManage(inst);
+      else if (act === "boot-volume") showBootVolume(inst);
       else if (act === "resize") {
         resizeTarget = inst;
         var n = norm(inst);
@@ -381,11 +560,9 @@
         document.getElementById("resize-memory").value = n.memory_gb != null ? n.memory_gb : 12;
         RBot.openModal("resize-modal");
       } else if (act === "repair") doRepair(inst);
-      else if (act === "terminate") {
-        terminateTarget = inst;
-        document.getElementById("terminate-name").textContent = norm(inst).name;
-        RBot.openModal("terminate-modal");
-      } else if (act === "rename") {
+      else if (act === "terminate") openTerminateModal(inst, false);
+      else if (act === "terminate-keep") openTerminateModal(inst, true);
+      else if (act === "rename") {
         renameTarget = inst;
         document.getElementById("rename-current").textContent = norm(inst).name;
         document.getElementById("rename-name").value = norm(inst).name;
@@ -416,21 +593,80 @@
       }
     });
 
-    // 确认终止：带 confirm:true，后端会永久删除引导卷
+    // 确认终止：带 confirm:true；保留模式多传 preserve_boot_volume:true
     document.getElementById("btn-confirm-terminate").addEventListener("click", async function () {
       if (!terminateTarget) return;
       var inst = terminateTarget;
+      var preserve = terminatePreserve;
       try {
         await RBot.api(RBot.withProfile("/api/instances/" + encodeURIComponent(inst.id) + "/terminate", currentProfile), {
           method: "POST",
-          body: { confirm: true },
+          body: { confirm: true, preserve_boot_volume: preserve },
         });
-        RBot.toast("实例已终止，引导卷已永久删除", "success");
+        RBot.toast(preserve
+          ? "实例已终止，引导卷已保留（可在启动盘页面删除）"
+          : "实例已终止，引导卷已永久删除", "success");
         RBot.closeModal("terminate-modal");
         RBot.cacheClear("inst:");
+        if (preserve) RBot.cacheClear("vol:");
         await loadInstances();
       } catch (err) {
         RBot.toast("终止失败：" + err.message, "error");
+      }
+    });
+
+    // IP 管理弹窗里的三个操作：换 IP 复用换 IP 弹窗，IPv6 复用已有流程
+    document.getElementById("btn-ip-change").addEventListener("click", function () {
+      if (!ipTarget) return;
+      changeIpTarget = ipTarget;
+      document.getElementById("change-ip-name").textContent = norm(ipTarget).name;
+      RBot.closeModal("ip-modal");
+      RBot.openModal("change-ip-modal");
+    });
+    document.getElementById("btn-ip-add-ipv6").addEventListener("click", function () {
+      if (!ipTarget) return;
+      var inst = ipTarget;
+      RBot.closeModal("ip-modal");
+      addIpv6(inst);
+    });
+    document.getElementById("btn-ip-delete-ipv6").addEventListener("click", function () {
+      if (!ipTarget) return;
+      var inst = ipTarget;
+      RBot.closeModal("ip-modal");
+      deleteIpv6(inst);
+    });
+
+    // 启动盘扩容：前端先校验新容量大于当前容量，后端再校验一次
+    document.getElementById("boot-volume-form").addEventListener("submit", async function (e) {
+      e.preventDefault();
+      if (!bootVolumeTarget) return;
+      var size = parseInt(document.getElementById("boot-volume-new-size").value, 10);
+      if (!size || size <= 0) {
+        RBot.toast("新容量必须是正整数（GB）", "error");
+        return;
+      }
+      if (bootVolumeTarget.size != null && size <= bootVolumeTarget.size) {
+        RBot.toast("新容量必须大于当前容量 " + bootVolumeTarget.size + "GB", "error");
+        return;
+      }
+      var ok = await RBot.confirmDialog(
+        "确认扩容",
+        "确认把实例 " + RBot.escapeHtml(norm(bootVolumeTarget.instance).name)
+        + " 的启动盘扩到 " + size + "GB 吗？<br>扩容后无法缩回，扩出的部分会计入 200GB 免费额度。",
+        "确认扩容", false);
+      if (!ok) return;
+      try {
+        await RBot.api(RBot.withProfile("/api/volumes/" + encodeURIComponent(bootVolumeTarget.volumeId) + "/resize", currentProfile), {
+          method: "POST",
+          body: { size_in_gbs: size },
+        });
+        RBot.toast("扩容已提交，启动盘正在扩大到 " + size + "GB", "success");
+        RBot.closeModal("boot-volume-modal");
+        RBot.cacheClear("vol:");
+        RBot.cacheClear("inst:");
+        await loadInstances();
+      } catch (err) {
+        RBot.toast("扩容失败：" + err.message, "error");
       }
     });
 

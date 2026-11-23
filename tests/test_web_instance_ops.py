@@ -368,7 +368,8 @@ class TestDetailExtras(InstanceOpsTestCase):
     """GET /api/instances/{id} 的附加字段（内网 IP / IPv6 / 启动盘）。"""
 
     @patch("web.routes.instances.get_boot_volume",
-           return_value={"size-in-gbs": 47})
+           return_value={"id": FAKE_VOLUME, "size-in-gbs": 47,
+                         "vpus-per-gb": 10, "lifecycle-state": "AVAILABLE"})
     @patch("web.routes.instances.list_boot_volume_attachments",
            return_value=[{"boot-volume-id": FAKE_VOLUME,
                           "instance-id": FAKE_INSTANCE,
@@ -389,6 +390,10 @@ class TestDetailExtras(InstanceOpsTestCase):
         self.assertEqual(body["private_ip"], "10.0.0.5")
         self.assertEqual(body["ipv6_addresses"], [FAKE_IPV6_ADDR])
         self.assertEqual(body["boot_volume_size_gbs"], 47)
+        self.assertEqual(body["boot_volume_id"], FAKE_VOLUME)
+        self.assertEqual(body["boot_volume_vpus_per_gb"], 10)
+        self.assertEqual(body["boot_volume_state"], "AVAILABLE")
+        self.assertEqual(body["boot_volume_attachment_state"], "ATTACHED")
 
     @patch("web.routes.instances.list_boot_volume_attachments",
            side_effect=OCIError("bv list failed"))
@@ -407,6 +412,10 @@ class TestDetailExtras(InstanceOpsTestCase):
         self.assertIsNone(body["private_ip"])
         self.assertIsNone(body["ipv6_addresses"])
         self.assertIsNone(body["boot_volume_size_gbs"])
+        self.assertIsNone(body["boot_volume_id"])
+        self.assertIsNone(body["boot_volume_vpus_per_gb"])
+        self.assertIsNone(body["boot_volume_state"])
+        self.assertIsNone(body["boot_volume_attachment_state"])
 
     @patch("web.routes.instances.list_boot_volume_attachments",
            return_value=[])
@@ -423,6 +432,10 @@ class TestDetailExtras(InstanceOpsTestCase):
         self.assertIsNone(body["private_ip"])
         self.assertIsNone(body["ipv6_addresses"])
         self.assertIsNone(body["boot_volume_size_gbs"])
+        self.assertIsNone(body["boot_volume_id"])
+        self.assertIsNone(body["boot_volume_vpus_per_gb"])
+        self.assertIsNone(body["boot_volume_state"])
+        self.assertIsNone(body["boot_volume_attachment_state"])
 
 
 class TestOciInstanceOpsHelpers(unittest.TestCase):

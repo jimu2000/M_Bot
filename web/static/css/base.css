@@ -324,6 +324,62 @@ textarea { resize: vertical; min-height: 74px; }
 }
 .name-btn:hover { text-decoration: underline; }
 
+/* ================= 实例卡片（R-Bot 风格，手机端优先） ================= */
+#batch-bar {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 12px 16px; margin-bottom: 16px;
+}
+#batch-bar .spacer { flex: 1; }
+.batch-select-all {
+  display: flex; align-items: center; gap: 6px;
+  cursor: pointer; white-space: nowrap;
+}
+.instance-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 16px;
+}
+.instance-loading, .instance-error {
+  color: var(--text-muted); text-align: center;
+  padding: 32px 0; grid-column: 1 / -1;
+}
+.instance-error { color: var(--danger); }
+.instance-card {
+  padding: 16px 18px;
+  display: flex; flex-direction: column; gap: 12px;
+  min-width: 0;
+}
+.instance-card-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.instance-card-head .row-select { flex-shrink: 0; }
+.instance-card-name {
+  flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 15.5px;
+}
+.instance-card-head .badge { flex-shrink: 0; }
+.instance-meta { display: flex; flex-direction: column; gap: 7px; font-size: 13.5px; }
+.instance-meta-row {
+  display: flex; align-items: baseline; gap: 10px;
+}
+.instance-meta-label { color: var(--text-muted); flex-shrink: 0; width: 64px; }
+.instance-meta-value {
+  min-width: 0; word-break: break-all;
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+}
+.instance-meta-value .mono { font-size: 12.5px; }
+.instance-ssh { width: 100%; justify-content: center; }
+.instance-actions {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+.instance-actions .btn { justify-content: center; width: 100%; }
+.ip-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+@media (max-width: 480px) {
+  .instance-grid { grid-template-columns: 1fr; }
+  .instance-actions { grid-template-columns: repeat(2, 1fr); }
+}
+
 /* 空状态 */
 .empty-state {
   text-align: center;

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{# 实例管理：OCI 实例表格 #}
+{# 实例管理：R-Bot 风格卡片布局（手机端优先），每台实例一张卡片 #}
 {% block title %}实例管理 · M_Bot Oracle开源管理面板{% endblock %}
 
 {% block content %}
@@ -7,15 +7,19 @@
   <h1>实例管理</h1>
   <label for="profile-select" style="color: var(--text-muted);">Profile</label>
   {# Profile 下拉：由 instances.js 从 GET /api/profiles 动态填充
-     （显示"名字 · 区域中文名"）；选择存 localStorage，切换后带 ?profile= 重新加载 #}
+     （显示"名字 · 区域中文名"）；选择存 localStorage，切换时先清空
+     卡片列表再加载，避免一帧旧数据闪过 #}
   <select id="profile-select" style="width: auto;" aria-label="切换账号"></select>
   <div class="spacer"></div>
   <button type="button" class="btn" id="btn-refresh-instances">↻ 刷新</button>
   <a class="btn btn-primary" href="/create">＋ 创建实例</a>
 </div>
 
-{# 批量操作栏：勾选实例后可用 #}
+{# 批量操作栏：勾选卡片后可用 #}
 <div class="card" id="batch-bar">
+  <label class="batch-select-all">
+    <input type="checkbox" id="select-all" aria-label="全选"> 全选
+  </label>
   <span id="batch-count" style="color: var(--text-muted);">已选 0 台</span>
   <div class="spacer"></div>
   <button type="button" class="btn btn-sm" data-batch="start" disabled>▶️ 批量开机</button>
@@ -24,26 +28,9 @@
   <button type="button" class="btn btn-sm btn-danger" data-batch="terminate" disabled>🗑️ 批量删除</button>
 </div>
 
-<div class="card">
-  <div class="table-wrap">
-    <table class="data" id="instance-table">
-      <thead>
-        <tr>
-          <th style="width: 32px;"><input type="checkbox" id="select-all" aria-label="全选"></th>
-          <th>名称</th>
-          <th>形状</th>
-          <th>状态</th>
-          <th>OCPU</th>
-          <th>内存</th>
-          <th>公网 IP</th>
-          <th>操作</th>
-        </tr>
-      </thead>
-      <tbody id="instance-tbody">
-        <tr><td colspan="8" style="text-align: center; color: var(--text-muted);">加载中…</td></tr>
-      </tbody>
-    </table>
-  </div>
+{# 实例卡片网格：由 instances.js 渲染（加载中占位由 JS 填） #}
+<div class="instance-grid" id="instance-grid">
+  <p class="instance-loading">加载中…</p>
 </div>
 
 <div class="empty-state" id="instance-empty" hidden>
@@ -52,16 +39,17 @@
   <a class="btn btn-primary" href="/create">创建实例</a>
 </div>
 
-{# 终止实例二次确认弹窗 #}
+{# 终止实例二次确认弹窗（删除 / 删除（保留启动盘）共用，
+   标题与警告文案由 JS 按模式切换） #}
 <div class="modal-overlay" id="terminate-modal" hidden>
   <div class="modal-box">
     <div class="modal-head">
-      <span>终止实例</span>
+      <span id="terminate-title">终止实例</span>
       <button type="button" class="modal-close" data-close-modal="terminate-modal" aria-label="关闭">×</button>
     </div>
     <div class="modal-body">
       <p>确定要终止实例 <b id="terminate-name"></b> 吗？</p>
-      <p class="danger-text">此操作不可撤销，将永久删除引导卷，实例上的数据会全部丢失。</p>
+      <p class="danger-text" id="terminate-warning">此操作不可撤销，将永久删除引导卷，实例上的数据会全部丢失。</p>
     </div>
     <div class="modal-foot">
       <button type="button" class="btn" data-close-modal="terminate-modal">取消</button>
@@ -172,6 +160,71 @@
       <button type="button" class="btn" data-close-modal="change-ip-modal">取消</button>
       <button type="button" class="btn btn-danger" id="btn-confirm-change-ip">确认换 IP</button>
     </div>
+  </div>
+</div>
+
+{# IP 管理弹窗：集合换 IP / 附加 IPv6 / 删除 IPv6 三个操作，
+   三个按钮复用已有的换 IP 弹窗与 addIpv6/deleteIpv6 流程 #}
+<div class="modal-overlay" id="ip-modal" hidden>
+  <div class="modal-box">
+    <div class="modal-head">
+      <span>IP 管理</span>
+      <button type="button" class="modal-close" data-close-modal="ip-modal" aria-label="关闭">×</button>
+    </div>
+    <div class="modal-body">
+      <p>实例 <b id="ip-name"></b></p>
+      <table class="data">
+        <tbody>
+          <tr><th style="width: 90px;">公网 IPv4</th><td id="ip-public" class="mono">—</td></tr>
+          <tr><th>内网 IP</th><td id="ip-private" class="mono">—</td></tr>
+          <tr><th>IPv6</th><td id="ip-ipv6" class="mono">—</td></tr>
+        </tbody>
+      </table>
+      <div class="ip-actions">
+        <button type="button" class="btn btn-danger" id="btn-ip-change">换 IP</button>
+        <button type="button" class="btn" id="btn-ip-add-ipv6">附加 IPv6</button>
+        <button type="button" class="btn" id="btn-ip-delete-ipv6">删除 IPv6</button>
+      </div>
+      <p class="hint">换 IP 会释放旧 IP（无法找回）；附加/删除 IPv6 只影响该实例主网卡，删除时一次删全部 IPv6。</p>
+    </div>
+    <div class="modal-foot">
+      <button type="button" class="btn btn-primary" data-close-modal="ip-modal">关闭</button>
+    </div>
+  </div>
+</div>
+
+{# 启动盘弹窗：显示该实例启动盘详情 + 扩容输入框
+   （详情来自 GET /api/instances/{id} 的启动盘字段，扩容复用
+   POST /api/volumes/{id}/resize） #}
+<div class="modal-overlay" id="boot-volume-modal" hidden>
+  <div class="modal-box">
+    <div class="modal-head">
+      <span>启动盘</span>
+      <button type="button" class="modal-close" data-close-modal="boot-volume-modal" aria-label="关闭">×</button>
+    </div>
+    <form id="boot-volume-form">
+      <div class="modal-body">
+        <p>实例 <b id="boot-volume-instance"></b></p>
+        <table class="data">
+          <tbody>
+            <tr><th style="width: 90px;">大小</th><td id="boot-volume-size">—</td></tr>
+            <tr><th>VPU</th><td id="boot-volume-vpus">—</td></tr>
+            <tr><th>状态</th><td id="boot-volume-state">—</td></tr>
+            <tr><th>挂载</th><td id="boot-volume-attached">—</td></tr>
+            <tr><th>OCID</th><td id="boot-volume-ocid" class="mono">—</td></tr>
+          </tbody>
+        </table>
+        <div class="form-group" style="margin-top: 14px;">
+          <label for="boot-volume-new-size">扩容到（GB，只能扩不能缩）</label>
+          <input type="number" id="boot-volume-new-size" min="1" step="1" required>
+          <p class="hint">扩完只改了云盘大小，系统里还要跑 resize2fs 等命令才生效；免费额度内启动盘总共 200GB。</p>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button type="button" class="btn" data-close-modal="boot-volume-modal">取消</button>
+        <button type="submit" class="btn btn-primary">确认扩容</button>
+      </div>
+    </form>
   </div>
 </div>
 

@@ -1,6 +1,6 @@
 # M_Bot Oracle开源管理面板
 
-> **当前版本：v1.5.0** · 更新记录见 [CHANGELOG.md](CHANGELOG.md)
+> **当前版本：v1.6.0** · 更新记录见 [CHANGELOG.md](CHANGELOG.md)
 
 [中文](#中文) | [English](#english)
 

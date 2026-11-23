@@ -160,14 +160,17 @@ class TestWebPages(unittest.TestCase):
 
     def test_instances_page(self):
         """实例管理页：Profile 下拉（由 JS 从 /api/profiles 动态填充，
-        不再写死 DEFAULT 选项）、刷新按钮、表格列、终止确认文案。"""
+        不再写死 DEFAULT 选项）、刷新按钮、卡片容器、IP 管理与启动盘
+        弹窗、终止确认文案。"""
         self._assert_page_ok("/instances", [
             'id="profile-select"',
             'id="btn-refresh-instances"',
-            'id="instance-table"',
+            'id="instance-grid"',
             "公网 IP",
             'id="terminate-modal"',
             "将永久删除引导卷",
+            'id="ip-modal"',
+            'id="boot-volume-modal"',
             "/static/js/instances.js",
         ])
         # 下拉是空的动态填充容器，不含写死的选项
