@@ -7,6 +7,17 @@
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-11-24
+
+### 功能
+- Telegram 命令菜单：机器人启动时注册 20 个命令到 Telegram 菜单（/start /help /oracle /instances /domain /azure /aws /gcp /do /vf /solusvm /oci /command /pubkey /uploadapi /oproxy /clearlock /raninfo /me /admin），对照 R-Bot 小助理的菜单文案
+- /me：查看我的信息（TG ID、用户名、面板版本、各账号 RUNNING 实例数）
+- /admin：管理员菜单（面板状态、重启面板/机器人服务、查看版本，重启需二次确认）
+- /oci：上传 Oracle 或 Azure 配置文件（校验后追加 profile；私钥不经 Telegram，需自行 scp）
+- /clearlock：清除面板登录失败锁定（重启面板服务，锁定状态在面板进程内存里）
+- /raninfo：重置面板管理员随机密码（pbkdf2-SHA256 哈希写 env、明文写密码文件 600、重启面板，新密码只私发一次）
+- 六个云命令（/azure /aws /gcp /do /vf /solusvm）：未配置时回复配置方法，已配置但模块是 stub 时直说功能尚未实现，绝不编造数据
+
 ## [1.4.0] - 2026-11-24
 
 ### 功能

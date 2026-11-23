@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""clouds/ 抽象接口与 5 个厂商 stub 的单元测试（不碰真实 API）。
+"""clouds/ 抽象接口与 6 个厂商 stub 的单元测试（不碰真实 API）。
 
 运行：python3 -m unittest tests.test_clouds_stubs -v
 """
@@ -11,7 +11,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from clouds import (AWSProvider, AzureProvider, CloudProvider, DOProvider,
-                    GCPProvider, SolusVMProvider)
+                    GCPProvider, SolusVMProvider, VirtFusionProvider)
 
 # 测试数据一律用文档保留值，绝不出现真实 IP / OCID / Token / 密钥。
 FAKE_INSTANCE_ID = "test-instance-id"
@@ -39,6 +39,10 @@ FAKE_SOLUSVM_CREDS = {
     "api_url": "https://example.com/api/client",
     "api_key": "fake-api-key",
     "api_hash": "fake-api-hash",
+}
+FAKE_VF_CREDS = {
+    "api_url": "https://example.com/api/v1",
+    "api_token": "fake-vf-token",
 }
 
 # 11 个抽象方法名（与 CloudProvider 的接口清单一致）。
@@ -201,6 +205,8 @@ TestDOProvider = _make_stub_tests(
     DOProvider, "do", "DigitalOcean", FAKE_DO_CREDS)
 TestSolusVMProvider = _make_stub_tests(
     SolusVMProvider, "solusvm", "SolusVM", FAKE_SOLUSVM_CREDS)
+TestVirtFusionProvider = _make_stub_tests(
+    VirtFusionProvider, "vf", "VirtFusion", FAKE_VF_CREDS)
 
 
 if __name__ == "__main__":

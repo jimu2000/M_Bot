@@ -15,6 +15,7 @@ import logging
 import os
 import sys
 
+from telegram import BotCommand
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -29,6 +30,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tgbot import config as bot_config  # noqa: E402
 from tgbot import handlers, handlers_client, handlers_extra  # noqa: E402
+from tgbot import handlers_menu  # noqa: E402
 
 # ================= 配置区（改这里） =================
 # 实例状态监控间隔（分钟）：check_instances_job 每隔这么久检查一次。
@@ -59,6 +61,20 @@ def _setup_logging():
     logging.getLogger("telegram").setLevel(logging.WARNING)
 
 
+async def _post_init(application):
+    """启动后注册命令菜单（Telegram 客户端"菜单"按钮显示全部命令）。
+
+    菜单内容见 tgbot/handlers_menu.py 的 BOT_COMMANDS；测试保证
+    菜单列表与已注册的 CommandHandler 一致。
+    """
+    await application.bot.set_my_commands(
+        [BotCommand(command, description)
+         for command, description in handlers_menu.BOT_COMMANDS])
+    logging.getLogger(__name__).info(
+        "已注册 %d 个机器人命令到 Telegram 菜单",
+        len(handlers_menu.BOT_COMMANDS))
+
+
 def build_application():
     """构建 Application 并注册全部命令/回调/定时任务。返回 Application。"""
     token = bot_config.get_token()  # 未配置时抛 RuntimeError，启动即失败
@@ -67,7 +83,8 @@ def build_application():
             "未配置白名单：请设置环境变量 RBOT_ALLOWED_USERS（逗号分隔的 "
             "Telegram 用户 ID），否则谁都无法使用机器人。")
 
-    application = Application.builder().token(token).build()
+    application = (Application.builder().token(token)
+                   .post_init(_post_init).build())
 
     # ---- 命令 ----
     application.add_handler(CommandHandler("start", handlers.start_command))
@@ -86,6 +103,30 @@ def build_application():
                                            handlers_client.oproxy_command))
     application.add_handler(CommandHandler("uploadapi",
                                            handlers_client.uploadapi_command))
+    # ---- 其他云命令（handlers_menu） ----
+    application.add_handler(CommandHandler("azure",
+                                           handlers_menu.azure_command))
+    application.add_handler(CommandHandler("aws",
+                                           handlers_menu.aws_command))
+    application.add_handler(CommandHandler("gcp",
+                                           handlers_menu.gcp_command))
+    application.add_handler(CommandHandler("do",
+                                           handlers_menu.do_command))
+    application.add_handler(CommandHandler("vf",
+                                           handlers_menu.vf_command))
+    application.add_handler(CommandHandler("solusvm",
+                                           handlers_menu.solusvm_command))
+    # ---- 配置 / 管理命令（handlers_menu） ----
+    application.add_handler(CommandHandler("oci",
+                                           handlers_menu.oci_command))
+    application.add_handler(CommandHandler("clearlock",
+                                           handlers_menu.clearlock_command))
+    application.add_handler(CommandHandler("raninfo",
+                                           handlers_menu.raninfo_command))
+    application.add_handler(CommandHandler("me",
+                                           handlers_menu.me_command))
+    application.add_handler(CommandHandler("admin",
+                                           handlers_menu.admin_command))
 
     # ---- 回调（按 callback_data 前缀路由，见 keyboards.py 的规范） ----
     application.add_handler(CallbackQueryHandler(
@@ -167,6 +208,11 @@ def build_application():
         handlers_client.memballoon_callback, pattern=r"^mh:"))
     application.add_handler(CallbackQueryHandler(
         handlers_client.memclear_callback, pattern=r"^mc:"))
+    # ---- 菜单命令回调（handlers_menu：/oci 确认 / /admin 菜单） ----
+    application.add_handler(CallbackQueryHandler(
+        handlers_menu.oci_callback, pattern=r"^oci:"))
+    application.add_handler(CallbackQueryHandler(
+        handlers_menu.admin_callback, pattern=r"^adm:"))
 
     # ---- 文字输入（改名 / 重装确认，见 handlers_extra.text_input_callback） ----
     # 只处理纯文字消息；命令仍走下面的 unknown_command。
@@ -187,6 +233,14 @@ def build_application():
     # handle_client_document 共存（各自只认自己的状态）。
     application.add_handler(MessageHandler(
         filters.Document.ALL, handlers_extra.boot_form_document_callback))
+    # ---- /oci 的 config 文件上传与粘贴文本 ----
+    # 只在 oci_awaiting 状态时处理，与上面的 document/text 处理
+    # 共存（各自只认自己的状态；ua_awaiting 优先于 oci_awaiting）。
+    application.add_handler(MessageHandler(
+        filters.Document.ALL, handlers_menu.handle_oci_document))
+    application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND,
+        handlers_menu.handle_oci_text_input))
 
     # ---- 未知命令 / 未知消息 ----
     application.add_handler(MessageHandler(filters.COMMAND,
