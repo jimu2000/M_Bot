@@ -1,4 +1,4 @@
-# R-Bot 开源克隆 / Open-Source R-Bot Clone
+# M-探长 / M-Tanzhang
 
 [中文](#中文) | [English](#english)
 
@@ -6,17 +6,12 @@
 
 ## 中文
 
-按 [R-Bot](https://github.com/semicons/java_oci_manage) 的**公开功能说明**，用 Python
-从零重写的一套 Oracle Cloud 管理工具：Telegram 机器人 + Web 面板 + Web SSH +
-抢机 + Cloudflare DNS + MCP 服务器。
+M-探长是一个 Oracle Cloud 管理工具：Telegram 机器人 + Web 面板 + Web SSH +
+抢机 + Cloudflare DNS + MCP 服务器。功能设计参考了 R-Bot（R 探长）的公开功能
+说明，代码全部独立编写、全部可见、可审计。
 
-**这不是代码克隆**：R-Bot 是闭源预编译二进制，仓库里只有文档没有源码，无从复制。
-这里的每一行代码都是按其公开的功能清单重新实现，全部可见、可审计。R-Bot 的
-"闪电权限"付费体系没有克隆——本项目里的对应功能（IAM 用户管理、用量统计、
-多 profile 管理等）全部免费开放。
-
-> ⚠️ 免责：本项目与 R-Bot / semicons 无任何关联。R-Bot 是其作者的商标与产品，
-> 本项目只是按公开文档实现相似功能的独立开源实现。
+> ⚠️ 免责：本项目与 R-Bot / semicons 无任何关联。R-Bot 是其作者的产品，
+> 本项目是按公开功能说明独立实现的开源项目。
 
 ### 功能
 
@@ -64,8 +59,8 @@
 ### 快速开始
 
 ```bash
-git clone https://github.com/jimu2000/rbot-clone.git
-cd rbot-clone
+git clone https://github.com/jimu2000/m-tanzhang.git
+cd m-tanzhang
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 pip install oci-cli          # OCI 调用走官方 CLI
@@ -134,30 +129,31 @@ python3 mcp_server.py
 
 ```bash
 python3 -m unittest discover -s tests -t .
-# Ran 1251 tests ... OK
+# Ran 1268 tests ... OK
 ```
 
-1251 个单元测试（mock 为主，写操作零次碰生产）。真实 API 验证记录见
+1268 个单元测试（mock 为主，写操作零次碰生产）。真实 API 验证记录见
 `docs/verification*.md`：只读操作对真实 OCI / Cloudflare API 实测通过；
 写操作（创建 / 换 IP / 升降配 / 扩容 / 释放等）在测试实例上真实跑通过。
 
 ### 项目结构
 
 ```
-rbot-clone/
+m-tanzhang/
   oci/          OCI 客户端（client/instance/network/volume/quota/grabber/email/objectstorage）
   tgbot/        Telegram 机器人（bot/handlers/handlers_extra/keyboards/services/monitoring）
   web/          Web 面板（FastAPI 路由、Web SSH、SFTP、任务调度）
   clouds/       Cloudflare 客户端 + 其他云抽象接口与 stub
   mcp_server.py MCP 服务器（JSON-RPC over stdio）
   scripts/      部署脚本（原子升级）
-  tests/        单元测试（1251 个）
+  tests/        单元测试（1268 个）
   docs/         设计与验证文档
 ```
 
 ### 明确不做的功能
 
-- R-Bot 的"闪电权限"付费体系（充值、权益开关）
+- 付费权益体系（充值、权益开关）——对应功能（IAM 用户管理、用量统计、
+  多 profile 管理等）全部免费开放
 - 删除当前 API（等于机器人自杀）
 - 禁用被封账户（不可逆操作，建议人工处理）
 
@@ -165,21 +161,15 @@ rbot-clone/
 
 ## English
 
-An open-source Oracle Cloud management toolkit written from scratch in Python,
-based on [R-Bot](https://github.com/semicons/java_oci_manage)'s **public feature
-documentation**: Telegram bot + web panel + web SSH + instance grabber +
-Cloudflare DNS + MCP server.
-
-**This is not a code clone**: R-Bot is a closed-source precompiled binary whose
-repository contains only documentation, no source code — there is nothing to
-copy. Every line here was reimplemented from its public feature list and is
-fully visible and auditable. R-Bot's paid "lightning privileges" system was not
-cloned — the equivalent features (IAM user management, usage stats, multi-profile
-management) are free for everyone here.
+M-Tanzhang is an open-source Oracle Cloud management toolkit written in Python:
+Telegram bot + web panel + web SSH + instance grabber + Cloudflare DNS + MCP
+server. Its feature design references [R-Bot](https://github.com/semicons/java_oci_manage)'s
+(R 探长) public feature documentation; all code here is independently written,
+fully visible and auditable.
 
 > Disclaimer: this project is not affiliated with R-Bot / semicons. R-Bot is
-> its author's trademark and product; this is an independent open-source
-> implementation of similar functionality based on public documentation.
+> its author's product; this is an independent open-source implementation based
+> on its public feature documentation.
 
 ### Features
 
@@ -233,8 +223,8 @@ verification needs accounts on those clouds).
 ### Quick start
 
 ```bash
-git clone https://github.com/jimu2000/rbot-clone.git
-cd rbot-clone
+git clone https://github.com/jimu2000/m-tanzhang.git
+cd m-tanzhang
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 pip install oci-cli          # OCI calls go through the official CLI
@@ -306,17 +296,18 @@ For production, run both services under systemd — see `docs/deployment.md`
 
 ```bash
 python3 -m unittest discover -s tests -t .
-# Ran 1251 tests ... OK
+# Ran 1268 tests ... OK
 ```
 
-1251 unit tests (mostly mocked; write operations never touch production).
+1268 unit tests (mostly mocked; write operations never touch production).
 Real-API verification notes live in `docs/verification*.md`: read-only calls
 verified against the real OCI / Cloudflare APIs; write operations (create /
 change IP / resize / extend / terminate) verified for real on test instances.
 
 ### Deliberately not implemented
 
-- R-Bot's paid "lightning privileges" system (payments, feature gates)
+- A paid privileges system (payments, feature gates) — the equivalent features
+  are free for everyone here
 - Deleting the current API key (would kill the bot itself)
 - Disabling banned accounts (irreversible; do it manually)
 

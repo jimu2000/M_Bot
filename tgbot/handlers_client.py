@@ -48,6 +48,7 @@ import time
 from datetime import datetime, timezone
 
 import paramiko
+from paramiko.ssh_exception import NoValidConnectionsError
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -135,9 +136,16 @@ MEMHOG_SLEEP_SECONDS = 10 ** 9
 MEMHOG_LOG_PATH = "/tmp/rbot_memhog.log"
 # 实例 SSH 默认值（hosts.json 里按 IP 匹配不到已保存主机时用）：
 # 用户名 / 端口 / 密钥（面板服务器上的默认密钥，需已加到实例上）。
+# 端口与密钥可由环境变量覆盖：RBOT_MEMHOG_SSH_PORT（默认 22，
+# 生产实例用 14422）、RBOT_MEMHOG_SSH_KEY（默认 ~/.ssh/id_ed25519；
+# 面板服务器上没有该私钥时必须设，指向部署用的专用密钥）。
 MEMHOG_SSH_USER = "root"
-MEMHOG_SSH_PORT = 22
-MEMHOG_SSH_KEY = os.path.expanduser("~/.ssh/id_ed25519")
+try:
+    MEMHOG_SSH_PORT = int(os.environ.get("RBOT_MEMHOG_SSH_PORT", "22"))
+except ValueError:
+    MEMHOG_SSH_PORT = 22
+MEMHOG_SSH_KEY = os.path.expanduser(
+    os.environ.get("RBOT_MEMHOG_SSH_KEY", "~/.ssh/id_ed25519"))
 # =====================================================
 
 
@@ -225,6 +233,22 @@ class CommandTimeoutError(RemoteCommandError):
     """远程命令执行超时。"""
 
 
+def _new_ssh_client():
+    """新建一个配好 host key 策略的 SSHClient。
+
+    每次连接尝试都用新的 client：失败的连接可能留下半开的
+    Transport，复用同一个 client 重试可能直接报错。
+    """
+    fresh = paramiko.SSHClient()
+    if os.path.exists(KNOWN_HOSTS_FILE):
+        try:
+            fresh.load_host_keys(KNOWN_HOSTS_FILE)
+        except Exception as exc:
+            logger.warning("known_hosts 读取失败：%s", exc)
+    fresh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    return fresh
+
+
 def run_remote_command(host, command, timeout=COMMAND_TIMEOUT_SECONDS):
     """在远程主机上执行一条命令，返回 (exit_code, stdout, stderr)。
 
@@ -232,6 +256,9 @@ def run_remote_command(host, command, timeout=COMMAND_TIMEOUT_SECONDS):
     连接模式与 web/ssh.py 一致：known_hosts 存在则加载，
     AutoAddPolicy 记住新 host key；key_path 存在时用密钥认证，
     否则走 agent / 默认密钥查找（密码不存文件，故不支持密码认证）。
+    端口回退：主端口连接失败（超时 / 拒绝 / 无可用连接）时，
+    在 22 与 14422 之间重试一次（新实例默认 22，生产实例用
+    14422；其他端口不回退）。认证失败不重试，直接报错。
     连接/认证失败抛 RemoteCommandError；命令执行超时抛 CommandTimeoutError。
     """
     hostname = host.get("host")
@@ -242,25 +269,42 @@ def run_remote_command(host, command, timeout=COMMAND_TIMEOUT_SECONDS):
         key_path = os.path.expanduser(key_path)
         if not os.path.exists(key_path):
             raise RemoteCommandError(f"密钥文件不存在：{key_path}")
-    client = paramiko.SSHClient()
+    kwargs = {
+        "hostname": hostname,
+        "username": username,
+        "timeout": SSH_CONNECT_TIMEOUT,
+        "banner_timeout": SSH_CONNECT_TIMEOUT,
+    }
+    if key_path:
+        kwargs["key_filename"] = key_path
+        kwargs["look_for_keys"] = False
+    ports = [port]
+    if port == 22:
+        ports.append(14422)
+    elif port == 14422:
+        ports.append(22)
+    client = None
+    for attempt, try_port in enumerate(ports):
+        attempt_client = _new_ssh_client()
+        try:
+            attempt_client.connect(**kwargs, port=try_port)
+        except paramiko.AuthenticationException:
+            attempt_client.close()
+            raise RemoteCommandError("SSH 认证失败：用户名或密钥不正确。")
+        except (socket.timeout, OSError, NoValidConnectionsError) as exc:
+            attempt_client.close()
+            if attempt + 1 < len(ports):
+                logger.warning(
+                    "SSH 连接 %s:%s 失败（%s），尝试备用端口 %s",
+                    hostname, try_port, exc, ports[attempt + 1])
+                continue
+            raise RemoteCommandError(f"SSH 连接失败：{exc}")
+        except paramiko.SSHException as exc:
+            attempt_client.close()
+            raise RemoteCommandError(f"SSH 连接失败：{exc}")
+        client = attempt_client
+        break
     try:
-        if os.path.exists(KNOWN_HOSTS_FILE):
-            try:
-                client.load_host_keys(KNOWN_HOSTS_FILE)
-            except Exception as exc:
-                logger.warning("known_hosts 读取失败：%s", exc)
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        kwargs = {
-            "hostname": hostname,
-            "port": port,
-            "username": username,
-            "timeout": SSH_CONNECT_TIMEOUT,
-            "banner_timeout": SSH_CONNECT_TIMEOUT,
-        }
-        if key_path:
-            kwargs["key_filename"] = key_path
-            kwargs["look_for_keys"] = False
-        client.connect(**kwargs)
         try:
             parent = os.path.dirname(KNOWN_HOSTS_FILE)
             if parent:

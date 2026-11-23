@@ -15,7 +15,9 @@ SSH 公钥用现场构造的假 key blob。
 import base64
 import json
 import os
+import socket
 import struct
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -555,6 +557,119 @@ class TestRunRemoteCommand(unittest.TestCase):
         kwargs = client.connect.call_args.kwargs
         self.assertEqual(kwargs["key_filename"], key_path)
         self.assertFalse(kwargs["look_for_keys"])
+
+    def test_port_fallback_22_to_14422(self):
+        """主端口 22 被拒时重试 14422，成功后返回输出。"""
+        host = dict(self.host, port=22)
+        client = _mock_ssh_client(b"ok\n", b"", 0)
+        client.connect.side_effect = [
+            ConnectionRefusedError("refused"), None]
+        with patch("paramiko.SSHClient", return_value=client):
+            code, out, _err = hc.run_remote_command(host, "ls")
+        self.assertEqual((code, out), (0, "ok\n"))
+        self.assertEqual(client.connect.call_count, 2)
+        ports = [c.kwargs["port"] for c in client.connect.call_args_list]
+        self.assertEqual(ports, [22, 14422])
+
+    def test_port_fallback_14422_to_22(self):
+        """主端口 14422 超时时重试 22，成功后返回输出。"""
+        client = _mock_ssh_client(b"ok\n", b"", 0)
+        client.connect.side_effect = [socket.timeout("timed out"), None]
+        with patch("paramiko.SSHClient", return_value=client):
+            code, out, _err = hc.run_remote_command(self.host, "ls")
+        self.assertEqual((code, out), (0, "ok\n"))
+        self.assertEqual(client.connect.call_count, 2)
+        ports = [c.kwargs["port"] for c in client.connect.call_args_list]
+        self.assertEqual(ports, [14422, 22])
+
+    def test_port_fallback_no_valid_connections(self):
+        """NoValidConnectionsError 也触发端口回退。"""
+        from paramiko.ssh_exception import NoValidConnectionsError
+        host = dict(self.host, port=22)
+        client = _mock_ssh_client(b"ok\n", b"", 0)
+        client.connect.side_effect = [
+            NoValidConnectionsError({"203.0.113.10": "refused"}), None]
+        with patch("paramiko.SSHClient", return_value=client):
+            code, _out, _err = hc.run_remote_command(host, "ls")
+        self.assertEqual(code, 0)
+        self.assertEqual(client.connect.call_count, 2)
+
+    def test_port_fallback_both_fail(self):
+        """主备端口都失败时抛连接失败（共尝试两次）。"""
+        host = dict(self.host, port=22)
+        client = MagicMock()
+        client.connect.side_effect = ConnectionRefusedError("refused")
+        with patch("paramiko.SSHClient", return_value=client):
+            with self.assertRaises(RemoteCommandError) as ctx:
+                hc.run_remote_command(host, "ls")
+        self.assertIn("连接失败", str(ctx.exception))
+        self.assertEqual(client.connect.call_count, 2)
+
+    def test_auth_failure_no_retry(self):
+        """认证失败不重试：connect 只调用一次。"""
+        client = MagicMock()
+        client.connect.side_effect = paramiko.AuthenticationException("nope")
+        with patch("paramiko.SSHClient", return_value=client):
+            with self.assertRaises(RemoteCommandError) as ctx:
+                hc.run_remote_command(self.host, "ls")
+        self.assertIn("认证失败", str(ctx.exception))
+        self.assertEqual(client.connect.call_count, 1)
+
+    def test_custom_port_no_fallback(self):
+        """非 22/14422 的端口不回退：失败一次即报错。"""
+        host = dict(self.host, port=2222)
+        client = MagicMock()
+        client.connect.side_effect = ConnectionRefusedError("refused")
+        with patch("paramiko.SSHClient", return_value=client):
+            with self.assertRaises(RemoteCommandError):
+                hc.run_remote_command(host, "ls")
+        self.assertEqual(client.connect.call_count, 1)
+
+
+class TestMemhogEnvOverrides(unittest.TestCase):
+    """MEMHOG_SSH_KEY / MEMHOG_SSH_PORT 环境变量覆盖。
+
+    两者是模块级常量（import 时读取），测试用子进程验证：
+    子进程带环境变量 import 模块并打印常量值。不能用
+    importlib.reload——reload 会让 RemoteCommandError 变成新类，
+    本进程后续测试的 assertRaises 就失效了。
+    """
+
+    def _read_constants(self, env):
+        script = ("import tgbot.handlers_client as hc; "
+                  "print(hc.MEMHOG_SSH_KEY); print(hc.MEMHOG_SSH_PORT)")
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        proc = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True, text=True, env=env, cwd=root)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        key, port = proc.stdout.strip().splitlines()
+        return key, int(port)
+
+    def _base_env(self):
+        env = dict(os.environ)
+        env.pop("RBOT_MEMHOG_SSH_KEY", None)
+        env.pop("RBOT_MEMHOG_SSH_PORT", None)
+        return env
+
+    def test_env_overrides(self):
+        env = self._base_env()
+        env["RBOT_MEMHOG_SSH_KEY"] = "/opt/rbot-clone/web/data/bot_ssh_key"
+        env["RBOT_MEMHOG_SSH_PORT"] = "14422"
+        key, port = self._read_constants(env)
+        self.assertEqual(key, "/opt/rbot-clone/web/data/bot_ssh_key")
+        self.assertEqual(port, 14422)
+
+    def test_defaults_without_env(self):
+        key, port = self._read_constants(self._base_env())
+        self.assertEqual(key, os.path.expanduser("~/.ssh/id_ed25519"))
+        self.assertEqual(port, 22)
+
+    def test_invalid_port_env_falls_back_to_22(self):
+        env = self._base_env()
+        env["RBOT_MEMHOG_SSH_PORT"] = "not-a-port"
+        _key, port = self._read_constants(env)
+        self.assertEqual(port, 22)
 
 
 # ================= 菜单 23/24：命令构造与存储 =================

@@ -855,7 +855,7 @@ class TestIpIpv6ResumeResizeVolumes(HandlersExtraTestCase):
                   "public-ip": "203.0.113.139", "private-ip": "10.0.0.5",
                   "is-primary": True}]
         self.cli.run.return_value = {"data": [
-            {"ip-address": "2001:db8::1",
+            {"ip-address": "2603:c024:c021:1d01::1",
              "lifecycle-state": "ASSIGNED"}]}
         with patch.object(he, "list_instances",
                           return_value=FAKE_INSTANCES), \
@@ -864,7 +864,7 @@ class TestIpIpv6ResumeResizeVolumes(HandlersExtraTestCase):
             context = make_context()
             await he.handle_ipv6(update, context)
         text = reply_text_of(update)
-        self.assertIn("2001:db8::1", text)
+        self.assertIn("2603:c024:c021:1d01::1", text)
         called_args = self.cli.run.call_args[0][0]
         self.assertEqual(called_args[:3], ["network", "ipv6", "list"])
         self.assertIn("ocid1.vnic.oc1..v1", called_args)
@@ -872,9 +872,9 @@ class TestIpIpv6ResumeResizeVolumes(HandlersExtraTestCase):
     def test_ipv6_create_delete_helpers(self):
         """create_ipv6 / delete_ipv6 只调 cli.run（mock，不发真实请求）。"""
         cli = MagicMock()
-        cli.run.return_value = {"data": {"ip-address": "2001:db8::2"}}
+        cli.run.return_value = {"data": {"ip-address": "2603::2"}}
         result = he.create_ipv6(cli, "ocid1.vnic.oc1..v1")
-        self.assertEqual(result["ip-address"], "2001:db8::2")
+        self.assertEqual(result["ip-address"], "2603::2")
         called_args = cli.run.call_args[0][0]
         self.assertEqual(called_args[:3], ["network", "ipv6", "create"])
         self.assertIn("ocid1.vnic.oc1..v1", called_args)
@@ -1032,6 +1032,128 @@ class TestIpIpv6ResumeResizeVolumes(HandlersExtraTestCase):
         callbacks = [b.callback_data for row in keyboard.inline_keyboard
                      for b in row]
         self.assertIn("c:delvol:0", callbacks)
+
+
+class TestIpv6Buttons(HandlersExtraTestCase):
+    """菜单 4 IPv6 创建/删除按钮（handle_ipv6 + 两个回调 + delipv6 确认）。"""
+
+    def _callbacks_of(self, update):
+        _, kwargs = update.effective_message.reply_text.await_args
+        keyboard = kwargs.get("reply_markup")
+        if keyboard is None:
+            return []
+        return [b.callback_data for row in keyboard.inline_keyboard
+                for b in row]
+
+    async def test_handle_ipv6_shows_create_and_delete_buttons(self):
+        instances = [
+            {"id": "ocid1.instance.oc1..aaa1", "display-name": "web-server",
+             "shape": "VM.Standard.A1.Flex", "lifecycle-state": "RUNNING"},
+            {"id": "ocid1.instance.oc1..bbb2", "display-name": "db-server",
+             "shape": "VM.Standard.A1.Flex", "lifecycle-state": "RUNNING"},
+        ]
+
+        def fake_vnics(_cli, instance_id):
+            suffix = "v1" if instance_id.endswith("aaa1") else "v2"
+            return [{"id": f"ocid1.vnic.oc1..{suffix}",
+                     "is-primary": True}]
+
+        def fake_ipv6(_cli, vnic_id):
+            if vnic_id.endswith("v1"):
+                return []
+            return [{"id": "ocid1.ipv6.oc1..i1",
+                     "ip-address": "2001:db8::1",
+                     "lifecycle-state": "ASSIGNED"}]
+
+        with patch.object(he, "list_instances",
+                          return_value=instances), \
+             patch.object(he, "list_vnics", side_effect=fake_vnics), \
+             patch.object(he, "list_ipv6_for_vnic", side_effect=fake_ipv6):
+            update = make_update()
+            context = make_context()
+            await he.handle_ipv6(update, context)
+        text = reply_text_of(update)
+        self.assertIn("web-server：无 IPv6", text)
+        self.assertIn("2001:db8::1", text)
+        callbacks = self._callbacks_of(update)
+        self.assertIn("ipv6_create:0", callbacks)
+        self.assertIn("ipv6_delete:0", callbacks)
+        self.assertIn("o:menu", callbacks)
+        self.assertEqual(
+            context.user_data["ipv6_vnics"],
+            [{"name": "web-server", "vnic_id": "ocid1.vnic.oc1..v1"},
+             {"name": "db-server", "vnic_id": "ocid1.vnic.oc1..v2"}])
+        self.assertEqual(
+            context.user_data["ipv6_entries"],
+            [{"id": "ocid1.ipv6.oc1..i1", "ip": "2001:db8::1",
+              "name": "db-server"}])
+
+    async def test_ipv6_create_callback_success(self):
+        update = make_update(callback_data="ipv6_create:0")
+        context = make_context()
+        context.user_data["ipv6_vnics"] = [
+            {"name": "web-server", "vnic_id": "ocid1.vnic.oc1..v1"}]
+        with patch.object(he, "create_ipv6",
+                          return_value={"ip-address": "2001:db8::9",
+                                        "id": "ocid1.ipv6.oc1..i9"}) \
+                as mock_create:
+            await he.ipv6_create_callback(update, context)
+        mock_create.assert_called_once()
+        self.assertEqual(mock_create.call_args[0][1],
+                         "ocid1.vnic.oc1..v1")
+        text = reply_text_of(update)
+        self.assertIn("2001:db8::9", text)
+        self.assertIn("web-server", text)
+
+    async def test_ipv6_create_callback_expired(self):
+        update = make_update(callback_data="ipv6_create:0")
+        context = make_context()
+        await he.ipv6_create_callback(update, context)
+        self.assertIn("已过期", reply_text_of(update))
+
+    async def test_ipv6_delete_callback_shows_confirm(self):
+        update = make_update(callback_data="ipv6_delete:0")
+        context = make_context()
+        context.user_data["ipv6_entries"] = [
+            {"id": "ocid1.ipv6.oc1..i1", "ip": "2001:db8::1",
+             "name": "web-server"}]
+        await he.ipv6_delete_callback(update, context)
+        text = reply_text_of(update)
+        self.assertIn("2001:db8::1", text)
+        self.assertIn("确认删除", text)
+        self.assertIn("c:delipv6:0", self._callbacks_of(update))
+
+    async def test_ipv6_delete_callback_expired(self):
+        update = make_update(callback_data="ipv6_delete:0")
+        context = make_context()
+        await he.ipv6_delete_callback(update, context)
+        self.assertIn("已过期", reply_text_of(update))
+
+    async def test_confirm_delipv6(self):
+        update = make_update(callback_data="c:delipv6:0")
+        context = make_context()
+        context.user_data["ipv6_entries"] = [
+            {"id": "ocid1.ipv6.oc1..i1", "ip": "2001:db8::1",
+             "name": "web-server"}]
+        with patch.object(he, "delete_ipv6",
+                          return_value=None) as mock_delete:
+            handled = await he.handle_confirm("delipv6", "0",
+                                              update, context)
+        self.assertTrue(handled)
+        mock_delete.assert_called_once()
+        self.assertEqual(mock_delete.call_args[0][1],
+                         "ocid1.ipv6.oc1..i1")
+        text = reply_text_of(update)
+        self.assertIn("已删除", text)
+        self.assertIn("2001:db8::1", text)
+
+    async def test_confirm_delipv6_expired(self):
+        update = make_update()
+        context = make_context()
+        handled = await he.handle_confirm("delipv6", "0", update, context)
+        self.assertTrue(handled)
+        self.assertIn("已过期", reply_text_of(update))
+        self.cli.run.assert_not_called()
 
 
 class TestUsersWorkflowsRegionsSubscriptionMfa(HandlersExtraTestCase):

@@ -1035,11 +1035,15 @@ async def handle_ip(update, context):
 
 @require_allowed
 async def handle_ipv6(update, context):
-    """菜单 4：按实例查 IPv6 列表（主 VNIC -> ipv6 list）。
+    """菜单 4：按实例查 IPv6 列表（主 VNIC -> ipv6 list），并挂
+    创建/删除按钮。
 
-    创建 / 删除 IPv6 只提供函数（create_ipv6 / delete_ipv6，mock 测试），
-    菜单里暂不挂按钮——IPv6 分配依赖子网已启用 IPv6，误操作会让实例
-    多出不可达地址，留给后续版本再接交互流程。
+    无 IPv6 的实例显示"➕ 创建 IPv6"（直接执行并回显新地址）；
+    已有 IPv6 的每条地址显示"🗑 删除"（先二次确认）。
+    目标列表存 user_data["ipv6_vnics"]（创建用：{name, vnic_id}）
+    与 user_data["ipv6_entries"]（删除用：{id, ip, name}），
+    回调按下标取回——实例 OCID 超过 Telegram callback_data
+    64 字节上限，不能直接放回调里。
     """
     cli = get_cli(context)
     try:
@@ -1049,30 +1053,99 @@ async def handle_ipv6(update, context):
         await _reply(update, fmt_error(exc))
         return
     lines = ["🌐 IPv6 管理：", ""]
-    any_running = False
+    vnics = []
+    entries = []
+    rows = []
     for inst in instances:
         if inst.get("lifecycle-state") != "RUNNING":
             continue
-        any_running = True
         name = inst.get("display-name") or "?"
         try:
-            vnics = await run_sync(list_vnics, cli, inst["id"])
-            primary = next((v for v in vnics if v.get("is-primary")), None)
+            inst_vnics = await run_sync(list_vnics, cli, inst["id"])
+            primary = next((v for v in inst_vnics if v.get("is-primary")),
+                           None)
             if primary is None:
                 lines.append(f"• {name}：无主 VNIC")
                 continue
+            vnic_idx = len(vnics)
+            vnics.append({"name": name, "vnic_id": primary["id"]})
             ipv6s = await run_sync(list_ipv6_for_vnic, cli, primary["id"])
             if not ipv6s:
                 lines.append(f"• {name}：无 IPv6")
+                rows.append([InlineKeyboardButton(
+                    f"➕ {name} 创建 IPv6",
+                    callback_data=f"ipv6_create:{vnic_idx}")])
             else:
                 addrs = ", ".join(v.get("ip-address", "?") for v in ipv6s)
                 lines.append(f"• {name}：{addrs}")
+                for v in ipv6s:
+                    entries.append({
+                        "id": v.get("id"),
+                        "ip": v.get("ip-address", "?"),
+                        "name": name,
+                    })
+                    rows.append([InlineKeyboardButton(
+                        f"🗑 删除 {name} {v.get('ip-address', '?')}",
+                        callback_data=f"ipv6_delete:{len(entries) - 1}")])
         except Exception as exc:  # noqa: BLE001 - 单台报错不影响其他台
             lines.append(f"• {name}：{fmt_error(exc)}")
-    if not any_running:
+    if not vnics:
         lines.append("没有运行中的实例。")
+    context.user_data["ipv6_vnics"] = vnics
+    context.user_data["ipv6_entries"] = entries
+    rows.append([InlineKeyboardButton("◀ Oracle 菜单",
+                                      callback_data="o:menu")])
     await _reply(update, "\n".join(lines),
+                 reply_markup=InlineKeyboardMarkup(rows))
+
+
+@require_allowed
+async def ipv6_create_callback(update, context):
+    """ipv6_create:<idx>：给 user_data["ipv6_vnics"][idx] 的 VNIC
+    分配一个 IPv6，直接执行并回显新地址。"""
+    parts = _callback_data(update).split(":")
+    try:
+        idx = int(parts[1]) if len(parts) >= 2 else -1
+    except ValueError:
+        idx = -1
+    targets = context.user_data.get("ipv6_vnics") or []
+    if idx < 0 or idx >= len(targets):
+        await _reply(update, "目标已过期，请重新打开 IPv6 管理。",
+                     reply_markup=back_to_oracle_keyboard())
+        return
+    target = targets[idx]
+    try:
+        created = await run_sync(create_ipv6, get_cli(context),
+                                 target["vnic_id"])
+    except Exception as exc:  # noqa: BLE001
+        await _reply(update, fmt_error(exc),
+                     reply_markup=back_to_oracle_keyboard())
+        return
+    addr = (created or {}).get("ip-address", "?")
+    await _reply(update, f"✅ {target['name']} 已分配 IPv6：{addr}",
                  reply_markup=back_to_oracle_keyboard())
+
+
+@require_allowed
+async def ipv6_delete_callback(update, context):
+    """ipv6_delete:<idx>：删除 IPv6 先弹二次确认
+    （确认按钮 c:delipv6:<idx>，由 handle_confirm 执行）。"""
+    parts = _callback_data(update).split(":")
+    try:
+        idx = int(parts[1]) if len(parts) >= 2 else -1
+    except ValueError:
+        idx = -1
+    entries = context.user_data.get("ipv6_entries") or []
+    if idx < 0 or idx >= len(entries):
+        await _reply(update, "目标已过期，请重新打开 IPv6 管理。",
+                     reply_markup=back_to_oracle_keyboard())
+        return
+    entry = entries[idx]
+    text = (f"🗑️ 确认删除 {entry['name']} 的 IPv6 {entry['ip']}？\n\n"
+            "删除后该地址立即不可达。")
+    await _reply(update, text,
+                 reply_markup=confirm_keyboard("delipv6", idx,
+                                               "🗑️ 确认删除"))
 
 
 # ---- 3. 被暂停开机 ----
@@ -2117,6 +2190,7 @@ async def handle_confirm(action, idx, update, context):
       - openport：开放云面板端口（idx 无用，传 0；安全组 + UFW 放行）。
       - upgrade：升级客户端（idx 无用，传 0；git pull + pip + 重启
         两个服务；不是 git 仓库时提示手动升级）。
+      - delipv6：删除 IPv6（idx 是 user_data["ipv6_entries"] 的下标）。
     """
     if action == "changeip":
         inst = resolve_instance(context, idx)
@@ -2405,6 +2479,26 @@ async def handle_confirm(action, idx, update, context):
         # 正常情况下 upgrade_client 最后重启机器人，本行可能发不出去；
         # 用户已收到“开始升级”消息，服务恢复后即代表升级完成。
         await _reply(update, "✅ 升级完成，面板与机器人正在重启。")
+        return True
+
+    if action == "delipv6":
+        entries = context.user_data.get("ipv6_entries") or []
+        try:
+            idx_int = int(idx)
+        except (TypeError, ValueError):
+            idx_int = -1
+        if idx_int < 0 or idx_int >= len(entries):
+            await _reply(update, "目标已过期，请重新打开 IPv6 管理。")
+            return True
+        entry = entries[idx_int]
+        try:
+            await run_sync(delete_ipv6, get_cli(context), entry["id"])
+        except Exception as exc:  # noqa: BLE001
+            await _reply(update, fmt_error(exc))
+            return True
+        await _reply(
+            update,
+            f"✅ 已删除 {entry['name']} 的 IPv6 {entry['ip']}。")
         return True
 
     return False
