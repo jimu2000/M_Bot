@@ -1,0 +1,178 @@
+{% extends "base.html" %}
+{# SSH 终端页（阶段 3，Web SSH）。
+   布局参考 docs/screenshots/terminal.jpg：顶部标签栏 + 终端区 + 右上角
+   SFTP/全屏/新建按钮，终端内右上角显示 CPU/MEM/DISK（/api/system 轮询）。#}
+{% block title %}SSH 终端 · R-Bot 开源克隆版{% endblock %}
+
+{% block extra_head %}
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
+<link rel="stylesheet" href="/static/css/terminal.css">
+{% endblock %}
+
+{% block content %}
+<div class="terminal-page" id="terminal-page">
+  <!-- 顶部标签栏：每个会话一个标签，+ 按钮新建连接 -->
+  <div class="tab-bar">
+    <div class="tab-list" id="tab-list"></div>
+    <button class="btn-icon" id="btn-new-tab" title="新建连接">＋</button>
+    <div class="tab-bar-right">
+      <button class="btn-tool" id="btn-favorites" title="收藏命令">收藏</button>
+      <button class="btn-tool" id="btn-batch" title="批量命令执行">批量命令</button>
+      <button class="btn-tool" id="btn-sftp" title="SFTP 文件面板">SFTP</button>
+      <button class="btn-tool" id="btn-fullscreen" title="全屏">全屏</button>
+      <button class="btn-tool" id="btn-reconnect" title="断开并重连当前会话">断开重连</button>
+    </div>
+  </div>
+
+  <!-- 终端区：每个标签一个 xterm 容器（动态创建） -->
+  <div class="terminal-container" id="terminal-container">
+    <div class="terminal-empty" id="terminal-empty">
+      <p>还没有 SSH 会话</p>
+      <p class="terminal-empty-hint">点右上角 ＋ 新建连接，或从主机列表点 ▶ 连接</p>
+      <button class="term-btn-primary" id="btn-empty-new">新建连接</button>
+    </div>
+    <!-- 终端内右上角：CPU/MEM/DISK（调 /api/system 轮询，每 5 秒刷新；
+         注意：/api/system 返回的是面板服务器自身的资源，不是远端主机的） -->
+    <div class="sys-stats hidden" id="sys-stats" title="面板服务器资源占用">
+      <span id="stat-cpu">CPU --</span>
+      <span id="stat-mem">MEM --</span>
+      <span id="stat-disk">DISK --</span>
+    </div>
+  </div>
+
+  <!-- 收藏命令面板（阶段 5 工作包 E）：左侧滑出，默认隐藏（.open 时滑入） -->
+  <div class="fav-panel" id="fav-panel">
+    <div class="sftp-header">
+      <span class="sftp-title">收藏命令</span>
+      <button class="btn-icon sftp-close" id="fav-close" title="关闭面板">×</button>
+    </div>
+    <div class="fav-list" id="fav-list">
+      <div class="sftp-empty">加载中…</div>
+    </div>
+    <div class="fav-add">
+      <input type="text" id="fav-name" placeholder="名称（如：查看磁盘）" maxlength="100">
+      <input type="text" id="fav-command" placeholder="命令（如：df -h）" maxlength="2000">
+      <button class="term-btn-primary" id="fav-save">保存收藏</button>
+      <p class="term-modal-hint">点一条收藏填入当前终端，点 ▶ 直接执行；删除前会二次确认。</p>
+    </div>
+  </div>
+
+  <!-- SFTP 文件面板（阶段 3b）：右侧滑出，默认隐藏（.open 时滑入） -->
+  <div class="sftp-panel" id="sftp-panel">
+    <div class="sftp-header">
+      <span class="sftp-title">SFTP 文件</span>
+      <span class="sftp-session" id="sftp-session"></span>
+      <button class="btn-icon sftp-close" id="sftp-close" title="关闭面板">×</button>
+    </div>
+    <div class="sftp-toolbar">
+      <button class="btn-tool" id="sftp-up" title="上级目录">↑ 上级</button>
+      <button class="btn-tool" id="sftp-refresh" title="刷新列表">刷新</button>
+      <button class="btn-tool" id="sftp-mkdir" title="新建目录">新建目录</button>
+      <button class="btn-tool" id="sftp-upload-btn" title="上传文件">上传</button>
+      <input type="file" id="sftp-file-input" multiple hidden>
+    </div>
+    <div class="sftp-breadcrumb" id="sftp-breadcrumb"></div>
+    <!-- 分块上传进度条（阶段 5 工作包 E）：大文件上传时显示 -->
+    <div class="sftp-upload-progress" id="sftp-upload-progress" hidden>
+      <div class="sftp-upload-name" id="sftp-upload-name"></div>
+      <div class="sftp-upload-bar"><div class="sftp-upload-fill" id="sftp-upload-fill"></div></div>
+      <div class="sftp-upload-row">
+        <span id="sftp-upload-text"></span>
+        <button class="btn-tool" id="sftp-upload-cancel" title="取消上传并删除临时分块">取消</button>
+      </div>
+    </div>
+    <div class="sftp-list" id="sftp-list">
+      <div class="sftp-empty">加载中…</div>
+    </div>
+    <div class="sftp-drop-hint" id="sftp-drop-hint">拖拽文件到此处上传</div>
+    <div class="sftp-status" id="sftp-status"></div>
+  </div>
+</div>
+
+<!-- SFTP 在线编辑弹窗（阶段 3b）：小文本文件双击打开 -->
+<div class="term-modal hidden" id="sftp-editor-modal">
+  <div class="term-modal-box term-modal-box-wide">
+    <div class="term-modal-title"><span id="sftp-editor-title">编辑文件</span>
+      <button class="term-modal-close" data-close="sftp-editor-modal">×</button>
+    </div>
+    <textarea id="sftp-editor-text" rows="20" spellcheck="false"
+              placeholder="文件内容…"></textarea>
+    <div class="term-modal-actions">
+      <button type="button" class="term-btn-secondary" data-close="sftp-editor-modal">取消</button>
+      <button type="button" class="term-btn-primary" id="sftp-editor-save">保存</button>
+    </div>
+    <p class="form-error hidden" id="sftp-editor-error"></p>
+  </div>
+</div>
+
+<!-- 新建连接表单弹窗 -->
+<div class="term-modal hidden" id="connect-modal">
+  <div class="term-modal-box">
+    <div class="term-modal-title">新建 SSH 连接
+      <button class="term-modal-close" data-close="connect-modal">×</button>
+    </div>
+    <form id="connect-form">
+      <label>已保存主机
+        <select id="conn-host-select">
+          <option value="">手动输入…</option>
+        </select>
+      </label>
+      <div class="form-row">
+        <label>主机地址<input id="conn-host" type="text" placeholder="203.0.113.10" required></label>
+        <label class="form-col-small">端口<input id="conn-port" type="number" value="22" min="1" max="65535"></label>
+      </div>
+      <label>用户名<input id="conn-username" type="text" value="root" required></label>
+      <label>密码<input id="conn-password" type="password" placeholder="密码或密钥二选一" autocomplete="off"></label>
+      <label>密钥路径（服务端上的私钥文件）<input id="conn-key-path" type="text" placeholder="/root/.ssh/id_ed25519"></label>
+      <div class="term-modal-actions">
+        <button type="button" class="term-btn-secondary" data-close="connect-modal">取消</button>
+        <button type="submit" class="term-btn-primary">连接</button>
+      </div>
+      <p class="form-error hidden" id="connect-error"></p>
+    </form>
+  </div>
+</div>
+
+<!-- 批量命令执行弹窗（阶段 5 工作包 E） -->
+<div class="term-modal hidden" id="batch-modal">
+  <div class="term-modal-box term-modal-box-wide">
+    <div class="term-modal-title">批量命令执行
+      <button class="term-modal-close" data-close="batch-modal">×</button>
+    </div>
+    <p class="term-modal-hint">勾选多台已保存主机，同一条命令逐台执行（密钥认证主机才能执行；危险命令会被拒绝）。执行前会二次确认。</p>
+    <div id="batch-host-list" class="batch-host-list">
+      <div class="sftp-empty">加载主机中…</div>
+    </div>
+    <label>命令
+      <input id="batch-command" type="text" placeholder="例如：uptime" autocomplete="off">
+    </label>
+    <div class="term-modal-actions">
+      <button type="button" class="term-btn-secondary" data-close="batch-modal">关闭</button>
+      <button type="button" class="term-btn-primary" id="batch-run">执行</button>
+      <button type="button" class="term-btn-secondary" id="batch-cancel" hidden>取消未执行的</button>
+    </div>
+    <div id="batch-results" class="batch-results"></div>
+  </div>
+</div>
+
+<!-- 多行粘贴保护确认弹窗 -->
+<div class="term-modal hidden" id="paste-modal">
+  <div class="term-modal-box term-modal-box-small">
+    <div class="term-modal-title">粘贴确认</div>
+    <p id="paste-modal-text"></p>
+    <p class="term-modal-hint">取消则只粘贴第一行文本，不执行。</p>
+    <div class="term-modal-actions">
+      <button type="button" class="term-btn-secondary" id="paste-cancel">只粘第一行</button>
+      <button type="button" class="term-btn-primary" id="paste-confirm">确认执行</button>
+    </div>
+  </div>
+</div>
+
+<div class="term-toast hidden" id="toast"></div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+<script src="/static/js/terminal.js"></script>
+{% endblock %}

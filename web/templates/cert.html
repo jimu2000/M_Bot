@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{# 证书管理页：ACME 证书状态与续期（阶段 5 工作包 E）。
+   数据来自 GET /api/cert/status，续期走 POST /api/cert/renew（异步任务）。 #}
+{% block title %}证书管理 · R-Bot 开源克隆版{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1>证书管理</h1>
+  <div class="spacer"></div>
+  <button type="button" class="btn" id="btn-refresh-cert">↻ 刷新</button>
+</div>
+
+<p style="color: var(--text-muted); margin-top: -8px;">
+  面板服务器的 ACME 证书状态（acme.sh 管理）；续期会跑 <span class="mono">acme.sh --renew</span>，执行前需二次确认。
+</p>
+
+<div id="cert-loading" class="card" style="text-align: center; color: var(--text-muted);">
+  加载中…
+</div>
+
+<div id="cert-error" class="card" hidden>
+  <p id="cert-error-text" style="color: var(--danger);"></p>
+</div>
+
+<div id="cert-cards" hidden>
+  <div class="card">
+    <h2>证书状态</h2>
+    <table class="data">
+      <tbody>
+        <tr><td style="width: 140px;">acme.sh</td><td id="cert-acme">—</td></tr>
+        <tr><td>域名</td><td id="cert-domain" class="mono">—</td></tr>
+        <tr><td>颁发者</td><td id="cert-issuer">—</td></tr>
+        <tr><td>生效时间</td><td id="cert-not-before">—</td></tr>
+        <tr><td>过期时间</td><td id="cert-not-after">—</td></tr>
+        <tr><td>剩余时间</td><td id="cert-remaining">—</td></tr>
+        <tr><td>状态</td><td id="cert-status">—</td></tr>
+      </tbody>
+    </table>
+    <div style="margin-top: 16px;">
+      <button type="button" class="btn btn-primary" id="btn-renew-cert">续期证书</button>
+      <span id="cert-renew-hint" style="color: var(--text-muted); margin-left: 8px;"></span>
+    </div>
+  </div>
+
+  <div class="card" id="cert-renew-card" hidden>
+    <h2>续期任务</h2>
+    <p id="cert-renew-status" style="color: var(--text-muted);">—</p>
+    <pre id="cert-renew-output" style="white-space: pre-wrap; word-break: break-all; max-height: 300px; overflow-y: auto;"></pre>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="/static/js/cert.js"></script>
+{% endblock %}

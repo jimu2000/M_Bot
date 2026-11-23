@@ -1,0 +1,150 @@
+{% extends "base.html" %}
+{# 对象存储：Bucket 列表 + 对象列表（点 Bucket 进入）+ 上传 #}
+{% block title %}对象存储 · R-Bot 开源克隆版{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1>对象存储</h1>
+  <div class="spacer"></div>
+  <button type="button" class="btn" id="btn-refresh-buckets">↻ 刷新</button>
+  <button type="button" class="btn btn-primary" id="btn-new-bucket">+ 新建 Bucket</button>
+</div>
+
+{# Bucket 列表视图 #}
+<div id="buckets-view">
+  <div class="card">
+    <div class="table-wrap">
+      <table class="data" id="bucket-table">
+        <thead>
+          <tr>
+            <th>Bucket 名</th>
+            <th>创建时间</th>
+            <th>公开访问</th>
+            <th>存储层</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="bucket-tbody">
+          <tr><td colspan="5" style="text-align: center; color: var(--text-muted);">加载中…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="empty-state" id="bucket-empty" hidden>
+    <div class="big">🪣</div>
+    <p>没有 Bucket</p>
+    <p>点右上角「新建 Bucket」创建一个。</p>
+  </div>
+</div>
+
+{# 对象列表视图（点 Bucket 进入） #}
+<div id="objects-view" hidden>
+  <p>
+    <button type="button" class="btn btn-sm" id="btn-back-buckets">◀ 返回 Bucket 列表</button>
+    <span style="margin-left: 8px;">Bucket：<b id="objects-bucket-name"></b></span>
+  </p>
+  <div class="card">
+    <div class="table-wrap">
+      <table class="data" id="object-table">
+        <thead>
+          <tr>
+            <th>对象名</th>
+            <th>大小</th>
+            <th>创建时间</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="object-tbody">
+          <tr><td colspan="4" style="text-align: center; color: var(--text-muted);">加载中…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <h2 style="font-size: 16px; margin: 26px 0 12px;">上传对象</h2>
+  <div class="card">
+    <form id="upload-form" style="padding: 16px;">
+      <div class="form-group">
+        <label for="upload-file">选择文件</label>
+        <input type="file" id="upload-file" required>
+      </div>
+      <div class="form-group">
+        <label for="upload-name">对象名（可选，默认用文件名）</label>
+        <input type="text" id="upload-name" placeholder="例如 backup/2026-11-23.tar.gz">
+        <p class="hint">同名对象会被覆盖；对象名里可以用斜杠当目录分隔。</p>
+      </div>
+      <button type="submit" class="btn btn-primary" id="btn-upload">上传</button>
+    </form>
+  </div>
+</div>
+
+{# 新建 Bucket 弹窗 #}
+<div class="modal-overlay" id="create-bucket-modal" hidden>
+  <div class="modal-box">
+    <div class="modal-head">
+      <span>新建 Bucket</span>
+      <button type="button" class="modal-close" data-close-modal="create-bucket-modal" aria-label="关闭">×</button>
+    </div>
+    <form id="create-bucket-form">
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="bucket-name">Bucket 名</label>
+          <input type="text" id="bucket-name" required pattern="[a-z0-9][a-z0-9.\-]{0,62}" title="1-63 字符，小写字母/数字/点/横线，以字母或数字开头">
+          <p class="hint">1-63 字符，小写字母/数字/点/横线，以字母或数字开头。新建的 Bucket 默认私有访问、标准存储层。</p>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button type="button" class="btn" data-close-modal="create-bucket-modal">取消</button>
+        <button type="submit" class="btn btn-primary">确认创建</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+{# 删除 Bucket 二次确认弹窗 #}
+<div class="modal-overlay" id="delete-bucket-modal" hidden>
+  <div class="modal-box">
+    <div class="modal-head">
+      <span>删除 Bucket</span>
+      <button type="button" class="modal-close" data-close-modal="delete-bucket-modal" aria-label="关闭">×</button>
+    </div>
+    <div class="modal-body">
+      <p>确定要删除 Bucket <b id="delete-bucket-name"></b> 吗？</p>
+      <p class="danger-text">此操作不可撤销，Bucket 删除后无法恢复。</p>
+      <div class="form-group">
+        <label>
+          <input type="checkbox" id="delete-bucket-empty">
+          同时删除 Bucket 内的全部对象（Bucket 非空时必须勾选，否则删除会失败）
+        </label>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button type="button" class="btn" data-close-modal="delete-bucket-modal">取消</button>
+      <button type="button" class="btn btn-danger" id="btn-confirm-delete-bucket">确认删除</button>
+    </div>
+  </div>
+</div>
+
+{# 删除对象二次确认弹窗 #}
+<div class="modal-overlay" id="delete-object-modal" hidden>
+  <div class="modal-box">
+    <div class="modal-head">
+      <span>删除对象</span>
+      <button type="button" class="modal-close" data-close-modal="delete-object-modal" aria-label="关闭">×</button>
+    </div>
+    <div class="modal-body">
+      <p>确定要删除对象 <b id="delete-object-name"></b> 吗？</p>
+      <p class="danger-text">此操作不可撤销，对象删除后无法恢复。</p>
+    </div>
+    <div class="modal-foot">
+      <button type="button" class="btn" data-close-modal="delete-object-modal">取消</button>
+      <button type="button" class="btn btn-danger" id="btn-confirm-delete-object">确认删除</button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="/static/js/objectstorage.js"></script>
+{% endblock %}

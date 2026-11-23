@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{# Email Delivery：一键搭建发件人 + 生成 SMTP 凭据 #}
+{% block title %}Email Delivery · R-Bot 开源克隆版{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1>Email Delivery</h1>
+  <div class="spacer"></div>
+  <button type="button" class="btn" id="btn-refresh-email">↻ 刷新</button>
+</div>
+
+<p style="color: var(--text-muted); margin-top: -8px;">
+  两步搭建 OCI 邮件发送：先创建发件人（需点击验证邮件里的链接），再生成 SMTP 凭据。
+</p>
+
+<h2 style="font-size: 16px; margin: 20px 0 12px;">发件人</h2>
+<div class="card">
+  <div class="table-wrap">
+    <table class="data" id="sender-table">
+      <thead>
+        <tr>
+          <th>邮箱地址</th>
+          <th>状态</th>
+          <th>创建时间</th>
+        </tr>
+      </thead>
+      <tbody id="sender-tbody">
+        <tr><td colspan="3" style="text-align: center; color: var(--text-muted);">加载中…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card" style="margin-top: 16px;">
+  <form id="create-sender-form" style="padding: 16px;">
+    <div class="form-group">
+      <label for="sender-email">新建发件人邮箱地址</label>
+      <input type="email" id="sender-email" placeholder="例如 noreply@example.com" required>
+      <p class="hint">创建后 OCI 会向该邮箱发送验证邮件，必须点击链接验证后发件人才可用。</p>
+    </div>
+    <button type="submit" class="btn btn-primary">创建发件人</button>
+  </form>
+</div>
+
+<h2 style="font-size: 16px; margin: 26px 0 12px;">SMTP 凭据</h2>
+<div class="card">
+  <form id="create-smtp-form" style="padding: 16px;">
+    <div class="form-group">
+      <label for="smtp-user">所属 IAM 用户</label>
+      <select id="smtp-user" required>
+        <option value="">加载中…</option>
+      </select>
+      <p class="hint">SMTP 凭据挂在某个 IAM 用户名下；发邮件时用这里生成的用户名和密码登录 smtp 服务器。</p>
+    </div>
+    <div class="form-group">
+      <label for="smtp-description">描述</label>
+      <input type="text" id="smtp-description" value="rbot-clone" required>
+    </div>
+    <button type="submit" class="btn btn-primary">生成 SMTP 凭据</button>
+  </form>
+</div>
+
+{# SMTP 凭据只显示一次的结果区 #}
+<div class="card" id="smtp-result" hidden style="margin-top: 16px; border-color: var(--warning);">
+  <div style="padding: 16px;">
+    <p class="danger-text">⚠️ 请立即保存，关闭后无法再次查看！</p>
+    <p style="color: var(--text-muted);">SMTP 凭据的密码只在创建时显示这一次，OCI 不会再次提供；后端也不会保存。丢失后只能删除旧凭据、重新生成。</p>
+    <div class="form-group">
+      <label for="smtp-username-result">SMTP 用户名</label>
+      <input type="text" id="smtp-username-result" readonly>
+    </div>
+    <div class="form-group">
+      <label for="smtp-password-result">SMTP 密码</label>
+      <input type="text" id="smtp-password-result" readonly>
+    </div>
+    <button type="button" class="btn" id="btn-copy-smtp">复制用户名与密码</button>
+    <button type="button" class="btn btn-primary" id="btn-close-smtp">我已保存，关闭</button>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="/static/js/email.js"></script>
+{% endblock %}

@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{# 任务管理：抢机 / 创建等后台任务列表，点行展开看日志 #}
+{% block title %}任务管理 · R-Bot 开源克隆版{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1>任务管理</h1>
+  <div class="spacer"></div>
+  <button type="button" class="btn" id="btn-refresh-tasks">↻ 刷新</button>
+</div>
+
+<p style="color: var(--text-muted); margin-top: -8px;">
+  点击任务行可展开查看完整日志；运行中的任务每 5 秒自动刷新进度。
+</p>
+
+<div class="card">
+  <div class="table-wrap">
+    <table class="data" id="task-table">
+      <thead>
+        <tr>
+          <th>类型</th>
+          <th>状态</th>
+          <th>开始时间</th>
+          <th>进度消息</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody id="task-tbody">
+        <tr><td colspan="5" style="text-align: center; color: var(--text-muted);">加载中…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="empty-state" id="task-empty" hidden>
+  <div class="big">📋</div>
+  <p>暂无任务</p>
+  <p>在「创建实例」提交后，抢机进度会显示在这里。</p>
+  <a class="btn btn-primary" href="/create">创建实例</a>
+</div>
+
+{# 抢机计划：定时抢机（APScheduler cron 表达式） #}
+<h2 style="font-size: 16px; margin: 26px 0 12px;">抢机计划</h2>
+<p style="color: var(--text-muted); margin-top: -8px;">
+  按 cron 表达式定时启动抢机任务；计划触发时复用创建实例的抢机逻辑。
+  触发时若同一计划已有抢机任务在跑，本次触发会跳过。
+</p>
+<div class="card">
+  <div class="table-wrap">
+    <table class="data" id="plan-table">
+      <thead>
+        <tr>
+          <th>计划</th>
+          <th>定时（cron）</th>
+          <th>形状 / 配置</th>
+          <th>状态</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody id="plan-tbody">
+        <tr><td colspan="5" style="text-align: center; color: var(--text-muted);">加载中…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card" style="margin-top: 16px;">
+  <form id="add-plan-form" style="padding: 16px;">
+    <div class="form-group">
+      <label for="plan-cron">定时（cron 表达式，标准 5 段）</label>
+      <input type="text" id="plan-cron" placeholder="例如 0 2 * * *（每天 2:00）" required>
+      <p class="hint">格式：分 时 日 月 周，如 0 2 * * * 表示每天 2:00，*/30 * * * * 表示每 30 分钟。</p>
+    </div>
+    <div class="form-group">
+      <label for="plan-shape">形状</label>
+      <select id="plan-shape">
+        <option value="VM.Standard.E2.1.Micro">E2.1.Micro（1 核 / 1GB，固定规格）</option>
+        <option value="VM.Standard.A1.Flex" selected>A1.Flex</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label for="plan-ocpus">OCPU 数</label>
+      <input type="number" id="plan-ocpus" min="1" max="4" step="1" value="1" required>
+    </div>
+    <div class="form-group">
+      <label for="plan-memory">内存（GB）</label>
+      <input type="number" id="plan-memory" min="1" max="24" step="1" value="6" required>
+      <p class="hint">免费额度内：A1 最多 4 核 / 24GB；E2 是固定规格，填 1 核 / 1GB 即可。</p>
+    </div>
+    <button type="submit" class="btn btn-primary">添加计划</button>
+  </form>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="/static/js/tasks.js"></script>
+{% endblock %}

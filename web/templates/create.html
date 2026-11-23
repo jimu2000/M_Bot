@@ -1,0 +1,164 @@
+{% extends "base.html" %}
+{# 创建实例：四卡表单 + 快捷开机（对应原版 cloud-create.jpg）
+   镜像 OCID 全部是占位符，真实值由后端按区域/架构解析。 #}
+{% block title %}创建实例 · R-Bot 开源克隆版{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1>创建实例</h1>
+</div>
+
+<div class="alert alert-error" id="create-error" hidden></div>
+
+<form id="create-form" autocomplete="off">
+  <div class="create-grid">
+    {# ---- 卡 1：基础配置 ---- #}
+    <section class="card">
+      <h2 class="card-title">🖥️ 基础配置</h2>
+      <div class="card-body">
+        <div class="form-group">
+          <label for="display-name">实例名称</label>
+          <input type="text" id="display-name" placeholder="留空则自动生成">
+        </div>
+        <div class="form-group">
+          <label for="shape">Shape</label>
+          <select id="shape">
+            <option value="VM.Standard.A1.Flex" selected>VM.Standard.A1.Flex (ARM，1-80 OCPU，1-512 GB)</option>
+            <option value="VM.Standard.E2.1.Micro">VM.Standard.E2.1.Micro (AMD，固定 1 OCPU / 1 GB)</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="ocpus">OCPU (1-80)</label>
+            <input type="number" id="ocpus" value="2" min="1" max="80" step="1" required>
+          </div>
+          <div class="form-group">
+            <label for="memory-gb">内存 (GB) (1-512)</label>
+            <input type="number" id="memory-gb" value="12" min="1" max="512" step="1" required>
+          </div>
+        </div>
+        <p class="hint" id="e2-hint" hidden style="color: var(--text-muted); font-size: 12px;">
+          E2.1.Micro 是固定规格：1 OCPU / 1 GB 内存，OCPU 与内存不可修改。
+        </p>
+        <p class="hint" style="color: var(--text-muted); font-size: 12px;">
+          A1 按所填 OCPU / 内存创建（--shape-config）；E2 是固定规格，OCPU / 内存仅用于配额预检。
+        </p>
+      </div>
+    </section>
+
+    {# ---- 卡 2：系统配置 ---- #}
+    <section class="card">
+      <h2 class="card-title">⚙️ 系统配置</h2>
+      <div class="card-body">
+        <div class="form-group">
+          <label for="image-id">镜像</label>
+          <select id="image-id">
+            <option value="ocid1.image.oc1..xxxxxxxx-aarch64" data-arch="aarch64" selected>
+              Canonical-Ubuntu-24.04-aarch64（ARM）
+            </option>
+            <option value="ocid1.image.oc1..xxxxxxxx-x86" data-arch="x86_64">
+              Canonical-Ubuntu-24.04-x86_64（AMD）
+            </option>
+          </select>
+          <p class="hint">后端按所选架构，从 web/config.py 的 IMAGE_IDS 查真实镜像 OCID（部署时须先填真实值）。</p>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="disk-gb">硬盘大小 (GB)</label>
+            <input type="number" id="disk-gb" value="50" min="47" max="200" step="1" required>
+          </div>
+          <div class="form-group">
+            <label for="count">数量</label>
+            <input type="number" id="count" value="1" disabled>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    {# ---- 卡 3：网络与安全 ---- #}
+    <section class="card">
+      <h2 class="card-title">🛡️ 网络与安全</h2>
+      <div class="card-body">
+        <div class="form-row" style="margin-bottom: 14px;">
+          <label class="switch">
+            <input type="checkbox" id="public-ip" checked>
+            <span class="switch-track"></span> 公网 IP
+          </label>
+          <label class="switch">
+            <input type="checkbox" id="ipv6">
+            <span class="switch-track"></span> IPv6
+          </label>
+        </div>
+        <div class="form-group">
+          <label for="availability-domain">可用域（Availability Domain）</label>
+          <input type="text" id="availability-domain" placeholder="例如：XXXX:AP-SINGAPORE-1-AD-1" required>
+        </div>
+        <div class="form-group">
+          <label for="subnet-id">子网 OCID</label>
+          <input type="text" id="subnet-id" placeholder="ocid1.subnet.oc1..xxxxxxxx" required>
+        </div>
+        <div class="form-group">
+          <label for="ssh-keys-file">SSH 公钥文件路径（面板服务器上的路径）</label>
+          <input type="text" id="ssh-keys-file" placeholder="例如：/root/.ssh/id_ed25519.pub" required>
+          <p class="hint">后端直接把该文件传给 OCI CLI（--ssh-authorized-keys-file），请填服务器上已存在的公钥文件路径，不要粘贴公钥内容。</p>
+        </div>
+      </div>
+    </section>
+
+    {# ---- 卡 4：高级选项 ---- #}
+    <section class="card">
+      <h2 class="card-title">⌨️ 高级选项</h2>
+      <div class="card-body">
+        <div class="form-row">
+          <div class="form-group">
+            <label for="min-delay">最小延迟（秒）</label>
+            <input type="number" id="min-delay" value="20" min="0" step="1">
+          </div>
+          <div class="form-group">
+            <label for="max-delay">最大延迟（秒）</label>
+            <input type="number" id="max-delay" value="50" min="0" step="1">
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="target-cpu">目标 CPU（可选）</label>
+          <input type="text" id="target-cpu" placeholder="例如：7J13，留空表示不筛选">
+          <p class="hint">抢到实例后会先核对 CPU 型号，不符合的自动释放并继续抢。</p>
+        </div>
+        <div class="form-group">
+          <label for="startup-script">启动脚本</label>
+          <textarea id="startup-script" rows="4" placeholder="可选：实例首次启动时执行的 cloud-init 脚本（bash）"></textarea>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  {# ---- 快捷开机：点一张卡片填满表单 ---- #}
+  <section class="card">
+    <h2 class="card-title">⚡ 快捷开机</h2>
+    <div class="card-body">
+      <div class="preset-grid" id="preset-grid">
+        <div class="preset-card" data-shape="VM.Standard.E2.1.Micro" data-ocpus="1" data-memory="1" data-arch="x86_64" data-disk="50" tabindex="0" role="button">
+          <b>AMD 微型</b>
+          <span>AMD，1 OCPU，1 GB，Ubuntu</span>
+        </div>
+        <div class="preset-card" data-shape="VM.Standard.A1.Flex" data-ocpus="2" data-memory="12" data-arch="aarch64" data-disk="50" tabindex="0" role="button">
+          <b>ARM A1 2C/12G</b>
+          <span>ARM，2 OCPU，12 GB，Ubuntu</span>
+        </div>
+        <div class="preset-card" data-shape="VM.Standard.A1.Flex" data-ocpus="4" data-memory="24" data-arch="aarch64" data-disk="50" tabindex="0" role="button">
+          <b>ARM A1 4C/24G</b>
+          <span>ARM，4 OCPU，24 GB，Ubuntu</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="submit-row">
+    <button type="submit" class="btn btn-primary" id="btn-create">开始创建</button>
+  </div>
+</form>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="/static/js/create.js"></script>
+{% endblock %}

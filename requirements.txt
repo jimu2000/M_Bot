@@ -1,0 +1,29 @@
+# R-Bot 克隆依赖（阶段 1 + 阶段 2 + 阶段 3）
+# 安装：pip install -r requirements.txt
+# 注意：OCI 调用走官方 OCI CLI（subprocess），不在这里依赖 oci SDK。
+
+# Telegram 机器人（阶段 2，python-telegram-bot v20+，async API）
+# job-queue extra 提供 APScheduler，用于监控/每日报告定时任务。
+python-telegram-bot[job-queue]>=22.0
+
+# Web 面板（阶段 3，FastAPI + WebSocket + Paramiko + xterm.js 前端）
+# 已验证版本：fastapi 0.165、paramiko 5.1、jinja2 3.1.6、websockets 17.4
+fastapi>=0.115
+uvicorn>=0.30
+paramiko>=3.0
+jinja2>=3.1
+websockets>=12.0
+python-multipart>=0.0.9
+httpx>=0.27  # fastapi.testclient 需要
+
+# 抢机计划 cron 调度（阶段 5 工作包 D，web/tasks.py 的 APScheduler 调度器；
+# python-telegram-bot[job-queue] 已自带 APScheduler，这里显式声明，
+# 保证只装 Web 面板依赖时调度器也能用）
+apscheduler>=3.10
+
+# 图形验证码（阶段 5 工作包 E，web/captcha.py）：Pillow 可用时画 PNG，
+# 未安装时自动用 SVG 字符画兜底，所以是可选依赖，不装也不影响登录。
+# cryptography 用于解析 ACME 证书（web/routes/cert.py），未安装时
+# 自动用 openssl 命令行兜底，同样是可选依赖。
+Pillow>=10.0
+cryptography>=42.0

@@ -1,0 +1,327 @@
+/* R-Bot 开源克隆版 · 通用工具
+ * api() / toast() / copyText() / 主题切换 / 资源栏轮询 / 弹窗工具
+ * 各页面脚本都依赖这里的 RBot 全局对象。 */
+(function () {
+  "use strict";
+
+  /* ---------- API 封装 ---------- */
+  // api("/api/hosts") -> 解析后的 JSON；失败抛 Error（带 status 与 data）
+  // 401 默认跳登录页；传 { noRedirect: true } 可自行处理（如登录页）。
+  async function api(url, options) {
+    options = options || {};
+    var res = await fetch(url, {
+      method: options.method || "GET",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      body: options.body ? JSON.stringify(options.body) : undefined,
+    });
+    var data = null;
+    try { data = await res.json(); } catch (e) { /* 非 JSON 响应时 data 保持 null */ }
+    if (res.status === 401 && !options.noRedirect) {
+      window.location.href = "/login";
+      throw new Error("未登录");
+    }
+    if (!res.ok || (data && data.ok === false)) {
+      var err = new Error(
+        (data && (data.detail || data.message || data.error)) ||
+        ("请求失败（HTTP " + res.status + "）")
+      );
+      err.status = res.status;
+      err.data = data;
+      throw err;
+    }
+    return data;
+  }
+
+  /* ---------- Toast 提示 ---------- */
+  function toast(message, type) {
+    type = type || "info";
+    var container = document.getElementById("toast-container");
+    if (!container) return;
+    var el = document.createElement("div");
+    el.className = "toast " + type;
+    el.textContent = message;
+    container.appendChild(el);
+    setTimeout(function () { el.remove(); }, 4000);
+  }
+
+  /* ---------- 一键复制 ---------- */
+  async function copyText(text, label) {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch (e) {
+      // clipboard API 不可用时（如非安全上下文）退回传统方式
+      var ta = document.createElement("textarea");
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      ta.remove();
+    }
+    toast((label || "内容") + "已复制", "success");
+  }
+
+  /* ---------- HTML 转义（渲染后端数据时防 XSS） ---------- */
+  function escapeHtml(value) {
+    return String(value == null ? "" : value)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  /* ---------- 时间格式化 ---------- */
+  // ISO 时间 -> "2天前" / "3小时前" / "刚刚"；无效值返回 "—"
+  function timeAgo(iso) {
+    if (!iso) return "—";
+    var t = new Date(iso).getTime();
+    if (isNaN(t)) return "—";
+    var diff = Date.now() - t;
+    if (diff < 0) diff = 0;
+    var min = Math.floor(diff / 60000);
+    if (min < 1) return "刚刚";
+    if (min < 60) return min + "分钟前";
+    var hour = Math.floor(min / 60);
+    if (hour < 24) return hour + "小时前";
+    var day = Math.floor(hour / 24);
+    if (day < 30) return day + "天前";
+    return new Date(t).toLocaleDateString("zh-CN");
+  }
+
+  // 时间 -> 本地 "2026/11/23 02:30:00"
+  // 接受 ISO 字符串，也接受 Unix 时间戳（秒或毫秒，后端任务用秒级时间戳）
+  function formatTime(value) {
+    if (value == null || value === "") return "—";
+    var d;
+    if (typeof value === "number") {
+      d = new Date(value < 1e12 ? value * 1000 : value);
+    } else {
+      d = new Date(value);
+    }
+    return isNaN(d.getTime()) ? String(value) : d.toLocaleString("zh-CN");
+  }
+
+  // 速率：kbps -> 可读字符串
+  function formatRate(kbps) {
+    if (kbps == null || isNaN(kbps)) return "--";
+    if (kbps >= 1024) return (kbps / 1024).toFixed(1) + " MB/s";
+    return Math.round(kbps) + " KB/s";
+  }
+
+  // 速率：字节/秒 -> 可读字符串（后端 /api/system 返回字节/秒）
+  function formatBytesRate(bytesPerSec) {
+    if (bytesPerSec == null || isNaN(bytesPerSec)) return "--";
+    if (bytesPerSec >= 1024 * 1024) return (bytesPerSec / (1024 * 1024)).toFixed(1) + " MB/s";
+    if (bytesPerSec >= 1024) return (bytesPerSec / 1024).toFixed(1) + " KB/s";
+    return Math.round(bytesPerSec) + " B/s";
+  }
+
+  /* ---------- 弹窗工具 ---------- */
+  function openModal(id) {
+    var el = document.getElementById(id);
+    if (el) el.hidden = false;
+  }
+  function closeModal(id) {
+    var el = document.getElementById(id);
+    if (el) el.hidden = true;
+  }
+  // 通用确认弹窗（动态生成，返回 Promise<boolean>）
+  function confirmDialog(title, bodyHtml, confirmText, danger) {
+    return new Promise(function (resolve) {
+      var root = document.getElementById("modal-root");
+      var overlay = document.createElement("div");
+      overlay.className = "modal-overlay";
+      overlay.innerHTML =
+        '<div class="modal-box">' +
+          '<div class="modal-head"><span>' + escapeHtml(title) + '</span>' +
+          '<button type="button" class="modal-close" aria-label="关闭">×</button></div>' +
+          '<div class="modal-body">' + bodyHtml + "</div>" +
+          '<div class="modal-foot">' +
+            '<button type="button" class="btn" data-act="cancel">取消</button>' +
+            '<button type="button" class="btn ' + (danger ? "btn-danger" : "btn-primary") + '" data-act="ok">' +
+              escapeHtml(confirmText || "确认") + "</button>" +
+          "</div></div>";
+      root.appendChild(overlay);
+      function done(value) { overlay.remove(); resolve(value); }
+      overlay.querySelector('[data-act="cancel"]').addEventListener("click", function () { done(false); });
+      overlay.querySelector('[data-act="ok"]').addEventListener("click", function () { done(true); });
+      overlay.querySelector(".modal-close").addEventListener("click", function () { done(false); });
+      overlay.addEventListener("click", function (e) { if (e.target === overlay) done(false); });
+    });
+  }
+
+  /* ---------- 主题切换 ---------- */
+  function applyTheme(theme, mode) {
+    var root = document.documentElement;
+    root.setAttribute("data-theme", theme);
+    // 星夜固定暗色
+    root.setAttribute("data-mode", theme === "starry" ? "dark" : mode);
+    try {
+      localStorage.setItem("rbot-theme", theme);
+      localStorage.setItem("rbot-mode", mode);
+    } catch (e) { /* 忽略存储失败 */ }
+    var sel = document.getElementById("theme-select");
+    if (sel) sel.value = theme;
+    updateModeIcon();
+  }
+  function currentTheme() {
+    return document.documentElement.getAttribute("data-theme") || "classic";
+  }
+  function currentMode() {
+    return document.documentElement.getAttribute("data-mode") || "light";
+  }
+  function updateModeIcon() {
+    var dark = currentMode() === "dark";
+    var moon = document.getElementById("icon-moon");
+    var sun = document.getElementById("icon-sun");
+    if (moon) moon.hidden = dark;
+    if (sun) sun.hidden = !dark;
+  }
+
+  /* ---------- 资源栏轮询（每 5 秒 GET /api/system） ---------- */
+  function setGauge(id, textId, pct) {
+    var gauge = document.getElementById(id);
+    var text = document.getElementById(textId);
+    if (!gauge || !text) return;
+    var p = Math.max(0, Math.min(100, Math.round(pct || 0)));
+    gauge.style.setProperty("--p", p);
+    gauge.classList.toggle("warn", p >= 70 && p < 90);
+    gauge.classList.toggle("danger", p >= 90);
+    text.textContent = p + "%";
+  }
+  async function refreshSystem() {
+    try {
+      var data = await api("/api/system");
+      // 兼容两种返回格式：
+      // 嵌套（后端实际）：{cpu:{percent}, memory:{percent}, disk:{percent},
+      //                   network:{rx_bytes_per_sec, tx_bytes_per_sec}}
+      // 扁平（契约草案）：{cpu_percent, mem_percent, disk_percent,
+      //                   net_down_kbps, net_up_kbps}
+      var cpu = data.cpu_percent != null ? data.cpu_percent : (data.cpu && data.cpu.percent);
+      var mem = data.mem_percent != null ? data.mem_percent : (data.memory && data.memory.percent);
+      var disk = data.disk_percent != null ? data.disk_percent : (data.disk && data.disk.percent);
+      setGauge("gauge-cpu", "gauge-cpu-text", cpu);
+      setGauge("gauge-mem", "gauge-mem-text", mem);
+      setGauge("gauge-disk", "gauge-disk-text", disk);
+      var down = document.getElementById("net-down");
+      var up = document.getElementById("net-up");
+      if (data.network) {
+        if (down) down.textContent = formatBytesRate(data.network.rx_bytes_per_sec);
+        if (up) up.textContent = formatBytesRate(data.network.tx_bytes_per_sec);
+      } else {
+        if (down) down.textContent = formatRate(data.net_down_kbps);
+        if (up) up.textContent = formatRate(data.net_up_kbps);
+      }
+    } catch (e) {
+      // 资源栏失败不打扰用户，静默等待下次轮询
+    }
+  }
+
+  // 侧边栏高亮兜底：服务端没传 current_page 时按当前路径高亮
+  function highlightSidebar() {
+    var sidebar = document.querySelector(".sidebar");
+    if (!sidebar) return;
+    if (sidebar.querySelector("a.active")) return; // 服务端已高亮，不动
+    var path = window.location.pathname.replace(/\/$/, "") || "/overview";
+    var page = path.replace(/^\//, "");
+    if (page === "") page = "overview";
+    var link = sidebar.querySelector('[data-page="' + page + '"]');
+    if (link) link.classList.add("active");
+  }
+
+  // 用户名兜底：模板没传 username 时调 /api/auth/me 补填
+  async function fillUsername() {
+    var el = document.getElementById("res-username");
+    if (!el || el.textContent.trim()) return;
+    try {
+      var data = await api("/api/auth/me");
+      if (data.username) el.textContent = data.username;
+    } catch (e) { /* 未登录等情况静默跳过 */ }
+  }
+
+  /* ---------- 退出登录 ---------- */
+  async function logout() {
+    try { await api("/api/auth/logout", { method: "POST" }); } catch (e) { /* 忽略登出失败 */ }
+    window.location.href = "/login";
+  }
+
+  /* ---------- 初始化 ---------- */
+  document.addEventListener("DOMContentLoaded", function () {
+    // 主题下拉与本地存储同步
+    var themeSel = document.getElementById("theme-select");
+    if (themeSel) {
+      themeSel.value = currentTheme();
+      themeSel.addEventListener("change", function () {
+        applyTheme(themeSel.value, currentMode());
+      });
+    }
+    var modeBtn = document.getElementById("mode-toggle");
+    if (modeBtn) {
+      updateModeIcon();
+      modeBtn.addEventListener("click", function () {
+        if (currentTheme() === "starry") {
+          toast("星夜主题固定为暗色", "info");
+          return;
+        }
+        applyTheme(currentTheme(), currentMode() === "dark" ? "light" : "dark");
+      });
+    }
+    var settingsBtn = document.getElementById("settings-btn");
+    if (settingsBtn) {
+      settingsBtn.addEventListener("click", function () {
+        // 改密码弹窗在 base.html 里（settings.js 处理提交）；
+        // 登录页等没有该弹窗的页面保持原提示。
+        var modal = document.getElementById("change-password-modal");
+        if (modal) {
+          openModal("change-password-modal");
+        } else {
+          toast("设置页面暂未实现", "info");
+        }
+      });
+    }
+    var logoutBtn = document.getElementById("logout-btn");
+    if (logoutBtn) logoutBtn.addEventListener("click", logout);
+
+    // 弹窗关闭：data-close-modal 属性 + 点遮罩关闭
+    document.querySelectorAll("[data-close-modal]").forEach(function (btn) {
+      btn.addEventListener("click", function () { closeModal(btn.getAttribute("data-close-modal")); });
+    });
+    document.querySelectorAll(".modal-overlay").forEach(function (overlay) {
+      overlay.addEventListener("click", function (e) {
+        if (e.target === overlay) overlay.hidden = true;
+      });
+    });
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape") {
+        document.querySelectorAll(".modal-overlay").forEach(function (o) { o.hidden = true; });
+      }
+    });
+
+    // 侧边栏高亮兜底 + 用户名补填
+    highlightSidebar();
+    fillUsername();
+
+    // 资源栏：立即刷新一次，再每 5 秒轮询（登录页没有资源栏，跳过）
+    if (document.getElementById("gauge-cpu")) {
+      refreshSystem();
+      setInterval(refreshSystem, 5000);
+    }
+  });
+
+  /* 暴露给各页面脚本 */
+  window.RBot = {
+    api: api,
+    toast: toast,
+    copyText: copyText,
+    escapeHtml: escapeHtml,
+    timeAgo: timeAgo,
+    formatTime: formatTime,
+    formatRate: formatRate,
+    formatBytesRate: formatBytesRate,
+    openModal: openModal,
+    closeModal: closeModal,
+    confirmDialog: confirmDialog,
+    logout: logout,
+  };
+})();

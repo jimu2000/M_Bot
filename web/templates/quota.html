@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{# 配额页：免费额度汇总（A1 / E2 / 启动盘），数据来自 GET /api/quota #}
+{% block title %}配额 · R-Bot 开源克隆版{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1>免费额度</h1>
+  <div class="spacer"></div>
+  <button type="button" class="btn" id="btn-refresh-quota">↻ 刷新</button>
+</div>
+
+<p style="color: var(--text-muted); margin-top: -8px;">
+  当前账号（<span id="quota-profile">—</span>）的 Always Free 额度使用情况。
+  <span id="quota-overall"></span>
+</p>
+
+<div id="quota-loading" class="card" style="text-align: center; color: var(--text-muted);">
+  加载中…
+</div>
+
+<div id="quota-error" class="card" hidden>
+  <p id="quota-error-text" style="color: var(--danger);"></p>
+</div>
+
+<div id="quota-cards" hidden>
+  <div class="card">
+    <h2>A1.Flex（ARM）</h2>
+    <div class="quota-row">
+      <span>OCPU</span>
+      <div class="quota-bar"><div class="quota-fill" id="a1-ocpu-fill"></div></div>
+      <span id="a1-ocpu-text">—</span>
+    </div>
+    <div class="quota-row">
+      <span>内存</span>
+      <div class="quota-bar"><div class="quota-fill" id="a1-mem-fill"></div></div>
+      <span id="a1-mem-text">—</span>
+    </div>
+    <p class="quota-instances" id="a1-instances"></p>
+    <p id="a1-over-warning" style="color: var(--danger); font-weight: bold;" hidden></p>
+  </div>
+
+  <div class="card">
+    <h2>E2.1.Micro（AMD）</h2>
+    <div class="quota-row">
+      <span>实例数</span>
+      <div class="quota-bar"><div class="quota-fill" id="e2-fill"></div></div>
+      <span id="e2-text">—</span>
+    </div>
+    <p class="quota-instances" id="e2-instances"></p>
+  </div>
+
+  <div class="card">
+    <h2>启动盘</h2>
+    <div class="quota-row">
+      <span>容量</span>
+      <div class="quota-bar"><div class="quota-fill" id="boot-fill"></div></div>
+      <span id="boot-text">—</span>
+    </div>
+    <p class="quota-instances" id="boot-volumes"></p>
+  </div>
+
+  <div class="card">
+    <h2>A1 配置体检</h2>
+    <p id="a1-health-status" style="color: var(--text-muted);">加载中…</p>
+    <ul id="a1-health-list" style="margin: 8px 0 0; padding-left: 20px;"></ul>
+  </div>
+</div>
+
+<style>
+.quota-row { display: flex; align-items: center; gap: 12px; margin: 12px 0; }
+.quota-row > span:first-child { width: 64px; color: var(--text-muted); }
+.quota-row > span:last-child { min-width: 120px; text-align: right; }
+.quota-bar { flex: 1; height: 12px; border-radius: 6px; background: var(--surface-muted); overflow: hidden; }
+.quota-fill { height: 100%; width: 0; border-radius: 6px; background: var(--accent); transition: width .3s; }
+.quota-fill.full { background: var(--danger); }
+.quota-fill.warn { background: var(--warning, #eab308); }
+.quota-instances { color: var(--text-muted); font-size: 0.9em; margin: 8px 0 0; }
+</style>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="/static/js/quota.js"></script>
+{% endblock %}

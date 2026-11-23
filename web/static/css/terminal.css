@@ -1,0 +1,682 @@
+/* SSH 终端页样式（阶段 3）。
+   深色主题，布局参考 docs/screenshots/terminal.jpg：顶部标签栏 + 终端区，
+   终端内右上角悬浮 CPU/MEM/DISK。 */
+
+:root {
+  --term-bg: #0b0e1a;
+  --term-bar: #14172b;
+  --term-border: #262a45;
+  --term-text: #c9cde8;
+  --term-muted: #7a80a8;
+  --term-accent: #7c8cff;
+  --term-green: #3ecf6e;
+  --term-red: #e5534b;
+  --term-btn: #1e2238;
+}
+
+* { box-sizing: border-box; }
+
+/* 注意：不设全局 body 样式，避免覆盖 base.html 的主题；
+   深色背景只作用在 .terminal-page 内。 */
+
+/* ---------- 整体布局 ----------
+   在 base.html 的 <main class="content"> 里：顶栏 54px + 资源栏 46px +
+   content 上下 padding（20px + 40px）共 160px，从视口高度里扣掉。 */
+.terminal-page {
+  position: relative;  /* SFTP 面板绝对定位的参照 */
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 160px);
+  min-height: 420px;
+  background: var(--term-bg);
+  color: var(--term-text);
+  font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+/* 全屏模式：占满视口，隐藏页面其他元素只留终端 */
+.terminal-page.fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: var(--term-bg);
+}
+
+/* ---------- 标签栏 ---------- */
+.tab-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: var(--term-bar);
+  border-bottom: 1px solid var(--term-border);
+  flex-shrink: 0;
+}
+
+.tab-list {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  flex: 1;
+  min-width: 0;
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--term-btn);
+  border: 1px solid transparent;
+  color: var(--term-text);
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.tab.active {
+  border-color: var(--term-accent);
+  background: #23284a;
+}
+
+.tab .tab-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--term-green);
+  flex-shrink: 0;
+}
+
+/* 断线重连中：黄点；已断开：红点 */
+.tab.reconnecting .tab-dot { background: #e5b83b; }
+.tab.disconnected .tab-dot { background: var(--term-red); }
+
+.tab .tab-close {
+  border: none;
+  background: none;
+  color: var(--term-muted);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+}
+
+.tab .tab-close:hover { color: var(--term-red); }
+
+.tab-bar-right {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+/* ---------- 按钮 ---------- */
+.btn-icon, .btn-tool {
+  border: 1px solid var(--term-border);
+  background: var(--term-btn);
+  color: var(--term-text);
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  padding: 6px 10px;
+}
+
+.btn-icon:hover, .btn-tool:hover { border-color: var(--term-accent); }
+
+.term-btn-primary {
+  border: none;
+  background: var(--term-accent);
+  color: #fff;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 14px;
+  padding: 8px 18px;
+}
+
+.term-btn-secondary {
+  border: 1px solid var(--term-border);
+  background: var(--term-btn);
+  color: var(--term-text);
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 14px;
+  padding: 8px 18px;
+}
+
+/* ---------- 终端区 ---------- */
+.terminal-container {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  background: #05060d;
+}
+
+.terminal-pane {
+  position: absolute;
+  inset: 0;
+  padding: 6px 8px;
+}
+
+.terminal-pane.hidden { display: none; }
+
+.terminal-pane .xterm {
+  height: 100%;
+  font-family: "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
+}
+
+.terminal-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--term-muted);
+}
+
+.terminal-empty p { margin: 0; }
+.terminal-empty-hint { font-size: 13px; }
+
+/* 终端内右上角小字：CPU/MEM/DISK */
+.sys-stats {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  z-index: 10;
+  display: flex;
+  gap: 12px;
+  padding: 3px 10px;
+  border-radius: 12px;
+  background: rgba(20, 23, 43, 0.85);
+  color: var(--term-muted);
+  font-size: 12px;
+  font-family: Menlo, Consolas, monospace;
+  pointer-events: none;
+}
+
+/* ---------- 弹窗 ---------- */
+.term-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.6);
+}
+
+.term-modal-box {
+  width: 420px;
+  max-width: calc(100vw - 32px);
+  padding: 18px 20px;
+  border-radius: 12px;
+  background: var(--term-bar);
+  border: 1px solid var(--term-border);
+}
+
+.term-modal-box-small { width: 360px; }
+
+.term-modal-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 16px;
+  margin-bottom: 14px;
+}
+
+.term-modal-close {
+  border: none;
+  background: none;
+  color: var(--term-muted);
+  font-size: 20px;
+  cursor: pointer;
+}
+
+.term-modal-hint {
+  color: var(--term-muted);
+  font-size: 13px;
+}
+
+.term-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+/* ---------- 连接表单 ---------- */
+#connect-form label {
+  display: block;
+  font-size: 13px;
+  color: var(--term-muted);
+  margin-bottom: 10px;
+}
+
+#connect-form input, #connect-form select {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--term-border);
+  background: #0b0e1a;
+  color: var(--term-text);
+  font-size: 14px;
+}
+
+.form-row {
+  display: flex;
+  gap: 10px;
+}
+
+.form-row label { flex: 1; }
+.form-row .form-col-small { flex: 0 0 90px; }
+
+.form-error {
+  color: var(--term-red);
+  font-size: 13px;
+  margin: 10px 0 0;
+}
+
+/* ---------- SFTP 文件面板（阶段 3b） ----------
+   右侧滑出抽屉：绝对定位覆盖终端右侧 420px，transform 做滑入动画。
+   颜色复用 --term-* 变量，与深色终端风格一致；亮色模式下 base.html
+   的 data-mode="light" 时用下方覆盖规则换浅色。 */
+.sftp-panel {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 420px;
+  max-width: 92%;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  background: var(--term-bar);
+  border-left: 1px solid var(--term-border);
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.45);
+  transform: translateX(105%);
+  transition: transform 0.25s ease;
+  visibility: hidden;
+}
+
+.sftp-panel.open {
+  transform: translateX(0);
+  visibility: visible;
+}
+
+.sftp-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--term-border);
+  flex-shrink: 0;
+}
+
+.sftp-title { font-size: 15px; font-weight: 600; }
+
+.sftp-session {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--term-muted);
+  font-size: 12px;
+}
+
+.sftp-close { margin-left: auto; }
+
+.sftp-toolbar {
+  display: flex;
+  gap: 6px;
+  padding: 8px 12px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+
+.sftp-toolbar .btn-tool:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.sftp-breadcrumb {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 6px 12px;
+  border-top: 1px solid var(--term-border);
+  border-bottom: 1px solid var(--term-border);
+  font-size: 13px;
+  flex-shrink: 0;
+}
+
+.sftp-crumb {
+  border: none;
+  background: none;
+  color: var(--term-accent);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+
+.sftp-crumb:hover { background: var(--term-btn); }
+
+.sftp-crumb-sep { color: var(--term-muted); }
+
+.sftp-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+.sftp-empty {
+  padding: 24px 12px;
+  text-align: center;
+  color: var(--term-muted);
+  font-size: 13px;
+}
+
+.sftp-error { color: var(--term-red); }
+
+.sftp-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  font-size: 13px;
+  cursor: default;
+  border-bottom: 1px solid rgba(38, 42, 69, 0.5);
+}
+
+.sftp-row:hover { background: rgba(124, 140, 255, 0.08); }
+
+.sftp-row-dir { cursor: pointer; }
+.sftp-row-dir .sftp-name { font-weight: 600; }
+
+.sftp-row-outside { opacity: 0.55; }
+.sftp-row-broken .sftp-name { color: var(--term-muted); }
+
+.sftp-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sftp-size {
+  flex: 0 0 64px;
+  text-align: right;
+  color: var(--term-muted);
+  font-size: 12px;
+  font-family: Menlo, Consolas, monospace;
+}
+
+.sftp-time {
+  flex: 0 0 138px;
+  color: var(--term-muted);
+  font-size: 12px;
+  font-family: Menlo, Consolas, monospace;
+}
+
+.sftp-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.sftp-action {
+  border: 1px solid var(--term-border);
+  background: var(--term-btn);
+  color: var(--term-text);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 3px 7px;
+}
+
+.sftp-action:hover { border-color: var(--term-accent); }
+.sftp-action-danger:hover { border-color: var(--term-red); color: var(--term-red); }
+
+.sftp-drop-hint {
+  padding: 8px 12px;
+  border-top: 1px dashed var(--term-border);
+  color: var(--term-muted);
+  font-size: 12px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.sftp-panel.sftp-dragover .sftp-drop-hint {
+  border-color: var(--term-accent);
+  color: var(--term-accent);
+  background: rgba(124, 140, 255, 0.08);
+}
+
+.sftp-status {
+  padding: 6px 12px;
+  border-top: 1px solid var(--term-border);
+  color: var(--term-muted);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 0;
+}
+
+/* 在线编辑弹窗：宽版 + 等宽文本区 */
+.term-modal-box-wide { width: 720px; }
+
+#sftp-editor-text {
+  display: block;
+  width: 100%;
+  min-height: 360px;
+  resize: vertical;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--term-border);
+  background: #05060d;
+  color: var(--term-text);
+  font-size: 13px;
+  line-height: 1.5;
+  font-family: "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
+  tab-size: 2;
+}
+
+/* 亮色模式：面板换浅色（base.html 用 data-mode="light" 标记） */
+html[data-mode="light"] .sftp-panel {
+  background: #f4f5fb;
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.15);
+}
+
+html[data-mode="light"] .sftp-row:hover { background: rgba(124, 140, 255, 0.12); }
+
+html[data-mode="light"] #sftp-editor-text {
+  background: #ffffff;
+  color: #1a1c2e;
+}
+
+/* ---------- 提示条 ---------- */
+.term-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  z-index: 3000;
+  padding: 10px 18px;
+  border-radius: 8px;
+  background: #23284a;
+  border: 1px solid var(--term-accent);
+  color: var(--term-text);
+  font-size: 14px;
+}
+
+.hidden { display: none !important; }
+
+/* ---------- 收藏命令面板（阶段 5 工作包 E） ----------
+   左侧滑出抽屉，与 SFTP 面板对称。 */
+.fav-panel {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 360px;
+  max-width: 92%;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  background: var(--term-bar);
+  border-right: 1px solid var(--term-border);
+  box-shadow: 8px 0 24px rgba(0, 0, 0, 0.45);
+  transform: translateX(-105%);
+  transition: transform 0.25s ease;
+  visibility: hidden;
+}
+
+.fav-panel.open {
+  transform: translateX(0);
+  visibility: visible;
+}
+
+.fav-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 12px;
+}
+
+.fav-item {
+  padding: 8px 10px;
+  border: 1px solid var(--term-border);
+  border-radius: 8px;
+  margin-bottom: 8px;
+}
+
+.fav-item-name { font-size: 14px; font-weight: 600; }
+
+.fav-item-cmd {
+  font-family: monospace;
+  font-size: 12px;
+  color: var(--term-muted);
+  word-break: break-all;
+  cursor: pointer;
+  margin: 4px 0 6px;
+}
+
+.fav-item-cmd:hover { color: var(--term-accent); }
+
+.fav-item-actions { display: flex; gap: 6px; }
+
+.fav-add {
+  padding: 10px 12px;
+  border-top: 1px solid var(--term-border);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.fav-add input {
+  background: var(--term-bg);
+  border: 1px solid var(--term-border);
+  border-radius: 6px;
+  color: var(--term-text);
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
+html[data-mode="light"] .fav-panel {
+  background: #f4f5fb;
+  box-shadow: 8px 0 24px rgba(0, 0, 0, 0.15);
+}
+
+/* ---------- 分块上传进度条（阶段 5 工作包 E） ---------- */
+.sftp-upload-progress {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--term-border);
+}
+
+.sftp-upload-name {
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sftp-upload-bar {
+  height: 8px;
+  border-radius: 4px;
+  background: var(--term-btn);
+  overflow: hidden;
+  margin: 6px 0;
+}
+
+.sftp-upload-fill {
+  height: 100%;
+  width: 0;
+  background: var(--term-accent);
+  transition: width 0.2s;
+}
+
+.sftp-upload-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--term-muted);
+}
+
+/* ---------- 批量命令弹窗（阶段 5 工作包 E） ---------- */
+.batch-host-list {
+  max-height: 180px;
+  overflow-y: auto;
+  border: 1px solid var(--term-border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-bottom: 12px;
+}
+
+.batch-host-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.batch-results { margin-top: 12px; }
+
+.batch-status { font-size: 13px; color: var(--term-muted); margin-bottom: 8px; }
+
+.batch-result {
+  border: 1px solid var(--term-border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+
+.batch-result-status { color: var(--term-muted); }
+
+.batch-output {
+  background: var(--term-bg);
+  border-radius: 6px;
+  padding: 8px;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 200px;
+  overflow-y: auto;
+  margin: 6px 0 0;
+}
+
+.batch-output.batch-error { color: var(--term-red); }

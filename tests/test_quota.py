@@ -1,0 +1,222 @@
+#!/usr/bin/env python3
+"""quota.py 的单元测试（mock OCIClient.run，不碰真实 API）。
+
+运行：python3 -m unittest tests.test_quota -v
+"""
+
+import os
+import sys
+import unittest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from oci.client import OCIClient
+from oci.quota import (can_launch, get_a1_usage, get_boot_volume_usage,
+                       get_e2_usage, get_free_tier_summary)
+
+# 占位符（测试里不出现真实 OCID）
+FAKE_COMPARTMENT = "ocid1.tenancy.oc1..xxxxxxxx"
+
+
+def _a1(inst_id, display_name, ocpus, memory_gb, state="RUNNING"):
+    return {
+        "id": f"ocid1.instance.oc1..{inst_id}",
+        "display-name": display_name,
+        "shape": "VM.Standard.A1.Flex",
+        "lifecycle-state": state,
+        "shape-config": {"ocpus": ocpus, "memory-in-gbs": memory_gb},
+    }
+
+
+def _e2(inst_id, display_name, state="RUNNING"):
+    return {
+        "id": f"ocid1.instance.oc1..{inst_id}",
+        "display-name": display_name,
+        "shape": "VM.Standard.E2.1.Micro",
+        "lifecycle-state": state,
+        "shape-config": {"ocpus": 1, "memory-in-gbs": 1},
+    }
+
+
+def _boot_volume(vol_id, display_name, size_gb, state="AVAILABLE"):
+    return {
+        "id": f"ocid1.bootvolume.oc1..{vol_id}",
+        "display-name": display_name,
+        "size-in-gbs": size_gb,
+        "lifecycle-state": state,
+    }
+
+
+def _make_cli(instances, boot_volumes):
+    """造一个 OCIClient，把 run 换成 mock：按命令返回预设的假数据。"""
+    cli = OCIClient(profile="DEFAULT", region="ap-singapore-1")
+
+    def _mock_run(args, **kwargs):
+        if args[:2] == ["compute", "instance"]:
+            return {"data": instances}
+        if args[:2] == ["bv", "boot-volume"]:
+            return {"data": boot_volumes}
+        raise AssertionError(f"unexpected command: {args}")
+
+    cli.run = _mock_run
+    return cli
+
+
+# 默认场景：A1 用了 4 核/18GB（已满），E2 有 1 台，启动盘 141GB。
+# 与真实账号新加坡区的现状一致。
+DEFAULT_INSTANCES = [
+    _a1("a1-1", "a1-main", 3, 12),
+    _a1("a1-2", "a1-small", 1, 6),
+    _a1("a1-dead", "a1-terminated", 4, 24, state="TERMINATED"),
+    _e2("e2-1", "e2-one"),
+    _e2("e2-dead", "e2-terminated", state="TERMINATED"),
+]
+DEFAULT_BOOT_VOLUMES = [
+    _boot_volume("bv-1", "boot-1", 47),
+    _boot_volume("bv-2", "boot-2", 47),
+    _boot_volume("bv-3", "boot-3", 47),
+    _boot_volume("bv-dead", "boot-terminating", 47, state="TERMINATING"),
+]
+
+
+class TestGetA1Usage(unittest.TestCase):
+    def test_sums_running_a1_only(self):
+        cli = _make_cli(DEFAULT_INSTANCES, DEFAULT_BOOT_VOLUMES)
+        result = get_a1_usage(cli, FAKE_COMPARTMENT)
+        # 只统计 RUNNING 的 A1：3+1 核，12+6GB；已终止的与 E2 不算
+        self.assertEqual(result["ocpu_used"], 4)
+        self.assertEqual(result["ocpu_limit"], 4)
+        self.assertEqual(result["memory_used_gb"], 18)
+        self.assertEqual(result["memory_limit_gb"], 24)
+        self.assertEqual(len(result["instances"]), 2)
+        self.assertEqual(result["instances"][0]["display_name"], "a1-main")
+        self.assertEqual(result["instances"][0]["ocpus"], 3)
+
+    def test_empty_when_no_instances(self):
+        cli = _make_cli([], [])
+        result = get_a1_usage(cli, FAKE_COMPARTMENT)
+        self.assertEqual(result["ocpu_used"], 0)
+        self.assertEqual(result["memory_used_gb"], 0)
+        self.assertEqual(result["instances"], [])
+
+
+class TestGetE2Usage(unittest.TestCase):
+    def test_counts_running_e2_only(self):
+        cli = _make_cli(DEFAULT_INSTANCES, DEFAULT_BOOT_VOLUMES)
+        result = get_e2_usage(cli, FAKE_COMPARTMENT)
+        self.assertEqual(result["count"], 1)
+        self.assertEqual(result["limit"], 2)
+        self.assertEqual(len(result["instances"]), 1)
+        self.assertEqual(result["instances"][0]["display_name"], "e2-one")
+
+    def test_empty_when_no_instances(self):
+        cli = _make_cli([], [])
+        result = get_e2_usage(cli, FAKE_COMPARTMENT)
+        self.assertEqual(result["count"], 0)
+        self.assertEqual(result["instances"], [])
+
+
+class TestGetBootVolumeUsage(unittest.TestCase):
+    def test_excludes_terminating_and_terminated(self):
+        vols = DEFAULT_BOOT_VOLUMES + [
+            _boot_volume("bv-gone", "boot-terminated", 47, state="TERMINATED"),
+        ]
+        cli = _make_cli(DEFAULT_INSTANCES, vols)
+        result = get_boot_volume_usage(cli, FAKE_COMPARTMENT)
+        # 3 块 AVAILABLE 的 47GB；删除中（TERMINATING）与已删除（TERMINATED）的不算
+        self.assertEqual(result["used_gb"], 141)
+        self.assertEqual(result["limit_gb"], 200)
+        self.assertEqual(len(result["volumes"]), 3)
+
+    def test_empty_when_no_volumes(self):
+        cli = _make_cli([], [])
+        result = get_boot_volume_usage(cli, FAKE_COMPARTMENT)
+        self.assertEqual(result["used_gb"], 0)
+        self.assertEqual(result["volumes"], [])
+
+
+class TestGetFreeTierSummary(unittest.TestCase):
+    def test_summary_within_limits(self):
+        cli = _make_cli(DEFAULT_INSTANCES, DEFAULT_BOOT_VOLUMES)
+        result = get_free_tier_summary(cli, FAKE_COMPARTMENT)
+        self.assertEqual(result["a1"]["ocpu_used"], 4)
+        self.assertEqual(result["a1"]["ocpu_remaining"], 0)
+        self.assertEqual(result["a1"]["memory_used_gb"], 18)
+        self.assertEqual(result["a1"]["memory_remaining_gb"], 6)
+        self.assertEqual(result["e2"]["count"], 1)
+        self.assertEqual(result["e2"]["remaining"], 1)
+        self.assertEqual(result["boot_volume"]["used_gb"], 141)
+        self.assertEqual(result["boot_volume"]["remaining_gb"], 59)
+        self.assertTrue(result["overall_ok"])
+
+    def test_summary_over_limit(self):
+        # A1 OCPU 超限（5 核）-> overall_ok 为 False，remaining 为负
+        instances = [_a1("a1-big", "a1-over", 5, 24)]
+        cli = _make_cli(instances, [])
+        result = get_free_tier_summary(cli, FAKE_COMPARTMENT)
+        self.assertEqual(result["a1"]["ocpu_remaining"], -1)
+        self.assertFalse(result["overall_ok"])
+
+
+class TestCanLaunch(unittest.TestCase):
+    def test_e2_can_launch(self):
+        cli = _make_cli(DEFAULT_INSTANCES, DEFAULT_BOOT_VOLUMES)
+        ok, reason = can_launch(cli, FAKE_COMPARTMENT,
+                                "VM.Standard.E2.1.Micro")
+        self.assertTrue(ok)
+        self.assertEqual(reason, "可以创建")
+
+    def test_e2_full(self):
+        instances = DEFAULT_INSTANCES + [_e2("e2-2", "e2-two")]
+        cli = _make_cli(instances, DEFAULT_BOOT_VOLUMES)
+        ok, reason = can_launch(cli, FAKE_COMPARTMENT, "E2.1.Micro")
+        self.assertFalse(ok)
+        self.assertEqual(reason, "E2 已满（2/2）")
+
+    def test_a1_ocpu_insufficient(self):
+        # 默认场景 A1 OCPU 已满（4/4），再要 1 核开不了
+        cli = _make_cli(DEFAULT_INSTANCES, DEFAULT_BOOT_VOLUMES)
+        ok, reason = can_launch(cli, FAKE_COMPARTMENT,
+                                "VM.Standard.A1.Flex", ocpus=1, memory_gb=6)
+        self.assertFalse(ok)
+        self.assertIn("OCPU 不足", reason)
+        self.assertIn("4/4", reason)
+
+    def test_a1_memory_insufficient(self):
+        # OCPU 够（3/4）但内存不够（剩 6GB，要 12GB）
+        instances = [_a1("a1-1", "a1-main", 3, 18)]
+        cli = _make_cli(instances, DEFAULT_BOOT_VOLUMES)
+        ok, reason = can_launch(cli, FAKE_COMPARTMENT,
+                                "VM.Standard.A1.Flex", ocpus=1, memory_gb=12)
+        self.assertFalse(ok)
+        self.assertIn("内存不足", reason)
+
+    def test_boot_volume_insufficient(self):
+        # 启动盘只剩 40GB < 47GB，E2 与 A1 都开不了
+        volumes = [_boot_volume("bv-1", "boot-1", 160)]
+        cli = _make_cli([], volumes)
+        ok, reason = can_launch(cli, FAKE_COMPARTMENT,
+                                "VM.Standard.E2.1.Micro")
+        self.assertFalse(ok)
+        self.assertIn("启动盘余量不足", reason)
+        self.assertIn("40GB", reason)
+
+    def test_a1_can_launch(self):
+        # A1 只用了 3 核/12GB，启动盘余量足，可以再开 1 核 6GB
+        instances = [_a1("a1-1", "a1-main", 3, 12)]
+        cli = _make_cli(instances, DEFAULT_BOOT_VOLUMES)
+        ok, reason = can_launch(cli, FAKE_COMPARTMENT,
+                                "A1.Flex", ocpus=1, memory_gb=6)
+        self.assertTrue(ok)
+        self.assertEqual(reason, "可以创建")
+
+    def test_unknown_shape(self):
+        cli = _make_cli(DEFAULT_INSTANCES, DEFAULT_BOOT_VOLUMES)
+        ok, reason = can_launch(cli, FAKE_COMPARTMENT,
+                                "VM.Standard.E5.Flex")
+        self.assertFalse(ok)
+        self.assertIn("不支持的规格", reason)
+
+
+if __name__ == "__main__":
+    unittest.main()

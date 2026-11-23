@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{# 巡检计划页：定时巡检计划管理 + 最近巡检报告（阶段 5 工作包 E）。
+   计划走 /api/inspect-schedules，报告走 /api/inspect-reports。 #}
+{% block title %}巡检计划 · R-Bot 开源克隆版{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1>巡检计划</h1>
+  <div class="spacer"></div>
+  <button type="button" class="btn" id="btn-refresh-inspect">↻ 刷新</button>
+</div>
+
+<p style="color: var(--text-muted); margin-top: -8px;">
+  按 cron 表达式定时巡检：查实例状态 + 磁盘 + 配额，生成报告并经 Telegram 通知摘要。
+  目标填实例 OCID（多个用逗号分隔），或填 all 表示全部实例。
+</p>
+
+<div class="card">
+  <h2>新增计划</h2>
+  <form id="inspect-form">
+    <div class="form-row">
+      <div class="form-group">
+        <label for="inspect-cron">定时（cron，5 段）</label>
+        <input type="text" id="inspect-cron" placeholder="例如：0 8 * * *（每天 8:00）" required>
+      </div>
+      <div class="form-group">
+        <label for="inspect-targets">目标实例</label>
+        <input type="text" id="inspect-targets" placeholder="all，或实例 OCID（逗号分隔）" value="all" required>
+      </div>
+    </div>
+    <button type="submit" class="btn btn-primary">添加计划</button>
+  </form>
+</div>
+
+<div class="card">
+  <div class="table-wrap">
+    <table class="data" id="inspect-table">
+      <thead>
+        <tr>
+          <th>计划</th>
+          <th>定时（cron）</th>
+          <th>目标</th>
+          <th>状态</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody id="inspect-tbody">
+        <tr><td colspan="5" style="text-align: center; color: var(--text-muted);">加载中…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="empty-state" id="inspect-empty" hidden>
+  <div class="big">🔍</div>
+  <p>暂无巡检计划</p>
+  <p>在上方添加一条计划，定时自动巡检并通知。</p>
+</div>
+
+<h2 style="font-size: 16px; margin: 26px 0 12px;">最近巡检报告</h2>
+<div class="card">
+  <div class="table-wrap">
+    <table class="data" id="report-table">
+      <thead>
+        <tr>
+          <th>计划</th>
+          <th>生成时间</th>
+          <th>实例</th>
+          <th>启动盘</th>
+          <th>结果</th>
+        </tr>
+      </thead>
+      <tbody id="report-tbody">
+        <tr><td colspan="5" style="text-align: center; color: var(--text-muted);">加载中…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="/static/js/inspect.js"></script>
+{% endblock %}

@@ -1,0 +1,214 @@
+#!/usr/bin/env python3
+"""Telegram 机器人入口（R-Bot 克隆阶段 2）。
+
+用法：
+    export RBOT_TELEGRAM_TOKEN="<BotFather 给的 Token>"
+    export RBOT_ALLOWED_USERS="<你的 Telegram 用户 ID>"
+    python3 -m tgbot.bot
+
+机器人用 polling 方式收消息（不需要公网端口、不需要域名）。
+白名单是硬规则：不在 RBOT_ALLOWED_USERS 里的用户发任何命令都直接拒绝。
+"""
+
+import datetime
+import logging
+import os
+import sys
+
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    MessageHandler,
+    filters,
+)
+
+# 把项目根目录加到 sys.path 开头（保证 `import oci` 解析到本项目
+# 的 oci/ 包，而不是系统里可能装的 OCI Python SDK 同名包）。
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from tgbot import config as bot_config  # noqa: E402
+from tgbot import handlers, handlers_client, handlers_extra  # noqa: E402
+
+# ================= 配置区（改这里） =================
+# 实例状态监控间隔（分钟）：check_instances_job 每隔这么久检查一次。
+MONITOR_INTERVAL_MINUTES = 10
+# 每日报告发送时间（24 小时制，机器人所在机器的本地时区）。
+DAILY_REPORT_TIME = datetime.time(hour=8, minute=0)
+# SSL 证书到期检查时间（每天一次，机器人所在机器的本地时区）。
+SSL_CHECK_TIME = datetime.time(hour=8, minute=30)
+# 日志级别。
+LOG_LEVEL = "INFO"
+# =====================================================
+
+
+def _setup_logging():
+    """日志同时写文件（供"查询最新日志"命令读）与控制台。"""
+    log_file = bot_config.LOG_FILE
+    os.makedirs(os.path.dirname(log_file), exist_ok=True)
+    logging.basicConfig(
+        level=getattr(logging, LOG_LEVEL, logging.INFO),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        handlers=[
+            logging.FileHandler(log_file, encoding="utf-8"),
+            logging.StreamHandler(sys.stdout),
+        ],
+    )
+    # httpx / telegram 的 DEBUG 日志太多，压到 WARNING。
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("telegram").setLevel(logging.WARNING)
+
+
+def build_application():
+    """构建 Application 并注册全部命令/回调/定时任务。返回 Application。"""
+    token = bot_config.get_token()  # 未配置时抛 RuntimeError，启动即失败
+    if not bot_config.ALLOWED_USER_IDS:
+        raise RuntimeError(
+            "未配置白名单：请设置环境变量 RBOT_ALLOWED_USERS（逗号分隔的 "
+            "Telegram 用户 ID），否则谁都无法使用机器人。")
+
+    application = Application.builder().token(token).build()
+
+    # ---- 命令 ----
+    application.add_handler(CommandHandler("start", handlers.start_command))
+    application.add_handler(CommandHandler("help", handlers.help_command))
+    application.add_handler(CommandHandler("oracle", handlers.oracle_command))
+    application.add_handler(CommandHandler("instances",
+                                           handlers.instances_command))
+    application.add_handler(CommandHandler("domain",
+                                           handlers_extra.handle_domain))
+    # ---- 客户端工具命令（阶段 5 工作包 B） ----
+    application.add_handler(CommandHandler("command",
+                                           handlers_client.command_command))
+    application.add_handler(CommandHandler("pubkey",
+                                           handlers_client.pubkey_command))
+    application.add_handler(CommandHandler("oproxy",
+                                           handlers_client.oproxy_command))
+    application.add_handler(CommandHandler("uploadapi",
+                                           handlers_client.uploadapi_command))
+
+    # ---- 回调（按 callback_data 前缀路由，见 keyboards.py 的规范） ----
+    application.add_handler(CallbackQueryHandler(
+        handlers.oracle_menu_callback, pattern=r"^o:"))
+    application.add_handler(CallbackQueryHandler(
+        handlers.instance_list_callback, pattern=r"^i:list$"))
+    application.add_handler(CallbackQueryHandler(
+        handlers.instance_detail_callback, pattern=r"^i:detail:"))
+    application.add_handler(CallbackQueryHandler(
+        handlers.instance_action_callback,
+        pattern=r"^i:(start|stop|restart|terminate|ip|resize|rename|reinstall|console):"))
+    application.add_handler(CallbackQueryHandler(
+        handlers.confirm_callback, pattern=r"^c:"))
+    application.add_handler(CallbackQueryHandler(
+        handlers.cancel_callback, pattern=r"^x$"))
+    application.add_handler(CallbackQueryHandler(
+        handlers_extra.boot_preset_callback, pattern=r"^b:boot:"))
+    application.add_handler(CallbackQueryHandler(
+        handlers_extra.boot_go_callback, pattern=r"^b:go$"))
+    application.add_handler(CallbackQueryHandler(
+        handlers_extra.task_cancel_callback, pattern=r"^t:cancel:"))
+    application.add_handler(CallbackQueryHandler(
+        handlers_extra.profile_callback, pattern=r"^p:"))
+    application.add_handler(CallbackQueryHandler(
+        handlers_extra.resize_preset_callback, pattern=r"^r:"))
+    application.add_handler(CallbackQueryHandler(
+        handlers_extra.volume_detail_callback, pattern=r"^v:detail:"))
+    application.add_handler(CallbackQueryHandler(
+        handlers_extra.volume_resize_callback, pattern=r"^v:resize:"))
+    application.add_handler(CallbackQueryHandler(
+        handlers_extra.volume_size_callback, pattern=r"^v:volsize:"))
+    application.add_handler(CallbackQueryHandler(
+        handlers_extra.volume_delete_callback, pattern=r"^v:delete:"))
+    application.add_handler(CallbackQueryHandler(
+        handlers_extra.domain_callback, pattern=r"^domain:"))
+    application.add_handler(CallbackQueryHandler(
+        handlers_extra.batch_toggle_callback, pattern=r"^ba:toggle:"))
+    application.add_handler(CallbackQueryHandler(
+        handlers_extra.batch_next_callback, pattern=r"^ba:next$"))
+    application.add_handler(CallbackQueryHandler(
+        handlers_extra.batch_action_callback, pattern=r"^ba:action:"))
+    application.add_handler(CallbackQueryHandler(
+        handlers_extra.traffic_guard_callback, pattern=r"^g:"))
+    application.add_handler(CallbackQueryHandler(
+        handlers_extra.keepalive_callback, pattern=r"^k:"))
+    application.add_handler(CallbackQueryHandler(
+        handlers_extra.ssl_watch_callback, pattern=r"^s:"))
+    # ---- 工作包 D 回调（对象存储 / 抢机计划 / 客户端管理） ----
+    application.add_handler(CallbackQueryHandler(
+        handlers_extra.objectstorage_callback, pattern=r"^os:"))
+    application.add_handler(CallbackQueryHandler(
+        handlers_extra.plan_callback, pattern=r"^pl:"))
+    application.add_handler(CallbackQueryHandler(
+        handlers_extra.client_callback, pattern=r"^cl:"))
+    # ---- 客户端工具回调（阶段 5 工作包 B） ----
+    application.add_handler(CallbackQueryHandler(
+        handlers_client.command_host_callback, pattern=r"^cmd:"))
+    application.add_handler(CallbackQueryHandler(
+        handlers_client.pubkey_callback, pattern=r"^pk:"))
+    application.add_handler(CallbackQueryHandler(
+        handlers_client.oproxy_callback, pattern=r"^px:"))
+    application.add_handler(CallbackQueryHandler(
+        handlers_client.uploadapi_callback, pattern=r"^ua:"))
+    application.add_handler(CallbackQueryHandler(
+        handlers_client.memballoon_callback, pattern=r"^mh:"))
+    application.add_handler(CallbackQueryHandler(
+        handlers_client.memclear_callback, pattern=r"^mc:"))
+
+    # ---- 文字输入（改名 / 重装确认，见 handlers_extra.text_input_callback） ----
+    # 只处理纯文字消息；命令仍走下面的 unknown_command。
+    application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND,
+        handlers_extra.text_input_callback))
+    # ---- 客户端工具的待输入消息（阶段 5 工作包 B） ----
+    # 纯文本按 user_data 里的待输入状态分发（无状态时静默忽略，
+    # 与上面的 text_input_callback 共存，各自只处理自己的状态）；
+    # 文件只在 /uploadapi 等待上传时处理。
+    application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND,
+        handlers_client.handle_client_text_input))
+    application.add_handler(MessageHandler(
+        filters.Document.ALL, handlers_client.handle_client_document))
+
+    # ---- 未知命令 / 未知消息 ----
+    application.add_handler(MessageHandler(filters.COMMAND,
+                                           handlers.unknown_command))
+
+    # ---- 错误处理 ----
+    application.add_error_handler(handlers.error_handler)
+
+    # ---- 定时任务（开关在 job 函数内部判断，见 handlers_extra） ----
+    job_queue = application.job_queue
+    if job_queue is not None:
+        job_queue.run_repeating(
+            handlers_extra.check_instances_job,
+            interval=datetime.timedelta(minutes=MONITOR_INTERVAL_MINUTES),
+            first=datetime.timedelta(seconds=30),
+            name="check_instances")
+        job_queue.run_daily(
+            handlers_extra.daily_report_job,
+            time=DAILY_REPORT_TIME,
+            name="daily_report")
+        job_queue.run_daily(
+            handlers_extra.ssl_check_job,
+            time=SSL_CHECK_TIME,
+            name="ssl_check")
+    else:
+        logging.getLogger(__name__).warning(
+            "job_queue 不可用（未安装 python-telegram-bot[job-queue]），"
+            "监控、每日报告与 SSL 检查定时任务未注册。")
+
+    return application
+
+
+def main():
+    """启动机器人（polling）。"""
+    _setup_logging()
+    logger = logging.getLogger(__name__)
+    application = build_application()
+    logger.info("机器人启动，白名单用户：%s",
+                sorted(bot_config.ALLOWED_USER_IDS))
+    application.run_polling(allowed_updates=["message", "callback_query"])
+
+
+if __name__ == "__main__":
+    main()
