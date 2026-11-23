@@ -27,7 +27,7 @@ from telegram.ext import ContextTypes
 
 from oci.instance import (get_instance, list_instances, restart_instance,
                           start_instance, stop_instance, terminate_instance)
-from oci.network import get_public_ip
+from oci.network import attach_public_ips, get_public_ip
 from tgbot.keyboards import (ORACLE_MENU_ITEMS, back_to_oracle_keyboard,
                              confirm_keyboard,
                              instance_actions_keyboard,
@@ -172,10 +172,14 @@ async def _load_instance_list(context):
 
     成功时把精简列表存进 user_data 供回调按下标取回；
     失败时返回 fmt_error 文本 + 返回菜单键盘。
+    列表里的实例会先补公网 IP（并行查，单台失败记 None，
+    TERMINATED 的不查），再存、再格式化。
     """
     try:
+        cli = get_cli(context)
         instances = await run_sync(
-            list_instances, get_cli(context), get_compartment(context))
+            list_instances, cli, get_compartment(context))
+        instances = await run_sync(attach_public_ips, cli, instances)
     except Exception as exc:  # noqa: BLE001 - OCI 异常统一转中文提示
         logger.warning("列实例失败：%s", exc)
         return fmt_error(exc), back_to_oracle_keyboard()
@@ -264,6 +268,16 @@ async def instance_list_callback(update: Update,
     await query.answer()
     text, keyboard = await _load_instance_list(context)
     await query.edit_message_text(text, reply_markup=keyboard)
+
+
+@require_allowed
+async def noop_callback(update: Update,
+                        context: ContextTypes.DEFAULT_TYPE):
+    """处理 i:noop 回调：实例列表的分组标题按钮。
+
+    只应答（消除按钮上的加载转圈），不发新消息、不改消息内容。
+    """
+    await update.callback_query.answer()
 
 
 @require_allowed

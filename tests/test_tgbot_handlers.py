@@ -92,6 +92,12 @@ def _all_callback_data(keyboard):
             for row in keyboard.inline_keyboard for btn in row]
 
 
+def _all_button_texts(keyboard):
+    """取 InlineKeyboardMarkup 里全部按钮文字。"""
+    return [btn.text
+            for row in keyboard.inline_keyboard for btn in row]
+
+
 class HandlersTestCase(unittest.IsolatedAsyncioTestCase):
     """基类：白名单 + OCI 边界 mock + 假 handlers_extra 模块。"""
 
@@ -198,16 +204,46 @@ class TestCommands(HandlersTestCase):
         update = make_message_update()
         context = make_context()
         with patch("tgbot.handlers.list_instances",
-                   return_value=list(FAKE_INSTANCES)) as mock_list:
+                   return_value=list(FAKE_INSTANCES)) as mock_list, \
+                patch("tgbot.handlers.attach_public_ips",
+                      side_effect=lambda cli, insts: insts):
             await handlers.instances_command(update, context)
         mock_list.assert_called_once_with(self.cli, FAKE_COMPARTMENT)
         self.assertEqual(context.user_data["instances"], FAKE_INSTANCES)
         text = update.effective_message.reply_text.call_args.args[0]
-        self.assertIn("instance-a1", text)
-        self.assertIn("instance-e2", text)
+        # 文字只剩标题 + 各组数量；实例名在按钮上。
+        self.assertIn("2 台", text)
+        self.assertIn("🟢 运行中 1 台 · 🟡 已停止 1 台", text)
+        self.assertNotIn("instance-a1", text)
         keyboard = update.effective_message.reply_text.call_args.kwargs[
             "reply_markup"]
         self.assertIn("i:detail:0", _all_callback_data(keyboard))
+        texts = _all_button_texts(keyboard)
+        self.assertIn("instance-a1 · A1 · 运行中", texts)
+        self.assertIn("instance-e2 · E2 · 已停止", texts)
+
+    async def test_instances_command_enriches_ip(self):
+        # _load_instance_list 先调 attach_public_ips 补 IP 再存、再格式化。
+        update = make_message_update()
+        context = make_context()
+        enriched = [dict(FAKE_INSTANCES[0], **{"public-ip": FAKE_IP}),
+                    dict(FAKE_INSTANCES[1], **{"public-ip": None})]
+        with patch("tgbot.handlers.list_instances",
+                   return_value=list(FAKE_INSTANCES)), \
+                patch("tgbot.handlers.attach_public_ips",
+                      return_value=enriched) as mock_attach:
+            await handlers.instances_command(update, context)
+        mock_attach.assert_called_once_with(self.cli, FAKE_INSTANCES)
+        self.assertEqual(context.user_data["instances"], enriched)
+        text = update.effective_message.reply_text.call_args.args[0]
+        # 文字只剩标题 + 各组数量；IP 在对应按钮上。
+        self.assertIn("🟢 运行中 1 台 · 🟡 已停止 1 台", text)
+        self.assertNotIn(FAKE_IP, text)
+        keyboard = update.effective_message.reply_text.call_args.kwargs[
+            "reply_markup"]
+        texts = _all_button_texts(keyboard)
+        self.assertIn(f"instance-a1 · A1 · {FAKE_IP}", texts)
+        self.assertIn("instance-e2 · E2 · 已停止", texts)
 
     async def test_instances_command_empty(self):
         update = make_message_update()
@@ -261,10 +297,17 @@ class TestOracleMenuCallback(HandlersTestCase):
         update = make_callback_update("o:instances")
         context = make_context()
         with patch("tgbot.handlers.list_instances",
-                   return_value=list(FAKE_INSTANCES)):
+                   return_value=list(FAKE_INSTANCES)), \
+                patch("tgbot.handlers.attach_public_ips",
+                      side_effect=lambda cli, insts: insts):
             await handlers.oracle_menu_callback(update, context)
         text = update.callback_query.edit_message_text.call_args.args[0]
-        self.assertIn("instance-a1", text)
+        self.assertIn("2 台", text)
+        self.assertNotIn("instance-a1", text)
+        keyboard = update.callback_query.edit_message_text.call_args.kwargs[
+            "reply_markup"]
+        self.assertIn("instance-a1 · A1 · 运行中",
+                      _all_button_texts(keyboard))
         self.assertEqual(context.user_data["instances"], FAKE_INSTANCES)
 
     async def test_forward_quota(self):
@@ -297,11 +340,25 @@ class TestInstanceListCallback(HandlersTestCase):
         update = make_callback_update("i:list")
         context = make_context()
         with patch("tgbot.handlers.list_instances",
-                   return_value=list(FAKE_INSTANCES)):
+                   return_value=list(FAKE_INSTANCES)), \
+                patch("tgbot.handlers.attach_public_ips",
+                      side_effect=lambda cli, insts: insts):
             await handlers.instance_list_callback(update, context)
         text = update.callback_query.edit_message_text.call_args.args[0]
         self.assertIn("2 台", text)
-        self.assertIn("instance-a1", text)
+        self.assertNotIn("instance-a1", text)
+        keyboard = update.callback_query.edit_message_text.call_args.kwargs[
+            "reply_markup"]
+        self.assertIn("instance-a1 · A1 · 运行中",
+                      _all_button_texts(keyboard))
+
+    async def test_noop_callback(self):
+        # 分组标题按钮：只应答，不改消息、不发新消息。
+        update = make_callback_update("i:noop")
+        await handlers.noop_callback(update, make_context())
+        update.callback_query.answer.assert_awaited_once()
+        update.callback_query.edit_message_text.assert_not_awaited()
+        update.effective_message.reply_text.assert_not_awaited()
 
     async def test_list_empty(self):
         update = make_callback_update("i:list")

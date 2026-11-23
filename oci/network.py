@@ -19,6 +19,8 @@
     ip = get_public_ip(cli, "ocid1.instance.oc1..xxxxxxxx")
 """
 
+from concurrent.futures import ThreadPoolExecutor
+
 # ================= 配置区（改这里） =================
 # change_public_ip() 创建保留 IP 时的默认显示名。
 DEFAULT_CHANGED_IP_NAME = "changed-ip"
@@ -63,6 +65,39 @@ def get_public_ip(cli, instance_id):
         if vnic.get("is-primary"):
             return vnic.get("public-ip")
     return None
+
+
+def attach_public_ips(cli, instances, max_workers=5):
+    """并行给实例精简列表补 public-ip 字段（原地修改并返回同一列表）。
+
+    每台查主 VNIC 的公网 IPv4（get_public_ip），写入
+    inst["public-ip"]。TERMINATED / TERMINATING 的实例跳过不查
+    （已无 VNIC，直接记 None）；单台查询失败（异常）或无公网 IP
+    时该台记 None，不抛异常，不让一台实例拖垮整个列表。
+    max_workers 控制并行度（默认 5；OCI CLI 调用是 subprocess，
+    并行安全）。
+    """
+    todo = []
+    for idx, inst in enumerate(instances):
+        state = (inst.get("lifecycle-state") or "").upper()
+        if state in ("TERMINATED", "TERMINATING") or not inst.get("id"):
+            inst["public-ip"] = None
+        else:
+            todo.append(idx)
+    if not todo:
+        return instances
+
+    def _fetch(idx):
+        try:
+            return get_public_ip(cli, instances[idx]["id"])
+        except Exception:  # noqa: BLE001 - 单台失败记 None，不拖垮列表
+            return None
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        ips = list(pool.map(_fetch, todo))
+    for idx, ip in zip(todo, ips):
+        instances[idx]["public-ip"] = ip
+    return instances
 
 
 def get_vnic(cli, vnic_id):

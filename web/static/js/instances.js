@@ -636,6 +636,13 @@
       deleteIpv6(inst);
     });
 
+    // 启动盘弹窗里的"备份启动卷"：配额检查 + 满了提示删最早，全在共享流程里
+    document.getElementById("btn-boot-volume-backup").addEventListener("click", async function () {
+      if (!bootVolumeTarget || !bootVolumeTarget.volumeId) return;
+      var created = await RBot.backupBootVolume(bootVolumeTarget.volumeId, currentProfile);
+      if (created) RBot.closeModal("boot-volume-modal");
+    });
+
     // 启动盘扩容：前端先校验新容量大于当前容量，后端再校验一次
     document.getElementById("boot-volume-form").addEventListener("submit", async function (e) {
       e.preventDefault();

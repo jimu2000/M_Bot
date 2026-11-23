@@ -116,6 +116,23 @@ def resolve_volume(context, idx):
     return None
 
 
+def store_boot_backups(context, backups):
+    """把启动卷备份列表存进 user_data，供备份回调按下标取回。"""
+    context.user_data["boot_backups"] = list(backups)
+
+
+def resolve_boot_backup(context, idx):
+    """按下标取启动卷备份字典；下标无效返回 None。"""
+    try:
+        idx = int(idx)
+    except (TypeError, ValueError):
+        return None
+    backups = context.user_data.get("boot_backups") or []
+    if 0 <= idx < len(backups):
+        return backups[idx]
+    return None
+
+
 # ---------------- 同步调用包装 ----------------
 
 async def run_sync(func, *args, **kwargs):
@@ -132,23 +149,81 @@ def _tail(ocid):
     return f"…{ocid[-OCID_TAIL_LEN:]}"
 
 
-def fmt_instance_line(inst):
-    """实例列表里的一行：名称 | 规格 | 状态 | 公网 IP（如果有）。"""
-    name = inst.get("display-name") or _tail(inst.get("id"))
-    shape = (inst.get("shape") or "").replace("VM.Standard.", "")
-    state = inst.get("lifecycle-state", "?")
-    return f"• {name}\n  {shape} | {state}"
+def short_shape(shape):
+    """规格简称，放按钮上：A1.Flex → A1，E2.1.Micro → E2，E5.Flex → E5。
+
+    只留第一段（按钮放不下全名）；空规格返回 "?"。
+    """
+    shape = (shape or "").replace("VM.Standard.", "")
+    if not shape:
+        return "?"
+    return shape.split(".")[0]
+
+
+# 实例列表分组：组顺序与组头（fmt_instance_list 与
+# instance_list_keyboard 共用，保证文字与按钮顺序一致）。
+INSTANCE_GROUP_ORDER = ("RUNNING", "STOPPED", "TERMINATED")
+INSTANCE_GROUP_TITLES = {
+    "RUNNING": "🟢 运行中",
+    "STOPPED": "🟡 已停止",
+    "TERMINATED": "⚫ 已终止",
+}
+INSTANCE_GROUP_OTHER_TITLE = "❓ 其他"
+
+
+def instance_group_title(state):
+    """状态对应的分组标题（不含数量）；未知状态归入“其他”。"""
+    state = (state or "").upper()
+    return INSTANCE_GROUP_TITLES.get(state, INSTANCE_GROUP_OTHER_TITLE)
+
+
+def sort_instances_by_group(instances):
+    """按状态分组排序：返回 [(原下标, 实例)]。
+
+    组顺序：RUNNING → STOPPED → TERMINATED → 其他状态；组内保持
+    原列表顺序。下标是实例在原列表里的下标（回调按它取回，见
+    store_instances，绝对不能用分组后的下标）。
+    """
+    order = {state: i for i, state in enumerate(INSTANCE_GROUP_ORDER)}
+    fallback = len(INSTANCE_GROUP_ORDER)
+    indexed = list(enumerate(instances))
+    indexed.sort(key=lambda pair: (
+        order.get((pair[1].get("lifecycle-state") or "").upper(),
+                  fallback),
+        pair[0]))
+    return indexed
 
 
 def fmt_instance_list(instances, profile):
-    """实例列表全文。"""
+    """实例列表的文字部分：只剩标题 + 各组数量 + 操作提示。
+
+    每台实例的信息（名称 / A1·E2 / 公网 IP）都在按钮上
+    （见 keyboards.instance_list_keyboard），文字不再逐台
+    重复，否则文字列表和按钮列表会同时出现两份。
+    空组不显示。
+    """
     if not instances:
         return f"[{profile}] 该账号下没有实例。"
-    lines = [f"[{profile}] 实例列表（{len(instances)} 台）：", ""]
-    for inst in instances:
-        lines.append(fmt_instance_line(inst))
-    lines.append("")
-    lines.append("点下面按钮查看详情或操作。")
+    ordered = sort_instances_by_group(instances)
+    counts = {}
+    for _idx, inst in ordered:
+        title = instance_group_title(inst.get("lifecycle-state"))
+        counts[title] = counts.get(title, 0) + 1
+    # 按组顺序排数量，如“🟢 运行中 3 台 · ⚫ 已终止 9 台”。
+    parts = []
+    for state in INSTANCE_GROUP_ORDER:
+        title = INSTANCE_GROUP_TITLES[state]
+        if title in counts:
+            parts.append(f"{title} {counts[title]} 台")
+    other = counts.get(INSTANCE_GROUP_OTHER_TITLE)
+    if other:
+        parts.append(f"{INSTANCE_GROUP_OTHER_TITLE} {other} 台")
+    lines = [
+        f"[{profile}] 实例列表（{len(instances)} 台）：",
+        " · ".join(parts),
+        "",
+        "点下面按钮查看详情或操作。",
+    ]
     return "\n".join(lines)
 
 

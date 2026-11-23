@@ -104,6 +104,19 @@ def reply_text_of(update):
     return args[0] if args else None
 
 
+def reply_button_texts_of(update):
+    """取 update 上 reply_text 最后一次调用的键盘按钮文字。"""
+    mock = update.effective_message.reply_text
+    if not mock.await_args_list:
+        return []
+    _args, kwargs = mock.await_args_list[-1]
+    keyboard = kwargs.get("reply_markup")
+    if keyboard is None:
+        return []
+    return [btn.text
+            for row in keyboard.inline_keyboard for btn in row]
+
+
 def fake_cli_run(args, **kwargs):
     """按命令返回 canned 数据的 cli.run 替身（dispatch 冒烟测试用）。"""
     if args[:2] == ["usage-api", "usage-summary"]:
@@ -895,14 +908,36 @@ class TestIpIpv6ResumeResizeVolumes(HandlersExtraTestCase):
 
     async def test_handle_resume_lists_stopped_only(self):
         with patch.object(he, "list_instances",
-                          return_value=FAKE_INSTANCES):
+                          return_value=FAKE_INSTANCES), \
+                patch.object(he, "attach_public_ips",
+                             side_effect=lambda cli, insts: insts):
             update = make_update()
             context = make_context()
             await he.handle_resume(update, context)
-        text = reply_text_of(update)
-        self.assertIn("e2-test", text)
-        self.assertNotIn("web-server", text)
+        # 文字只剩标题；实例在按钮上，且只有 STOPPED 的那台。
+        texts = reply_button_texts_of(update)
+        self.assertIn("e2-test · E2 · 已停止", texts)
+        self.assertNotIn("web-server", " ".join(texts))
         self.assertEqual(len(context.user_data["instances"]), 1)
+
+    async def test_handle_resume_enriches_ip(self):
+        # 菜单 3 同样补公网 IP 再存、再格式化。
+        # 203.0.113.10 是 TEST-NET-3 文档保留地址，非真实 IP。
+        enriched = [dict(FAKE_INSTANCES[1],
+                         **{"public-ip": "203.0.113.10"})]
+        with patch.object(he, "list_instances",
+                          return_value=FAKE_INSTANCES), \
+                patch.object(he, "attach_public_ips",
+                             return_value=enriched) as mock_attach:
+            update = make_update()
+            context = make_context()
+            await he.handle_resume(update, context)
+        mock_attach.assert_called_once()
+        self.assertEqual(context.user_data["instances"], enriched)
+        # IP 在对应按钮上（文字只剩标题）。
+        self.assertIn("e2-test · E2 · 203.0.113.10",
+                      reply_button_texts_of(update))
+        self.assertNotIn("203.0.113.10", reply_text_of(update))
 
     async def test_handle_resume_none_stopped(self):
         with patch.object(he, "list_instances",

@@ -10,12 +10,13 @@
 import os
 import sys
 import unittest
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock, call, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from oci.client import NotFoundError, OCIClient
-from oci.network import (assign_public_ip, change_public_ip,
+from oci.client import NotFoundError, OCIClient, OCIError
+from oci.network import (assign_public_ip, attach_public_ips,
+                         change_public_ip,
                          create_reserved_ip, delete_public_ip, get_public_ip,
                          get_vnic, list_private_ips, list_public_ips,
                          list_vnics)
@@ -311,6 +312,65 @@ class TestChangePublicIp(unittest.TestCase):
             change_public_ip(self.cli, FAKE_COMPARTMENT, FAKE_INSTANCE)
         # 只查了 VNIC + 内网 IP 就停下，没有创建任何 IP
         self.assertEqual(self.cli.run.call_count, 2)
+
+
+class TestAttachPublicIps(unittest.TestCase):
+    """attach_public_ips：并行补 IP、跳过已终止、单台失败记 None。"""
+
+    def setUp(self):
+        self.cli = _mock_cli()
+
+    def _inst(self, inst_id, state):
+        return {"id": inst_id, "display-name": inst_id[-4:],
+                "shape": "VM.Standard.A1.Flex", "lifecycle-state": state,
+                "time-created": "2026-11-20T00:00:00Z"}
+
+    def test_attaches_ips_and_returns_same_list(self):
+        instances = [self._inst("ocid1.instance.oc1..aaaa", "RUNNING"),
+                     self._inst("ocid1.instance.oc1..bbbb", "STOPPED")]
+        with patch("oci.network.get_public_ip",
+                   side_effect=["203.0.113.10", None]) as mock_get:
+            result = attach_public_ips(self.cli, instances)
+        self.assertIs(result, instances)
+        self.assertEqual(instances[0]["public-ip"], "203.0.113.10")
+        self.assertIsNone(instances[1]["public-ip"])
+        self.assertEqual(mock_get.call_count, 2)
+
+    def test_skips_terminated_and_terminating(self):
+        instances = [self._inst("ocid1.instance.oc1..aaaa", "RUNNING"),
+                     self._inst("ocid1.instance.oc1..bbbb", "TERMINATED"),
+                     self._inst("ocid1.instance.oc1..cccc", "TERMINATING")]
+        with patch("oci.network.get_public_ip",
+                   return_value=FAKE_IP) as mock_get:
+            attach_public_ips(self.cli, instances)
+        # 只查了 RUNNING 的那台，已终止/终止中的不查。
+        mock_get.assert_called_once_with(
+            self.cli, "ocid1.instance.oc1..aaaa")
+        self.assertEqual(instances[0]["public-ip"], FAKE_IP)
+        self.assertIsNone(instances[1]["public-ip"])
+        self.assertIsNone(instances[2]["public-ip"])
+
+    def test_single_failure_becomes_none(self):
+        instances = [self._inst("ocid1.instance.oc1..aaaa", "RUNNING"),
+                     self._inst("ocid1.instance.oc1..bbbb", "RUNNING")]
+        with patch("oci.network.get_public_ip",
+                   side_effect=[OCIError("boom"), FAKE_IP]):
+            attach_public_ips(self.cli, instances)
+        self.assertIsNone(instances[0]["public-ip"])
+        self.assertEqual(instances[1]["public-ip"], FAKE_IP)
+
+    def test_missing_id_not_queried(self):
+        instances = [{"display-name": "no-id",
+                      "lifecycle-state": "RUNNING"}]
+        with patch("oci.network.get_public_ip") as mock_get:
+            attach_public_ips(self.cli, instances)
+        mock_get.assert_not_called()
+        self.assertIsNone(instances[0]["public-ip"])
+
+    def test_empty_list(self):
+        with patch("oci.network.get_public_ip") as mock_get:
+            self.assertEqual(attach_public_ips(self.cli, []), [])
+        mock_get.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ callback_data 规范（Telegram 限制 64 字节，OCID 约 100 字节放不下�
   - "m:<key>"        主菜单项（start 菜单）
   - "i:list"         实例列表
   - "i:detail:<idx>" 实例详情（idx 是 context.user_data["instances"] 的下标）
+  - "i:noop"         实例列表的分组标题按钮：点它只应答，不做任何事
   - "i:<act>:<idx>"  实例操作：start/stop/restart/terminate/ip/resize/
     rename（改名，需回复文字）/reinstall（重装，需输入实例名确认）/
     console（串行控制台）
@@ -59,6 +60,12 @@ callback_data 规范（Telegram 限制 64 字节，OCID 约 100 字节放不下�
 """
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+from tgbot.services import (
+    instance_group_title,
+    short_shape,
+    sort_instances_by_group,
+)
 
 # ================= 配置区（改这里） =================
 # /oracle 菜单：(callback key, 显示文字)，1-34 项与 R-Bot 的 34 项菜单对应
@@ -171,17 +178,50 @@ def main_menu_keyboard():
     ])
 
 
+def _instance_button_text(inst):
+    """实例按钮文字：名称 · A1/E2 · 公网 IP 或状态词。
+
+    有公网 IP 时显示 IP（`名称 · E2 · 1.2.3.4`）；没有 IP 时
+    显示状态词（运行中 / 已停止 / 已终止 / 原状态英文）。
+    按钮就是唯一的列表，文字部分只剩标题，不再逐台重复。
+    """
+    name = inst.get("display-name") or inst.get("id", "")[-4:]
+    shape = short_shape(inst.get("shape"))
+    ip = inst.get("public-ip")
+    if ip:
+        return f"{name} · {shape} · {ip}"
+    state = (inst.get("lifecycle-state") or "").upper()
+    state_word = {"RUNNING": "运行中", "STOPPED": "已停止",
+                  "TERMINATED": "已终止"}.get(state, state or "?")
+    return f"{name} · {shape} · {state_word}"
+
+
 def instance_list_keyboard(instances):
-    """实例列表键盘：每台一个按钮，callback 带下标（不是 OCID）。
+    """实例列表键盘：按状态分组，每组一行标题按钮 + 每台一个按钮。
 
     instances 是 instance.list_instances 返回的精简列表。
+    分组顺序与 fmt_instance_list 一致（RUNNING → STOPPED →
+    TERMINATED → 其他），共用 sort_instances_by_group。
+    标题按钮的 callback_data 是 "i:noop"（点它只应答，不做任何事）；
+    实例按钮的 callback_data 带原列表下标（不是分组后的下标），
+    因为 store_instances 存的是原始顺序列表，回调按原下标取回。
+    实例按钮文字带规格简称（A1/E2）与公网 IP（运行中才有）。
     """
+    ordered = sort_instances_by_group(instances)
+    counts = {}
+    for _idx, inst in ordered:
+        title = instance_group_title(inst.get("lifecycle-state"))
+        counts[title] = counts.get(title, 0) + 1
     rows = []
-    for idx, inst in enumerate(instances):
-        name = inst.get("display-name") or inst.get("id", "")[-4:]
-        state = inst.get("lifecycle-state", "?")
+    current_group = None
+    for idx, inst in ordered:
+        group = instance_group_title(inst.get("lifecycle-state"))
+        if group != current_group:
+            current_group = group
+            rows.append([InlineKeyboardButton(
+                f"{group}（{counts[group]} 台）：", callback_data="i:noop")])
         rows.append([InlineKeyboardButton(
-            f"{name} ({state})", callback_data=f"i:detail:{idx}")])
+            _instance_button_text(inst), callback_data=f"i:detail:{idx}")])
     rows.append([InlineKeyboardButton("🔄 刷新", callback_data="i:list"),
                  InlineKeyboardButton("◀ Oracle 菜单", callback_data="o:menu")])
     return InlineKeyboardMarkup(rows)

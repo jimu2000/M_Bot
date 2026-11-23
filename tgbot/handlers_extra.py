@@ -18,7 +18,7 @@
     如何提示）。
   - "c:<action>:<idx>" 确认回调由 handlers.py 转发给
     handle_confirm(action, idx, update, context)。
-  - 其余回调（b:/t:/p:/r:/v:/ba:/g:/k:/s:/os:/pl:/cl:/ip_create/ip_delete:/u:）
+  - 其余回调（b:/t:/p:/r:/v:/bb:/ba:/g:/k:/s:/os:/pl:/cl:/ip_create/ip_delete:/u:）
     由 bot.py 直接注册到本模块的对应函数，不经过 handlers.py。
     开机表单矩阵的回调（bf: 前缀）与快捷开机一键启动（b:load:）也在
     本模块，表单状态机与键盘在 tgbot/boot_form.py 里。
@@ -122,12 +122,26 @@ from tgbot.services import (
     get_compartment,
     get_current_profile,
     require_allowed,
+    resolve_boot_backup,
     resolve_instance,
     resolve_volume,
     run_sync,
     set_current_profile,
+    store_boot_backups,
     store_instances,
     store_volumes,
+)
+from oci.boot_backup import (
+    DEFAULT_RESTORE_MEMORY_GB,
+    DEFAULT_RESTORE_OCPUS,
+    DEFAULT_RESTORE_SHAPE,
+    check_backup_quota,
+    create_boot_volume_backup,
+    create_boot_volume_backup_with_limit_retry,
+    delete_boot_volume_backup,
+    get_source_instance_shape,
+    list_boot_volume_backups,
+    restore_boot_volume_backup,
 )
 from oci.client import QuotaExceededError
 from oci.email import create_sender, is_valid_email
@@ -155,6 +169,7 @@ from oci.instance import (
     stop_instance,
 )
 from oci.network import (
+    attach_public_ips,
     change_public_ip,
     create_ipv6,
     create_reserved_ip,
@@ -171,7 +186,14 @@ from oci.objectstorage import (
     list_buckets,
     list_objects,
 )
-from oci.quota import a1_health_check, can_launch, can_launch_batch, get_free_tier_summary
+from oci.quota import (
+    SHAPE_A1_FLEX,
+    a1_health_check,
+    can_launch,
+    can_launch_batch,
+    check_a1_single_instance_cap,
+    get_free_tier_summary,
+)
 from oci.volume import (
     delete_boot_volume,
     get_boot_volume,
@@ -191,7 +213,7 @@ from tgbot.client_ops import (
     ufw_allow_port,
     upgrade_client,
 )
-from web.tasks import PLANS
+from web.tasks import PLAN_DEFAULTS, PLANS
 
 try:
     # Cloudflare DNS 客户端：clouds/cloudflare.py 由另一工人并行编写。
@@ -663,6 +685,40 @@ def fmt_volume_detail(volume):
     return "\n".join(lines)
 
 
+def _fmt_backup_time(value):
+    """备份 ISO 时间转 "YYYY-MM-DD HH:MM"（显示用）。"""
+    text = (value or "")[:16].replace("T", " ")
+    return text or "未知时间"
+
+
+def fmt_boot_backup_list(backups, count, limit, full):
+    """启动卷备份列表全文（R-Bot 没有备份功能，这是 M_Bot 独有的）。"""
+    lines = [f"💾 启动卷备份（免费额度 {count}/{limit}"
+             f"{'，已满' if full else ''}）：", ""]
+    if not backups:
+        lines.append("• 暂无备份")
+    for backup in backups:
+        name = backup.get("display-name") or "?"
+        size = backup.get("size-in-gbs", "?")
+        state = backup.get("lifecycle-state", "?")
+        created = _fmt_backup_time(backup.get("time-created"))
+        lines.append(f"• {name}：{size}GB（{state}，{created}）")
+    lines.append("")
+    lines.append("点下面按钮恢复（开一台新实例，原机不动）或删除。")
+    return "\n".join(lines)
+
+
+def fmt_backup_quota_full(count, limit, oldest):
+    """备份额度满了时的提示文案（与面板弹窗措辞一致）。"""
+    base = f"免费备份已满（{count}/{limit}）"
+    if not oldest:
+        return base + "，请删除旧备份后再试。"
+    name = oldest.get("display-name") or oldest.get("id") or "?"
+    created = _fmt_backup_time(oldest.get("time-created"))
+    return (f"{base}，最早的备份是「{name}」（{created}），"
+            "是否删除它以腾出位置？")
+
+
 def read_local_load():
     """读本机负载与内存（/proc/loadavg 与 /proc/meminfo）。
 
@@ -735,24 +791,45 @@ def resize_preset_keyboard(idx):
 
 
 def volume_list_keyboard(volumes):
-    """磁盘列表键盘：每块盘一个详情按钮。"""
+    """磁盘列表键盘：每块盘一个详情按钮 + 启动卷备份入口。"""
     rows = []
     for idx, vol in enumerate(volumes):
         name = vol.get("display-name") or (vol.get("id") or "")[-4:]
         rows.append([InlineKeyboardButton(
             f"{name}（{vol.get('size-in-gbs')}GB）",
             callback_data=f"v:detail:{idx}")])
+    rows.append([InlineKeyboardButton("💾 启动卷备份", callback_data="bb:list")])
     rows.append([InlineKeyboardButton("◀ Oracle 菜单", callback_data="o:menu")])
     return InlineKeyboardMarkup(rows)
 
 
 def volume_actions_keyboard(idx):
-    """单个磁盘的操作键盘：扩容 / 删除。"""
+    """单个磁盘的操作键盘：扩容 / 备份 / 删除。"""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📐 扩容", callback_data=f"v:resize:{idx}"),
+         InlineKeyboardButton("💾 备份启动卷", callback_data=f"v:backup:{idx}"),
          InlineKeyboardButton("🗑️ 删除", callback_data=f"v:delete:{idx}")],
         [InlineKeyboardButton("◀ 磁盘列表", callback_data="o:volumes")],
     ])
+
+
+def boot_backup_list_keyboard(backups):
+    """启动卷备份列表键盘：每个备份一行恢复/删除按钮。
+
+    只有 AVAILABLE 状态的备份才能恢复，非 AVAILABLE 的备份只给删除按钮。
+    """
+    rows = []
+    for idx, backup in enumerate(backups):
+        name = backup.get("display-name") or (backup.get("id") or "")[-4:]
+        row = []
+        if (backup.get("lifecycle-state") or "").upper() == "AVAILABLE":
+            row.append(InlineKeyboardButton(
+                f"♻️ 恢复「{name}」", callback_data=f"bb:restore:{idx}"))
+        row.append(InlineKeyboardButton(
+            f"🗑️ 删除「{name}」", callback_data=f"bb:delete:{idx}"))
+        rows.append(row)
+    rows.append([InlineKeyboardButton("◀ 磁盘列表", callback_data="o:volumes")])
+    return InlineKeyboardMarkup(rows)
 
 
 def volume_resize_keyboard(idx):
@@ -1574,6 +1651,8 @@ async def handle_resume(update, context):
         await _reply(update, "没有被暂停（STOPPED）的实例。",
                      reply_markup=back_to_oracle_keyboard())
         return
+    # 补公网 IP（并行查，单台失败记 None），再存、再格式化。
+    stopped = await run_sync(attach_public_ips, get_cli(context), stopped)
     store_instances(context, stopped)
     await _reply(update, fmt_instance_list(stopped, get_current_profile(context)),
                  reply_markup=instance_list_keyboard(stopped))
@@ -1754,6 +1833,114 @@ async def volume_delete_callback(update, context):
         "删除后数据永久丢失，无法恢复。\n"
         "挂在实例上的盘删不掉，必须先终止实例（或先分离）。",
         reply_markup=confirm_keyboard("delvol", idx, "🗑️ 确认删除"))
+
+
+# ---- 7b. 启动卷备份与恢复（R-Bot 没有，M_Bot 独有） ----
+
+@require_allowed
+async def boot_backups_callback(update, context):
+    """回调 "bb:list"：启动卷备份列表 + 免费额度。"""
+    cli = get_cli(context)
+    compartment = get_compartment(context)
+    try:
+        backups = await run_sync(list_boot_volume_backups, cli, compartment)
+        count, limit, full, _oldest = await run_sync(
+            check_backup_quota, cli, compartment)
+    except Exception as exc:  # noqa: BLE001
+        await _reply(update, fmt_error(exc))
+        return
+    store_boot_backups(context, backups)
+    await _reply(update, fmt_boot_backup_list(backups, count, limit, full),
+                 reply_markup=boot_backup_list_keyboard(backups))
+
+
+@require_allowed
+async def volume_backup_callback(update, context):
+    """回调 "v:backup:<idx>"：给该启动卷做 FULL 全量备份。
+
+    先查免费额度：未满直接创建；满了则提示最早备份信息 + 确认键盘，
+    真正"删最早再创建"在 handle_confirm("deloldestbb")。
+    """
+    idx = _callback_data(update).split(":")[-1]
+    vol = resolve_volume(context, idx)
+    if vol is None:
+        await _reply(update, "磁盘不存在或已过期，请重新打开磁盘列表。")
+        return
+    cli = get_cli(context)
+    compartment = get_compartment(context)
+    try:
+        count, limit, full, oldest = await run_sync(
+            check_backup_quota, cli, compartment)
+    except Exception as exc:  # noqa: BLE001
+        await _reply(update, fmt_error(exc))
+        return
+    name = vol.get("display-name") or "?"
+    if full:
+        await _reply(
+            update,
+            fmt_backup_quota_full(count, limit, oldest),
+            reply_markup=confirm_keyboard(
+                "deloldestbb", idx, "🗑 删除最早备份并继续"))
+        return
+    try:
+        backup = await run_sync(create_boot_volume_backup, cli, vol["id"])
+    except Exception as exc:  # noqa: BLE001
+        await _reply(update, fmt_error(exc))
+        return
+    backup_name = backup.get("display-name") or "?"
+    await _reply(update,
+                 f"✅ {name} 的备份「{backup_name}」创建中，"
+                 f"几分钟后可用（免费额度 {count + 1}/{limit}）。")
+
+
+@require_allowed
+async def boot_backup_restore_callback(update, context):
+    """回调 "bb:restore:<idx>"：从备份恢复——先让用户输入新实例名。
+
+    只有 AVAILABLE 状态的备份才能恢复；新实例名由用户回复文字
+    （发"默认"则用"<备份名>-restored"），见 text_input_callback
+    的 "restore_name" 分支；真正执行在 handle_confirm("restorebb")。
+    形状默认用备份来源实例的形状（查不到用 A1 1核/6GB）。
+    """
+    idx = _callback_data(update).split(":")[-1]
+    backup = resolve_boot_backup(context, idx)
+    if backup is None:
+        await _reply(update, "备份不存在或已过期，请重新打开启动卷备份列表。")
+        return
+    if (backup.get("lifecycle-state") or "").upper() != "AVAILABLE":
+        await _reply(update,
+                     f"备份「{backup.get('display-name') or '?'}」当前状态是 "
+                     f"{backup.get('lifecycle-state') or '未知'}，"
+                     "只有 AVAILABLE 状态的备份才能恢复。")
+        return
+    context.user_data["pending_input"] = {"kind": "restore_name", "idx": idx}
+    await _reply(
+        update,
+        f"♻️ 从备份「{backup.get('display-name') or '?'}」恢复出一台"
+        "新实例（原机不动）。\n"
+        "请回复新实例名，或直接发送“默认”使用 "
+        f"「{backup.get('display-name') or 'backup'}-restored」。\n"
+        "形状默认用备份来源实例的形状（查不到用 A1 1核/6GB）；"
+        "恢复前会预检免费额度，额度不够会拦截。")
+
+
+@require_allowed
+async def boot_backup_delete_callback(update, context):
+    """回调 "bb:delete:<idx>"：删除备份警告 + 二次确认键盘。
+
+    真正执行在 handle_confirm("delbb")。
+    """
+    idx = _callback_data(update).split(":")[-1]
+    backup = resolve_boot_backup(context, idx)
+    if backup is None:
+        await _reply(update, "备份不存在或已过期，请重新打开启动卷备份列表。")
+        return
+    name = backup.get("display-name") or "?"
+    await _reply(
+        update,
+        f"⚠️ 即将删除备份 {name}（{backup.get('size-in-gbs')}GB）！\n"
+        "删除后无法再用它恢复实例，不可恢复。",
+        reply_markup=confirm_keyboard("delbb", idx, "🗑️ 确认删除备份"))
 
 
 # ---- 8. 云账户管理 / 30. 批量查询邮箱 ----
@@ -2677,7 +2864,7 @@ def fmt_serial_console(name, console):
 async def text_input_callback(update, context):
     """处理用户回复的纯文字输入（改名 / 重装确认 / SSL 添加域名 /
     Email 发件人 / 用户改描述 / 用户改邮箱 / 用户删除确认 /
-    开机表单自定义值 / 开机脚本粘贴）。
+    从备份恢复的新实例名 / 开机表单自定义值 / 开机脚本粘贴）。
 
     只在 user_data["pending_input"] 存在时处理；否则忽略
     （机器人平时不处理自由文字）。改名：校验后弹二次确认；
@@ -2768,6 +2955,34 @@ async def text_input_callback(update, context):
                      reply_markup=confirm_keyboard(
                          "deluser", pending.get("idx"), "🗑️ 确认删除"))
         return
+    if kind == "restore_name":
+        # 从备份恢复：输入新实例名（发"默认"用"<备份名>-restored"）。
+        context.user_data.pop("pending_input", None)
+        backup = resolve_boot_backup(context, pending.get("idx"))
+        if backup is None:
+            await _reply(update, "备份不存在或已过期，请重新打开启动卷备份列表。")
+            return
+        backup_name = backup.get("display-name") or "backup"
+        if text in ("默认", "default"):
+            new_name = f"{backup_name}-restored"
+        else:
+            if not text:
+                await _reply(update, "新实例名不能为空，恢复已取消。")
+                return
+            if len(text) > MAX_DISPLAY_NAME_LEN:
+                await _reply(update,
+                             f"新实例名不能超过 {MAX_DISPLAY_NAME_LEN} 字符，"
+                             "恢复已取消。")
+                return
+            new_name = text
+        context.user_data["pending_restore_name"] = new_name
+        await _reply(update,
+                     f"确认从备份「{backup_name}」恢复出新实例"
+                     f"「{new_name}」？\n"
+                     "原机不动，恢复会占用免费实例与启动盘额度。",
+                     reply_markup=confirm_keyboard(
+                         "restorebb", pending.get("idx"), "✅ 确认恢复"))
+        return
     idx = pending.get("idx")
     inst = resolve_instance(context, idx)
     if inst is None:
@@ -2847,6 +3062,12 @@ async def handle_confirm(action, idx, update, context):
       - changeip：换实例公网 IP（旧 IP 释放，DNS 需同步更新）。
       - resize：A1 升/降配（目标规格在 user_data["pending_resize"]）。
       - delvol：删除启动盘。
+      - delbb：删除启动卷备份。
+      - deloldestbb：删除最早备份后再给该启动盘创建新备份（idx 是
+        user_data["volumes"] 的下标；额度满了时"删除最早备份并继续"）。
+      - restorebb：从备份恢复出新实例（新实例名在
+        user_data["pending_restore_name"]，idx 是
+        user_data["boot_backups"] 的下标）。
       - delmfa：删除全部 MFA TOTP 设备（idx 无用，传 0）。
       - rename：改实例名（新名在 user_data["pending_rename_name"]）。
       - reinstall：重装系统（用当前镜像重建引导卷）。
@@ -2941,6 +3162,130 @@ async def handle_confirm(action, idx, update, context):
             return True
         name = vol.get("display-name") or "?"
         await _reply(update, f"✅ 启动盘 {name} 已删除。")
+        return True
+
+    if action == "delbb":
+        backup = resolve_boot_backup(context, idx)
+        if backup is None:
+            await _reply(update, "备份不存在或已过期，请重新打开启动卷备份列表。")
+            return True
+        try:
+            await run_sync(delete_boot_volume_backup, get_cli(context),
+                           backup["id"])
+        except Exception as exc:  # noqa: BLE001
+            await _reply(update, fmt_error(exc))
+            return True
+        name = backup.get("display-name") or "?"
+        await _reply(update, f"✅ 备份 {name} 已删除。")
+        return True
+
+    if action == "deloldestbb":
+        vol = resolve_volume(context, idx)
+        if vol is None:
+            await _reply(update, "磁盘不存在或已过期，请重新打开磁盘列表。")
+            return True
+        cli = get_cli(context)
+        compartment = get_compartment(context)
+        try:
+            # 重新查一次配额，取当前最早的备份（用户确认期间可能有变化）。
+            _count, _limit, _full, oldest = await run_sync(
+                check_backup_quota, cli, compartment)
+            if oldest is None:
+                await _reply(update, "没有可删除的备份，请重新点备份。")
+                return True
+            await run_sync(delete_boot_volume_backup, cli, oldest["id"])
+            # 删完立即创建可能撞上 OCI 配额同步延迟（LimitExceeded），
+            # 用带重试的创建（实测 2026-11-24 芝加哥）。
+            backup = await run_sync(
+                create_boot_volume_backup_with_limit_retry, cli, vol["id"])
+        except Exception as exc:  # noqa: BLE001
+            await _reply(update, fmt_error(exc))
+            return True
+        old_name = oldest.get("display-name") or "?"
+        new_name = backup.get("display-name") or "?"
+        await _reply(update,
+                     f"✅ 已删除最早备份「{old_name}」，"
+                     f"新备份「{new_name}」创建中，几分钟后可用。")
+        return True
+
+    if action == "restorebb":
+        backup = resolve_boot_backup(context, idx)
+        if backup is None:
+            await _reply(update, "备份不存在或已过期，请重新打开启动卷备份列表。")
+            return True
+        display_name = context.user_data.pop("pending_restore_name", None)
+        if not display_name:
+            await _reply(update, "新实例名已过期，请重新点恢复并输入实例名。")
+            return True
+        cli = get_cli(context)
+        compartment = get_compartment(context)
+        # 形状：备份来源实例的形状，查不到用默认 A1 1核/6GB。
+        try:
+            detected = await run_sync(get_source_instance_shape, cli,
+                                      compartment, backup)
+        except Exception:  # noqa: BLE001 - 来源查不到就兜底默认形状
+            detected = None
+        if detected:
+            shape, ocpus, memory_gb = detected
+        else:
+            shape, ocpus, memory_gb = (DEFAULT_RESTORE_SHAPE,
+                                       DEFAULT_RESTORE_OCPUS,
+                                       DEFAULT_RESTORE_MEMORY_GB)
+        if shape.endswith(".Flex"):
+            if ocpus is None:
+                ocpus = DEFAULT_RESTORE_OCPUS
+            if memory_gb is None:
+                memory_gb = DEFAULT_RESTORE_MEMORY_GB
+        # A1 单台上限 + 免费额度预检（启动盘按备份实际大小算）。
+        if shape == SHAPE_A1_FLEX:
+            cap_error = check_a1_single_instance_cap(ocpus, memory_gb)
+            if cap_error:
+                await _reply(update, f"❌ {cap_error}")
+                return True
+        try:
+            ok, reason = await run_sync(
+                can_launch_batch, cli, compartment, shape,
+                ocpus=ocpus or 0, memory_gb=memory_gb or 0, count=1,
+                boot_volume_size_gbs=backup.get("size-in-gbs") or 47)
+        except Exception as exc:  # noqa: BLE001
+            await _reply(update, fmt_error(exc))
+            return True
+        if not ok:
+            await _reply(update, f"❌ 配额预检不通过：{reason}")
+            return True
+        availability_domain = PLAN_DEFAULTS["availability_domain"]
+        subnet_id = PLAN_DEFAULTS["subnet_id"]
+        ssh_keys_file = PLAN_DEFAULTS["ssh_keys_file"]
+        if availability_domain in (None, "", "xxxx:AP-SINGAPORE-1-AD-1"):
+            await _reply(update,
+                         "❌ 未配置可用域：请在部署环境变量 RBOT_PLAN_AD 里配置。")
+            return True
+        if subnet_id in (None, "", "ocid1.subnet.oc1..xxxxxxxx"):
+            await _reply(update,
+                         "❌ 未配置子网：请在部署环境变量 "
+                         "RBOT_PLAN_SUBNET_ID 里配置。")
+            return True
+        if ssh_keys_file in (None, "", "/path/to/keys.pub"):
+            # 恢复出来的系统保留原机的 authorized_keys，原密钥照样能登录，
+            # 所以 SSH 公钥文件不是必须的；没配就传空字符串。
+            ssh_keys_file = ""
+        await _reply(update,
+                     f"♻️ 正在从备份重建启动盘并开机「{display_name}」，"
+                     "需要几分钟，请稍候…")
+        try:
+            result = await run_sync(
+                restore_boot_volume_backup, cli, compartment, backup["id"],
+                availability_domain=availability_domain,
+                subnet_id=subnet_id, display_name=display_name,
+                ssh_keys_file=ssh_keys_file, shape=shape, ocpus=ocpus,
+                memory_gb=memory_gb, assign_public_ip=True)
+        except Exception as exc:  # noqa: BLE001
+            await _reply(update, fmt_error(exc))
+            return True
+        instance_id = result.get("instance_id") or ""
+        await _reply(update,
+                     f"✅ 恢复成功，新实例「{display_name}」已开机"
+                     f"（{shape}）。\n实例 ID：…{instance_id[-12:]}")
         return True
 
     if action == "delmfa":

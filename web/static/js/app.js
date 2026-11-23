@@ -262,6 +262,55 @@
     });
   }
 
+  /* ---------- 启动卷备份（启动盘页与实例卡片弹窗共用） ---------- */
+  // 创建备份流程（核心用户要求）：
+  //   1. 先调配额接口；未满直接创建。
+  //   2. 已满则弹窗提示最早备份，点"删除最早备份并继续"时后端先删
+  //      最早备份再创建；点取消什么都不做。
+  // 成功返回备份对象，失败/取消返回 null；调用方成功后自行刷新列表。
+  async function backupBootVolume(volumeId, profile) {
+    var prof = profile || getProfile();
+    var quota;
+    try {
+      quota = await api(withProfile("/api/boot-backups/quota", prof));
+    } catch (e) {
+      toast("配额检查失败：" + (e && e.message ? e.message : e), "error");
+      return null;
+    }
+    var deleteOldest = false;
+    if (quota.full) {
+      var oldest = quota.oldest || {};
+      var oldestName = oldest.name || oldest.id || "?";
+      var oldestTime = formatTime(oldest.time_created);
+      var ok = await confirmDialog(
+        "免费备份已满",
+        "<p>免费备份已满（" + quota.count + "/" + quota.limit + "），" +
+          "最早的备份是「" + escapeHtml(oldestName) + "」（" +
+          escapeHtml(oldestTime) + "），是否删除它以腾出位置？</p>",
+        "删除最早备份并继续", true);
+      if (!ok) return null;
+      deleteOldest = true;
+    }
+    try {
+      var res = await api(withProfile("/api/boot-backups", prof), {
+        method: "POST",
+        body: {
+          boot_volume_id: volumeId,
+          delete_oldest: deleteOldest,
+        },
+      });
+      var name = (res.backup && (res.backup.displayName || res.backup["display-name"])) || "";
+      toast(deleteOldest
+        ? "已删除最早备份，备份「" + name + "」创建中（几分钟后可用）。"
+        : "备份「" + name + "」创建中（几分钟后可用）。", "success");
+      cacheClear("bb:");
+      return res.backup || null;
+    } catch (e) {
+      toast("创建备份失败：" + (e && e.message ? e.message : e), "error");
+      return null;
+    }
+  }
+
   /* ---------- 主题切换 ---------- */
   function applyTheme(theme, mode) {
     var root = document.documentElement;
@@ -433,6 +482,7 @@
     openModal: openModal,
     closeModal: closeModal,
     confirmDialog: confirmDialog,
+    backupBootVolume: backupBootVolume,
     logout: logout,
     // 前端缓存（Map + TTL + 按前缀清除）
     cacheGet: cacheGet,

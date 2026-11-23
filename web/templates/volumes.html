@@ -58,6 +58,31 @@
   </div>
 </div>
 
+{# 启动卷备份：每个账号免费 5 个；从备份可恢复出一台新实例（原机不动） #}
+<h2 style="font-size: 16px; margin: 26px 0 12px;">
+  启动卷备份
+  <span id="backup-quota" style="color: var(--text-muted); font-weight: normal; font-size: 13px;"></span>
+</h2>
+<div class="card">
+  <div class="table-wrap">
+    <table class="data" id="backup-table">
+      <thead>
+        <tr>
+          <th>名称</th>
+          <th>来源卷</th>
+          <th>大小</th>
+          <th>状态</th>
+          <th>创建时间</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody id="backup-tbody">
+        <tr><td colspan="6" style="text-align: center; color: var(--text-muted);">加载中…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
 {# 扩容弹窗 #}
 <div class="modal-overlay" id="resize-modal" hidden>
   <div class="modal-box">
@@ -124,6 +149,71 @@
     <div class="modal-foot">
       <button type="button" class="btn" data-close-modal="delete-volume-modal">取消</button>
       <button type="button" class="btn btn-danger" id="btn-confirm-delete-volume">确认删除</button>
+    </div>
+  </div>
+</div>
+
+{# 从备份恢复弹窗：新实例名默认"<备份名>-restored"，形状默认来源实例形状 #}
+<div class="modal-overlay" id="restore-modal" hidden>
+  <div class="modal-box">
+    <div class="modal-head">
+      <span>从备份恢复</span>
+      <button type="button" class="modal-close" data-close-modal="restore-modal" aria-label="关闭">×</button>
+    </div>
+    <form id="restore-form">
+      <div class="modal-body">
+        <p>从备份 <b id="restore-backup-name"></b> 恢复出一台<b>新实例</b>（原机不动）。</p>
+        <div class="form-group">
+          <label for="restore-name">新实例名</label>
+          <input type="text" id="restore-name" required maxlength="255">
+        </div>
+        <div class="form-group">
+          <label for="restore-shape">形状</label>
+          <select id="restore-shape">
+            <option value="auto">自动（来源实例的形状，查不到用 A1 1核/6GB）</option>
+            <option value="VM.Standard.A1.Flex">A1.Flex（ARM，免费 4核/24GB 内）</option>
+            <option value="VM.Standard.E2.1.Micro">E2.1.Micro（x86，免费）</option>
+          </select>
+        </div>
+        <div class="form-group" id="restore-flex-group">
+          <label for="restore-ocpus">CPU 核心数（A1）</label>
+          <select id="restore-ocpus">
+            <option value="1">1 核</option>
+            <option value="2">2 核</option>
+            <option value="4">4 核</option>
+          </select>
+          <label for="restore-memory">内存（GB）</label>
+          <select id="restore-memory">
+            <option value="6">6 GB</option>
+            <option value="12">12 GB</option>
+            <option value="24">24 GB</option>
+          </select>
+          <p class="hint">免费层单台 A1 上限 4 核 / 24GB。</p>
+        </div>
+        <p class="hint">恢复会占用免费实例与启动盘额度（按备份大小算），额度不够会拦截并提示。启动盘从备份重建需要几分钟，请耐心等待。</p>
+      </div>
+      <div class="modal-foot">
+        <button type="button" class="btn" data-close-modal="restore-modal">取消</button>
+        <button type="submit" class="btn btn-primary">确认恢复</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+{# 删除备份二次确认弹窗 #}
+<div class="modal-overlay" id="delete-backup-modal" hidden>
+  <div class="modal-box">
+    <div class="modal-head">
+      <span>删除备份</span>
+      <button type="button" class="modal-close" data-close-modal="delete-backup-modal" aria-label="关闭">×</button>
+    </div>
+    <div class="modal-body">
+      <p>确定要删除备份 <b id="delete-backup-name"></b> 吗？</p>
+      <p class="danger-text">此操作不可撤销，备份删除后无法再用它恢复实例。</p>
+    </div>
+    <div class="modal-foot">
+      <button type="button" class="btn" data-close-modal="delete-backup-modal">取消</button>
+      <button type="button" class="btn btn-danger" id="btn-confirm-delete-backup">确认删除</button>
     </div>
   </div>
 </div>

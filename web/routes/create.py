@@ -81,7 +81,7 @@ class CreateBody(BaseModel):
     display_name: str
     ssh_keys_file: str
     target_cpu: str = None
-    boot_volume_size_gbs: int = Field(default=50, ge=47, le=200)
+    boot_volume_size_gbs: int = Field(default=47, ge=47, le=200)
     assign_public_ip: bool = True
     assign_ipv6: bool = False
     min_delay: int = Field(default=0, ge=0)

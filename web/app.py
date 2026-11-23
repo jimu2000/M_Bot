@@ -26,6 +26,7 @@ from fastapi.staticfiles import StaticFiles
 from web import config
 from web.routes import auth as auth_routes
 from web.routes import batch as batch_routes
+from web.routes import boot_backups as boot_backups_routes
 from web.routes import cert as cert_routes
 from web.routes import cloudreport as cloudreport_routes
 from web.routes import create as create_routes
@@ -109,6 +110,7 @@ def create_app():
     app.include_router(system_routes.router)
     app.include_router(instances_routes.router)
     app.include_router(volumes_routes.router)
+    app.include_router(boot_backups_routes.router)
     app.include_router(quota_routes.router)
     app.include_router(dns_routes.router)
     app.include_router(create_routes.router)

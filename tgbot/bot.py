@@ -134,6 +134,8 @@ def build_application():
     application.add_handler(CallbackQueryHandler(
         handlers.instance_list_callback, pattern=r"^i:list$"))
     application.add_handler(CallbackQueryHandler(
+        handlers.noop_callback, pattern=r"^i:noop$"))
+    application.add_handler(CallbackQueryHandler(
         handlers.instance_detail_callback, pattern=r"^i:detail:"))
     application.add_handler(CallbackQueryHandler(
         handlers.instance_action_callback,
@@ -164,6 +166,14 @@ def build_application():
         handlers_extra.volume_size_callback, pattern=r"^v:volsize:"))
     application.add_handler(CallbackQueryHandler(
         handlers_extra.volume_delete_callback, pattern=r"^v:delete:"))
+    application.add_handler(CallbackQueryHandler(
+        handlers_extra.volume_backup_callback, pattern=r"^v:backup:"))
+    application.add_handler(CallbackQueryHandler(
+        handlers_extra.boot_backups_callback, pattern=r"^bb:list$"))
+    application.add_handler(CallbackQueryHandler(
+        handlers_extra.boot_backup_restore_callback, pattern=r"^bb:restore:"))
+    application.add_handler(CallbackQueryHandler(
+        handlers_extra.boot_backup_delete_callback, pattern=r"^bb:delete:"))
     application.add_handler(CallbackQueryHandler(
         handlers_extra.ipv6_create_callback, pattern=r"^ipv6_create:"))
     application.add_handler(CallbackQueryHandler(
