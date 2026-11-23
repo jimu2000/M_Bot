@@ -1,4 +1,5 @@
-/* 实例管理逻辑：加载实例表格、启动/停止/重启/终止、批量操作、改名、重装、串行控制台 */
+/* 实例管理逻辑：加载实例表格、启动/停止/重启/终止、批量操作、改名、重装、串行控制台、
+   换 IP、IPv6 附加/删除、升降配、尝试修复、实例详情弹窗 */
 (function () {
   "use strict";
   var RBot = window.RBot;
@@ -8,6 +9,8 @@
   var terminateTarget = null; // 待终止的实例
   var renameTarget = null; // 待改名的实例
   var reinstallTarget = null; // 待重装的实例
+  var changeIpTarget = null; // 待换 IP 的实例
+  var resizeTarget = null; // 待升降配的实例
   var consoleCommand = ""; // 当前串行控制台连接命令（供复制）
 
   var BATCH_LABEL = {
@@ -95,6 +98,13 @@
       actions += '<button type="button" class="btn btn-sm" data-act="rename">改名</button>';
       actions += '<button type="button" class="btn btn-sm" data-act="reinstall">重装</button>';
       actions += '<button type="button" class="btn btn-sm" data-act="console">控制台</button>';
+      actions += '<button type="button" class="btn btn-sm" data-act="change-ip">换 IP</button>';
+      actions += '<button type="button" class="btn btn-sm" data-act="add-ipv6">加 IPv6</button>';
+      actions += '<button type="button" class="btn btn-sm" data-act="delete-ipv6">删 IPv6</button>';
+      if (inst.shape === "VM.Standard.A1.Flex") {
+        actions += '<button type="button" class="btn btn-sm" data-act="resize">升降配</button>';
+      }
+      actions += '<button type="button" class="btn btn-sm" data-act="repair">修复</button>';
       actions += '<button type="button" class="btn btn-sm btn-danger" data-act="terminate">终止</button>';
       // OCPU/内存：后端列表接口目前不返回 shape-config，缺失时显示 "—"
       var created = inst.created
@@ -105,7 +115,7 @@
       return (
         "<tr data-instance-id=\"" + esc(inst.id) + "\">" +
           '<td><input type="checkbox" class="row-select" data-select="' + esc(inst.id) + '"' + checked + ' aria-label="选择实例"></td>' +
-          "<td><b>" + esc(inst.name) + "</b>" + created + "</td>" +
+          '<td><button type="button" class="name-btn" data-act="detail" title="查看详情">' + esc(inst.name) + "</button>" + created + "</td>" +
           "<td class=\"mono\">" + esc(inst.shape) + "</td>" +
           "<td>" + stateBadge(inst.state) + "</td>" +
           "<td>" + esc(inst.ocpus != null ? inst.ocpus : "—") + "</td>" +
@@ -149,6 +159,104 @@
       await loadInstances();
     } catch (err) {
       RBot.toast(label + "失败：" + err.message, "error");
+    }
+  }
+
+  // 实例详情弹窗：点实例名打开，显示形状/规格/内外网 IP/IPv6/可用域/启动盘/创建时间
+  async function showDetail(instId) {
+    try {
+      var res = await RBot.api(RBot.withProfile("/api/instances/" + encodeURIComponent(instId), currentProfile));
+      var inst = res.instance || {};
+      var esc = RBot.escapeHtml;
+      var cfg = inst["shape-config"] || {};
+      document.getElementById("detail-name").textContent = inst["display-name"] || "—";
+      document.getElementById("detail-shape").textContent = inst.shape || "—";
+      document.getElementById("detail-spec").textContent =
+        (cfg.ocpus != null ? cfg.ocpus + " OCPU / " + cfg["memory-in-gbs"] + " GB" : "—");
+      document.getElementById("detail-state").innerHTML = stateBadge(inst["lifecycle-state"]);
+      document.getElementById("detail-public-ip").textContent = res.public_ip || "—";
+      document.getElementById("detail-private-ip").textContent = res.private_ip || "—";
+      var ipv6 = res.ipv6_addresses;
+      document.getElementById("detail-ipv6").textContent =
+        (ipv6 && ipv6.length ? ipv6.join(", ") : "无");
+      document.getElementById("detail-ad").textContent = inst["availability-domain"] || "—";
+      document.getElementById("detail-boot-volume").textContent =
+        (res.boot_volume_size_gbs != null ? res.boot_volume_size_gbs + " GB" : "—");
+      document.getElementById("detail-created").textContent =
+        inst["time-created"] ? RBot.formatTime(inst["time-created"]) : "—";
+      RBot.openModal("detail-modal");
+    } catch (err) {
+      RBot.toast("加载实例详情失败：" + err.message, "error");
+    }
+  }
+
+  // 附加 IPv6：确认后直接执行，成功后回显新地址
+  async function addIpv6(inst) {
+    var name = norm(inst).name;
+    var ok = await RBot.confirmDialog(
+      "附加 IPv6", "确认给实例 " + RBot.escapeHtml(name) + " 分配一个 IPv6 地址吗？",
+      "确认附加", false);
+    if (!ok) return;
+    try {
+      var res = await RBot.api(RBot.withProfile("/api/instances/" + encodeURIComponent(inst.id) + "/ipv6", currentProfile), { method: "POST" });
+      RBot.toast("已分配 IPv6：" + (res.ipv6 || "—"), "success");
+      RBot.cacheClear("inst:");
+      await loadInstances();
+    } catch (err) {
+      RBot.toast("附加 IPv6 失败：" + err.message, "error");
+    }
+  }
+
+  // 删除全部 IPv6：二次确认；无 IPv6 时后端返回 ok + 提示
+  async function deleteIpv6(inst) {
+    var name = norm(inst).name;
+    var ok = await RBot.confirmDialog(
+      "删除 IPv6",
+      "确认删除实例 " + RBot.escapeHtml(name) + " 的全部 IPv6 地址吗？<br>删除后这些地址立即不可达。",
+      "确认删除", true);
+    if (!ok) return;
+    try {
+      var res = await RBot.api(RBot.withProfile("/api/instances/" + encodeURIComponent(inst.id) + "/ipv6", currentProfile), { method: "DELETE" });
+      var deleted = res.deleted || [];
+      if (deleted.length === 0) {
+        RBot.toast(res.message || "该实例没有 IPv6", "info");
+      } else {
+        RBot.toast("已删除 " + deleted.length + " 个 IPv6 地址", "success");
+      }
+      RBot.cacheClear("inst:");
+      await loadInstances();
+    } catch (err) {
+      RBot.toast("删除 IPv6 失败：" + err.message, "error");
+    }
+  }
+
+  // 尝试修复：确认后调接口，在弹窗里展示修复报告
+  async function doRepair(inst) {
+    var name = norm(inst).name;
+    var ok = await RBot.confirmDialog(
+      "尝试修复",
+      "确认尝试修复实例 " + RBot.escapeHtml(name) + " 吗？<br>只检查实例状态、主 VNIC 与公网 IP，公网 IP 缺失时重新附加一个临时公网 IP，不做其他改动。",
+      "确认修复", false);
+    if (!ok) return;
+    try {
+      var res = await RBot.api(RBot.withProfile("/api/instances/" + encodeURIComponent(inst.id) + "/repair", currentProfile), { method: "POST" });
+      var report = res.report || {};
+      document.getElementById("repair-name").textContent = name;
+      document.getElementById("repair-report").innerHTML =
+        (report.checks || []).map(function (c) {
+          var mark = c.status === "fixed" ? "🔧" : "✅";
+          return "<li>" + mark + " " + RBot.escapeHtml(c.name) + "："
+            + RBot.escapeHtml(c.detail || "") + "</li>";
+        }).join("");
+      document.getElementById("repair-summary").textContent =
+        report.repaired
+          ? "已修复：新公网 IP " + (report.new_ip || "—")
+          : "检查通过，无需修复。当前公网 IP：" + (report.public_ip || "—");
+      RBot.openModal("repair-modal");
+      RBot.cacheClear("inst:");
+      await loadInstances();
+    } catch (err) {
+      RBot.toast("修复失败：" + err.message, "error");
     }
   }
 
@@ -256,6 +364,23 @@
       if (act === "start") instanceAction(instId, "start", "启动");
       else if (act === "stop") instanceAction(instId, "stop", "停止");
       else if (act === "restart") instanceAction(instId, "restart", "重启");
+      else if (act === "detail") showDetail(instId);
+      else if (act === "change-ip") {
+        changeIpTarget = inst;
+        document.getElementById("change-ip-name").textContent = norm(inst).name;
+        RBot.openModal("change-ip-modal");
+      } else if (act === "add-ipv6") addIpv6(inst);
+      else if (act === "delete-ipv6") deleteIpv6(inst);
+      else if (act === "resize") {
+        resizeTarget = inst;
+        var n = norm(inst);
+        document.getElementById("resize-name").textContent = n.name;
+        document.getElementById("resize-current").textContent =
+          (n.ocpus != null ? n.ocpus + " 核 / " + n.memory_gb + " GB" : "未知");
+        document.getElementById("resize-ocpus").value = n.ocpus != null ? n.ocpus : 2;
+        document.getElementById("resize-memory").value = n.memory_gb != null ? n.memory_gb : 12;
+        RBot.openModal("resize-modal");
+      } else if (act === "repair") doRepair(inst);
       else if (act === "terminate") {
         terminateTarget = inst;
         document.getElementById("terminate-name").textContent = norm(inst).name;
@@ -306,6 +431,52 @@
         await loadInstances();
       } catch (err) {
         RBot.toast("终止失败：" + err.message, "error");
+      }
+    });
+
+    // 确认换 IP：带 confirm:true，成功后回显旧 IP → 新 IP
+    document.getElementById("btn-confirm-change-ip").addEventListener("click", async function () {
+      if (!changeIpTarget) return;
+      var inst = changeIpTarget;
+      try {
+        var res = await RBot.api(RBot.withProfile("/api/instances/" + encodeURIComponent(inst.id) + "/change-ip", currentProfile), {
+          method: "POST",
+          body: { confirm: true },
+        });
+        RBot.toast("换 IP 成功：" + (res.old_ip || "—") + " → " + (res.new_ip || "—"), "success");
+        RBot.closeModal("change-ip-modal");
+        RBot.cacheClear("inst:");
+        await loadInstances();
+      } catch (err) {
+        RBot.toast("换 IP 失败：" + err.message, "error");
+      }
+    });
+
+    // 确认升/降配：前端先按免费额度上限校验，后端再校验一次
+    document.getElementById("resize-form").addEventListener("submit", async function (e) {
+      e.preventDefault();
+      if (!resizeTarget) return;
+      var ocpus = parseInt(document.getElementById("resize-ocpus").value, 10);
+      var memory = parseInt(document.getElementById("resize-memory").value, 10);
+      if (!ocpus || ocpus < 1 || ocpus > 4) {
+        RBot.toast("OCPU 必须在 1–4 之间（免费额度上限 4 核）", "error");
+        return;
+      }
+      if (!memory || memory < 1 || memory > 24) {
+        RBot.toast("内存必须在 1–24GB 之间（免费额度上限 24GB）", "error");
+        return;
+      }
+      try {
+        await RBot.api(RBot.withProfile("/api/instances/" + encodeURIComponent(resizeTarget.id) + "/resize", currentProfile), {
+          method: "POST",
+          body: { ocpus: ocpus, memory_gb: memory, confirm: true },
+        });
+        RBot.toast("改规格已提交（" + ocpus + " 核 / " + memory + "GB），实例可能会重启", "success");
+        RBot.closeModal("resize-modal");
+        RBot.cacheClear("inst:");
+        await loadInstances();
+      } catch (err) {
+        RBot.toast("升/降配失败：" + err.message, "error");
       }
     });
 

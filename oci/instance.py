@@ -200,6 +200,36 @@ def rename_instance(cli, instance_id, new_name):
     return _unwrap(result) or {}
 
 
+def resize_instance(cli, instance_id, ocpus, memory_gb):
+    """升/降配 A1.Flex 实例（compute instance update --shape-config）。
+
+    与 Telegram 菜单 5 的流程一致（tgbot/handlers_extra.py 的
+    handle_confirm/resize，2026-11-23 真实验证通过）：直接 update，
+    不先关机——OCI 会在改配置过程中自动重启实例。--force 必加：
+    不加时 OCI CLI 会交互确认，subprocess 无 stdin 应答会一直挂到
+    超时（同类教训见 rename_instance）。
+
+    调用方需先确认实例是 VM.Standard.A1.Flex（E2.1.Micro 是固定
+    规格不支持升降配）且规格在免费额度内（见 oci/quota.py 的
+    check_a1_single_instance_cap）；本函数只校验数值本身为正整数。
+    返回更新后的实例详情字典（已解包 data）。
+    """
+    if not isinstance(ocpus, int) or isinstance(ocpus, bool) or ocpus < 1:
+        raise ValueError("OCPU 必须是大于 0 的整数")
+    if not isinstance(memory_gb, int) or isinstance(memory_gb, bool) \
+            or memory_gb < 1:
+        raise ValueError("内存必须是大于 0 的整数（GB）")
+    shape_config = json.dumps({
+        "ocpus": ocpus,
+        "memoryInGBs": memory_gb,
+    })
+    result = cli.run(["compute", "instance", "update",
+                      "--instance-id", instance_id,
+                      "--shape-config", shape_config,
+                      "--force"])
+    return _unwrap(result) or {}
+
+
 def reinstall_instance(cli, instance_id, image_id=None):
     """重装系统：用 compute instance update --source-details 重建引导卷。
 

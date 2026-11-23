@@ -157,6 +157,98 @@
     </div>
   </div>
 </div>
+
+<div class="modal-overlay" id="change-ip-modal" hidden>
+  <div class="modal-box">
+    <div class="modal-head">
+      <span>换公网 IP</span>
+      <button type="button" class="modal-close" data-close-modal="change-ip-modal" aria-label="关闭">×</button>
+    </div>
+    <div class="modal-body">
+      <p>确定要给实例 <b id="change-ip-name"></b> 换一个新的公网 IP 吗？</p>
+      <p class="danger-text">换 IP 后旧 IP 立即失效，无法找回；所有基于旧 IP 的连接（SSH、代理、网站访问）会立即断开，DNS 记录与客户端配置需同步更新。</p>
+    </div>
+    <div class="modal-foot">
+      <button type="button" class="btn" data-close-modal="change-ip-modal">取消</button>
+      <button type="button" class="btn btn-danger" id="btn-confirm-change-ip">确认换 IP</button>
+    </div>
+  </div>
+</div>
+
+{# 升/降配弹窗 #}
+<div class="modal-overlay" id="resize-modal" hidden>
+  <div class="modal-box">
+    <div class="modal-head">
+      <span>升 / 降配</span>
+      <button type="button" class="modal-close" data-close-modal="resize-modal" aria-label="关闭">×</button>
+    </div>
+    <form id="resize-form">
+      <div class="modal-body">
+        <p>实例 <b id="resize-name"></b>，当前规格：<b id="resize-current"></b></p>
+        <div class="form-group">
+          <label for="resize-ocpus">OCPU（1–4，免费额度内单台上限 4 核）</label>
+          <input type="number" id="resize-ocpus" min="1" max="4" step="1" required>
+        </div>
+        <div class="form-group">
+          <label for="resize-memory">内存（GB，1–24，免费额度内单台上限 24GB）</label>
+          <input type="number" id="resize-memory" min="1" max="24" step="1" required>
+        </div>
+        <p class="hint">改规格时实例会重启；E2.1.Micro 是固定规格，不支持升/降配。</p>
+      </div>
+      <div class="modal-foot">
+        <button type="button" class="btn" data-close-modal="resize-modal">取消</button>
+        <button type="submit" class="btn btn-primary">确认改规格</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+{# 尝试修复结果弹窗 #}
+<div class="modal-overlay" id="repair-modal" hidden>
+  <div class="modal-box">
+    <div class="modal-head">
+      <span>尝试修复</span>
+      <button type="button" class="modal-close" data-close-modal="repair-modal" aria-label="关闭">×</button>
+    </div>
+    <div class="modal-body">
+      <p>实例 <b id="repair-name"></b></p>
+      <ul id="repair-report" style="margin: 8px 0;"></ul>
+      <p id="repair-summary" style="color: var(--text-muted);"></p>
+    </div>
+    <div class="modal-foot">
+      <button type="button" class="btn btn-primary" data-close-modal="repair-modal">关闭</button>
+    </div>
+  </div>
+</div>
+
+{# 实例详情弹窗（点实例名打开） #}
+<div class="modal-overlay" id="detail-modal" hidden>
+  <div class="modal-box">
+    <div class="modal-head">
+      <span>实例详情</span>
+      <button type="button" class="modal-close" data-close-modal="detail-modal" aria-label="关闭">×</button>
+    </div>
+    <div class="modal-body">
+      <table class="data" id="detail-table">
+        <tbody>
+          <tr><th style="width: 120px;">名称</th><td id="detail-name">—</td></tr>
+          <tr><th>形状</th><td id="detail-shape">—</td></tr>
+          <tr><th>规格</th><td id="detail-spec">—</td></tr>
+          <tr><th>状态</th><td id="detail-state">—</td></tr>
+          <tr><th>公网 IP</th><td id="detail-public-ip" class="mono">—</td></tr>
+          <tr><th>内网 IP</th><td id="detail-private-ip" class="mono">—</td></tr>
+          <tr><th>IPv6</th><td id="detail-ipv6" class="mono">—</td></tr>
+          <tr><th>可用域</th><td id="detail-ad">—</td></tr>
+          <tr><th>启动盘</th><td id="detail-boot-volume">—</td></tr>
+          <tr><th>创建时间</th><td id="detail-created">—</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="modal-foot">
+      <button type="button" class="btn btn-primary" data-close-modal="detail-modal">关闭</button>
+    </div>
+  </div>
+</div>
 {% endblock %}
 
 {% block extra_scripts %}

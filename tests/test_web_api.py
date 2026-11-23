@@ -254,17 +254,36 @@ class TestInstancesApi(WebApiTestCase):
         self.assertIsNone(r.json()["instances"][0]["public-ip"])
         self.assertIsNone(r.json()["instances"][0]["publicIp"])
 
+    @patch("web.routes.instances.get_boot_volume",
+           return_value={"size-in-gbs": 47})
+    @patch("web.routes.instances.list_boot_volume_attachments",
+           return_value=[{"boot-volume-id": FAKE_VOLUME,
+                          "instance-id": FAKE_INSTANCE,
+                          "lifecycle-state": "ATTACHED"}])
+    @patch("web.routes.instances.list_ipv6_for_vnic",
+           return_value=[{"ip-address": "2603:c024:c021:1d01::1"}])
+    @patch("web.routes.instances.list_vnics",
+           return_value=[{"id": "ocid1.vnic.oc1..testxxxx",
+                          "public-ip": FAKE_IP,
+                          "private-ip": "10.0.0.5",
+                          "is-primary": True}])
     @patch("web.routes.instances.get_public_ip", return_value=FAKE_IP)
     @patch("web.routes.instances.get_instance")
-    def test_get_instance(self, mock_get, mock_ip):
+    def test_get_instance(self, mock_get, mock_ip, mock_vnics, mock_ipv6,
+                          mock_atts, mock_vol):
         mock_get.return_value = {"data": {"id": FAKE_INSTANCE,
                                           "display-name": "instance-a1",
-                                          "lifecycle-state": "RUNNING"}}
+                                          "lifecycle-state": "RUNNING",
+                                          "availability-domain": "AD-1"}}
         r = self.client.get(f"/api/instances/{FAKE_INSTANCE}")
         self.assertEqual(r.status_code, 200)
         body = r.json()
         self.assertEqual(body["instance"]["display-name"], "instance-a1")
         self.assertEqual(body["public_ip"], FAKE_IP)
+        self.assertEqual(body["private_ip"], "10.0.0.5")
+        self.assertEqual(body["ipv6_addresses"],
+                         ["2603:c024:c021:1d01::1"])
+        self.assertEqual(body["boot_volume_size_gbs"], 47)
 
     @patch("web.routes.instances.get_instance",
            side_effect=NotFoundError("not found"))

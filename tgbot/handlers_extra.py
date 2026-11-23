@@ -156,9 +156,12 @@ from oci.instance import (
 )
 from oci.network import (
     change_public_ip,
+    create_ipv6,
     create_reserved_ip,
+    delete_ipv6,
     delete_public_ip,
     get_public_ip,
+    list_ipv6_for_vnic,
     list_public_ips,
     list_vnics,
 )
@@ -547,33 +550,9 @@ def fmt_regions(regions):
     return "\n".join(lines)
 
 
-# ---------------- IPv6（cli.run 直调，阶段 1 未封装） ----------------
-
-def list_ipv6_for_vnic(cli, vnic_id):
-    """查某 VNIC 上的 IPv6 列表（network ipv6 list --vnic-id）。"""
-    result = cli.run(["network", "ipv6", "list", "--vnic-id", vnic_id])
-    return _unwrap(result) or []
-
-
-def create_ipv6(cli, vnic_id, ip_address=None):
-    """给 VNIC 分配一个 IPv6（network ipv6 create）。
-
-    写操作：调用方应在用户确认后才调用。ip_address 可选，不传由 OCI 分配。
-    返回创建后的 IPv6 详情字典。
-    """
-    args = ["network", "ipv6", "create", "--vnic-id", vnic_id]
-    if ip_address:
-        args += ["--ip-address", ip_address]
-    return _unwrap(cli.run(args))
-
-
-def delete_ipv6(cli, ipv6_id):
-    """删除（解绑）一个 IPv6（network ipv6 delete --force）。
-
-    写操作：调用方应在用户确认后才调用。成功时 OCI CLI 无输出，返回 None。
-    """
-    return cli.run(["network", "ipv6", "delete",
-                    "--ipv6-id", ipv6_id, "--force"])
+# ---------------- IPv6 ----------------
+# list_ipv6_for_vnic / create_ipv6 / delete_ipv6 已移到 oci/network.py，
+# 这里从那里导入（Web 面板实例操作也复用同一份实现）。
 
 
 # ---------------- MFA 设备（cli.run 直调） ----------------

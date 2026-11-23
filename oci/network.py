@@ -142,6 +142,108 @@ def delete_public_ip(cli, public_ip_id):
                     "--public-ip-id", public_ip_id, "--force"])
 
 
+def get_primary_vnic(cli, instance_id):
+    """返回实例的主 VNIC 字典，没有主 VNIC 时抛 ValueError。"""
+    vnics = list_vnics(cli, instance_id)
+    primary = next((v for v in vnics if v.get("is-primary")), None)
+    if primary is None:
+        raise ValueError(f"实例 {instance_id} 没有主 VNIC")
+    return primary
+
+
+def get_primary_private_ip(cli, vnic_id):
+    """返回 VNIC 的主内网 IP 字典，没有时抛 ValueError。"""
+    private_ips = list_private_ips(cli, vnic_id)
+    primary = next((p for p in private_ips if p.get("is-primary")), None)
+    if primary is None:
+        raise ValueError(f"VNIC {vnic_id} 没有主内网 IP")
+    return primary
+
+
+def list_ipv6_for_vnic(cli, vnic_id):
+    """查某 VNIC 上的 IPv6 列表（network ipv6 list --vnic-id）。"""
+    result = cli.run(["network", "ipv6", "list", "--vnic-id", vnic_id])
+    return _data(result) or []
+
+
+def create_ipv6(cli, vnic_id, ip_address=None):
+    """给 VNIC 分配一个 IPv6（network ipv6 create）。
+
+    写操作：调用方应在用户确认后才调用。ip_address 可选，不传由 OCI 分配。
+    返回创建后的 IPv6 详情字典。
+    """
+    args = ["network", "ipv6", "create", "--vnic-id", vnic_id]
+    if ip_address:
+        args += ["--ip-address", ip_address]
+    return _data(cli.run(args))
+
+
+def delete_ipv6(cli, ipv6_id):
+    """删除（解绑）一个 IPv6（network ipv6 delete --force）。
+
+    写操作：调用方应在用户确认后才调用。成功时 OCI CLI 无输出，返回 None。
+    """
+    return cli.run(["network", "ipv6", "delete",
+                    "--ipv6-id", ipv6_id, "--force"])
+
+
+def create_ephemeral_public_ip(cli, compartment_id, private_ip_id):
+    """给指定内网 IP 创建并绑定一个临时公网 IP。
+
+    一步完成创建 + 绑定（create 时直接传 --private-ip-id）。
+    注意：该内网 IP 上不能已有公网 IP，否则 OCI 报 409 Conflict；
+    调用前应先确认未绑定（见 repair_instance_ip）。
+    返回 (新 IP 的 OCID, IP 地址) 二元组。
+    """
+    result = cli.run(["network", "public-ip", "create",
+                      "--compartment-id", compartment_id,
+                      "--lifetime", "EPHEMERAL",
+                      "--private-ip-id", private_ip_id])
+    data = _data(result) or {}
+    return data.get("id"), data.get("ip-address")
+
+
+def repair_instance_ip(cli, compartment_id, instance_id):
+    """尝试修复实例的公网 IP（Web 面板“尝试修复”）。
+
+    保守策略，只做检查 + 补缺，不做破坏性操作：
+      1. 查实例状态（已终止的实例无法修复，抛 ValueError）；
+      2. 查主 VNIC（没有主 VNIC 时抛 ValueError）；
+      3. 主 VNIC 已有公网 IP（无论临时还是保留）即正常，不动任何资源；
+      4. 缺失时给主内网 IP 创建并绑定一个临时公网 IP。
+
+    返回修复报告字典：
+    {instance_id, state, public_ip, repaired, new_ip, checks}，
+    checks 是 [{name, status, detail}]，status 为 ok / fixed。
+    """
+    inst = _data(cli.run(["compute", "instance", "get",
+                          "--instance-id", instance_id])) or {}
+    state = inst.get("lifecycle-state") or ""
+    if state == "TERMINATED":
+        raise ValueError(f"实例 {instance_id} 已终止，无法修复")
+    checks = [{"name": "实例状态", "status": "ok",
+               "detail": state or "未知"}]
+    vnic = get_primary_vnic(cli, instance_id)
+    checks.append({"name": "主 VNIC", "status": "ok",
+                   "detail": vnic.get("display-name") or vnic["id"]})
+    current_ip = vnic.get("public-ip")
+    if current_ip:
+        checks.append({"name": "公网 IP", "status": "ok",
+                       "detail": f"已绑定 {current_ip}，无需修复"})
+        return {"instance_id": instance_id, "state": state,
+                "public_ip": current_ip, "repaired": False,
+                "new_ip": None, "checks": checks}
+    checks.append({"name": "公网 IP", "status": "fixed",
+                   "detail": "缺失，正在重新附加临时公网 IP…"})
+    private_ip = get_primary_private_ip(cli, vnic["id"])
+    _new_id, new_ip = create_ephemeral_public_ip(
+        cli, compartment_id, private_ip["id"])
+    checks[-1]["detail"] = f"缺失，已重新附加临时公网 IP {new_ip}"
+    return {"instance_id": instance_id, "state": state,
+            "public_ip": new_ip, "repaired": True,
+            "new_ip": new_ip, "checks": checks}
+
+
 def list_private_ips(cli, vnic_id):
     """列 VNIC 的内网 IP（oci network private-ip list --vnic-id）。
 

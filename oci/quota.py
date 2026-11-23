@@ -291,6 +291,25 @@ def _normalize_shape(shape):
     return shape.replace("VM.Standard.", "")
 
 
+def check_a1_single_instance_cap(ocpus, memory_gb):
+    """校验单台 A1 实例规格是否在免费额度内。
+
+    Always Free 额度内单台 A1.Flex 上限是 4 OCPU / 24GB（与租户级
+    A1 总额度一致：一台占满即用完免费额度）。创建（web/routes/create.py）
+    与升降配（web/routes/instances.py）共用此校验，超过即报错，
+    防止误开付费规格。
+
+    返回 None 表示通过，否则返回错误信息字符串。
+    """
+    if ocpus is not None and ocpus > A1_MAX_OCPU:
+        return (f"A1 免费额度内单台上限为 {_fmt(A1_MAX_OCPU)} OCPU / "
+                f"{_fmt(A1_MAX_MEMORY_GB)}GB，超过会产生费用")
+    if memory_gb is not None and memory_gb > A1_MAX_MEMORY_GB:
+        return (f"A1 免费额度内单台上限为 {_fmt(A1_MAX_OCPU)} OCPU / "
+                f"{_fmt(A1_MAX_MEMORY_GB)}GB，超过会产生费用")
+    return None
+
+
 def can_launch(cli, compartment_id, shape, ocpus=0, memory_gb=0):
     """判断能不能再开一台指定规格的实例。
 

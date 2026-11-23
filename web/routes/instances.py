@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """实例路由：列表 / 详情 / 启动 / 停止 / 重启 / 终止 / 批量 / 改名 / 重装 /
-串行控制台。
+串行控制台 / 换 IP / IPv6 / 升降配 / 尝试修复。
 
   - GET /api/instances：列表（R-Bot 形状，见 format_instance；只含
     RUNNING 状态实例，每项补上公网 IP，取不到时为 None）。
     各实例的公网 IP 并行取（线程池）；列表结果服务端缓存 30 秒，
     手动刷新时传 refresh=1 绕过缓存；写操作成功后清对应账号的缓存。
-  - GET /api/instances/{id}：详情（含公网 IP）。
+  - GET /api/instances/{id}：详情（含公网 IP、内网 IP、IPv6 列表、
+    启动盘大小；附加字段尽力而为，查不到时为 None）。
   - GET /api/instances/{id}/console：串行控制台连接信息。
   - POST /api/instances/batch：批量开机/关机/重启/删除
     （body {action, instance_ids, confirm}，删除必须 confirm=true）。
@@ -17,6 +18,17 @@
   - POST /api/instances/{id}/reinstall：body 必须含 confirm=true 且
     confirm_name 等于实例当前显示名（防误点）；重装清空系统盘，
     实例 OCID 与 IP 保留不变。
+  - POST /api/instances/{id}/change-ip：换公网 IP（body 须含
+    confirm=true；先删旧临时 IP 再绑新保留 IP，见 change_public_ip；
+    返回 {old_ip, new_ip}）。
+  - POST /api/instances/{id}/ipv6：给主 VNIC 附加一个 IPv6，返回新地址。
+  - DELETE /api/instances/{id}/ipv6：删除该实例主 VNIC 的全部 IPv6；
+    无 IPv6 时返回 ok + 提示，不报错。
+  - POST /api/instances/{id}/resize：升/降配 A1.Flex（body
+    {ocpus, memory_gb, confirm}；E2 固定规格拒绝；A1 按免费额度校验
+    上限 4 核/24GB；直接 update，OCI 自动重启实例）。
+  - POST /api/instances/{id}/repair：尝试修复（检查实例状态/主 VNIC/
+    公网 IP，缺失时重新附加临时公网 IP；返回修复报告）。
 
 profile 通过查询参数传（如 ?profile=ACCOUNT2），默认 DEFAULT。
 """
@@ -39,12 +51,24 @@ from oci.instance import (
     list_instances,
     reinstall_instance,
     rename_instance,
+    resize_instance,
     restart_instance,
     start_instance,
     stop_instance,
     terminate_instance,
 )
-from oci.network import get_public_ip
+from oci.network import (
+    change_public_ip,
+    create_ipv6,
+    delete_ipv6,
+    get_primary_vnic,
+    get_public_ip,
+    list_ipv6_for_vnic,
+    list_vnics,
+    repair_instance_ip,
+)
+from oci.quota import SHAPE_A1_FLEX, SHAPE_E2_MICRO, check_a1_single_instance_cap
+from oci.volume import get_boot_volume, list_boot_volume_attachments
 from web import config
 from web.deps import (
     error_response,
@@ -116,12 +140,68 @@ class ReinstallBody(BaseModel):
     image_id: str = None
 
 
+class ChangeIpBody(BaseModel):
+    """换 IP 请求体：必须显式确认（旧 IP 立即释放，无法找回）。"""
+
+    confirm: bool = False
+
+
+class ResizeBody(BaseModel):
+    """升/降配请求体：目标规格 + 显式确认（改规格时实例会重启）。"""
+
+    ocpus: int
+    memory_gb: int
+    confirm: bool = False
+
+
+def _unwrap_instance(data):
+    """get_instance 返回的 JSON 可能包一层 {"data": ...}，这里解包。"""
+    if isinstance(data, dict) and "data" in data:
+        return data["data"] or {}
+    return data or {}
+
+
 def _safe_public_ip(cli, instance_id):
     """取实例公网 IP，失败时返回 None（不让单台实例的 IP 查询拖垮列表）。"""
     try:
         return get_public_ip(cli, instance_id)
     except OCIError:
         return None
+
+
+def _detail_extras(cli, compartment_id, instance_id, availability_domain):
+    """详情页的附加字段：内网 IP / IPv6 地址列表 / 启动盘大小（GB）。
+
+    全部尽力而为：任一查询失败（包括 OCI CLI 不可用）时该字段为 None，
+    不影响详情主体的返回。IPv6 无地址时为空列表（与“查不到”区分）。
+    """
+    extras = {"private_ip": None, "ipv6_addresses": None,
+              "boot_volume_size_gbs": None}
+    try:
+        vnics = list_vnics(cli, instance_id)
+        primary = next((v for v in vnics if v.get("is-primary")), None)
+        if primary is not None:
+            extras["private_ip"] = primary.get("private-ip")
+            try:
+                ipv6s = list_ipv6_for_vnic(cli, primary["id"])
+                extras["ipv6_addresses"] = [v.get("ip-address")
+                                            for v in ipv6s]
+            except Exception:  # noqa: BLE001 - 附加字段失败不影响详情
+                pass
+    except Exception:  # noqa: BLE001 - 同上
+        pass
+    try:
+        if availability_domain:
+            attachments = list_boot_volume_attachments(
+                cli, compartment_id, availability_domain)
+            for att in attachments:
+                if att.get("instance-id") == instance_id:
+                    vol = get_boot_volume(cli, att["boot-volume-id"]) or {}
+                    extras["boot_volume_size_gbs"] = vol.get("size-in-gbs")
+                    break
+    except Exception:  # noqa: BLE001 - 同上
+        pass
+    return extras
 
 
 def format_instance(inst, public_ip, region):
@@ -256,17 +336,22 @@ def batch(body: BatchBody,
 def detail(instance_id: str,
            profile: str = Query(default=None),
            username: str = Depends(get_current_user)):
-    """查单个实例详情（含公网 IP）。"""
+    """查单个实例详情（含公网 IP、内网 IP、IPv6 列表、启动盘大小）。"""
     try:
-        cli, _compartment_id = resolve_profile(profile)
+        cli, compartment_id = resolve_profile(profile)
         data = get_instance(cli, instance_id)
-        detail_data = data.get("data") if isinstance(data, dict) and "data" in data else data
+        detail_data = _unwrap_instance(data)
         public_ip = _safe_public_ip(cli, instance_id)
+        extras = _detail_extras(cli, compartment_id, instance_id,
+                                detail_data.get("availability-domain"))
     except ValueError as exc:
         return error_response(str(exc), status_code=400)
     except OCIError as exc:
         return oci_error_response(exc)
-    return {"ok": True, "instance": detail_data, "public_ip": public_ip}
+    return {"ok": True, "instance": detail_data, "public_ip": public_ip,
+            "private_ip": extras["private_ip"],
+            "ipv6_addresses": extras["ipv6_addresses"],
+            "boot_volume_size_gbs": extras["boot_volume_size_gbs"]}
 
 
 def _action(instance_id, profile, func, action_name):
@@ -392,3 +477,139 @@ def terminate(instance_id: str,
         return oci_error_response(exc)
     clear_instance_list_cache(profile or config.DEFAULT_PROFILE)
     return {"ok": True, "instance_id": instance_id, "action": "terminate"}
+
+
+@router.post("/api/instances/{instance_id}/change-ip")
+def change_ip(instance_id: str,
+              body: ChangeIpBody,
+              profile: str = Query(default=None),
+              username: str = Depends(get_current_user)):
+    """换公网 IP（必须 confirm=true；旧 IP 立即释放，无法找回）。
+
+    复用 oci/network.py 的 change_public_ip：先删旧临时 IP 再创建并
+    绑定新保留 IP（OCI 拒绝给已绑公网 IP 的内网 IP 再绑一个，409）。
+    返回 {old_ip, new_ip}；换 IP 后指向旧 IP 的 DNS/反代需同步更新。
+    """
+    if not body.confirm:
+        return error_response("换 IP 需要确认：请求体须含 confirm=true",
+                              status_code=400)
+    try:
+        cli, compartment_id = resolve_profile(profile)
+        old_ip = _safe_public_ip(cli, instance_id)
+        new_ip = change_public_ip(cli, compartment_id, instance_id)
+    except ValueError as exc:
+        return error_response(str(exc), status_code=400)
+    except OCIError as exc:
+        return oci_error_response(exc)
+    clear_instance_list_cache(profile or config.DEFAULT_PROFILE)
+    return {"ok": True, "instance_id": instance_id,
+            "old_ip": old_ip, "new_ip": new_ip}
+
+
+@router.post("/api/instances/{instance_id}/ipv6")
+def add_ipv6(instance_id: str,
+             profile: str = Query(default=None),
+             username: str = Depends(get_current_user)):
+    """给实例主 VNIC 附加一个 IPv6，返回新地址。"""
+    try:
+        cli, _compartment_id = resolve_profile(profile)
+        vnic = get_primary_vnic(cli, instance_id)
+        created = create_ipv6(cli, vnic["id"]) or {}
+    except ValueError as exc:
+        return error_response(str(exc), status_code=400)
+    except OCIError as exc:
+        return oci_error_response(exc)
+    clear_instance_list_cache(profile or config.DEFAULT_PROFILE)
+    return {"ok": True, "instance_id": instance_id,
+            "ipv6": created.get("ip-address")}
+
+
+@router.delete("/api/instances/{instance_id}/ipv6")
+def delete_all_ipv6(instance_id: str,
+                    profile: str = Query(default=None),
+                    username: str = Depends(get_current_user)):
+    """删除实例主 VNIC 的全部 IPv6。
+
+    无 IPv6 时返回 ok + 提示，不报错。注意与 R-Bot 的区别：R-Bot 按
+    单个 IPv6 ID 删除，本接口一次删全部（与面板“删除 IPv6”按钮语义一致）。
+    """
+    try:
+        cli, _compartment_id = resolve_profile(profile)
+        vnic = get_primary_vnic(cli, instance_id)
+        ipv6s = list_ipv6_for_vnic(cli, vnic["id"])
+        if not ipv6s:
+            return {"ok": True, "instance_id": instance_id, "deleted": [],
+                    "message": "该实例没有 IPv6，无需删除"}
+        deleted = []
+        for entry in ipv6s:
+            delete_ipv6(cli, entry["id"])
+            deleted.append(entry.get("ip-address"))
+    except ValueError as exc:
+        return error_response(str(exc), status_code=400)
+    except OCIError as exc:
+        return oci_error_response(exc)
+    clear_instance_list_cache(profile or config.DEFAULT_PROFILE)
+    return {"ok": True, "instance_id": instance_id, "deleted": deleted}
+
+
+@router.post("/api/instances/{instance_id}/resize")
+def resize(instance_id: str,
+           body: ResizeBody,
+           profile: str = Query(default=None),
+           username: str = Depends(get_current_user)):
+    """升/降配 A1.Flex 实例（必须 confirm=true；改规格时实例会重启）。
+
+    只支持 VM.Standard.A1.Flex（E2.1.Micro 是固定规格）；A1 按免费额度
+    校验单台上限 4 核/24GB（与创建页同一校验，见
+    oci/quota.py 的 check_a1_single_instance_cap）。
+    """
+    if not body.confirm:
+        return error_response("升/降配需要确认：请求体须含 confirm=true",
+                              status_code=400)
+    if body.ocpus < 1 or body.memory_gb < 1:
+        return error_response("OCPU 与内存都必须大于 0", status_code=400)
+    try:
+        cli, _compartment_id = resolve_profile(profile)
+        detail_data = _unwrap_instance(get_instance(cli, instance_id))
+        shape = detail_data.get("shape") or ""
+        if shape == SHAPE_E2_MICRO:
+            return error_response(
+                "E2.1.Micro 是固定规格（1 核 / 1GB），不支持升/降配",
+                status_code=400)
+        if shape != SHAPE_A1_FLEX:
+            return error_response(
+                f"规格 {shape} 不支持升/降配，只支持 A1.Flex",
+                status_code=400)
+        cap_error = check_a1_single_instance_cap(body.ocpus,
+                                                 body.memory_gb)
+        if cap_error:
+            return error_response(cap_error, status_code=400)
+        resize_instance(cli, instance_id, body.ocpus, body.memory_gb)
+    except ValueError as exc:
+        return error_response(str(exc), status_code=400)
+    except OCIError as exc:
+        return oci_error_response(exc)
+    clear_instance_list_cache(profile or config.DEFAULT_PROFILE)
+    return {"ok": True, "instance_id": instance_id,
+            "ocpus": body.ocpus, "memory_gb": body.memory_gb,
+            "message": "改规格已提交，实例可能会重启，请稍后查看状态"}
+
+
+@router.post("/api/instances/{instance_id}/repair")
+def repair(instance_id: str,
+           profile: str = Query(default=None),
+           username: str = Depends(get_current_user)):
+    """尝试修复实例的公网 IP（保守：只检查 + 补缺失的公网 IP 附加）。
+
+    返回修复报告 {state, public_ip, repaired, new_ip, checks}；
+    公网 IP 正常时不做任何改动。
+    """
+    try:
+        cli, compartment_id = resolve_profile(profile)
+        report = repair_instance_ip(cli, compartment_id, instance_id)
+    except ValueError as exc:
+        return error_response(str(exc), status_code=400)
+    except OCIError as exc:
+        return oci_error_response(exc)
+    clear_instance_list_cache(profile or config.DEFAULT_PROFILE)
+    return {"ok": True, "instance_id": instance_id, "report": report}

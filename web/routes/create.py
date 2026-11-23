@@ -22,7 +22,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
 from oci.client import OCIError
-from oci.quota import can_launch
+from oci.quota import can_launch, check_a1_single_instance_cap
 from web import config
 from web.deps import (
     error_response,
@@ -97,11 +97,11 @@ def create_instance(body: CreateBody,
         return error_response(
             f"最大延迟（{body.max_delay} 秒）不能小于最小延迟"
             f"（{body.min_delay} 秒）", status_code=400)
-    if body.shape == "VM.Standard.A1.Flex" and (
-            body.ocpus > 4 or body.memory_gb > 24):
-        return error_response(
-            "A1 免费额度内单台上限为 4 OCPU / 24GB，超过会产生费用",
-            status_code=400)
+    if body.shape == "VM.Standard.A1.Flex":
+        cap_error = check_a1_single_instance_cap(body.ocpus,
+                                                 body.memory_gb)
+        if cap_error:
+            return error_response(cap_error, status_code=400)
     try:
         cli, compartment_id = resolve_profile(body.profile)
         ok, reason = can_launch(cli, compartment_id, body.shape,
