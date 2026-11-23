@@ -133,7 +133,7 @@ class TestModuleLevelApp(unittest.TestCase):
                    hash_password(TEST_PASSWORD)):
             importlib.reload(app_module)
             self.assertIsNotNone(getattr(app_module, "app", None))
-            self.assertEqual(app_module.app.title, "R-Bot Web 面板")
+            self.assertEqual(app_module.app.title, "M_Bot Web 面板")
         # 恢复：删掉模块级 app 再 reload（reload 不清空旧命名空间，
         # 不删会残留），无哈希时不应重建。
         del app_module.app
@@ -183,7 +183,7 @@ class TestPageContext(IntegrationTestCase):
                      "/volumes", "/tasks", "/terminal"):
             r = self.client.get(path)
             self.assertEqual(r.status_code, 200, f"{path} 应返回 200")
-            self.assertIn("R-Bot", r.text, f"{path} 应含品牌名")
+            self.assertIn("M_Bot", r.text, f"{path} 应含品牌名")
         r = self.client.get("/login")
         self.assertEqual(r.status_code, 200)
 

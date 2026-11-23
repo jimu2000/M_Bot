@@ -1,4 +1,4 @@
-/* R-Bot 开源克隆版 · 通用工具
+/* M_Bot Oracle开源管理面板 · 通用工具
  * api() / toast() / copyText() / 主题切换 / 资源栏轮询 / 弹窗工具
  * 各页面脚本都依赖这里的 RBot 全局对象。 */
 (function () {

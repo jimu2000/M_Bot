@@ -106,7 +106,7 @@ class TestWebPages(unittest.TestCase):
             'id="login-error"',
             'id="lockout-countdown"',
             "默认凭据请查看部署文档",
-            "R-Bot 开源克隆版",
+            "M_Bot Oracle开源管理面板",
             "/static/js/login.js",
         ])
         # 登录页不继承 base，不应有侧边栏
@@ -116,8 +116,8 @@ class TestWebPages(unittest.TestCase):
         """继承 base 的页面：顶栏、资源栏、侧边栏、主题与退出按钮。"""
         for path in ("/overview", "/instances", "/volumes", "/create", "/tasks"):
             self._assert_page_ok(path, [
-                "R-Bot",
-                "开源克隆版",
+                "M_Bot",
+                "Oracle管理面板",
                 'id="theme-select"',
                 'id="mode-toggle"',
                 'id="logout-btn"',
@@ -276,7 +276,7 @@ class TestRealBackendIntegration(unittest.TestCase):
         resp = self.client.get("/login")
         self.assertEqual(resp.status_code, 200)
         self.assertIn('id="login-btn"', resp.text)
-        self.assertIn("R-Bot 开源克隆版", resp.text)
+        self.assertIn("M_Bot Oracle开源管理面板", resp.text)
 
     def test_overview_redirects_when_anonymous(self):
         # 用全新 client（不带登录 cookie，避免其他测试的会话串用）

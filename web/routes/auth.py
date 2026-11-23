@@ -200,7 +200,7 @@ def telegram_send_code(request: Request):
                      "retry_after_seconds": remaining})
     code_id, code = TELEGRAM_CODES.create()
     sent = send_to_allowed_users(
-        f"【R-Bot 面板登录】验证码：{code}，5 分钟内有效，"
+        f"【M_Bot 面板登录】验证码：{code}，5 分钟内有效，"
         f"请勿告诉他人。如非本人操作请忽略。")
     if sent <= 0:
         # 发送失败：作废这条码（不进冷却，用户可立即重试）。

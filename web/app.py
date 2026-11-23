@@ -39,6 +39,7 @@ from web.routes import monitor as monitor_routes
 from web.routes import objectstorage as objectstorage_routes
 from web.routes import pages as pages_routes
 from web.routes import plans as plans_routes
+from web.routes import profiles as profiles_routes
 from web.routes import quota as quota_routes
 from web.routes import settings as settings_routes
 from web.routes import system as system_routes
@@ -78,7 +79,7 @@ def create_app():
             "先运行 python3 -m web.auth 生成哈希，"
             "再设环境变量 RBOT_WEB_PASSWORD_HASH 后启动。")
 
-    app = FastAPI(title="R-Bot Web 面板", version="0.3.0",
+    app = FastAPI(title="M_Bot Web 面板", version="1.2.0",
                   lifespan=_lifespan)
 
     # 统一错误信封：HTTPException / 参数校验失败也返回
@@ -115,6 +116,7 @@ def create_app():
     app.include_router(objectstorage_routes.router)
     app.include_router(email_routes.router)
     app.include_router(plans_routes.router)
+    app.include_router(profiles_routes.router)
     # 阶段 5 工作包 E 新增路由：批量命令 / 终端收藏夹 / 证书 /
     # 巡检计划 / 云报告 / 监控规则 / 设置（OCI 代理）。
     app.include_router(batch_routes.router)
