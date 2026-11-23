@@ -54,6 +54,22 @@ def _extract_data(result):
     return result
 
 
+def _extract_list(result):
+    """取出列表型接口的 data 列表。
+
+    空列表时 OCI CLI 只返回 {"opc-total-items": "0"}，没有 data
+    字段——此时必须返回 []，不能把 dict 本身当列表迭代（迭代 dict
+    取到的是 key 字符串，下游 .get() 会报 AttributeError，实测
+    2026-11-24 触发过 /api/email/senders 500）。
+    """
+    if isinstance(result, dict):
+        data = result.get("data")
+        return data if isinstance(data, list) else []
+    if isinstance(result, list):
+        return result
+    return []
+
+
 def is_valid_email(email_address):
     """邮箱格式是否形如 本地@域名.后缀（宽松校验）。"""
     return bool(isinstance(email_address, str)
@@ -70,7 +86,7 @@ def list_senders(cli, compartment_id):
     """
     result = cli.run(["email", "sender", "list",
                       "--compartment-id", compartment_id])
-    items = _extract_data(result) or []
+    items = _extract_list(result)
     return [{
         "id": item.get("id"),
         "email-address": item.get("email-address"),
@@ -120,7 +136,7 @@ def list_iam_users(cli, compartment_id):
     """
     result = cli.run(["iam", "user", "list",
                       "--compartment-id", compartment_id])
-    items = _extract_data(result) or []
+    items = _extract_list(result)
     return [{
         "id": item.get("id"),
         "name": item.get("name"),

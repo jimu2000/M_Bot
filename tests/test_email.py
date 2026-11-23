@@ -79,6 +79,13 @@ class TestListSenders(unittest.TestCase):
         cli = _mock_cli({"data": []})
         self.assertEqual(list_senders(cli, FAKE_COMPARTMENT), [])
 
+    def test_empty_no_data_field(self):
+        """空列表时 OCI CLI 只返回 {"opc-total-items": "0"}，没有
+        data 字段——必须返回 []，不能对 dict 迭代取 key（2026-11-24
+        实测因此触发 /api/email/senders 500）。"""
+        cli = _mock_cli({"opc-total-items": "0"})
+        self.assertEqual(list_senders(cli, FAKE_COMPARTMENT), [])
+
 
 class TestCreateSender(unittest.TestCase):
     def test_command_args(self):
