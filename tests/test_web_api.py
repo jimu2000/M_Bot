@@ -27,6 +27,8 @@ from oci.grabber import GrabResult
 from web import config
 from web.app import create_app
 from web.auth import LOGIN_GUARD, SESSIONS, hash_password
+from web.routes.cloudreport import clear_cloud_report_cache
+from web.routes.instances import clear_instance_list_cache
 from web.tasks import TASKS
 
 # 占位符（测试里不出现真实 OCID / IP）
@@ -107,6 +109,9 @@ class WebApiTestCase(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self._data_dir_patcher = patch("web.config.DATA_DIR", self._tmp.name)
         self._data_dir_patcher.start()
+        # 清服务端缓存（实例列表 / 云报告），避免缓存跨测试串数据。
+        clear_instance_list_cache()
+        clear_cloud_report_cache()
         LOGIN_GUARD.reset()
         SESSIONS.reset()
         TASKS.reset()
@@ -560,6 +565,21 @@ class TestCreateAndTasksApi(WebApiTestCase):
         r = self.client.post("/api/create", json=body)
         self.assertEqual(r.status_code, 400)
         self.assertIn("最大延迟", r.json()["error"])
+
+    def test_create_a1_over_free_tier_400(self):
+        """A1 超过免费额度上限（4 核 / 24GB）返回 400。"""
+        body = dict(CREATE_BODY)
+        body["shape"] = "VM.Standard.A1.Flex"
+        body["ocpus"] = 8
+        body["memory_gb"] = 12
+        r = self.client.post("/api/create", json=body)
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("4 OCPU / 24GB", r.json()["error"])
+        body["ocpus"] = 4
+        body["memory_gb"] = 48
+        r = self.client.post("/api/create", json=body)
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("4 OCPU / 24GB", r.json()["error"])
 
     @patch("web.tasks.Grabber", BlockingGrabber)
     @patch("web.routes.create.can_launch", return_value=(True, "可以创建"))

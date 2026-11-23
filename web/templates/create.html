@@ -23,25 +23,25 @@
         <div class="form-group">
           <label for="shape">Shape</label>
           <select id="shape">
-            <option value="VM.Standard.A1.Flex" selected>VM.Standard.A1.Flex (ARM，1-80 OCPU，1-512 GB)</option>
+            <option value="VM.Standard.A1.Flex" selected>VM.Standard.A1.Flex (ARM，免费额度：1-4 OCPU，1-24 GB)</option>
             <option value="VM.Standard.E2.1.Micro">VM.Standard.E2.1.Micro (AMD，固定 1 OCPU / 1 GB)</option>
           </select>
         </div>
         <div class="form-row">
           <div class="form-group">
-            <label for="ocpus">OCPU (1-80)</label>
-            <input type="number" id="ocpus" value="2" min="1" max="80" step="1" required>
+            <label for="ocpus">OCPU (1-4)</label>
+            <input type="number" id="ocpus" value="2" min="1" max="4" step="1" required>
           </div>
           <div class="form-group">
-            <label for="memory-gb">内存 (GB) (1-512)</label>
-            <input type="number" id="memory-gb" value="12" min="1" max="512" step="1" required>
+            <label for="memory-gb">内存 (GB) (1-24)</label>
+            <input type="number" id="memory-gb" value="12" min="1" max="24" step="1" required>
           </div>
         </div>
         <p class="hint" id="e2-hint" hidden style="color: var(--text-muted); font-size: 12px;">
           E2.1.Micro 是固定规格：1 OCPU / 1 GB 内存，OCPU 与内存不可修改。
         </p>
         <p class="hint" style="color: var(--text-muted); font-size: 12px;">
-          A1 按所填 OCPU / 内存创建（--shape-config）；E2 是固定规格，OCPU / 内存仅用于配额预检。
+          A1 按所填 OCPU / 内存创建（--shape-config）；免费额度内 A1 单台上限为 4 核 / 24GB，超过会产生费用。E2 是固定规格，OCPU / 内存仅用于配额预检。
         </p>
       </div>
     </section>
@@ -60,7 +60,7 @@
               Canonical-Ubuntu-24.04-x86_64（AMD）
             </option>
           </select>
-          <p class="hint">后端按所选架构，从 web/config.py 的 IMAGE_IDS 查真实镜像 OCID（部署时须先填真实值）。</p>
+          <p class="hint">系统镜像按所选架构自动选择（Ubuntu 24.04）。</p>
         </div>
         <div class="form-row">
           <div class="form-group">

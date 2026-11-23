@@ -340,6 +340,17 @@ class TestValidateForm(unittest.TestCase):
         form = _filled_form(cpu="amd", ocpus=None, memory_gb=None)
         self.assertEqual(bf.validate_form(form, FAKE_DEPLOY), [])
 
+    def test_a1_free_tier_cap(self):
+        """A1 免费额度内单台上限 4 核 / 24GB，超过报错。"""
+        form = _filled_form(cpu="arm", ocpus=8, memory_gb=12)
+        errors = bf.validate_form(form, FAKE_DEPLOY)
+        self.assertTrue(any("4 核" in e for e in errors))
+        form = _filled_form(cpu="arm", ocpus=4, memory_gb=48)
+        errors = bf.validate_form(form, FAKE_DEPLOY)
+        self.assertTrue(any("24GB" in e for e in errors))
+        form = _filled_form(cpu="arm", ocpus=4, memory_gb=24)
+        self.assertEqual(bf.validate_form(form, FAKE_DEPLOY), [])
+
     def test_no_key_requires_root(self):
         form = _filled_form(ssh_key="none", root_login=False)
         errors = bf.validate_form(form, FAKE_DEPLOY)

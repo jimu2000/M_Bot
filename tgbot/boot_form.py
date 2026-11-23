@@ -64,8 +64,8 @@ CPU_OPTIONS = [("arm", "ARM"), ("amd", "AMD"), ("intel", "INTEL")]
 # 已映射为 Oracle Linux。
 OS_OPTIONS = [("ubuntu", "Ubuntu"), ("centos", "CentOS*")]
 # 核心 / 内存 / 硬盘 / 数量 / 延迟各行的预设值。
-OCPU_OPTIONS = [1, 2, 4, 16]
-MEMORY_OPTIONS = [1, 12, 24, 96]
+OCPU_OPTIONS = [1, 2, 4]  # A1 免费额度内单台上限 4 核
+MEMORY_OPTIONS = [1, 6, 12, 24]  # A1 免费额度内单台上限 24GB
 DISK_OPTIONS = [100, 150, 200]
 COUNT_OPTIONS = [1, 2, 3, 4]
 DELAY_OPTIONS = [1, 5, 10, 20, 40, 60, 100, 120, 150, 200]
@@ -398,6 +398,12 @@ def validate_form(form, deploy=None):
             errors.append("未选核心数")
         if form.get("memory_gb") is None:
             errors.append("未选内存")
+    if shape == SHAPE_A1_FLEX:
+        # A1 免费额度内单台上限 4 核 / 24GB，超过会产生费用。
+        if (form.get("ocpus") or 0) > 4:
+            errors.append("A1 免费额度内单台上限 4 核")
+        if (form.get("memory_gb") or 0) > 24:
+            errors.append("A1 免费额度内单台上限 24GB 内存")
     disk = form.get("disk_gb")
     if disk is not None and not (DISK_MIN_GB <= disk <= DISK_MAX_GB):
         errors.append(f"硬盘应为 {DISK_MIN_GB}–{DISK_MAX_GB}GB")

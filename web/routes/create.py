@@ -97,6 +97,11 @@ def create_instance(body: CreateBody,
         return error_response(
             f"最大延迟（{body.max_delay} 秒）不能小于最小延迟"
             f"（{body.min_delay} 秒）", status_code=400)
+    if body.shape == "VM.Standard.A1.Flex" and (
+            body.ocpus > 4 or body.memory_gb > 24):
+        return error_response(
+            "A1 免费额度内单台上限为 4 OCPU / 24GB，超过会产生费用",
+            status_code=400)
     try:
         cli, compartment_id = resolve_profile(body.profile)
         ok, reason = can_launch(cli, compartment_id, body.shape,
