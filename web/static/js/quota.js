@@ -2,6 +2,7 @@
 (function () {
   "use strict";
 
+  var currentProfile = null; // 当前账号（profile），由 fillProfileSelect 恢复
   function setBar(fillId, textId, used, limit, unit) {
     var fill = document.getElementById(fillId);
     var text = document.getElementById(textId);
@@ -13,11 +14,14 @@
       "（剩余 " + Math.max(0, limit - used) + " " + unit + "）";
   }
 
-  function loadQuota() {
+  // 加载配额汇总（走前端缓存；force=true 时跳过缓存重新拉取）
+  function loadQuota(force) {
+    var prof = currentProfile || "DEFAULT";
     document.getElementById("quota-loading").hidden = false;
     document.getElementById("quota-error").hidden = true;
     document.getElementById("quota-cards").hidden = true;
-    RBot.api("/api/quota").then(function (res) {
+    RBot.cachedApi("quota:summary:" + prof,
+      RBot.withProfile("/api/quota", currentProfile), !!force).then(function (res) {
       var s = res.summary;
       document.getElementById("quota-profile").textContent = res.profile || "—";
       document.getElementById("quota-overall").textContent = s.overall_ok
@@ -35,8 +39,8 @@
         "启动盘：" + (s.boot_volume.volumes.join("、") || "无");
       document.getElementById("quota-loading").hidden = true;
       document.getElementById("quota-cards").hidden = false;
-      loadA1Health();
-      loadA1Quota();
+      loadA1Health(force);
+      loadA1Quota(force);
     }).catch(function (err) {
       document.getElementById("quota-loading").hidden = true;
       document.getElementById("quota-error-text").textContent =
@@ -46,10 +50,11 @@
   }
 
   // A1 配额（R-Bot 形状）：调 GET /api/quota/a1，超限时在 A1 卡片追加警告
-  function loadA1Quota() {
+  function loadA1Quota(force) {
     var el = document.getElementById("a1-over-warning");
     if (!el) return;
-    RBot.api("/api/quota/a1").then(function (res) {
+    RBot.cachedApi("quota:a1:" + (currentProfile || "DEFAULT"),
+      RBot.withProfile("/api/quota/a1", currentProfile), !!force).then(function (res) {
       var a1 = res.a1 || {};
       if (a1.over) {
         var parts = [];
@@ -72,12 +77,13 @@
     ok: "var(--success, #22c55e)",
   };
 
-  function loadA1Health() {
+  function loadA1Health(force) {
     var statusEl = document.getElementById("a1-health-status");
     var listEl = document.getElementById("a1-health-list");
     statusEl.textContent = "加载中…";
     listEl.innerHTML = "";
-    RBot.api("/api/quota/a1-health").then(function (res) {
+    RBot.cachedApi("quota:health:" + (currentProfile || "DEFAULT"),
+      RBot.withProfile("/api/quota/a1-health", currentProfile), !!force).then(function (res) {
       var health = res.health || {};
       var suggestions = health.suggestions || [];
       statusEl.textContent = health.overall_ok
@@ -95,7 +101,20 @@
   }
 
   document.addEventListener("DOMContentLoaded", function () {
-    loadQuota();
-    document.getElementById("btn-refresh-quota").addEventListener("click", loadQuota);
+    // 先填 profile 下拉（恢复上次选择），再按当前账号加载配额；
+    // profiles 接口失败时仍按默认账号加载，不让页面空白。
+    var profileSelect = document.getElementById("profile-select");
+    RBot.fillProfileSelect(profileSelect).then(function (profile) {
+      currentProfile = profile;
+      loadQuota();
+    }).catch(function () {
+      loadQuota();
+    });
+    profileSelect.addEventListener("change", function (e) {
+      currentProfile = e.target.value;
+      RBot.setProfile(currentProfile);
+      loadQuota();
+    });
+    document.getElementById("btn-refresh-quota").addEventListener("click", function () { loadQuota(true); });
   });
 })();

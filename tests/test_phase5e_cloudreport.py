@@ -19,6 +19,7 @@ from fastapi.testclient import TestClient
 from oci.client import OCIError
 from web.app import create_app
 from web.auth import LOGIN_GUARD, SESSIONS, hash_password
+from web.routes.cloudreport import clear_cloud_report_cache
 
 # 测试密码：运行时随机生成（不在代码里写任何固定口令）。
 TEST_PASSWORD = secrets.token_urlsafe(16)
@@ -54,6 +55,8 @@ class CloudReportTestCase(unittest.TestCase):
         self._data_dir_patcher.start()
         self._profiles_patcher = patch("web.config.PROFILES", FAKE_PROFILES)
         self._profiles_patcher.start()
+        # 清云报告缓存，避免缓存跨测试串数据。
+        clear_cloud_report_cache()
         LOGIN_GUARD.reset()
         SESSIONS.reset()
         self.client = TestClient(self.app)

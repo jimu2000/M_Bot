@@ -6,10 +6,9 @@
 <div class="page-head">
   <h1>实例管理</h1>
   <label for="profile-select" style="color: var(--text-muted);">Profile</label>
-  {# Profile 下拉：静态占位，后端目前只暴露 DEFAULT #}
-  <select id="profile-select" style="width: auto;">
-    <option value="DEFAULT" selected>DEFAULT</option>
-  </select>
+  {# Profile 下拉：由 instances.js 从 GET /api/profiles 动态填充
+     （显示"名字 · 区域中文名"）；选择存 localStorage，切换后带 ?profile= 重新加载 #}
+  <select id="profile-select" style="width: auto;" aria-label="切换账号"></select>
   <div class="spacer"></div>
   <button type="button" class="btn" id="btn-refresh-instances">↻ 刷新</button>
   <a class="btn btn-primary" href="/create">＋ 创建实例</a>

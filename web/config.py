@@ -113,6 +113,15 @@ def _build_profiles():
 
 PROFILES = _build_profiles()
 
+# 区域中文名（前端 profile 下拉显示"名字 · 区域中文名"用；未列出的区域
+# 显示原始区域代码）。R-Bot 模型：区域只是每个 profile 自带的一个显示字段，
+# 账号/区域切换就是切换 profile，没有独立的区域选择器。
+REGION_LABELS = {
+    "ap-singapore-1": "新加坡",
+    "us-sanjose-1": "圣何塞",
+    "us-chicago-1": "芝加哥",
+}
+
 # 创建实例用的系统镜像 OCID（按架构查表；创建表单下拉选架构后，
 # 后端按这张表解析成真实镜像 OCID 再传给 OCI CLI）。
 # 部署时用环境变量 RBOT_IMAGE_AARCH64 / RBOT_IMAGE_X86_64 填真实值。
@@ -155,3 +164,8 @@ def get_compartment_id(profile=None):
 def get_region(profile=None):
     """返回指定 profile 的区域。"""
     return get_profile_config(profile)["region"]
+
+
+def get_region_label(region):
+    """返回区域的中文名；未列出的区域返回原始区域代码。"""
+    return REGION_LABELS.get(region, region)

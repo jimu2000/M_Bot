@@ -83,10 +83,12 @@
              "-" + String(d.getHours()).padStart(2, "0") + String(d.getMinutes()).padStart(2, "0");
     }
     return {
+      profile: $("profile").value || null,
       shape: shape,
       ocpus: isE2 ? 1 : parseInt($("ocpus").value, 10),
       memory_gb: isE2 ? 1 : parseInt($("memory-gb").value, 10),
-      image_id: $("image-id").value,
+      // 自定义镜像 OCID 优先于下拉（跨区域创建时填该区域的镜像 OCID）
+      image_id: $("image-id-custom").value.trim() || $("image-id").value,
       display_name: name,
       // 后端必填三项（卡 3 收集）
       subnet_id: $("subnet-id").value.trim(),
@@ -119,8 +121,8 @@
     btn.disabled = true;
     btn.textContent = "配额预检中…";
     try {
-      // 先调配额预检
-      var check = await RBot.api("/api/quota/can-launch", {
+      // 先调配额预检（带当前账号，预检该账号的免费额度）
+      var check = await RBot.api(RBot.withProfile("/api/quota/can-launch", payload.profile), {
         method: "POST",
         body: { shape: payload.shape, ocpus: payload.ocpus, memory_gb: payload.memory_gb },
       });
@@ -142,6 +144,12 @@
   }
 
   document.addEventListener("DOMContentLoaded", function () {
+    // 填 profile 下拉（恢复上次选择）；失败时保持默认账号，不阻塞表单
+    var profileSelect = $("profile");
+    RBot.fillProfileSelect(profileSelect).catch(function () { /* 保持默认账号 */ });
+    profileSelect.addEventListener("change", function (e) {
+      RBot.setProfile(e.target.value);
+    });
     $("shape").addEventListener("change", onShapeChange);
     onShapeChange();
     document.getElementById("preset-grid").addEventListener("click", function (e) {

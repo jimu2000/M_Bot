@@ -33,6 +33,117 @@
     return data;
   }
 
+  /* ---------- 前端缓存（Map + TTL + 按前缀清除） ---------- */
+  // 与 R-Bot 的 CloudCache 同款模型：内存 Map，默认 15 分钟 TTL，
+  // 键按资源 + profile 区分（如 "inst:DEFAULT"、"vol:list:DEFAULT"），
+  // 写操作后按前缀清缓存。页面内存里的缓存，刷新页面即失效；
+  // 服务端还有一层缓存（实例 30 秒、云报告 60 秒），两层叠加。
+  var CACHE_DEFAULT_TTL_MS = 15 * 60 * 1000; // 默认 15 分钟
+  var _cache = new Map();
+
+  function cacheGet(key) {
+    var entry = _cache.get(key);
+    if (!entry) return null;
+    if (Date.now() > entry.expires) {
+      _cache.delete(key);
+      return null;
+    }
+    return entry.value;
+  }
+
+  function cacheSet(key, value, ttlMs) {
+    _cache.set(key, {
+      value: value,
+      expires: Date.now() + (ttlMs || CACHE_DEFAULT_TTL_MS),
+    });
+  }
+
+  // 按前缀清除（不传前缀时清全部）。写操作成功后调用，避免列表显示旧数据。
+  function cacheClear(prefix) {
+    if (prefix == null) {
+      _cache.clear();
+      return;
+    }
+    _cache.forEach(function (_, key) {
+      if (key.indexOf(prefix) === 0) _cache.delete(key);
+    });
+  }
+
+  // 带缓存的 GET：命中时直接返回缓存；force=true 时跳过缓存读，
+  // 重新请求并刷新缓存（前端刷新按钮用）。
+  async function cachedApi(key, url, force) {
+    if (!force) {
+      var hit = cacheGet(key);
+      if (hit !== null) return hit;
+    }
+    var data = await api(url);
+    cacheSet(key, data);
+    return data;
+  }
+
+  /* ---------- 账号（profile）切换 ---------- */
+  // 与 R-Bot 同款模型：一个 profile = 一个账号 + 区域，账号/区域切换
+  // 就是切换 profile，没有独立的区域选择器；区域只是下拉里的显示字段。
+  // 当前选择优先级：内存 -> localStorage -> 默认 profile -> 第一个。
+  var PROFILE_KEY = "cloud_active_profile";
+  var _profiles = null; // 内存中的 profile 列表（GET /api/profiles）
+  var _profilesDefault = null; // 后端默认 profile
+  var _currentProfile = null; // 内存中的当前选择
+
+  function getProfile() {
+    if (_currentProfile) return _currentProfile;
+    try {
+      _currentProfile = window.localStorage.getItem(PROFILE_KEY) || null;
+    } catch (e) { /* 隐私模式下 localStorage 不可用 */ }
+    return _currentProfile;
+  }
+
+  function setProfile(name) {
+    _currentProfile = name;
+    try {
+      window.localStorage.setItem(PROFILE_KEY, name);
+    } catch (e) { /* 隐私模式下 localStorage 不可用 */ }
+  }
+
+  async function loadProfiles() {
+    if (_profiles) return _profiles;
+    var res = await api("/api/profiles");
+    _profiles = res.profiles || [];
+    _profilesDefault = res.default || null;
+    return _profiles;
+  }
+
+  // 填充 profile 下拉：选项显示"名字 · 区域中文名"；恢复保存的选择，
+  // 返回选中的名字（列表为空时返回 null，调用方按默认账号加载）。
+  async function fillProfileSelect(selectEl) {
+    var profiles = await loadProfiles();
+    selectEl.innerHTML = "";
+    profiles.forEach(function (p) {
+      var opt = document.createElement("option");
+      opt.value = p.name;
+      opt.textContent = p.name + " · " + (p.regionLabel || p.region || "");
+      selectEl.appendChild(opt);
+    });
+    var saved = getProfile();
+    var names = profiles.map(function (p) { return p.name; });
+    var selected = null;
+    if (saved && names.indexOf(saved) !== -1) selected = saved;
+    else if (_profilesDefault && names.indexOf(_profilesDefault) !== -1) selected = _profilesDefault;
+    else if (names.length > 0) selected = names[0];
+    if (selected) {
+      selectEl.value = selected;
+      setProfile(selected);
+    }
+    return selected;
+  }
+
+  // 给 URL 拼 ?profile= 参数（已有查询串时用 & 拼接）。
+  function withProfile(url, profile) {
+    if (!profile) return url;
+    var sep = url.indexOf("?") === -1 ? "?" : "&";
+    return url + sep + "profile=" + encodeURIComponent(profile);
+  }
+
   /* ---------- Toast 提示 ---------- */
   function toast(message, type) {
     type = type || "info";
@@ -323,5 +434,18 @@
     closeModal: closeModal,
     confirmDialog: confirmDialog,
     logout: logout,
+    // 前端缓存（Map + TTL + 按前缀清除）
+    cacheGet: cacheGet,
+    cacheSet: cacheSet,
+    cacheClear: cacheClear,
+    cachedApi: cachedApi,
+    CACHE_DEFAULT_TTL_MS: CACHE_DEFAULT_TTL_MS,
+    // 账号（profile）切换
+    PROFILE_KEY: PROFILE_KEY,
+    getProfile: getProfile,
+    setProfile: setProfile,
+    loadProfiles: loadProfiles,
+    fillProfileSelect: fillProfileSelect,
+    withProfile: withProfile,
   };
 })();

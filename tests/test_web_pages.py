@@ -159,10 +159,10 @@ class TestWebPages(unittest.TestCase):
         ])
 
     def test_instances_page(self):
-        """实例管理页：Profile 下拉、刷新按钮、表格列、终止确认文案。"""
+        """实例管理页：Profile 下拉（由 JS 从 /api/profiles 动态填充，
+        不再写死 DEFAULT 选项）、刷新按钮、表格列、终止确认文案。"""
         self._assert_page_ok("/instances", [
             'id="profile-select"',
-            "DEFAULT",
             'id="btn-refresh-instances"',
             'id="instance-table"',
             "公网 IP",
@@ -170,6 +170,9 @@ class TestWebPages(unittest.TestCase):
             "将永久删除引导卷",
             "/static/js/instances.js",
         ])
+        # 下拉是空的动态填充容器，不含写死的选项
+        resp = self.client.get("/instances")
+        self.assertNotIn('<option value="DEFAULT"', resp.text)
 
     def test_create_page(self):
         """创建实例页：四卡表单字段、快捷开机、提交按钮。"""

@@ -5,6 +5,10 @@
 {% block content %}
 <div class="page-head">
   <h1>免费额度</h1>
+  <label for="profile-select" style="color: var(--text-muted);">Profile</label>
+  {# Profile 下拉：由 quota.js 从 GET /api/profiles 动态填充
+     （显示"名字 · 区域中文名"）；选择存 localStorage，切换后带 ?profile= 重新加载 #}
+  <select id="profile-select" style="width: auto;" aria-label="切换账号"></select>
   <div class="spacer"></div>
   <button type="button" class="btn" id="btn-refresh-quota">↻ 刷新</button>
 </div>

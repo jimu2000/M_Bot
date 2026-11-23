@@ -4,6 +4,8 @@
 
   - GET /api/instances：列表（R-Bot 形状，见 format_instance；只含
     RUNNING 状态实例，每项补上公网 IP，取不到时为 None）。
+    各实例的公网 IP 并行取（线程池）；列表结果服务端缓存 30 秒，
+    手动刷新时传 refresh=1 绕过缓存；写操作成功后清对应账号的缓存。
   - GET /api/instances/{id}：详情（含公网 IP）。
   - GET /api/instances/{id}/console：串行控制台连接信息。
   - POST /api/instances/batch：批量开机/关机/重启/删除
@@ -18,6 +20,10 @@
 
 profile 通过查询参数传（如 ?profile=ACCOUNT2），默认 DEFAULT。
 """
+
+from concurrent.futures import ThreadPoolExecutor
+import threading
+import time
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
@@ -48,6 +54,35 @@ from web.deps import (
 )
 
 router = APIRouter()
+
+# ================= 配置区（改这里） =================
+# 实例列表服务端缓存 TTL（秒）：列表接口每次要跑 1 + N 次 OCI CLI
+# （1 次 list + 每台实例 1 次 list-vnics 取公网 IP），串行约 10 秒；
+# 30 秒内重复访问直接返回缓存，手动刷新（refresh=1）绕过缓存。
+INSTANCE_LIST_CACHE_TTL = 30
+# 并行取公网 IP 的线程数上限。OCIClient.run 只跑独立子进程，
+# 各线程间无共享可变状态，并行安全。
+MAX_IP_WORKERS = 8
+# =====================================================
+
+# 实例列表缓存：(profile, state) -> {"expires": 单调时钟过期点, "payload": 响应体}。
+# 只放内存不写盘；面板是单管理员，无需按用户隔离。
+_LIST_CACHE = {}
+_LIST_CACHE_LOCK = threading.Lock()
+
+
+def clear_instance_list_cache(profile=None):
+    """清实例列表缓存：指定 profile 时只清该账号，否则全清。
+
+    写操作（启停/重启/终止/批量/改名/重装）成功后调用，避免列表显示旧状态；
+    单元测试在 setUp 里调用，避免缓存跨测试串数据。
+    """
+    with _LIST_CACHE_LOCK:
+        if profile is None:
+            _LIST_CACHE.clear()
+        else:
+            for key in [k for k in _LIST_CACHE if k[0] == profile]:
+                del _LIST_CACHE[key]
 
 
 class TerminateBody(BaseModel):
@@ -123,6 +158,7 @@ def format_instance(inst, public_ip, region):
 @router.get("/api/instances")
 def list_all(profile: str = Query(default=None),
              state: str = Query(default="running"),
+             refresh: bool = Query(default=False),
              username: str = Depends(get_current_user)):
     """列出该账号下的实例（R-Bot 形状，每项补公网 IP）。
 
@@ -130,13 +166,21 @@ def list_all(profile: str = Query(default=None),
     /cloud/oci/instances 一致）。
     state=all：含全部非 TERMINATED 实例（RUNNING/STOPPED/STOPPING 等），
     用于从面板启动已停实例；TERMINATED 的实例始终不含。
+    refresh=true：绕过服务端缓存，强制重新查询（前端刷新按钮用）。
     """
     show_all = (state or "").lower() == "all"
     try:
         cli, compartment_id = resolve_profile(profile)
+        profile_name = profile or config.DEFAULT_PROFILE
+        cache_key = (profile_name, "all" if show_all else "running")
+        if not refresh:
+            with _LIST_CACHE_LOCK:
+                entry = _LIST_CACHE.get(cache_key)
+            if entry and time.monotonic() < entry["expires"]:
+                return entry["payload"]
         raw = list_instances(cli, compartment_id,
                              include_shape_config=True)
-        instances = []
+        filtered = []
         for inst in raw:
             inst_state = inst.get("lifecycle-state") or ""
             if show_all:
@@ -144,15 +188,29 @@ def list_all(profile: str = Query(default=None),
                     continue
             elif inst_state != "RUNNING":
                 continue
-            public_ip = _safe_public_ip(cli, inst.get("id"))
-            instances.append(format_instance(inst, public_ip, cli.region))
+            filtered.append(inst)
+        # 各实例的公网 IP 并行取（每台 1 次 list-vnics；map 保序，
+        # 结果与 filtered 一一对应；_safe_public_ip 失败时返回 None）。
+        if filtered:
+            with ThreadPoolExecutor(max_workers=MAX_IP_WORKERS) as pool:
+                ips = list(pool.map(
+                    lambda inst: _safe_public_ip(cli, inst.get("id")),
+                    filtered))
+        else:
+            ips = []
+        instances = [format_instance(inst, ip, cli.region)
+                     for inst, ip in zip(filtered, ips)]
     except ValueError as exc:
         return error_response(str(exc), status_code=400)
     except OCIError as exc:
         return oci_error_response(exc)
-    return {"ok": True,
-            "profile": profile or config.DEFAULT_PROFILE,
-            "instances": instances}
+    payload = {"ok": True, "profile": profile_name, "instances": instances}
+    with _LIST_CACHE_LOCK:
+        _LIST_CACHE[cache_key] = {
+            "expires": time.monotonic() + INSTANCE_LIST_CACHE_TTL,
+            "payload": payload,
+        }
+    return payload
 
 
 @router.post("/api/instances/batch")
@@ -189,6 +247,7 @@ def batch(body: BatchBody,
         return error_response(str(exc), status_code=400)
     except OCIError as exc:
         return oci_error_response(exc)
+    clear_instance_list_cache(profile or config.DEFAULT_PROFILE)
     return {"ok": True, "action": body.action,
             "succeeded": result["succeeded"], "failed": result["failed"]}
 
@@ -219,6 +278,7 @@ def _action(instance_id, profile, func, action_name):
         return error_response(str(exc), status_code=400)
     except OCIError as exc:
         return oci_error_response(exc)
+    clear_instance_list_cache(profile or config.DEFAULT_PROFILE)
     return {"ok": True, "instance_id": instance_id, "action": action_name}
 
 
@@ -276,6 +336,7 @@ def rename(instance_id: str,
         return error_response(str(exc), status_code=400)
     except OCIError as exc:
         return oci_error_response(exc)
+    clear_instance_list_cache(profile or config.DEFAULT_PROFILE)
     return {"ok": True, "instance_id": instance_id, "instance": detail}
 
 
@@ -308,6 +369,7 @@ def reinstall(instance_id: str,
         return error_response(str(exc), status_code=400)
     except OCIError as exc:
         return oci_error_response(exc)
+    clear_instance_list_cache(profile or config.DEFAULT_PROFILE)
     return {"ok": True, "instance_id": instance_id, "instance": result}
 
 
@@ -328,4 +390,5 @@ def terminate(instance_id: str,
         return error_response(str(exc), status_code=400)
     except OCIError as exc:
         return oci_error_response(exc)
+    clear_instance_list_cache(profile or config.DEFAULT_PROFILE)
     return {"ok": True, "instance_id": instance_id, "action": "terminate"}

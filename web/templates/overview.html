@@ -12,7 +12,10 @@
 
 {# 云报告卡片（阶段 5 工作包 E）：各账号实例/磁盘/配额汇总，来自 GET /api/cloud-report/summary #}
 <div class="card" id="cloud-report-card" style="margin-bottom: 16px;">
-  <h2>云报告</h2>
+  <div style="display: flex; align-items: center; gap: 8px;">
+    <h2 style="margin: 0;">云报告</h2>
+    <button type="button" class="btn btn-sm" id="btn-refresh-cloud-report" title="绕过缓存重新汇总" style="margin-left: auto;">↻ 刷新</button>
+  </div>
   <p id="cloud-report-loading" style="color: var(--text-muted);">加载中…</p>
   <div id="cloud-report-body" hidden></div>
   <p id="cloud-report-generated" style="color: var(--text-muted); font-size: 0.9em;" hidden></p>

@@ -156,13 +156,17 @@
     }
   }
 
-  // 云报告卡片：调 GET /api/cloud-report/summary，按账号渲染汇总
-  function loadCloudReport() {
+  // 云报告卡片：调 GET /api/cloud-report/summary，按账号渲染汇总。
+  // 走前端缓存（force=true 时跳过前端缓存并带 refresh=1 绕过服务端缓存）。
+  // 后端各账号并行汇总 + 60 秒服务端缓存，首次约一个账号的耗时。
+  function loadCloudReport(force) {
     var loadingEl = document.getElementById("cloud-report-loading");
     var bodyEl = document.getElementById("cloud-report-body");
     var genEl = document.getElementById("cloud-report-generated");
     if (!loadingEl || !bodyEl) return;
-    RBot.api("/api/cloud-report/summary").then(function (res) {
+    var url = "/api/cloud-report/summary";
+    if (force) url += "?refresh=1";
+    RBot.cachedApi("cloudreport", url, !!force).then(function (res) {
       var groups = res.groups || [];
       if (groups.length === 0) {
         loadingEl.textContent = "暂无已配置账号。";
@@ -202,6 +206,7 @@
   document.addEventListener("DOMContentLoaded", function () {
     loadHosts();
     loadCloudReport();
+    document.getElementById("btn-refresh-cloud-report").addEventListener("click", function () { loadCloudReport(true); });
 
     document.getElementById("host-search").addEventListener("input", function (e) {
       filterText = e.target.value;

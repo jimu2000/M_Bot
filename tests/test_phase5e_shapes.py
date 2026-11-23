@@ -29,6 +29,8 @@ from oci.instance import list_instances
 from oci.volume import list_boot_volume_attachments, list_boot_volumes
 from web.app import create_app
 from web.auth import LOGIN_GUARD, SESSIONS, hash_password
+from web.routes.cloudreport import clear_cloud_report_cache
+from web.routes.instances import clear_instance_list_cache
 
 FAKE_INSTANCE = "ocid1.instance.oc1..testxxxx"
 FAKE_INSTANCE_2 = "ocid1.instance.oc1..testyyyy"
@@ -83,6 +85,9 @@ class Phase5eShapesTestCase(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self._data_dir_patcher = patch("web.config.DATA_DIR", self._tmp.name)
         self._data_dir_patcher.start()
+        # 清服务端缓存（实例列表 / 云报告），避免缓存跨测试串数据。
+        clear_instance_list_cache()
+        clear_cloud_report_cache()
         LOGIN_GUARD.reset()
         SESSIONS.reset()
         self.client = TestClient(self.app)

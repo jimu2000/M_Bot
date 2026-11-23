@@ -17,6 +17,12 @@
       <h2 class="card-title">🖥️ 基础配置</h2>
       <div class="card-body">
         <div class="form-group">
+          <label for="profile">账号 / 区域</label>
+          {# Profile 下拉：由 create.js 从 GET /api/profiles 动态填充 #}
+          <select id="profile"></select>
+          <p class="hint">镜像、子网、可用域须与所选账号的区域一致。</p>
+        </div>
+        <div class="form-group">
           <label for="display-name">实例名称</label>
           <input type="text" id="display-name" placeholder="留空则自动生成">
         </div>
@@ -61,6 +67,10 @@
             </option>
           </select>
           <p class="hint">系统镜像按所选架构自动选择（Ubuntu 24.04）。</p>
+        </div>
+        <div class="form-group">
+          <label for="image-id-custom">自定义镜像 OCID（可选）</label>
+          <input type="text" id="image-id-custom" placeholder="填了优先于上方下拉（跨区域创建时填该区域的镜像 OCID）">
         </div>
         <div class="form-row">
           <div class="form-group">

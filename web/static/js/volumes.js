@@ -4,6 +4,7 @@
   var RBot = window.RBot;
   var volumes = [];
   var orphans = [];
+  var currentProfile = null; // 当前账号（profile），由 fillProfileSelect 恢复
   var resizeTarget = null;
   var deleteTarget = null;
   var vpusTarget = null;
@@ -81,9 +82,12 @@
     }
   }
 
-  async function loadAll() {
+  // 加载卷列表 + 孤儿盘（走前端缓存；force=true 时跳过缓存重新拉取）
+  async function loadAll(force) {
+    var prof = currentProfile || "DEFAULT";
     try {
-      var data = await RBot.api("/api/volumes");
+      var data = await RBot.cachedApi("vol:list:" + prof,
+        RBot.withProfile("/api/volumes", currentProfile), !!force);
       volumes = data.volumes || [];
     } catch (err) {
       document.getElementById("volume-tbody").innerHTML =
@@ -91,7 +95,8 @@
         RBot.escapeHtml(err.message) + "</td></tr>";
     }
     try {
-      var o = await RBot.api("/api/volumes/orphans");
+      var o = await RBot.cachedApi("vol:orphans:" + prof,
+        RBot.withProfile("/api/volumes/orphans", currentProfile), !!force);
       // 兼容两种返回键名：orphans 或 volumes
       orphans = o.orphans || o.volumes || [];
     } catch (err) {
@@ -106,8 +111,21 @@
   }
 
   document.addEventListener("DOMContentLoaded", function () {
-    loadAll();
-    document.getElementById("btn-refresh-volumes").addEventListener("click", loadAll);
+    // 先填 profile 下拉（恢复上次选择），再按当前账号加载列表；
+    // profiles 接口失败时仍按默认账号加载，不让页面空白。
+    var profileSelect = document.getElementById("profile-select");
+    RBot.fillProfileSelect(profileSelect).then(function (profile) {
+      currentProfile = profile;
+      loadAll();
+    }).catch(function () {
+      loadAll();
+    });
+    profileSelect.addEventListener("change", function (e) {
+      currentProfile = e.target.value;
+      RBot.setProfile(currentProfile);
+      loadAll();
+    });
+    document.getElementById("btn-refresh-volumes").addEventListener("click", function () { loadAll(true); });
 
     // 两张表共用一套操作按钮处理
     ["volume-tbody", "orphan-tbody"].forEach(function (tbodyId) {
@@ -152,12 +170,13 @@
         return;
       }
       try {
-        await RBot.api("/api/volumes/" + encodeURIComponent(resizeTarget.id) + "/resize", {
+        await RBot.api(RBot.withProfile("/api/volumes/" + encodeURIComponent(resizeTarget.id) + "/resize", currentProfile), {
           method: "POST",
           body: { size_in_gbs: newSize },
         });
         RBot.toast("扩容已提交", "success");
         RBot.closeModal("resize-modal");
+        RBot.cacheClear("vol:");
         await loadAll();
       } catch (err) {
         RBot.toast("扩容失败：" + err.message, "error");
@@ -174,12 +193,13 @@
         return;
       }
       try {
-        await RBot.api("/api/volumes/" + encodeURIComponent(vpusTarget.id) + "/vpus", {
+        await RBot.api(RBot.withProfile("/api/volumes/" + encodeURIComponent(vpusTarget.id) + "/vpus", currentProfile), {
           method: "POST",
           body: { vpus_per_gb: newVpus },
         });
         RBot.toast("VPU 已改为 " + newVpus, "success");
         RBot.closeModal("vpus-modal");
+        RBot.cacheClear("vol:");
         await loadAll();
       } catch (err) {
         RBot.toast("改 VPU 失败：" + err.message, "error");
@@ -190,9 +210,10 @@
     document.getElementById("btn-confirm-delete-volume").addEventListener("click", async function () {
       if (!deleteTarget) return;
       try {
-        await RBot.api("/api/volumes/" + encodeURIComponent(deleteTarget.id), { method: "DELETE" });
+        await RBot.api(RBot.withProfile("/api/volumes/" + encodeURIComponent(deleteTarget.id), currentProfile), { method: "DELETE" });
         RBot.toast("启动盘已删除", "success");
         RBot.closeModal("delete-volume-modal");
+        RBot.cacheClear("vol:");
         await loadAll();
       } catch (err) {
         RBot.toast("删除失败：" + err.message, "error");

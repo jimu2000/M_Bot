@@ -4,6 +4,7 @@
   var RBot = window.RBot;
   var instances = [];
   var selected = {}; // 选中实例的 id 集合（对象当集合用）
+  var currentProfile = null; // 当前账号（profile），由 fillProfileSelect 恢复
   var terminateTarget = null; // 待终止的实例
   var renameTarget = null; // 待改名的实例
   var reinstallTarget = null; // 待重装的实例
@@ -117,9 +118,13 @@
     updateBatchBar();
   }
 
-  async function loadInstances() {
+  // 加载实例列表（走前端缓存；force=true 时跳过前端缓存并带 refresh=1
+  // 绕过服务端缓存）。后端并行取公网 IP + 30 秒服务端缓存，首次约 3-5 秒。
+  async function loadInstances(force) {
     try {
-      var data = await RBot.api("/api/instances");
+      var url = RBot.withProfile("/api/instances", currentProfile);
+      if (force) url += (url.indexOf("?") === -1 ? "?" : "&") + "refresh=1";
+      var data = await RBot.cachedApi("inst:" + (currentProfile || "DEFAULT"), url, !!force);
       instances = data.instances || [];
       // 刷新后清理已不存在实例的选中状态
       var alive = {};
@@ -135,11 +140,12 @@
     }
   }
 
-  // 实例操作：start / stop / restart，成功后刷新列表并 toast
+  // 实例操作：start / stop / restart，成功后清前端缓存并刷新列表
   async function instanceAction(id, action, label) {
     try {
-      await RBot.api("/api/instances/" + encodeURIComponent(id) + "/" + action, { method: "POST" });
+      await RBot.api(RBot.withProfile("/api/instances/" + encodeURIComponent(id) + "/" + action, currentProfile), { method: "POST" });
       RBot.toast(label + "指令已发送", "success");
+      RBot.cacheClear("inst:");
       await loadInstances();
     } catch (err) {
       RBot.toast(label + "失败：" + err.message, "error");
@@ -151,7 +157,7 @@
     var ids = selectedIds();
     if (ids.length === 0) return;
     try {
-      var res = await RBot.api("/api/instances/batch", {
+      var res = await RBot.api(RBot.withProfile("/api/instances/batch", currentProfile), {
         method: "POST",
         body: { action: action, instance_ids: ids, confirm: !!confirm },
       });
@@ -166,6 +172,7 @@
         RBot.toast(label + "：成功 " + ok + " 台，失败 " + bad + " 台（" + detail + "）", "error");
       }
       selected = {};
+      RBot.cacheClear("inst:");
       await loadInstances();
     } catch (err) {
       RBot.toast(label + "失败：" + err.message, "error");
@@ -173,8 +180,22 @@
   }
 
   document.addEventListener("DOMContentLoaded", function () {
-    loadInstances();
-    document.getElementById("btn-refresh-instances").addEventListener("click", loadInstances);
+    // 先填 profile 下拉（恢复上次选择），再按当前账号加载列表；
+    // profiles 接口失败时仍按默认账号加载，不让页面空白。
+    var profileSelect = document.getElementById("profile-select");
+    RBot.fillProfileSelect(profileSelect).then(function (profile) {
+      currentProfile = profile;
+      loadInstances();
+    }).catch(function () {
+      loadInstances();
+    });
+    profileSelect.addEventListener("change", function (e) {
+      currentProfile = e.target.value;
+      RBot.setProfile(currentProfile);
+      selected = {};
+      loadInstances();
+    });
+    document.getElementById("btn-refresh-instances").addEventListener("click", function () { loadInstances(true); });
 
     // 全选 / 取消全选
     document.getElementById("select-all").addEventListener("change", function (e) {
@@ -252,7 +273,7 @@
       } else if (act === "console") {
         (async function () {
           try {
-            var res = await RBot.api("/api/instances/" + encodeURIComponent(instId) + "/console");
+            var res = await RBot.api(RBot.withProfile("/api/instances/" + encodeURIComponent(instId) + "/console", currentProfile));
             var conn = res.console || {};
             consoleCommand = conn["connection-string"] || "";
             document.getElementById("console-name").textContent = norm(inst).name;
@@ -275,12 +296,13 @@
       if (!terminateTarget) return;
       var inst = terminateTarget;
       try {
-        await RBot.api("/api/instances/" + encodeURIComponent(inst.id) + "/terminate", {
+        await RBot.api(RBot.withProfile("/api/instances/" + encodeURIComponent(inst.id) + "/terminate", currentProfile), {
           method: "POST",
           body: { confirm: true },
         });
         RBot.toast("实例已终止，引导卷已永久删除", "success");
         RBot.closeModal("terminate-modal");
+        RBot.cacheClear("inst:");
         await loadInstances();
       } catch (err) {
         RBot.toast("终止失败：" + err.message, "error");
@@ -303,12 +325,13 @@
         return;
       }
       try {
-        await RBot.api("/api/instances/" + encodeURIComponent(renameTarget.id) + "/rename", {
+        await RBot.api(RBot.withProfile("/api/instances/" + encodeURIComponent(renameTarget.id) + "/rename", currentProfile), {
           method: "POST",
           body: { name: newName },
         });
         RBot.toast("实例已改名为 " + newName, "success");
         RBot.closeModal("rename-modal");
+        RBot.cacheClear("inst:");
         await loadInstances();
       } catch (err) {
         RBot.toast("改名失败：" + err.message, "error");
@@ -325,12 +348,13 @@
         return;
       }
       try {
-        await RBot.api("/api/instances/" + encodeURIComponent(reinstallTarget.id) + "/reinstall", {
+        await RBot.api(RBot.withProfile("/api/instances/" + encodeURIComponent(reinstallTarget.id) + "/reinstall", currentProfile), {
           method: "POST",
           body: { confirm: true, confirm_name: confirmName },
         });
         RBot.toast("重装已提交，系统盘正在重建", "success");
         RBot.closeModal("reinstall-modal");
+        RBot.cacheClear("inst:");
         await loadInstances();
       } catch (err) {
         RBot.toast("重装失败：" + err.message, "error");
