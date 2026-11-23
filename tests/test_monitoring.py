@@ -48,7 +48,7 @@ class TestTrafficGuardConfig(MonitoringTestCase):
         cfg = mon.load_traffic_guard()
         self.assertEqual(cfg, {
             "enabled": False,
-            "threshold_gb": 10240,
+            "threshold_gb": 200,
             "action": "notify",
             "last_triggered": None,
             "chat_id": None,
@@ -60,13 +60,13 @@ class TestTrafficGuardConfig(MonitoringTestCase):
             f.write("{not json")
         cfg = mon.load_traffic_guard()
         self.assertFalse(cfg["enabled"])
-        self.assertEqual(cfg["threshold_gb"], 10240)
+        self.assertEqual(cfg["threshold_gb"], 200)
 
     def test_save_and_load_roundtrip(self):
         cfg = {
             "enabled": True,
             "threshold_gb": 5120,
-            "action": "shutdown",
+            "action": "block",
             "last_triggered": "2026-11-23T10:00:00+00:00",
             "chat_id": 654321,
         }
@@ -84,7 +84,7 @@ class TestTrafficGuardConfig(MonitoringTestCase):
                 self.write_json(mon.TRAFFIC_GUARD_FILE,
                                 {"threshold_gb": bad})
                 self.assertEqual(
-                    mon.load_traffic_guard()["threshold_gb"], 10240)
+                    mon.load_traffic_guard()["threshold_gb"], 200)
 
     def test_integer_threshold_stays_integer(self):
         self.write_json(mon.TRAFFIC_GUARD_FILE, {"threshold_gb": 5120.0})

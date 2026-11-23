@@ -263,47 +263,56 @@ class TestHandlersMenuStates(MonitoringBotTestCase):
 
 class TestTrafficGuardMenu(MonitoringBotTestCase):
 
+    def _patch_fetch(self, value=(1234.5, "2 台可达")):
+        return patch.object(he, "_fetch_guard_monthly_gb",
+                            new=AsyncMock(return_value=value))
+
     async def test_menu_shows_config_and_usage(self):
         update = make_update(callback_data="o:traffic_guard")
         context = make_context()
-        mon.save_traffic_guard({"enabled": True, "threshold_gb": 5120,
-                                "action": "shutdown",
+        mon.save_traffic_guard({"enabled": True, "threshold_gb": 200,
+                                "action": "block",
                                 "last_triggered": None,
                                 "chat_id": TEST_CHAT_ID})
-        with patch.object(he, "fetch_usage_summary",
-                          return_value=usage_items(1234.5)):
+        with self._patch_fetch():
             await he.handle_traffic_guard(update, context)
         text = reply_text_of(update)
         self.assertIn("✅ 开启", text)
-        self.assertIn("5120GB", text)
-        self.assertIn("自动关机", text)
+        self.assertIn("200GB", text)
+        self.assertIn("阻断断网", text)
         self.assertIn("1234.50GB", text)
+        self.assertIn("2 台可达", text)
         data = button_data(reply_markup_of(update))
+        texts = button_texts(reply_markup_of(update))
         self.assertIn("g:toggle", data)
         self.assertIn("g:action", data)
-        self.assertIn("g:threshold:10240", data)
+        self.assertIn("g:threshold:9216", data)
+        self.assertIn("g:unblock", data)
+        self.assertIn("阈值 9TB", texts)
 
     async def test_menu_survives_usage_failure(self):
         update = make_update(callback_data="o:traffic_guard")
         context = make_context()
-        with patch.object(he, "fetch_usage_summary",
-                          side_effect=RuntimeError("api down")):
+        with self._patch_fetch((None, "全部实例都连不上")):
             await he.handle_traffic_guard(update, context)
         text = reply_text_of(update)
         self.assertIn("⬜ 关闭", text)
-        self.assertIn("查询失败", text)
+        self.assertIn("全部实例都连不上", text)
+
+    async def test_menu_shows_no_key_note(self):
+        """未配 SSH 密钥时（测试环境默认）菜单直接显示提示，不调 SSH。"""
+        update = make_update(callback_data="o:traffic_guard")
+        context = make_context()
+        await he.handle_traffic_guard(update, context)
+        self.assertIn("未配置 SSH 密钥", reply_text_of(update))
 
 
 class TestTrafficGuardCallback(MonitoringBotTestCase):
 
-    def _patch_usage(self):
-        return patch.object(he, "fetch_usage_summary", return_value=[])
-
     async def test_toggle_enables_and_records_chat_id(self):
         update = make_update(callback_data="g:toggle")
         context = make_context()
-        with self._patch_usage():
-            await he.traffic_guard_callback(update, context)
+        await he.traffic_guard_callback(update, context)
         cfg = mon.load_traffic_guard()
         self.assertTrue(cfg["enabled"])
         self.assertEqual(cfg["chat_id"], TEST_CHAT_ID)
@@ -312,35 +321,33 @@ class TestTrafficGuardCallback(MonitoringBotTestCase):
     async def test_toggle_twice_disables(self):
         update = make_update(callback_data="g:toggle")
         context = make_context()
-        with self._patch_usage():
-            await he.traffic_guard_callback(update, context)
-            await he.traffic_guard_callback(update, context)
+        await he.traffic_guard_callback(update, context)
+        await he.traffic_guard_callback(update, context)
         self.assertFalse(mon.load_traffic_guard()["enabled"])
 
-    async def test_action_toggle(self):
+    async def test_action_cycles_three_ways(self):
+        """动作三选一循环：仅通知 → 阻断断网 → 限速200K → 仅通知。"""
         update = make_update(callback_data="g:action")
         context = make_context()
-        with self._patch_usage():
-            await he.traffic_guard_callback(update, context)
-        self.assertEqual(mon.load_traffic_guard()["action"], "shutdown")
-        with self._patch_usage():
-            await he.traffic_guard_callback(update, context)
+        await he.traffic_guard_callback(update, context)
+        self.assertEqual(mon.load_traffic_guard()["action"], "block")
+        await he.traffic_guard_callback(update, context)
+        self.assertEqual(mon.load_traffic_guard()["action"], "limit")
+        await he.traffic_guard_callback(update, context)
         self.assertEqual(mon.load_traffic_guard()["action"], "notify")
 
     async def test_threshold_change(self):
-        update = make_update(callback_data="g:threshold:5120")
+        update = make_update(callback_data="g:threshold:20")
         context = make_context()
-        with self._patch_usage():
-            await he.traffic_guard_callback(update, context)
-        self.assertEqual(mon.load_traffic_guard()["threshold_gb"], 5120)
+        await he.traffic_guard_callback(update, context)
+        self.assertEqual(mon.load_traffic_guard()["threshold_gb"], 20)
 
     async def test_bad_threshold_rejected(self):
         update = make_update(callback_data="g:threshold:abc")
         context = make_context()
-        with self._patch_usage():
-            await he.traffic_guard_callback(update, context)
+        await he.traffic_guard_callback(update, context)
         self.assertIn("参数错误", reply_text_of(update))
-        self.assertEqual(mon.load_traffic_guard()["threshold_gb"], 10240)
+        self.assertEqual(mon.load_traffic_guard()["threshold_gb"], 200)
 
     async def test_unknown_action_rejected(self):
         update = make_update(callback_data="g:bogus")
@@ -348,29 +355,62 @@ class TestTrafficGuardCallback(MonitoringBotTestCase):
         await he.traffic_guard_callback(update, context)
         self.assertIn("参数错误", reply_text_of(update))
 
+    async def test_unblock_runs_on_running_instances(self):
+        """解除限制：在运行中实例上跑解除命令，汇报结果后重渲染菜单。"""
+        update = make_update(callback_data="g:unblock")
+        context = make_context()
+        instances = [dict(FAKE_INSTANCES[0], **{"public-ip": "203.0.113.10"}),
+                     dict(FAKE_INSTANCES[1])]
+        with patch.object(he, "list_instances",
+                          return_value=instances), \
+             patch.object(he, "attach_public_ips",
+                          side_effect=lambda cli, insts: insts), \
+             patch.object(bot_config, "GUARD_SSH_KEY", "/tmp/fake-key"), \
+             patch.object(he, "run_remote_command",
+                          return_value=(0, "GUARD-UNBLOCKED", "")) as mock_run:
+            await he.traffic_guard_callback(update, context)
+        mock_run.assert_called()
+        # 第 1 次调用是解除命令（第 2 次是重渲染菜单时的 vnstat 查询）。
+        _host, command = mock_run.call_args_list[0].args
+        self.assertIn("TRAFFIC_GUARD", command)
+        self.assertIn("tc qdisc del", command)
+        # 结果消息是倒数第二条（最后一条是重渲染的菜单）。
+        texts = [a.args[0] for a in
+                 update.effective_message.reply_text.await_args_list]
+        self.assertTrue(any("已解除" in t and "web-server" in t
+                            for t in texts))
+
 
 class TestTrafficGuardStep(MonitoringBotTestCase):
 
-    def _enable_guard(self, action="notify", threshold=10240, **over):
+    def _enable_guard(self, action="notify", threshold=200, **over):
         cfg = {"enabled": True, "threshold_gb": threshold, "action": action,
                "last_triggered": None, "chat_id": TEST_CHAT_ID}
         cfg.update(over)
         mon.save_traffic_guard(cfg)
         return cfg
 
+    def _patch_fetch(self, value=(250.0, "2 台可达")):
+        return patch.object(he, "_fetch_guard_monthly_gb",
+                            new=AsyncMock(return_value=value))
+
+    def _running_instances(self):
+        return [dict(FAKE_INSTANCES[0], **{"public-ip": "203.0.113.10"}),
+                dict(FAKE_INSTANCES[1])]
+
     async def test_disabled_does_nothing(self):
         context = make_context()
-        with patch.object(he, "fetch_usage_summary") as mock_usage:
+        with self._patch_fetch() as mock_fetch:
             await he._traffic_guard_step(context)
-            mock_usage.assert_not_called()
+            mock_fetch.assert_not_called()
         context.bot.send_message.assert_not_awaited()
 
     async def test_no_chat_id_does_nothing(self):
         context = make_context()
         self._enable_guard(chat_id=None)
-        with patch.object(he, "fetch_usage_summary") as mock_usage:
+        with self._patch_fetch() as mock_fetch:
             await he._traffic_guard_step(context)
-            mock_usage.assert_not_called()
+            mock_fetch.assert_not_called()
         context.bot.send_message.assert_not_awaited()
 
     async def test_monitor_chat_id_is_fallback(self):
@@ -378,8 +418,7 @@ class TestTrafficGuardStep(MonitoringBotTestCase):
         context.bot_data["monitor"] = {"on": True, "autostart": False,
                                        "chat_id": TEST_CHAT_ID}
         self._enable_guard(chat_id=None)
-        with patch.object(he, "fetch_usage_summary",
-                          return_value=usage_items(15000)):
+        with self._patch_fetch():
             await he._traffic_guard_step(context)
         context.bot.send_message.assert_awaited_once()
         _, kwargs = context.bot.send_message.await_args
@@ -388,8 +427,7 @@ class TestTrafficGuardStep(MonitoringBotTestCase):
     async def test_below_threshold_does_nothing(self):
         context = make_context()
         self._enable_guard()
-        with patch.object(he, "fetch_usage_summary",
-                          return_value=usage_items(5000)):
+        with self._patch_fetch((100.0, "2 台可达")):
             await he._traffic_guard_step(context)
         context.bot.send_message.assert_not_awaited()
         self.assertIsNone(mon.load_traffic_guard()["last_triggered"])
@@ -397,56 +435,82 @@ class TestTrafficGuardStep(MonitoringBotTestCase):
     async def test_notify_action_only_notifies(self):
         context = make_context()
         self._enable_guard(action="notify")
-        with patch.object(he, "fetch_usage_summary",
-                          return_value=usage_items(15000)), \
-             patch.object(he, "stop_instance") as mock_stop:
+        with self._patch_fetch(), \
+             patch.object(he, "run_remote_command") as mock_run:
             await he._traffic_guard_step(context)
-            mock_stop.assert_not_called()
+            mock_run.assert_not_called()
         texts = sent_texts(context)
         self.assertEqual(len(texts), 1)
         self.assertIn("流量守护提醒", texts[0])
-        self.assertIn("15000.00GB", texts[0])
+        self.assertIn("250.00GB", texts[0])
         self.assertIn("仅通知", texts[0])
         # 触发时间已记录。
         self.assertIsNotNone(mon.load_traffic_guard()["last_triggered"])
 
-    async def test_shutdown_stops_running_only(self):
+    async def test_block_blocks_running_only(self):
         context = make_context()
-        self._enable_guard(action="shutdown")
-        with patch.object(he, "fetch_usage_summary",
-                          return_value=usage_items(15000)), \
-             patch.object(he, "stop_instance",
-                          return_value=None) as mock_stop:
-            await he._traffic_guard_step(context, instances=FAKE_INSTANCES)
-        mock_stop.assert_called_once_with(self.cli, RUNNING_ID)
+        self._enable_guard(action="block")
+        with self._patch_fetch(), \
+             patch.object(bot_config, "GUARD_SSH_KEY", "/tmp/fake-key"), \
+             patch.object(he, "run_remote_command",
+                          return_value=(0, "GUARD-BLOCKED", "")) as mock_run:
+            await he._traffic_guard_step(context,
+                                         instances=self._running_instances())
+        mock_run.assert_called_once()
+        host, command = mock_run.call_args.args
+        self.assertEqual(host["host"], "203.0.113.10")
+        self.assertEqual(host["port"], 14422)
+        self.assertIn("TRAFFIC_GUARD", command)
+        self.assertIn("--sport", command)
         texts = sent_texts(context)
         self.assertEqual(len(texts), 1)
-        self.assertIn("已自动关机", texts[0])
+        self.assertIn("阻断断网", texts[0])
         self.assertIn("web-server", texts[0])
 
-    async def test_shutdown_fetches_instances_when_none_passed(self):
+    async def test_limit_limits_running_only(self):
         context = make_context()
-        self._enable_guard(action="shutdown")
-        with patch.object(he, "fetch_usage_summary",
-                          return_value=usage_items(15000)), \
-             patch.object(he, "list_instances",
-                          return_value=FAKE_INSTANCES), \
-             patch.object(he, "stop_instance",
-                          return_value=None) as mock_stop:
-            await he._traffic_guard_step(context)
-        mock_stop.assert_called_once_with(self.cli, RUNNING_ID)
-
-    async def test_shutdown_failure_reported_per_instance(self):
-        context = make_context()
-        self._enable_guard(action="shutdown")
-        with patch.object(he, "fetch_usage_summary",
-                          return_value=usage_items(15000)), \
-             patch.object(he, "stop_instance",
-                          side_effect=RuntimeError("boom")):
-            await he._traffic_guard_step(context, instances=FAKE_INSTANCES)
+        self._enable_guard(action="limit")
+        with self._patch_fetch(), \
+             patch.object(bot_config, "GUARD_SSH_KEY", "/tmp/fake-key"), \
+             patch.object(he, "run_remote_command",
+                          return_value=(0, "GUARD-LIMITED", "")) as mock_run:
+            await he._traffic_guard_step(context,
+                                         instances=self._running_instances())
+        mock_run.assert_called_once()
+        _host, command = mock_run.call_args.args
+        self.assertIn("htb", command)
+        self.assertIn("1600kbit", command)
         texts = sent_texts(context)
         self.assertEqual(len(texts), 1)
-        self.assertIn("停止失败", texts[0])
+        self.assertIn("限速 200K", texts[0])
+        self.assertIn("web-server", texts[0])
+
+    async def test_block_fetches_instances_when_none_passed(self):
+        context = make_context()
+        self._enable_guard(action="block")
+        with self._patch_fetch(), \
+             patch.object(bot_config, "GUARD_SSH_KEY", "/tmp/fake-key"), \
+             patch.object(he, "list_instances",
+                          return_value=self._running_instances()), \
+             patch.object(he, "attach_public_ips",
+                          side_effect=lambda cli, insts: insts), \
+             patch.object(he, "run_remote_command",
+                          return_value=(0, "GUARD-BLOCKED", "")) as mock_run:
+            await he._traffic_guard_step(context)
+        mock_run.assert_called_once()
+
+    async def test_block_failure_reported_per_instance(self):
+        context = make_context()
+        self._enable_guard(action="block")
+        with self._patch_fetch(), \
+             patch.object(bot_config, "GUARD_SSH_KEY", "/tmp/fake-key"), \
+             patch.object(he, "run_remote_command",
+                          side_effect=RuntimeError("boom")):
+            await he._traffic_guard_step(context,
+                                         instances=self._running_instances())
+        texts = sent_texts(context)
+        self.assertEqual(len(texts), 1)
+        self.assertIn("未执行", texts[0])
         self.assertIn("web-server", texts[0])
 
     async def test_cooldown_blocks_repeat_within_24h(self):
@@ -454,11 +518,11 @@ class TestTrafficGuardStep(MonitoringBotTestCase):
         now = datetime.now(timezone.utc)
         self._enable_guard(action="notify",
                            last_triggered=now.isoformat())
-        with patch.object(he, "fetch_usage_summary",
-                          return_value=usage_items(15000)), \
-             patch.object(he, "stop_instance") as mock_stop:
-            await he._traffic_guard_step(context, instances=FAKE_INSTANCES)
-            mock_stop.assert_not_called()
+        with self._patch_fetch(), \
+             patch.object(he, "run_remote_command") as mock_run:
+            await he._traffic_guard_step(context,
+                                         instances=self._running_instances())
+            mock_run.assert_not_called()
         context.bot.send_message.assert_not_awaited()
 
     async def test_triggers_again_after_cooldown(self):
@@ -466,20 +530,156 @@ class TestTrafficGuardStep(MonitoringBotTestCase):
         old = (datetime.now(timezone.utc)
                - timedelta(hours=25)).isoformat()
         self._enable_guard(action="notify", last_triggered=old)
-        with patch.object(he, "fetch_usage_summary",
-                          return_value=usage_items(15000)):
+        with self._patch_fetch():
             await he._traffic_guard_step(context)
         context.bot.send_message.assert_awaited_once()
 
     async def test_usage_failure_notifies(self):
         context = make_context()
         self._enable_guard()
-        with patch.object(he, "fetch_usage_summary",
-                          side_effect=RuntimeError("api down")):
+        with self._patch_fetch((None, "全部实例都连不上")):
             await he._traffic_guard_step(context)
         texts = sent_texts(context)
         self.assertEqual(len(texts), 1)
         self.assertIn("流量守护检查失败", texts[0])
+
+
+class TestTrafficGuardCommands(MonitoringBotTestCase):
+    """v1.7.2：动作/阈值辅助函数 + 远程命令生成 + vnstat 解析。"""
+
+    def test_fmt_threshold_gb(self):
+        self.assertEqual(mon.fmt_threshold_gb(10), "10GB")
+        self.assertEqual(mon.fmt_threshold_gb(200), "200GB")
+        self.assertEqual(mon.fmt_threshold_gb(9216), "9TB")
+        self.assertEqual(mon.fmt_threshold_gb(1024), "1TB")
+        self.assertEqual(mon.fmt_threshold_gb(2048), "2TB")
+
+    def test_action_labels_and_cycle(self):
+        self.assertEqual(mon.traffic_guard_action_label("notify"), "仅通知")
+        self.assertEqual(mon.traffic_guard_action_label("block"),
+                         "阻断断网（保留SSH）")
+        self.assertEqual(mon.traffic_guard_action_label("limit"), "限速200K")
+        self.assertEqual(mon.traffic_guard_action_label("bogus"), "仅通知")
+        self.assertEqual(mon.next_traffic_guard_action("notify"), "block")
+        self.assertEqual(mon.next_traffic_guard_action("block"), "limit")
+        self.assertEqual(mon.next_traffic_guard_action("limit"), "notify")
+        self.assertEqual(mon.next_traffic_guard_action("bogus"), "notify")
+
+    def test_old_shutdown_action_falls_back_to_notify(self):
+        """旧版存的 shutdown 动作读出来回退到仅通知（不再有关机动作）。"""
+        mon.save_traffic_guard({"enabled": True, "threshold_gb": 200,
+                                "action": "shutdown", "last_triggered": None,
+                                "chat_id": TEST_CHAT_ID})
+        self.assertEqual(mon.load_traffic_guard()["action"], "notify")
+
+    def test_defaults_follow_script(self):
+        """默认阈值 200GB、预设 10/20/200/9216，照 auto_limit.sh。"""
+        self.assertEqual(mon.TRAFFIC_GUARD_DEFAULT_THRESHOLD_GB, 200)
+        self.assertEqual(mon.TRAFFIC_GUARD_THRESHOLD_PRESETS,
+                         [10, 20, 200, 9216])
+        self.assertEqual(mon.default_traffic_guard()["threshold_gb"], 200)
+        self.assertEqual(mon.TRAFFIC_GUARD_RATE_LIMIT, "1600kbit")
+
+    def test_block_command_keeps_ssh_open(self):
+        """阻断命令：放行回环/已建立连接/SSH 端口/内网，外网 DROP。"""
+        cmd = mon.guard_block_command()
+        self.assertIn("TRAFFIC_GUARD", cmd)
+        self.assertIn("-o lo -j ACCEPT", cmd)
+        self.assertIn("ESTABLISHED,RELATED", cmd)
+        self.assertIn('--sport "$SSH_PORT"', cmd)
+        self.assertIn("-d 10.0.0.0/8 -j ACCEPT", cmd)
+        self.assertIn('-o "$IF" -j DROP', cmd)
+        self.assertIn("GUARD-BLOCKED", cmd)
+        self.assertIn("GUARD-ALREADY-BLOCKED", cmd)
+
+    def test_limit_command_htb_1600kbit(self):
+        cmd = mon.guard_limit_command()
+        self.assertIn("htb", cmd)
+        self.assertIn("1600kbit", cmd)
+        self.assertIn("GUARD-LIMITED", cmd)
+        self.assertIn("GUARD-ALREADY-LIMITED", cmd)
+        self.assertIn("800kbit", mon.guard_limit_command("800kbit"))
+
+    def test_unblock_command_removes_both(self):
+        cmd = mon.guard_unblock_command()
+        self.assertIn("iptables -D OUTPUT -j TRAFFIC_GUARD", cmd)
+        self.assertIn("iptables -X TRAFFIC_GUARD", cmd)
+        self.assertIn("tc qdisc del", cmd)
+        self.assertIn("GUARD-UNBLOCKED", cmd)
+
+    def test_vnstat_command_and_parser(self):
+        cmd = mon.guard_vnstat_command()
+        self.assertIn("vnstat", cmd)
+        self.assertIn("--json m", cmd)
+        sample = ('{"interfaces": [{"name": "enp0s6", "traffic": {"month": ['
+                  '{"date": {"year": 2026, "month": 10}, '
+                  '"rx": 1073741824, "tx": 2147483648}, '
+                  '{"date": {"year": 2026, "month": 11}, '
+                  '"rx": 11967212635, "tx": 7227582128}]}}]}')
+        now = datetime(2026, 11, 24, tzinfo=timezone.utc)
+        rx, tx = mon.parse_vnstat_monthly_gb(sample, now=now)
+        self.assertAlmostEqual(rx, 11.15, places=2)
+        self.assertAlmostEqual(tx, 6.73, places=2)
+        # 没有当月条目时取最后一条。
+        now_oct = datetime(2026, 10, 5, tzinfo=timezone.utc)
+        rx2, tx2 = mon.parse_vnstat_monthly_gb(sample, now=now_oct)
+        self.assertAlmostEqual(rx2, 1.0, places=2)
+        self.assertAlmostEqual(tx2, 2.0, places=2)
+        # 解析失败 / 无数据返回 None。
+        self.assertIsNone(mon.parse_vnstat_monthly_gb("not json"))
+        self.assertIsNone(mon.parse_vnstat_monthly_gb(
+            '{"interfaces": [{"traffic": {"month": []}}]}'))
+
+
+class TestGuardFetch(MonitoringBotTestCase):
+    """v1.7.2：_fetch_guard_monthly_gb 与 _run_guard_command_on_instances。"""
+
+    def _vnstat_json(self, tx_gb):
+        import json as _json
+        tx_bytes = int(tx_gb * 1024 * 1024 * 1024)
+        return _json.dumps({"interfaces": [{"name": "enp0s6", "traffic": {
+            "month": [{"date": {"year": 2026, "month": 11},
+                       "rx": 0, "tx": tx_bytes}]}}]})
+
+    async def test_fetch_sums_running_instances(self):
+        context = make_context()
+        instances = [dict(FAKE_INSTANCES[0],
+                          **{"public-ip": "203.0.113.10"}),
+                     dict(FAKE_INSTANCES[1],
+                          **{"public-ip": "203.0.113.11"})]
+        with patch.object(bot_config, "GUARD_SSH_KEY", "/tmp/fake-key"), \
+             patch.object(he, "run_remote_command",
+                          return_value=(0, self._vnstat_json(6.73), "")):
+            total, note = await he._fetch_guard_monthly_gb(
+                context, instances=instances)
+        # 只有 RUNNING 的 web-server 被查（STOPPED 的 e2-test 跳过）。
+        self.assertAlmostEqual(total, 6.73, places=2)
+        self.assertIn("1 台可达", note)
+
+    async def test_fetch_no_key_returns_none(self):
+        context = make_context()
+        total, note = await he._fetch_guard_monthly_gb(
+            context, instances=self._running_instances())
+        self.assertIsNone(total)
+        self.assertIn("未配置 SSH 密钥", note)
+
+    def _running_instances(self):
+        return [dict(FAKE_INSTANCES[0], **{"public-ip": "203.0.113.10"})]
+
+    async def test_run_command_skips_stopped_and_reports_failure(self):
+        instances = [dict(FAKE_INSTANCES[0],
+                          **{"public-ip": "203.0.113.10"}),
+                     dict(FAKE_INSTANCES[1],
+                          **{"public-ip": "203.0.113.11"})]
+        with patch.object(bot_config, "GUARD_SSH_KEY", "/tmp/fake-key"), \
+             patch.object(he, "run_remote_command",
+                          side_effect=RuntimeError("ssh down")):
+            ok_names, failed = await he._run_guard_command_on_instances(
+                "echo hi", instances)
+        self.assertEqual(ok_names, [])
+        self.assertEqual(len(failed), 1)
+        self.assertEqual(failed[0][0], "web-server")
+        self.assertIn("ssh down", failed[0][1])
 
 
 class TestCheckInstancesJobIntegration(MonitoringBotTestCase):
@@ -487,11 +687,11 @@ class TestCheckInstancesJobIntegration(MonitoringBotTestCase):
 
     async def test_guard_runs_when_monitor_off(self):
         context = make_context()  # 监控开关没开
-        mon.save_traffic_guard({"enabled": True, "threshold_gb": 10240,
+        mon.save_traffic_guard({"enabled": True, "threshold_gb": 200,
                                 "action": "notify", "last_triggered": None,
                                 "chat_id": TEST_CHAT_ID})
-        with patch.object(he, "fetch_usage_summary",
-                          return_value=usage_items(15000)), \
+        with patch.object(he, "_fetch_guard_monthly_gb",
+                          new=AsyncMock(return_value=(250.0, "2 台可达"))), \
              patch.object(he, "list_instances") as mock_list:
             await he.check_instances_job(context)
             mock_list.assert_not_called()  # 仅通知不需要实例列表

@@ -2,16 +2,19 @@
 """监控增强的纯逻辑与配置持久化（阶段 5 工作包 C）。
 
 三个功能：
-  1. 流量守护：本月出站流量超阈值时仅通知或自动关机，
-     同一阈值触发后 24 小时内不再重复执行。
+  1. 流量守护：本月出站流量（vnstat 自然月统计，SSH 到实例上查）
+     超阈值时按动作执行：仅通知 / 阻断断网（iptables 熔断，SSH
+     逃生门保留）/ 限速 200K（tc 限流到 1600kbit），同一阈值触发后
+     24 小时内不再重复执行。动作与阈值照用户自己的 auto_limit.sh。
   2. 停机保活：STOPPED 实例按每实例开关自动开机，
      连续 3 次开机失败后停止尝试该实例。
   3. SSL 监控：域名证书到期前 30/14/7/1 天各提醒一次。
 
-本模块是纯同步逻辑（JSON 文件读写 + 阈值判断），不调 OCI API、
-不发 Telegram 消息，单元测试直接跑，不需要 mock 网络。
-Telegram handler 与 JobQueue job 在 tgbot/handlers_extra.py 里，
-调本模块的函数做判断与持久化。
+本模块是纯同步逻辑（JSON 文件读写 + 阈值判断 + 远程命令生成 +
+vnstat 解析），不调 OCI API、不发 Telegram 消息、不连 SSH，
+单元测试直接跑，不需要 mock 网络。Telegram handler 与 JobQueue
+job 在 tgbot/handlers_extra.py 里，调本模块的函数做判断与持久化，
+远程命令经 tgbot.handlers_client.run_remote_command 执行。
 
 配置文件（都在 tgbot.config.DATA_DIR 下，JSON）：
   - traffic_guard.json：{"enabled", "threshold_gb", "action",
@@ -24,7 +27,9 @@ Telegram handler 与 JobQueue job 在 tgbot/handlers_extra.py 里，
 
 安全说明：
   - 配置文件里只有开关、阈值与 OCID，不含任何密钥 / Token。
-  - 自动关机 / 自动开机默认关闭，用户明确开启才生效（见默认值）。
+  - 阻断 / 限速默认关闭，用户明确开启才生效（见默认值）。
+  - 阻断只切断外网出站：回环、已建立连接、SSH 端口、内网网段
+    全部放行，SSH 逃生门保留；限速只降速不断网。
 """
 
 import json
@@ -35,12 +40,24 @@ from datetime import datetime, timedelta, timezone
 from tgbot import config as bot_config
 
 # ================= 配置区（改这里） =================
-# 流量守护默认阈值（GB）：OCI 免费层每月出站流量额度 10TB。
-TRAFFIC_GUARD_DEFAULT_THRESHOLD_GB = 10240
-# 流量守护阈值预设（GB），Telegram 菜单里点选。
-TRAFFIC_GUARD_THRESHOLD_PRESETS = [1024, 5120, 10240, 20480]
+# 流量守护默认阈值（GB）：照用户 auto_limit.sh 的 LIMIT_GB（200）。
+TRAFFIC_GUARD_DEFAULT_THRESHOLD_GB = 200
+# 流量守护阈值预设（GB），Telegram 菜单里点选：脚本的 10/20/200
+# + 封顶 9TB（9216GB，用户 2026-11-24 定）。
+TRAFFIC_GUARD_THRESHOLD_PRESETS = [10, 20, 200, 9216]
+# 流量守护动作：notify 仅通知 / block 阻断断网（保留 SSH）/
+# limit 限速 200K。照 auto_limit.sh 的 OVER_LIMIT_MODE
+# （0=阻断，1=限速），另加仅通知。
+TRAFFIC_GUARD_ACTIONS = ("notify", "block", "limit")
+TRAFFIC_GUARD_ACTION_LABELS = {
+    "notify": "仅通知",
+    "block": "阻断断网（保留SSH）",
+    "limit": "限速200K",
+}
+# 限速目标（tc 速率）：1600kbit ≈ 200 KB/s，照 auto_limit.sh。
+TRAFFIC_GUARD_RATE_LIMIT = "1600kbit"
 # 流量守护触发后冷却时间（小时）：同一阈值触发后这么久内不再重复执行
-# （防反复开关机；仅通知动作同样冷却，防每 10 分钟刷屏）。
+# （防反复阻断/限速；仅通知动作同样冷却，防每 10 分钟刷屏）。
 TRAFFIC_GUARD_COOLDOWN_HOURS = 24
 # 停机保活：连续开机失败这么多次后停止尝试该实例并通知用户。
 KEEPALIVE_MAX_FAILURES = 3
@@ -101,8 +118,34 @@ def _parse_time(value):
 
 # ---------------- 流量守护 ----------------
 
+def fmt_threshold_gb(gb):
+    """阈值显示：整 TB 时显示 TB（如 9216 → "9TB"），否则显示 GB。"""
+    try:
+        value = int(gb)
+    except (TypeError, ValueError):
+        return f"{gb}GB"
+    if value >= 1024 and value % 1024 == 0:
+        return f"{value // 1024}TB"
+    return f"{value}GB"
+
+
+def traffic_guard_action_label(action):
+    """动作的中文名（未知动作回退到“仅通知”）。"""
+    return TRAFFIC_GUARD_ACTION_LABELS.get(action,
+                                           TRAFFIC_GUARD_ACTION_LABELS["notify"])
+
+
+def next_traffic_guard_action(action):
+    """动作切换顺序：仅通知 → 阻断断网 → 限速200K → 仅通知。"""
+    try:
+        idx = TRAFFIC_GUARD_ACTIONS.index(action)
+    except ValueError:
+        return "notify"
+    return TRAFFIC_GUARD_ACTIONS[(idx + 1) % len(TRAFFIC_GUARD_ACTIONS)]
+
+
 def default_traffic_guard():
-    """流量守护默认配置：关闭、10240GB、仅通知。"""
+    """流量守护默认配置：关闭、200GB、仅通知。"""
     return {
         "enabled": False,
         "threshold_gb": TRAFFIC_GUARD_DEFAULT_THRESHOLD_GB,
@@ -128,7 +171,7 @@ def load_traffic_guard(path=None):
         threshold = int(threshold)
     cfg["threshold_gb"] = threshold
     cfg["action"] = (data.get("action") if data.get("action")
-                     in ("notify", "shutdown") else "notify")
+                     in TRAFFIC_GUARD_ACTIONS else "notify")
     cfg["last_triggered"] = data.get("last_triggered")
     cfg["chat_id"] = data.get("chat_id")
     return cfg
@@ -141,7 +184,7 @@ def save_traffic_guard(cfg, path=None):
         "threshold_gb": cfg.get("threshold_gb",
                                 TRAFFIC_GUARD_DEFAULT_THRESHOLD_GB),
         "action": (cfg.get("action") if cfg.get("action")
-                   in ("notify", "shutdown") else "notify"),
+                   in TRAFFIC_GUARD_ACTIONS else "notify"),
         "last_triggered": cfg.get("last_triggered"),
         "chat_id": cfg.get("chat_id"),
     }
@@ -178,6 +221,9 @@ def current_month_transfer_gb(items, now=None):
     items 是 handlers_extra.fetch_usage_summary 的返回值；只统计
     service 含 "Data Transfer" 且 time-usage-started 属于本月
     （YYYY-MM）的项，computed-quantity 按 API 返回值以 GB 计。
+    注意：OCI 用量接口不给真实出站数（一直 0.00GB），流量守护已改
+    用 vnstat（见 parse_vnstat_monthly_gb），本函数只剩菜单 19 在用，
+    v1.8.0 随菜单 19 一并换掉。
     """
     now = now or datetime.now(timezone.utc)
     month = now.strftime("%Y-%m")
@@ -192,6 +238,136 @@ def current_month_transfer_gb(items, now=None):
         except (TypeError, ValueError):
             continue
     return total
+
+
+# ---------------- 流量守护：远程命令（经 SSH 执行） ----------------
+# 命令照用户 auto_limit.sh 的逻辑（阻断 / 限速 / vnstat 查流量），
+# 由 handlers_extra 经 tgbot.handlers_client.run_remote_command
+# 发到实例上执行。本模块只生成命令字符串，不连 SSH。
+
+_GUARD_IFACE_DETECT = (
+    "IF=$(ip route show default 2>/dev/null "
+    "| awk '/default/ {print $5}' | head -n1); "
+    "if [ -z \"$IF\" ]; then "
+    "for _nic in eth0 ens3 enp0s6 enp0s3 ens5 ens4 enp1s0 eno1 ens6 venet0 eth1; do "
+    "if [ -f \"/sys/class/net/$_nic/statistics/tx_bytes\" ]; then "
+    "IF=\"$_nic\"; break; fi; done; fi; "
+    "[ -z \"$IF\" ] && { echo GUARD-ERROR no-interface; exit 1; }"
+)
+
+_GUARD_SSH_PORT_DETECT = (
+    "SSH_PORT=$(ss -tlnp 2>/dev/null | awk '/sshd/ {print $4}' "
+    "| head -n1 | sed 's/.*://'); "
+    "if [ -z \"$SSH_PORT\" ]; then "
+    "SSH_PORT=$(grep -E '^Port' /etc/ssh/sshd_config 2>/dev/null "
+    "| awk '{print $2}' | head -n1); fi; "
+    "[ -z \"$SSH_PORT\" ] && SSH_PORT=22"
+)
+
+
+def guard_vnstat_command():
+    """查本月流量：识别默认网卡后跑 vnstat --json m，输出 JSON。"""
+    return _GUARD_IFACE_DETECT + "; vnstat -i \"$IF\" --json m"
+
+
+def parse_vnstat_monthly_gb(json_text, now=None):
+    """解析 vnstat --json m 的输出，返回 (入站 GiB, 出站 GiB)。
+
+    取 interfaces[0].traffic.month 里与当前年月匹配的一条；
+    没有当月条目时取最后一条；解析失败 / 无数据时返回 None。
+    vnstat 的 rx/tx 单位是字节，除以 1024^3 得 GiB。
+    """
+    now = now or datetime.now(timezone.utc)
+    try:
+        data = json.loads(json_text)
+        months = data["interfaces"][0]["traffic"]["month"]
+    except (TypeError, ValueError, KeyError, IndexError):
+        return None
+    if not months:
+        return None
+    entry = None
+    for item in months:
+        date = item.get("date") or {}
+        if (date.get("year") == now.year
+                and date.get("month") == now.month):
+            entry = item
+            break
+    if entry is None:
+        entry = months[-1]
+    try:
+        rx_gb = float(entry["rx"]) / 1024 / 1024 / 1024
+        tx_gb = float(entry["tx"]) / 1024 / 1024 / 1024
+    except (TypeError, ValueError, KeyError):
+        return None
+    return (rx_gb, tx_gb)
+
+
+def guard_block_command():
+    """阻断断网命令（照 auto_limit.sh 的 trip_circuit_breaker）。
+
+    TRAFFIC_GUARD 链：放行回环、已建立连接、SSH 端口出站、内网
+    网段，其余外网出站 DROP。已熔断时不再重复执行。执行结果打在
+    stdout 最后一行：GUARD-BLOCKED / GUARD-ALREADY-BLOCKED。
+    注意：当前 SSH 会话属于 ESTABLISHED，不会被切断。
+    """
+    return (
+        _GUARD_IFACE_DETECT + "; " + _GUARD_SSH_PORT_DETECT + "; "
+        "iptables -N TRAFFIC_GUARD 2>/dev/null || true; "
+        "if ! iptables -C OUTPUT -j TRAFFIC_GUARD 2>/dev/null; then "
+        "iptables -I OUTPUT 1 -j TRAFFIC_GUARD; fi; "
+        "if iptables -L TRAFFIC_GUARD -n 2>/dev/null | grep -q DROP; then "
+        "echo GUARD-ALREADY-BLOCKED; exit 0; fi; "
+        "iptables -F TRAFFIC_GUARD; "
+        "iptables -A TRAFFIC_GUARD -o lo -j ACCEPT; "
+        "iptables -A TRAFFIC_GUARD -m conntrack "
+        "--ctstate ESTABLISHED,RELATED -j ACCEPT; "
+        "iptables -A TRAFFIC_GUARD -p tcp --sport \"$SSH_PORT\" -j ACCEPT; "
+        "iptables -A TRAFFIC_GUARD -d 10.0.0.0/8 -j ACCEPT; "
+        "iptables -A TRAFFIC_GUARD -d 172.16.0.0/12 -j ACCEPT; "
+        "iptables -A TRAFFIC_GUARD -d 192.168.0.0/16 -j ACCEPT; "
+        "iptables -A TRAFFIC_GUARD -o \"$IF\" -j DROP; "
+        "echo GUARD-BLOCKED"
+    )
+
+
+def guard_limit_command(rate=None):
+    """限速命令（照 auto_limit.sh 的限速分支）：tc htb 限流。
+
+    rate 默认 TRAFFIC_GUARD_RATE_LIMIT（1600kbit ≈ 200KB/s）。
+    已有限速规则时不再重复执行。结果打在 stdout 最后一行：
+    GUARD-LIMITED / GUARD-ALREADY-LIMITED。
+    """
+    rate = rate or TRAFFIC_GUARD_RATE_LIMIT
+    return (
+        _GUARD_IFACE_DETECT + "; "
+        "if tc qdisc show dev \"$IF\" 2>/dev/null | grep -q htb; then "
+        "echo GUARD-ALREADY-LIMITED; exit 0; fi; "
+        "tc qdisc del dev \"$IF\" root 2>/dev/null; "
+        "tc qdisc add dev \"$IF\" root handle 1: htb default 10; "
+        "tc class add dev \"$IF\" parent 1: classid 1:1 htb "
+        f"rate {rate} ceil {rate}; "
+        "tc class add dev \"$IF\" parent 1:1 classid 1:10 htb "
+        f"rate {rate} ceil {rate}; "
+        "tc filter add dev \"$IF\" protocol ip prio 1 u32 "
+        "match u32 0 0 flowid 1:10; "
+        "echo GUARD-LIMITED"
+    )
+
+
+def guard_unblock_command():
+    """解除限制：删 TRAFFIC_GUARD 链的 OUTPUT 跳转并删链，删 tc 限速。
+
+    两步都 best-effort（没设过限制时也正常返回）。结果打在
+    stdout 最后一行：GUARD-UNBLOCKED。
+    """
+    return (
+        _GUARD_IFACE_DETECT + "; "
+        "iptables -D OUTPUT -j TRAFFIC_GUARD 2>/dev/null || true; "
+        "iptables -F TRAFFIC_GUARD 2>/dev/null || true; "
+        "iptables -X TRAFFIC_GUARD 2>/dev/null || true; "
+        "tc qdisc del dev \"$IF\" root 2>/dev/null || true; "
+        "echo GUARD-UNBLOCKED"
+    )
 
 
 # ---------------- 停机保活 ----------------

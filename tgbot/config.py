@@ -106,6 +106,15 @@ PRESETS_FILE = os.path.expanduser("~/workspace/rbot-clone/tgbot/presets.json")
 # 部署时用 RBOT_TGBOT_DATA_DIR 指到部署路径（如 /opt/rbot-clone/tgbot/data）。
 DATA_DIR = os.path.expanduser(os.environ.get(
     "RBOT_TGBOT_DATA_DIR", "~/workspace/rbot-clone/tgbot/data"))
+# 流量守护的 SSH 私钥：阻断 / 限速 / vnstat 查流量要 SSH 到实例上执行，
+# 用这把专用密钥（公钥需加到各实例的 authorized_keys）。未配置时
+# 流量守护只能“仅通知”，阻断/限速/解除按钮会提示未配置。
+# 部署示例：RBOT_GUARD_SSH_KEY=/root/.ssh/rbot_guard
+GUARD_SSH_KEY = os.path.expanduser(os.environ.get(
+    "RBOT_GUARD_SSH_KEY", "")) if os.environ.get("RBOT_GUARD_SSH_KEY") else ""
+# 流量守护 SSH 端口与用户名（实例标准配置：root + 14422）。
+GUARD_SSH_PORT = 14422
+GUARD_SSH_USER = "root"
 # =====================================================
 
 # 把项目根目录加到 sys.path 开头，保证 `import oci` 解析到本项目

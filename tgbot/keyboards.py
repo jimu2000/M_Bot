@@ -20,7 +20,7 @@ callback_data 规范（Telegram 限制 64 字节，OCID 约 100 字节放不下�
   - "ba:next"         批量操作：选好实例，进入选动作
   - "ba:action:<act>" 批量操作：选动作（start/stop/restart/terminate）
   - "g:toggle"        流量守护：开关
-  - "g:action"        流量守护：切换动作（仅通知/自动关机）
+  - "g:action"        流量守护：切换动作（仅通知/阻断断网/限速200K）
   - "g:threshold:<gb>" 流量守护：改阈值（GB）
   - "k:toggle:<idx>"  停机保活：切换某台实例的保活开关
     （idx 是 context.user_data["instances"] 的下标）
@@ -65,6 +65,9 @@ callback_data 规范（Telegram 限制 64 字节，OCID 约 100 字节放不下�
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
+from tgbot.monitoring import (TRAFFIC_GUARD_THRESHOLD_PRESETS,
+                              fmt_threshold_gb,
+                              traffic_guard_action_label)
 from tgbot.services import (
     instance_group_title,
     short_shape,
@@ -438,12 +441,16 @@ def domain_records_keyboard(zone_id, records):
     ])
 
 
-def traffic_guard_keyboard(cfg, presets=(1024, 5120, 10240, 20480)):
-    """流量守护菜单键盘：开关 / 切换动作 / 阈值预设。
+def traffic_guard_keyboard(cfg, presets=None):
+    """流量守护菜单键盘：开关 / 切换动作 / 阈值预设 / 解除限制。
 
     cfg 是 tgbot.monitoring.load_traffic_guard() 的返回值；
-    presets 是阈值预设（GB），当前阈值标 ✅。
+    presets 是阈值预设（GB），默认 monitoring 的
+    TRAFFIC_GUARD_THRESHOLD_PRESETS，当前阈值标 ✅。
+    动作按钮三选一循环：仅通知 → 阻断断网 → 限速200K。
     """
+    if presets is None:
+        presets = TRAFFIC_GUARD_THRESHOLD_PRESETS
     enabled = bool(cfg.get("enabled"))
     action = cfg.get("action", "notify")
     threshold = cfg.get("threshold_gb")
@@ -451,16 +458,18 @@ def traffic_guard_keyboard(cfg, presets=(1024, 5120, 10240, 20480)):
         [InlineKeyboardButton("✅ 关闭流量守护" if enabled else "🚀 开启流量守护",
                               callback_data="g:toggle")],
         [InlineKeyboardButton(
-            f"动作：{'自动关机' if action == 'shutdown' else '仅通知'}（点切换）",
+            f"动作：{traffic_guard_action_label(action)}（点切换）",
             callback_data="g:action")],
     ]
     for i in range(0, len(presets), 2):
         row = []
         for gb in presets[i:i + 2]:
             mark = "✅ " if gb == threshold else ""
-            row.append(InlineKeyboardButton(f"{mark}阈值 {gb}GB",
+            row.append(InlineKeyboardButton(f"{mark}阈值 {fmt_threshold_gb(gb)}",
                                             callback_data=f"g:threshold:{gb}"))
         rows.append(row)
+    rows.append([InlineKeyboardButton("🔓 解除限制（取消阻断/限速）",
+                                      callback_data="g:unblock")])
     rows.append([InlineKeyboardButton("◀ Oracle 菜单", callback_data="o:menu")])
     return InlineKeyboardMarkup(rows)
 

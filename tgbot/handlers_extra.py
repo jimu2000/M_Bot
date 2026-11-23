@@ -92,9 +92,16 @@ from tgbot.keyboards import (
     task_list_keyboard,
     traffic_guard_keyboard,
 )
+from tgbot.handlers_client import run_remote_command
 from tgbot.monitoring import (
     KEEPALIVE_MAX_FAILURES,
+    TRAFFIC_GUARD_RATE_LIMIT,
     current_month_transfer_gb,
+    fmt_threshold_gb,
+    guard_block_command,
+    guard_limit_command,
+    guard_unblock_command,
+    guard_vnstat_command,
     is_valid_domain,
     keepalive_enabled_instances,
     keepalive_record_failure,
@@ -104,7 +111,9 @@ from tgbot.monitoring import (
     load_keepalive_state,
     load_ssl_watch,
     load_traffic_guard,
+    next_traffic_guard_action,
     normalize_domain,
+    parse_vnstat_monthly_gb,
     record_traffic_guard_trigger,
     save_keepalive,
     save_keepalive_state,
@@ -112,6 +121,7 @@ from tgbot.monitoring import (
     save_traffic_guard,
     should_trigger_traffic_guard,
     ssl_reminder_due,
+    traffic_guard_action_label,
 )
 from tgbot.services import (
     TASKS,
@@ -2579,51 +2589,156 @@ def get_menu_states(context):
     }
 
 
-def fmt_traffic_guard(cfg, used_gb=None):
-    """流量守护菜单全文。used_gb 为 None 表示本月流量查询失败。"""
+def fmt_traffic_guard(cfg, used_gb=None, used_note=None):
+    """流量守护菜单全文。
+
+    used_gb 为 None 表示本月流量查不到（未配 SSH 密钥或实例全连不上）；
+    used_note 是流量行的补充说明（如“2 台可达，1 台连不上”）。
+    """
     lines = ["🛡️ 流量守护：", ""]
     lines.append(f"状态：{'✅ 开启' if cfg.get('enabled') else '⬜ 关闭'}")
-    lines.append(f"阈值：{cfg.get('threshold_gb')}GB / 月")
-    action = "自动关机" if cfg.get("action") == "shutdown" else "仅通知"
-    lines.append(f"超阈值动作：{action}")
+    lines.append(f"阈值：{fmt_threshold_gb(cfg.get('threshold_gb'))} / 月")
+    lines.append(f"超阈值动作：{traffic_guard_action_label(cfg.get('action'))}")
     if used_gb is not None:
-        lines.append(f"本月已用出站流量：{used_gb:.2f}GB")
+        line = f"本月已用出站流量：{used_gb:.2f}GB"
+        if used_note:
+            line += f"（{used_note}）"
+        lines.append(line)
     else:
-        lines.append("本月已用出站流量：查询失败")
+        lines.append("本月已用出站流量："
+                     + (used_note or "查询失败"))
     last = cfg.get("last_triggered")
     if last:
         lines.append(f"上次触发：{str(last)[:19].replace('T', ' ')}")
     lines.append("")
-    lines.append("阈值默认 10240GB（OCI 免费出站流量额度）；"
-                "触发后 24 小时内不再重复执行。")
+    lines.append("流量按 vnstat 自然月统计（SSH 到实例上查）；阈值默认 200GB，"
+                "封顶 9TB；触发后 24 小时内不再重复执行。")
+    lines.append("阻断断网：iptables 熔断，切断外网出站，SSH 逃生门保留；"
+                "限速200K：tc 限流到 200KB/s，不断网。")
     return "\n".join(lines)
+
+
+def _guard_host_for_instance(public_ip):
+    """流量守护的 SSH 主机记录（实例公网 IP + 专用密钥）。
+
+    未配置 RBOT_GUARD_SSH_KEY 或无公网 IP 时返回 None。
+    """
+    if not public_ip or not bot_config.GUARD_SSH_KEY:
+        return None
+    return {
+        "host": public_ip,
+        "port": bot_config.GUARD_SSH_PORT,
+        "username": bot_config.GUARD_SSH_USER,
+        "key_path": bot_config.GUARD_SSH_KEY,
+    }
+
+
+async def _run_guard_command_on_instances(command, instances):
+    """在多台实例上各跑一条守护命令（SSH），返回 (成功名, 失败名+原因)。
+
+    instances 是 list_instances 的精简列表，只对 RUNNING 且有公网 IP
+    的实例执行；跳过 / 失败的都进失败列表并注明原因。命令的 stdout
+    最后一行是 GUARD-* 状态行，失败时（非 0 退出码或无状态行）取
+    stderr 末行作原因。
+    """
+    ok_names, failed = [], []
+    for inst in instances or []:
+        if inst.get("lifecycle-state") != "RUNNING":
+            continue
+        name = inst.get("display-name") or "?"
+        host = _guard_host_for_instance(inst.get("public-ip"))
+        if host is None:
+            failed.append((name, "无公网 IP 或未配置 SSH 密钥"))
+            continue
+        try:
+            exit_code, out, err = await run_sync(
+                run_remote_command, host, command)
+        except Exception as exc:  # noqa: BLE001 - 单台失败不影响其他台
+            failed.append((name, fmt_error(exc)))
+            continue
+        last_line = (out or "").strip().splitlines()[-1] if (out or "").strip() else ""
+        if exit_code == 0 and last_line.startswith("GUARD-"):
+            ok_names.append(name)
+        else:
+            reason = (err or "").strip().splitlines()
+            failed.append((name, reason[-1] if reason else
+                           (f"退出码 {exit_code}" if exit_code else "无返回")))
+    return ok_names, failed
+
+
+async def _fetch_guard_monthly_gb(context, instances=None):
+    """查 DEFAULT 账号下运行中实例的本月出站流量总和（vnstat）。
+
+    返回 (出站总 GiB 或 None, 说明文字)。instances 不传时现查
+    （并补公网 IP）；未配 SSH 密钥时返回 (None, "未配置 SSH 密钥")；
+    部分实例连不上时只计可达的，并在说明里注明。
+    """
+    if not bot_config.GUARD_SSH_KEY:
+        return None, "未配置 SSH 密钥，查不到流量"
+    if instances is None:
+        try:
+            instances = await run_sync(
+                list_instances, get_cli(context), get_compartment(context))
+            instances = await run_sync(
+                attach_public_ips, get_cli(context), instances)
+        except Exception as exc:  # noqa: BLE001
+            return None, f"查实例列表失败：{fmt_error(exc)}"
+    elif any(inst.get("lifecycle-state") == "RUNNING"
+             and "public-ip" not in inst for inst in instances or []):
+        # job 传进来的列表没补公网 IP（check_instances_job 的原始列表），
+        # 这里补上（原地修改，调用方后续动作也能用上）。
+        try:
+            instances = await run_sync(
+                attach_public_ips, get_cli(context), instances)
+        except Exception:  # noqa: BLE001 - 补 IP 失败时按原列表走
+            pass
+    total_tx = 0.0
+    ok_count, fail_count = 0, 0
+    for inst in instances or []:
+        if inst.get("lifecycle-state") != "RUNNING":
+            continue
+        host = _guard_host_for_instance(inst.get("public-ip"))
+        if host is None:
+            fail_count += 1
+            continue
+        try:
+            exit_code, out, _err = await run_sync(
+                run_remote_command, host, guard_vnstat_command())
+        except Exception:  # noqa: BLE001 - 单台失败不影响其他台
+            fail_count += 1
+            continue
+        parsed = (parse_vnstat_monthly_gb(out)
+                  if exit_code == 0 else None)
+        if parsed is None:
+            fail_count += 1
+            continue
+        total_tx += parsed[1]
+        ok_count += 1
+    if ok_count == 0:
+        return None, "全部实例都连不上"
+    note = f"{ok_count} 台可达" if fail_count == 0 else (
+        f"{ok_count} 台可达，{fail_count} 台连不上")
+    return total_tx, note
 
 
 @require_allowed
 async def handle_traffic_guard(update, context):
-    """菜单 37：流量守护——开关、阈值、动作。
+    """菜单 37：流量守护——开关、阈值、动作、解除限制。
 
-    本月流量复用用量 API（与菜单 19 同一查询方式），查不到也不影响改配置。
+    本月流量用 vnstat（SSH 到实例上查），查不到也不影响改配置。
     """
     cfg = load_traffic_guard()
-    used_gb = None
-    try:
-        items = await run_sync(fetch_usage_summary,
-                               get_cli(context), get_compartment(context),
-                               "MONTHLY", 1)
-        used_gb = current_month_transfer_gb(items)
-    except Exception:  # noqa: BLE001 - 流量查不到也不影响改配置
-        used_gb = None
-    await _reply(update, fmt_traffic_guard(cfg, used_gb),
+    used_gb, used_note = await _fetch_guard_monthly_gb(context)
+    await _reply(update, fmt_traffic_guard(cfg, used_gb, used_note),
                  reply_markup=traffic_guard_keyboard(cfg))
 
 
 @require_allowed
 async def traffic_guard_callback(update, context):
-    """回调 "g:toggle" / "g:action" / "g:threshold:<gb>"。
+    """回调 "g:toggle" / "g:action" / "g:threshold:<gb>" / "g:unblock"。
 
     每次操作都记录通知 chat_id（job 触发时往这里发消息），
-    保存后重新渲染菜单。
+    保存后重新渲染菜单；解除限制先执行再汇报结果。
     """
     parts = _callback_data(update).split(":")
     action = parts[1] if len(parts) > 1 else ""
@@ -2633,8 +2748,7 @@ async def traffic_guard_callback(update, context):
     if action == "toggle":
         cfg["enabled"] = not cfg.get("enabled")
     elif action == "action":
-        cfg["action"] = ("notify" if cfg.get("action") == "shutdown"
-                         else "shutdown")
+        cfg["action"] = next_traffic_guard_action(cfg.get("action"))
     elif action == "threshold" and len(parts) == 3:
         try:
             threshold = int(parts[2])
@@ -2645,10 +2759,37 @@ async def traffic_guard_callback(update, context):
             await _reply(update, "阈值必须大于 0，请重新选择。")
             return
         cfg["threshold_gb"] = threshold
+    elif action == "unblock":
+        save_traffic_guard(cfg)
+        await _guard_unblock(update, context)
+        return
     else:
         await _reply(update, "参数错误，请重新打开流量守护菜单。")
         return
     save_traffic_guard(cfg)
+    await handle_traffic_guard(update, context)
+
+
+async def _guard_unblock(update, context):
+    """解除限制：在运行中实例上删阻断链与限速规则，汇报结果后重渲染菜单。"""
+    try:
+        instances = await run_sync(list_instances, get_cli(context),
+                                   get_compartment(context))
+        instances = await run_sync(
+            attach_public_ips, get_cli(context), instances)
+    except Exception as exc:  # noqa: BLE001
+        await _reply(update, f"❌ 查实例列表失败：{fmt_error(exc)}")
+        return
+    ok_names, failed = await _run_guard_command_on_instances(
+        guard_unblock_command(), instances)
+    lines = ["🔓 解除限制："]
+    if ok_names:
+        lines.append(f"已解除：{', '.join(ok_names)}")
+    for name, reason in failed:
+        lines.append(f"{name}：未解除（{reason}）")
+    if not ok_names and not failed:
+        lines.append("当前没有运行中的实例，无需解除。")
+    await _reply(update, "\n".join(lines))
     await handle_traffic_guard(update, context)
 
 
@@ -4064,10 +4205,11 @@ async def check_instances_job(context):
 async def _traffic_guard_step(context, instances=None):
     """流量守护检查（check_instances_job 的一步）。
 
-    已开启时查本月出站流量（复用用量 API，与菜单 19 同一查询方式），
-    超阈值且距上次触发超过 24 小时才动作：notify 只发提醒；
-    shutdown 停掉该账号下全部 RUNNING 实例并通知。
-    instances 是 job 已查好的列表（可为 None，shutdown 需要时再查）。
+    已开启时查本月出站流量（vnstat，SSH 到 DEFAULT 账号的运行中
+    实例上查并汇总），超阈值且距上次触发超过 24 小时才动作：
+    notify 只发提醒；block 在全部运行中实例上阻断断网（保留 SSH）；
+    limit 在全部运行中实例上限速 200K。instances 是 job 已查好的
+    列表（可为 None，流量查询与动作需要时再查）。
     """
     cfg = load_traffic_guard()
     if not cfg.get("enabled"):
@@ -4077,57 +4219,55 @@ async def _traffic_guard_step(context, instances=None):
     if not chat_id:
         logger.warning("流量守护已开启但未记录通知 chat_id，跳过本次检查")
         return
-    profile = bot_config.DEFAULT_PROFILE
-    cli = bot_config.get_oci_client(profile=profile)
-    compartment = bot_config.get_compartment_id(profile)
-    try:
-        items = await run_sync(fetch_usage_summary, cli, compartment,
-                               "MONTHLY", 1)
-    except Exception as exc:  # noqa: BLE001 - 查询失败也要通知用户
+    used_gb, used_note = await _fetch_guard_monthly_gb(context, instances)
+    if used_gb is None:
         await context.bot.send_message(
-            chat_id=chat_id, text=f"流量守护检查失败：{fmt_error(exc)}")
+            chat_id=chat_id,
+            text=f"流量守护检查失败：{used_note}，本次跳过。")
         return
-    used_gb = current_month_transfer_gb(items)
     if not should_trigger_traffic_guard(cfg, used_gb):
         return
     record_traffic_guard_trigger(cfg)
     threshold = cfg.get("threshold_gb")
-    if cfg.get("action") != "shutdown":
+    action = cfg.get("action") or "notify"
+    if action == "notify":
         await context.bot.send_message(
             chat_id=chat_id,
             text=(f"⚠️ 流量守护提醒：本月出站流量 {used_gb:.2f}GB，"
-                  f"已超过阈值 {threshold}GB。\n"
-                  "当前动作是“仅通知”，未关机；"
-                  "如需自动关机请到 /oracle 菜单 37. 流量守护里切换。"))
+                  f"已超过阈值 {fmt_threshold_gb(threshold)}。\n"
+                  "当前动作是“仅通知”，未做任何限制；"
+                  "如需阻断或限速请到 /oracle 菜单 37. 流量守护里切换。"))
         return
     if instances is None:
         try:
+            profile = bot_config.DEFAULT_PROFILE
+            cli = bot_config.get_oci_client(profile=profile)
+            compartment = bot_config.get_compartment_id(profile)
             instances = await run_sync(list_instances, cli, compartment)
+            instances = await run_sync(attach_public_ips, cli, instances)
         except Exception as exc:  # noqa: BLE001
             await context.bot.send_message(
                 chat_id=chat_id,
                 text="流量守护：流量已超阈值，但查实例列表失败，"
-                     f"未能自动关机：{fmt_error(exc)}")
+                     f"未能执行动作：{fmt_error(exc)}")
             return
-    stopped, failed = [], []
-    for inst in instances or []:
-        if inst.get("lifecycle-state") != "RUNNING":
-            continue
-        name = inst.get("display-name") or "?"
-        try:
-            await run_sync(stop_instance, cli, inst["id"])
-        except Exception:  # noqa: BLE001 - 单台失败不影响其他台
-            failed.append(name)
-        else:
-            stopped.append(name)
+    if action == "block":
+        command = guard_block_command()
+        verb = "阻断断网（SSH 已保留）"
+    else:  # limit
+        command = guard_limit_command()
+        verb = "限速 200K"
+    ok_names, failed = await _run_guard_command_on_instances(
+        command, instances)
     lines = [f"🛡️ 流量守护：本月出站流量 {used_gb:.2f}GB 已超过阈值 "
-             f"{threshold}GB，已自动关机。"]
-    if stopped:
-        lines.append(f"已停止：{', '.join(stopped)}")
-    if failed:
-        lines.append(f"停止失败：{', '.join(failed)}（请手动处理）")
-    if not stopped and not failed:
-        lines.append("当前没有运行中的实例，无需关机。")
+             f"{fmt_threshold_gb(threshold)}，已{verb}。"]
+    if ok_names:
+        lines.append(f"已执行：{', '.join(ok_names)}")
+    for name, reason in failed:
+        lines.append(f"{name}：未执行（{reason}）")
+    if not ok_names and not failed:
+        lines.append("当前没有运行中的实例，无需执行。")
+    lines.append("恢复请到 /oracle 菜单 37. 流量守护里点“解除限制”。")
     await context.bot.send_message(chat_id=chat_id, text="\n".join(lines))
 
 
