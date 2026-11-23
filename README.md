@@ -1,5 +1,7 @@
 # M-探长 / M-Tanzhang
 
+> **当前版本：v1.0.0** · 更新记录见 [CHANGELOG.md](CHANGELOG.md)
+
 [中文](#中文) | [English](#english)
 
 ---
