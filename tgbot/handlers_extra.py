@@ -52,12 +52,27 @@ import json
 import logging
 import os
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from tgbot import config as bot_config
 from tgbot import handlers_client  # 菜单 23/24（内存占用/清除）由该模块实现
+from tgbot.bark import (
+    bark_configured,
+    load_bark_config,
+    mask_bark_url,
+    save_bark_config,
+    send_bark_test,
+)
+from tgbot.billing import (
+    check_account_billing,
+    collect_billing_alerts,
+    fmt_billing_alerts,
+    load_billing_state,
+    save_billing_state,
+)
 from tgbot.boot_form import (
     SCRIPT_MAX_CHARS,
     boot_form_keyboard,
@@ -76,6 +91,8 @@ from tgbot.boot_form import (
 )
 from tgbot.keyboards import (
     back_to_oracle_keyboard,
+    bark_input_cancel_keyboard,
+    bark_keyboard,
     batch_action_keyboard,
     batch_select_keyboard,
     boot_confirm_keyboard,
@@ -96,10 +113,13 @@ from tgbot.keyboards import (
     traffic_guard_keyboard,
 )
 from tgbot.handlers_client import run_remote_command
+from tgbot.notify import (DEFAULT_BOOT_DISK_GB, notify_boot_success,
+                          notify_dual)
 from tgbot.monitoring import (
     KEEPALIVE_MAX_FAILURES,
     TRAFFIC_GUARD_RATE_LIMIT,
     current_month_transfer_gb,
+    fetch_city_for_ip,
     fmt_threshold_gb,
     guard_block_command,
     guard_limit_command,
@@ -1346,7 +1366,7 @@ async def boot_preset_callback(update, context):
     await _reply(update, text, reply_markup=boot_confirm_keyboard())
 
 
-def _run_grabber_thread(task_id, cli, compartment_id, preset):
+def _run_grabber_thread(task_id, cli, compartment_id, preset, notify=None):
     """抢机线程体（daemon 线程里跑，不要在线程里直接调 Telegram API）。
 
     进度通过 on_event 回调写进任务 detail；结束时更新任务状态。
@@ -1357,6 +1377,10 @@ def _run_grabber_thread(task_id, cli, compartment_id, preset):
     新参数（表单/快捷开机的新字段）一律用 .get 兜底，旧版预设照常跑。
     注意：target_cpu 只有在 cpu_check_hook 注入时才筛 CPU，机器人
     目前未注入 hook（SSH 查 CPU 的逻辑在编排器里），E2 抢到即留。
+    notify（可选）：{"token", "chat_id", "profile_label", "region_label",
+    "root_password"}，成功后双通道推送开机成功通知（TG + Bark，
+    Bark 未开启时只推 TG；root_password 为空时不带密码行）。
+    通知失败不影响任务状态，只记日志（密码绝不进日志）。
     """
     def on_event(_event_type, message):
         TASKS.update(task_id, detail=message)
@@ -1419,6 +1443,58 @@ def _run_grabber_thread(task_id, cli, compartment_id, preset):
     saved = {key: value for key, value in preset.items()
              if key not in ("user_data", "root_password")}
     save_preset(saved)
+    if notify:
+        _notify_boot_success(cli, preset, successes, notify)
+
+
+def _notify_boot_success(cli, preset, successes, notify):
+    """抢机成功后的双通道推送（线程内调用）。
+
+    每台查公网 IP（刚开出来 VNIC 可能还没 IP，最多重试 3 次，
+    间隔 3 秒；查不到就写“获取中”，不阻塞通知）。
+    通知函数本身不抛异常；这里再包一层，绝不让通知拖垮线程。
+    """
+    try:
+        instances = []
+        count = preset.get("count", 1) or 1
+        base_name = preset["display_name"]
+        for i, result in enumerate(successes):
+            name = base_name if count == 1 else f"{base_name}-{i + 1}"
+            public_ip = None
+            for attempt in range(3):
+                try:
+                    public_ip = get_public_ip(cli, result.instance_id)
+                except Exception:  # noqa: BLE001 - 查 IP 失败就重试/放弃
+                    public_ip = None
+                if public_ip or attempt == 2:
+                    break
+                time.sleep(3)
+            instances.append({
+                "name": name,
+                "public_ip": public_ip,
+                "attempts": result.attempts,
+                "elapsed_seconds": result.elapsed_seconds,
+            })
+        shape = preset.get("shape") or ""
+        ocpus = preset.get("ocpus")
+        memory_gb = preset.get("memory_gb")
+        if ocpus is None:
+            ocpus = 1
+        if memory_gb is None:
+            memory_gb = 1 if shape == "VM.Standard.E2.1.Micro" else 6
+        result = notify_boot_success(
+            notify.get("token"), notify.get("chat_id"),
+            notify.get("profile_label") or "?",
+            notify.get("region_label") or "?",
+            shape, ocpus, memory_gb,
+            preset.get("boot_volume_size_gbs") or DEFAULT_BOOT_DISK_GB,
+            instances,
+            root_password=notify.get("root_password"))
+        if result.get("errors"):
+            logger.warning("开机成功通知部分失败：%s",
+                           "; ".join(result["errors"]))
+    except Exception:  # noqa: BLE001 - 通知绝不能拖垮抢机线程
+        logger.exception("开机成功通知异常")
 
 
 @require_allowed
@@ -1428,7 +1504,8 @@ async def boot_go_callback(update, context):
     root 密码在启动时才生成（每台/每批一次），经 user-data 设进实例；
     密码只在启动回复里显示一次，随后 pending_boot 即被清除，
     不进任务详情、不进日志、不进 presets.json（见 _run_grabber_thread
-    的保存脱敏）。
+    的保存脱敏）。密码同时传给抢机线程（仅内存），抢机成功后在
+    成功通知（TG + Bark 双通道）里带上，通知完即丢。
     """
     preset = context.user_data.get("pending_boot")
     if not preset:
@@ -1457,9 +1534,20 @@ async def boot_go_callback(update, context):
         pass
     task_id = TASKS.register(
         "grab", detail=f"抢机准备中：{preset['display_name']}…")
+    # 成功通知信息（只在内存里传给线程：密码不落盘，通知完即丢）。
+    notify = {
+        "token": bot_config.TELEGRAM_BOT_TOKEN,
+        "chat_id": update.effective_chat.id if update.effective_chat else None,
+        "profile_label": bot_config.profile_display_name(
+            get_current_profile(context)),
+        "region_label": bot_config.get_region_label(
+            get_current_region(context)),
+        "root_password": root_password,
+    }
     thread = threading.Thread(
         target=_run_grabber_thread,
-        args=(task_id, get_cli(context), get_compartment(context), preset),
+        args=(task_id, get_cli(context), get_compartment(context), preset,
+              notify),
         daemon=True)
     thread.start()
     # 启动后立即清除 pending_boot（里面含带密码的 user-data，不留内存）。
@@ -1564,17 +1652,102 @@ async def _show_quota(update, context, profile, region, multi):
 
 # ---- 19. 近 3 月流量查询 / 25. 近 3 月花费查询 ----
 
+def fmt_instance_traffic(entries):
+    """本月流量全文（vnstat 自然月统计，格式照用户自己的脚本）。
+
+    entries：每台 {"name", "public_ip", "city", "rx_gb", "tx_gb",
+    "error"}；rx_gb/tx_gb 为 None 表示查不到（error 说明原因）。
+    无运行中实例时返回提示。
+    """
+    if not entries:
+        return "当前账号/区域没有运行中的实例。"
+    lines = ["📈 本月流量（vnstat）：", ""]
+    total_rx = 0.0
+    total_tx = 0.0
+    counted = 0
+    for entry in entries:
+        ip = entry.get("public_ip") or "无公网 IP"
+        city = entry.get("city") or "未知地区"
+        lines.append(f"IP: {ip}（{city}）")
+        if entry.get("rx_gb") is not None and entry.get("tx_gb") is not None:
+            lines.append(f"当月入站: {entry['rx_gb']:.2f} GiB / "
+                         f"当月出站: {entry['tx_gb']:.2f} GiB")
+            total_rx += entry["rx_gb"]
+            total_tx += entry["tx_gb"]
+            counted += 1
+        else:
+            lines.append(f"流量：查不到（{entry.get('error') or '未知原因'}）")
+        lines.append("")
+    if counted:
+        lines.append(f"合计：入站 {total_rx:.2f} GiB / "
+                     f"出站 {total_tx:.2f} GiB（{counted} 台）")
+    return "\n".join(lines).rstrip("\n")
+
+
+async def _fetch_instance_traffic(context, instances=None):
+    """查运行中实例的本月流量（vnstat，SSH 到实例上查）。
+
+    返回 fmt_instance_traffic 用的 entries 列表。instances 不传时现查
+    （并补公网 IP）；城市名经 ip-api.com 查（本机直接查，不走 SSH）。
+    单台失败不影响其他台（该台 error 说明原因）。
+    """
+    if instances is None:
+        instances = await run_sync(
+            list_instances, get_cli(context), get_compartment(context))
+        instances = await run_sync(
+            attach_public_ips, get_cli(context), instances)
+    entries = []
+    for inst in instances or []:
+        if inst.get("lifecycle-state") != "RUNNING":
+            continue
+        public_ip = inst.get("public-ip")
+        entry = {
+            "name": inst.get("display-name"),
+            "public_ip": public_ip,
+            "city": await run_sync(fetch_city_for_ip, public_ip),
+            "rx_gb": None,
+            "tx_gb": None,
+            "error": None,
+        }
+        host = _guard_host_for_instance(public_ip)
+        if host is None:
+            entry["error"] = ("未配置 SSH 密钥" if not bot_config.GUARD_SSH_KEY
+                              else "无公网 IP")
+            entries.append(entry)
+            continue
+        try:
+            exit_code, out, _err = await run_sync(
+                run_remote_command, host, guard_vnstat_command())
+        except Exception:  # noqa: BLE001 - 单台失败不影响其他台
+            entry["error"] = "SSH 连不上该实例"
+            entries.append(entry)
+            continue
+        if exit_code != 0:
+            entry["error"] = "vnstat 查询失败"
+            entries.append(entry)
+            continue
+        parsed = parse_vnstat_monthly_gb(out)
+        if parsed is None:
+            entry["error"] = "vnstat 无本月数据"
+        else:
+            entry["rx_gb"], entry["tx_gb"] = parsed
+        entries.append(entry)
+    return entries
+
+
 @require_allowed
 async def handle_traffic(update, context):
-    """菜单 19：用量 API 按月汇总费用与出站流量。"""
+    """菜单 19：本月流量——vnstat 自然月统计（SSH 到实例上查）。
+
+    原先查 OCI 用量接口的出站流量恒为 0.00 GB（接口不给真实出站数），
+    改用用户自己的 vnstat 口径：每台 IP + 中文城市 + 当月入站/出站。
+    """
     try:
-        items = await run_sync(fetch_usage_summary,
-                               get_cli(context), get_compartment(context),
-                               "MONTHLY")
+        entries = await _fetch_instance_traffic(context)
     except Exception as exc:  # noqa: BLE001
         await _reply(update, fmt_error(exc))
         return
-    await _reply(update, fmt_usage_monthly(items),
+    await _reply(update, fmt_instance_traffic(entries),
                  reply_markup=back_to_oracle_keyboard())
 
 
@@ -2686,18 +2859,20 @@ async def handle_daily(update, context):
 def get_menu_states(context):
     """取 /oracle 菜单按钮的动态开关状态（handlers.py 生成菜单时调用）。
 
-    返回 {"monitor", "autostart", "traffic_guard", "keepalive"}，
+    返回 {"monitor", "autostart", "traffic_guard", "keepalive", "bark"}，
     值都是 bool。流量守护读文件配置；停机保活为 True 当且仅当
-    至少一台实例开启了保活。
+    至少一台实例开启了保活；Bark 为 True 当且仅当开关开启且配齐。
     """
     monitor = context.bot_data.get("monitor") or {}
     guard = load_traffic_guard()
     keepalive = load_keepalive()
+    bark_cfg = load_bark_config()
     return {
         "monitor": bool(monitor.get("on")),
         "autostart": bool(monitor.get("autostart")),
         "traffic_guard": bool(guard.get("enabled")),
         "keepalive": bool(keepalive_enabled_instances(keepalive)),
+        "bark": bool(bark_cfg.get("enabled")) and bark_configured(bark_cfg),
     }
 
 
@@ -3090,6 +3265,145 @@ async def _handle_ssl_domain_input(update, context, text):
     await handle_sslwatch(update, context)
 
 
+# ---- 43. Bark 通知设置 ----
+
+def fmt_bark_settings(cfg):
+    """Bark 通知设置页全文（地址脱敏显示，Key 只显示是否已设）。"""
+    cfg = cfg or {}
+    enabled = bool(cfg.get("enabled"))
+    configured = bark_configured(cfg)
+    lines = [
+        "🔔 Bark 通知设置：",
+        "",
+        f"推送开关：{'✅ 已开启' if enabled else '❌ 已关闭'}",
+        f"Bark 地址：{mask_bark_url(cfg.get('url') or '')}",
+        f"加密 Key：{'✅ 已设置（32 位）' if len(cfg.get('key') or '') == 32 else '❌ 未设置'}",
+        "",
+    ]
+    if not configured:
+        lines.append("先设置 Bark 地址和 32 位加密 Key，再点“测试推送”"
+                     "确认能收到，最后打开开关。")
+        lines.append("开启后，开机成功、账单超支、付费实例被停等通知"
+                     "会同时推到 Bark 和 Telegram。")
+    elif not enabled:
+        lines.append("配置已配齐，打开开关后开始推送。")
+    else:
+        lines.append("Bark 推送已开启：开机成功、账单超支等通知会"
+                     "同时推到 Bark 和 Telegram。")
+    return "\n".join(lines)
+
+
+@require_allowed
+async def handle_bark(update, context):
+    """菜单 43：Bark 通知设置——地址 / 加密 Key / 测试推送 / 开关。"""
+    cfg = load_bark_config()
+    await _reply(update, fmt_bark_settings(cfg),
+                 reply_markup=bark_keyboard(cfg.get("enabled"),
+                                            bark_configured(cfg)))
+
+
+@require_allowed
+async def bark_callback(update, context):
+    """回调 bark:url / bark:key / bark:test / bark:toggle /
+    bark:cancel_input。
+
+    地址与 Key 走 text_input_callback（pending_input kind
+    \"bark_url\" / \"bark_key\"）。测试推送不依赖开关。
+    """
+    parts = _callback_data(update).split(":")
+    action = parts[1] if len(parts) > 1 else ""
+    if action == "url":
+        context.user_data["pending_input"] = {"kind": "bark_url"}
+        await _reply_prompt(
+            update, context,
+            "请发送 Bark 推送地址（例如 https://api.day.app/你的设备Key/）：\n"
+            "直接发文字消息即可。",
+            reply_markup=bark_input_cancel_keyboard())
+        return
+    if action == "key":
+        context.user_data["pending_input"] = {"kind": "bark_key"}
+        await _reply_prompt(
+            update, context,
+            "请发送 Bark 加密 Key（32 位，与 Bark App 里加密设置中的 Key 一致）：\n"
+            "直接发文字消息即可。",
+            reply_markup=bark_input_cancel_keyboard())
+        return
+    if action == "cancel_input":
+        context.user_data.pop("pending_input", None)
+        chat_id = update.effective_chat.id if update.effective_chat else None
+        if chat_id is not None:
+            await _delete_tracked_prompts(context, chat_id)
+        await handle_bark(update, context)
+        return
+    if action == "test":
+        ok, err = await run_sync(send_bark_test)
+        if ok:
+            await _reply(update, "✅ 测试推送已发出，请查看手机 Bark 是否收到。",
+                         reply_markup=bark_keyboard(
+                             load_bark_config().get("enabled"),
+                             bark_configured()))
+        else:
+            await _reply(update, f"❌ 测试推送失败：{err}",
+                         reply_markup=bark_keyboard(
+                             load_bark_config().get("enabled"),
+                             bark_configured()))
+        return
+    if action == "toggle":
+        cfg = load_bark_config()
+        if not cfg.get("enabled") and not bark_configured(cfg):
+            await _reply(update,
+                         "❌ 还没配齐：请先设置 Bark 地址和 32 位加密 Key。",
+                         reply_markup=bark_keyboard(False, False))
+            return
+        cfg["enabled"] = not cfg.get("enabled")
+        if update.effective_chat is not None:
+            cfg["chat_id"] = update.effective_chat.id
+        save_bark_config(cfg)
+        await handle_bark(update, context)
+        return
+
+
+async def _handle_bark_url_input(update, context, text):
+    """text_input_callback 的 bark_url 分支：校验后保存 Bark 地址。"""
+    if not (text.startswith("http://") or text.startswith("https://")):
+        await _reply(update,
+                     "地址格式不正确：请以 http:// 或 https:// 开头。\n"
+                     "请重新点“🔗 设置 Bark 地址”再试。",
+                     reply_markup=back_to_oracle_keyboard())
+        return
+    cfg = load_bark_config()
+    cfg["url"] = text
+    if update.effective_chat is not None:
+        cfg["chat_id"] = update.effective_chat.id
+    save_bark_config(cfg)
+    await _reply(update,
+                 f"✅ Bark 地址已保存：{mask_bark_url(text)}",
+                 reply_markup=bark_keyboard(cfg.get("enabled"),
+                                            bark_configured(cfg)))
+
+
+async def _handle_bark_key_input(update, context, text):
+    """text_input_callback 的 bark_key 分支：校验 32 位后保存 Key。
+
+    Key 值绝不回显（只在消息里确认已保存）。
+    """
+    if len(text) != 32:
+        await _reply(update,
+                     f"加密 Key 必须是 32 位（你发的是 {len(text)} 位）。\n"
+                     "请重新点“🔑 设置加密 Key”再试。",
+                     reply_markup=back_to_oracle_keyboard())
+        return
+    cfg = load_bark_config()
+    cfg["key"] = text
+    if update.effective_chat is not None:
+        cfg["chat_id"] = update.effective_chat.id
+    save_bark_config(cfg)
+    await _reply(update,
+                 "✅ 加密 Key 已保存（32 位）。",
+                 reply_markup=bark_keyboard(cfg.get("enabled"),
+                                            bark_configured(cfg)))
+
+
 # ---- 26. 清除所有 2FA 设备 ----
 
 @require_allowed
@@ -3371,6 +3685,16 @@ async def text_input_callback(update, context):
         # SSL 监控添加域名：不关联实例，直接处理。
         context.user_data.pop("pending_input", None)
         await _handle_ssl_domain_input(update, context, text)
+        return
+    if kind == "bark_url":
+        # Bark 设置地址：不关联实例，直接处理。
+        context.user_data.pop("pending_input", None)
+        await _handle_bark_url_input(update, context, text)
+        return
+    if kind == "bark_key":
+        # Bark 设置加密 Key：不关联实例，直接处理。
+        context.user_data.pop("pending_input", None)
+        await _handle_bark_key_input(update, context, text)
         return
     if kind == "email_sender":
         # Email 发件人：不关联实例，校验邮箱格式后弹二次确认。
@@ -4533,6 +4857,47 @@ async def ssl_check_job(context):
         save_ssl_watch(cfg)
 
 
+async def billing_check_job(context):
+    """每天跑一次：检查三账号本月费用与付费实例（账单预警）。
+
+    逻辑搬自 check_billing.py：本月费用 vs SGD 1 预算、费用变化、
+    付费 RUNNING 实例自动 STOP、免费额度超限。有告警时双通道通知
+    （TG + Bark，Bark 未开启时只推 TG）；无变化时静默。
+    通知 chat_id 优先用 Bark 配置里记的，其次监控/每日报告里记的，
+    最后用白名单用户 ID（与机器人私聊的 chat_id 就是用户 ID）。
+    """
+    results = []
+    for profile in bot_config.PROFILES:
+        try:
+            results.append(await run_sync(check_account_billing, profile))
+        except Exception as exc:  # noqa: BLE001 - 单账号失败不影响其他
+            results.append({"profile": profile, "error": str(exc)})
+    prev_state = load_billing_state()
+    alerts = collect_billing_alerts(results, prev_state)
+    new_state = {}
+    for res in results:
+        if res.get("error"):
+            continue
+        new_state[res["profile"]] = {
+            "mtd_cost": res.get("mtd_cost", 0),
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+        }
+    save_billing_state(new_state)
+    if not alerts:
+        return
+    chat_id = (load_bark_config().get("chat_id")
+               or (context.bot_data.get("monitor") or {}).get("chat_id")
+               or (context.bot_data.get("daily_report") or {}).get("chat_id"))
+    if not chat_id and bot_config.ALLOWED_USER_IDS:
+        chat_id = next(iter(bot_config.ALLOWED_USER_IDS))
+    if not chat_id:
+        logger.warning("账单预警有告警但未找到通知 chat_id，跳过通知")
+        return
+    await run_sync(notify_dual, bot_config.TELEGRAM_BOT_TOKEN, chat_id,
+                   "⚠️ Oracle 账单预警", fmt_billing_alerts(alerts),
+                   group="oracle-billing")
+
+
 # ================= 工作包 D 新增（阶段 5） =================
 # 对象存储（菜单 40）、Email 发件人（菜单 41）、抢机计划（菜单 42）、
 # 开放云面板端口（菜单 11）、客户端管理（菜单 14）、重启（菜单 31）、
@@ -4996,6 +5361,7 @@ _DISPATCH = {
     "objectstorage": handle_objectstorage,
     "email": handle_email,
     "plans": handle_plans,
+    "bark": handle_bark,
     "rename": handle_rename_prompt,
     "reinstall": handle_reinstall_prompt,
     "console": handle_console,

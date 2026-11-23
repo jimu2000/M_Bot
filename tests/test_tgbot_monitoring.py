@@ -141,7 +141,7 @@ class TestGetMenuStates(MonitoringBotTestCase):
         context = make_context()
         self.assertEqual(he.get_menu_states(context), {
             "monitor": False, "autostart": False,
-            "traffic_guard": False, "keepalive": False,
+            "traffic_guard": False, "keepalive": False, "bark": False,
         })
 
     def test_reads_monitor_and_files(self):
@@ -154,7 +154,7 @@ class TestGetMenuStates(MonitoringBotTestCase):
         mon.save_keepalive({STOPPED_ID: True, RUNNING_ID: False})
         self.assertEqual(he.get_menu_states(context), {
             "monitor": True, "autostart": True,
-            "traffic_guard": True, "keepalive": True,
+            "traffic_guard": True, "keepalive": True, "bark": False,
         })
 
     def test_keepalive_off_when_no_instance_enabled(self):
@@ -629,6 +629,34 @@ class TestTrafficGuardCommands(MonitoringBotTestCase):
         self.assertIsNone(mon.parse_vnstat_monthly_gb("not json"))
         self.assertIsNone(mon.parse_vnstat_monthly_gb(
             '{"interfaces": [{"traffic": {"month": []}}]}'))
+
+    def test_fetch_city_for_ip(self):
+        resp = MagicMock()
+        resp.read.return_value = (
+            b'{"status": "success", "city": "\\u65b0\\u52a0\\u5761"}')
+        resp.__enter__.return_value = resp
+        resp.__exit__.return_value = False
+        with patch.object(mon.urllib.request, "urlopen",
+                          return_value=resp) as urlopen_mock:
+            self.assertEqual(mon.fetch_city_for_ip("203.0.113.11"),
+                             "新加坡")
+        url = urlopen_mock.call_args[0][0].full_url
+        self.assertIn("ip-api.com/json/203.0.113.11", url)
+        self.assertIn("lang=zh-CN", url)
+
+    def test_fetch_city_for_ip_failures(self):
+        self.assertEqual(mon.fetch_city_for_ip(None), "未知地区")
+        self.assertEqual(mon.fetch_city_for_ip(""), "未知地区")
+        with patch.object(mon.urllib.request, "urlopen",
+                          side_effect=RuntimeError("timeout")):
+            self.assertEqual(mon.fetch_city_for_ip("1.2.3.4"), "未知地区")
+        resp = MagicMock()
+        resp.read.return_value = b'{"status": "fail"}'
+        resp.__enter__.return_value = resp
+        resp.__exit__.return_value = False
+        with patch.object(mon.urllib.request, "urlopen",
+                          return_value=resp):
+            self.assertEqual(mon.fetch_city_for_ip("1.2.3.4"), "未知地区")
 
 
 class TestGuardFetch(MonitoringBotTestCase):

@@ -17,6 +17,7 @@ import json
 import os
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from tgbot import config as bot_config
@@ -41,7 +42,7 @@ IMPLEMENTED_ITEMS = [
     "cost", "mfa", "daily", "emails", "regions", "logs",
     "memballoon", "memclear",
     "openport", "clients", "restart", "upgrade",
-    "objectstorage", "email", "plans",
+    "objectstorage", "email", "plans", "bark",
 ]
 # 本模块不实现的项（dispatch 应返回 False）。
 NOT_IMPLEMENTED_ITEMS = [
@@ -260,36 +261,35 @@ class TestQuotaTrafficCost(HandlersExtraTestCase):
         self.assertIn("q:acct:DEFAULT", reply_callback_data_of(update))
         self.assertIn("q:acct:ACCOUNT2", reply_callback_data_of(update))
 
-    async def test_traffic_formats_monthly(self):
-        items = [
-            {"time-usage-started": "2026-09-05T00:00:00Z",
-             "computed-amount": 1.5, "currency": "SGD",
-             "service": "Compute", "computed-quantity": 10},
-            {"time-usage-started": "2026-09-20T00:00:00Z",
-             "computed-amount": 0.5, "currency": "SGD",
-             "service": "Data Transfer", "computed-quantity": 12.5},
-            {"time-usage-started": "2026-10-03T00:00:00Z",
-             "computed-amount": 2.0, "currency": "SGD",
-             "service": "Data Transfer", "computed-quantity": 3.25},
+    async def test_traffic_shows_vnstat_entries(self):
+        """菜单 19 改版（v1.8.0）：vnstat 本月流量，不再用用量 API。"""
+        entries = [
+            {"name": "web-server-1", "public_ip": "203.0.113.11",
+             "city": "新加坡", "rx_gb": 3.21, "tx_gb": 6.73,
+             "error": None},
+            {"name": "e2-test-1", "public_ip": "203.0.113.12",
+             "city": "新加坡", "rx_gb": None, "tx_gb": None,
+             "error": "SSH 连不上该实例"},
         ]
-        self.cli.run.return_value = {"data": {"items": items}}
         update = make_update()
         context = make_context()
-        await he.handle_traffic(update, context)
+        with patch.object(he, "_fetch_instance_traffic",
+                          return_value=entries):
+            await he.handle_traffic(update, context)
         text = reply_text_of(update)
-        self.assertIn("2026-09：费用 2.00 SGD，出站流量 12.50 GB", text)
-        self.assertIn("2026-10：费用 2.00 SGD，出站流量 3.25 GB", text)
-        self.assertIn("合计：4.00 SGD", text)
-        # 流量菜单用 MONTHLY 粒度
-        called_args = self.cli.run.call_args[0][0]
-        self.assertIn("MONTHLY", called_args)
+        self.assertIn("本月流量（vnstat）", text)
+        self.assertIn("IP: 203.0.113.11（新加坡）", text)
+        self.assertIn("当月入站: 3.21 GiB / 当月出站: 6.73 GiB", text)
+        self.assertIn("IP: 203.0.113.12（新加坡）", text)
+        self.assertIn("查不到（SSH 连不上该实例）", text)
+        self.assertIn("合计：入站 3.21 GiB / 出站 6.73 GiB（1 台）", text)
 
-    async def test_traffic_empty(self):
-        self.cli.run.return_value = {"data": {"items": []}}
+    async def test_traffic_no_instances(self):
         update = make_update()
         context = make_context()
-        await he.handle_traffic(update, context)
-        self.assertIn("没有用量记录", reply_text_of(update))
+        with patch.object(he, "_fetch_instance_traffic", return_value=[]):
+            await he.handle_traffic(update, context)
+        self.assertIn("没有运行中的实例", reply_text_of(update))
 
     async def test_cost_total(self):
         items = [
@@ -335,6 +335,74 @@ class TestQuotaTrafficCost(HandlersExtraTestCase):
         self.assertIn("没有用量记录", he.fmt_usage_total([]))
         self.assertIn("5.50 EUR", he.fmt_usage_total(
             [{"computed-amount": 5.5, "currency": "EUR"}]))
+
+
+class TestInstanceTraffic(HandlersExtraTestCase):
+
+    VNSTAT_SAMPLE = ('{"interfaces": [{"name": "enp0s6", "traffic": '
+                     '{"month": [{"date": {"year": 2026, "month": 11}, '
+                     '"rx": 3446363443, "tx": 7227582128}]}}]}')
+
+    def test_fmt_instance_traffic_pure(self):
+        self.assertIn("没有运行中的实例", he.fmt_instance_traffic([]))
+        text = he.fmt_instance_traffic([
+            {"name": "a", "public_ip": "1.2.3.4", "city": "新加坡",
+             "rx_gb": 1.0, "tx_gb": 2.0, "error": None},
+            {"name": "b", "public_ip": None, "city": "未知地区",
+             "rx_gb": None, "tx_gb": None, "error": "无公网 IP"},
+        ])
+        self.assertIn("IP: 1.2.3.4（新加坡）", text)
+        self.assertIn("当月入站: 1.00 GiB / 当月出站: 2.00 GiB", text)
+        self.assertIn("IP: 无公网 IP（未知地区）", text)
+        self.assertIn("查不到（无公网 IP）", text)
+        self.assertIn("合计：入站 1.00 GiB / 出站 2.00 GiB（1 台）", text)
+
+    async def test_fetch_instance_traffic(self):
+        """每台查城市 + SSH vnstat，失败的台单独标 error。"""
+        instances = [
+            {"display-name": "web", "lifecycle-state": "RUNNING",
+             "public-ip": "1.2.3.4"},
+            {"display-name": "dead", "lifecycle-state": "RUNNING",
+             "public-ip": "5.6.7.8"},
+            {"display-name": "stopped", "lifecycle-state": "STOPPED",
+             "public-ip": "9.9.9.9"},
+        ]
+        # 示例只有 2026-11 一条月份数据，解析器默认取该条（无当月时
+        # 取最后一条，所以任何时间跑这个测试都稳定）。
+        context = make_context()
+        with patch.object(bot_config, "GUARD_SSH_KEY", "/root/.ssh/rbot_guard"), \
+                patch.object(he, "fetch_city_for_ip",
+                             side_effect=lambda ip: {"1.2.3.4": "新加坡",
+                                                     "5.6.7.8": "圣何塞"}.get(ip, "未知地区")), \
+                patch.object(he, "run_remote_command") as mock_cmd:
+            def _cmd(host, command):
+                if host["host"] == "1.2.3.4":
+                    return (0, self.VNSTAT_SAMPLE, "")
+                raise RuntimeError("ssh refused")
+            mock_cmd.side_effect = _cmd
+            entries = await he._fetch_instance_traffic(context, instances)
+        # 已停止的实例不查。
+        self.assertEqual(len(entries), 2)
+        self.assertEqual(entries[0]["city"], "新加坡")
+        self.assertAlmostEqual(entries[0]["rx_gb"], 3.21, places=2)
+        self.assertAlmostEqual(entries[0]["tx_gb"], 6.73, places=2)
+        self.assertIsNone(entries[0]["error"])
+        self.assertEqual(entries[1]["city"], "圣何塞")
+        self.assertIsNone(entries[1]["rx_gb"])
+        self.assertEqual(entries[1]["error"], "SSH 连不上该实例")
+
+    async def test_fetch_instance_traffic_no_key(self):
+        """未配 SSH 密钥时每台都标“未配置 SSH 密钥”，不尝试 SSH。"""
+        instances = [{"display-name": "web", "lifecycle-state": "RUNNING",
+                      "public-ip": "1.2.3.4"}]
+        context = make_context()
+        with patch.object(bot_config, "GUARD_SSH_KEY", ""), \
+                patch.object(he, "fetch_city_for_ip",
+                             return_value="新加坡"), \
+                patch.object(he, "run_remote_command") as mock_cmd:
+            entries = await he._fetch_instance_traffic(context, instances)
+        mock_cmd.assert_not_called()
+        self.assertEqual(entries[0]["error"], "未配置 SSH 密钥")
 
 
 class TestHealthTasksProfiles(HandlersExtraTestCase):

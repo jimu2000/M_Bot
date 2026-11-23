@@ -46,6 +46,8 @@ callback_data 规范（Telegram 限制 64 字节，OCID 约 100 字节放不下�
   - "t:cancel:<id>"  取消任务（id 是任务注册表里的短 ID，如 "g1"）
   - "p:<profile>"    切换 profile（多区账号先出二级区域菜单）
   - "pr:<profile>:<region>" 切换账号 + 工作区域
+  - "bark:url" / "bark:key" / "bark:test" / "bark:toggle" / "bark:cancel_input"
+    Bark 通知设置：设地址 / 设加密 Key / 测试推送 / 开关 / 取消输入
   - "q:list"         免费额度：回账号列表
   - "q:acct:<name>"  免费额度：点开某账号（多区账号出二级区域菜单，
     单区账号直接显示该区额度）
@@ -99,7 +101,7 @@ ORACLE_MENU_ITEMS = [
     ("autoip", "16. 监控(自动换ip)"),
     ("presets", "17. 快捷开机"),
     ("subscription", "18. 订阅信息"),
-    ("traffic", "19. 近3月流量查询"),
+    ("traffic", "19. 本月流量"),
     ("quota", "20. 查询配额"),
     ("tasks", "21. 查看运行中的任务"),
     ("load", "22. 查看客户端负载"),
@@ -123,6 +125,7 @@ ORACLE_MENU_ITEMS = [
     ("objectstorage", "40. 对象存储"),
     ("email", "41. Email 发件人"),
     ("plans", "42. 抢机计划"),
+    ("bark", "43. Bark 通知设置"),
 ]
 # 每页显示的菜单项数（2 列，自动分页；总页数随菜单项数变化）。
 MENU_PAGE_SIZE = 18
@@ -134,6 +137,7 @@ DYNAMIC_STATE_ITEMS = {
     "autostart": "autostart",
     "traffic_guard": "traffic_guard",
     "keepalive": "keepalive",
+    "bark": "bark",
 }
 # =====================================================
 
@@ -187,7 +191,7 @@ def main_menu_keyboard():
         [InlineKeyboardButton("☁️ Oracle 菜单", callback_data="o:menu"),
          InlineKeyboardButton("🖥️ 实例列表", callback_data="i:list")],
         [InlineKeyboardButton("📊 查询配额", callback_data="o:quota"),
-         InlineKeyboardButton("📈 近3月流量", callback_data="o:traffic")],
+         InlineKeyboardButton("📈 本月流量", callback_data="o:traffic")],
         [InlineKeyboardButton("📋 运行中的任务", callback_data="o:tasks"),
          InlineKeyboardButton("❤️ 一键测活", callback_data="o:health")],
     ])
@@ -535,4 +539,28 @@ def ssl_add_cancel_keyboard():
     """SSL 监控添加域名时的取消键盘（等用户回复文字时用）。"""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("❌ 取消添加", callback_data="s:add_cancel")],
+    ])
+
+
+def bark_keyboard(enabled, configured):
+    """Bark 通知设置键盘：设地址 / 设 Key / 测试推送 / 开关。
+
+    enabled：推送开关；configured：地址 + 32 位 Key 是否配齐。
+    测试推送不依赖开关（配齐即可测）。
+    """
+    rows = [
+        [InlineKeyboardButton("🔗 设置 Bark 地址", callback_data="bark:url"),
+         InlineKeyboardButton("🔑 设置加密 Key", callback_data="bark:key")],
+        [InlineKeyboardButton("📲 测试推送", callback_data="bark:test")],
+        [InlineKeyboardButton("✅ 关闭 Bark 推送" if enabled else "🚀 开启 Bark 推送",
+                              callback_data="bark:toggle")],
+        [InlineKeyboardButton("◀ Oracle 菜单", callback_data="o:menu")],
+    ]
+    return InlineKeyboardMarkup(rows)
+
+
+def bark_input_cancel_keyboard():
+    """Bark 设置等用户回复文字时的取消键盘。"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("❌ 取消", callback_data="bark:cancel_input")],
     ])

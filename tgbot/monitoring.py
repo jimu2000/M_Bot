@@ -35,6 +35,7 @@ job 在 tgbot/handlers_extra.py 里，调本模块的函数做判断与持久化
 import json
 import os
 import re
+import urllib.request
 from datetime import datetime, timedelta, timezone
 
 from tgbot import config as bot_config
@@ -300,6 +301,26 @@ def parse_vnstat_monthly_gb(json_text, now=None):
     except (TypeError, ValueError, KeyError):
         return None
     return (rx_gb, tx_gb)
+
+
+def fetch_city_for_ip(ip, timeout=3):
+    """查 IP 的中文城市名（ip-api.com，lang=zh-CN）。
+
+    与用户 oracle_traffic_guard.py 的 get_ip_and_geo 同源。
+    查不到/超时/返回异常时返回“未知地区”，不抛异常。
+    """
+    if not ip:
+        return "未知地区"
+    try:
+        url = f"http://ip-api.com/json/{ip}?lang=zh-CN"
+        req = urllib.request.Request(url, headers={"User-Agent": "M-Bot"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception:  # noqa: BLE001 - 查城市失败不影响流量显示
+        return "未知地区"
+    if isinstance(data, dict) and data.get("status") == "success":
+        return data.get("city") or "未知地区"
+    return "未知地区"
 
 
 def guard_block_command():

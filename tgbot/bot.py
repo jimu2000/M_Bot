@@ -14,6 +14,7 @@ import datetime
 import logging
 import os
 import sys
+from zoneinfo import ZoneInfo
 
 from telegram import BotCommand
 from telegram.ext import (
@@ -40,6 +41,10 @@ MONITOR_INTERVAL_MINUTES = 10
 DAILY_REPORT_TIME = datetime.time(hour=8, minute=0)
 # SSL 证书到期检查时间（每天一次，机器人所在机器的本地时区）。
 SSL_CHECK_TIME = datetime.time(hour=8, minute=30)
+# 账单预警检查时间（每天一次，北京时间早上 8 点；带时区，
+# 不受机器人所在机器时区影响）。
+BILLING_CHECK_TIME = datetime.time(hour=8, minute=0,
+                                   tzinfo=ZoneInfo("Asia/Shanghai"))
 # 日志级别。
 LOG_LEVEL = "INFO"
 # =====================================================
@@ -215,6 +220,8 @@ def build_application():
         handlers_extra.keepalive_callback, pattern=r"^k:"))
     application.add_handler(CallbackQueryHandler(
         handlers_extra.ssl_watch_callback, pattern=r"^s:"))
+    application.add_handler(CallbackQueryHandler(
+        handlers_extra.bark_callback, pattern=r"^bark:"))
     # ---- 工作包 D 回调（对象存储 / 抢机计划 / 客户端管理） ----
     application.add_handler(CallbackQueryHandler(
         handlers_extra.objectstorage_callback, pattern=r"^os:"))
@@ -292,6 +299,10 @@ def build_application():
             handlers_extra.ssl_check_job,
             time=SSL_CHECK_TIME,
             name="ssl_check")
+        job_queue.run_daily(
+            handlers_extra.billing_check_job,
+            time=BILLING_CHECK_TIME,
+            name="billing_check")
     else:
         logging.getLogger(__name__).warning(
             "job_queue 不可用（未安装 python-telegram-bot[job-queue]），"
