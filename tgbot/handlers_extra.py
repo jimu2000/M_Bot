@@ -63,9 +63,11 @@ from tgbot.boot_form import (
     boot_form_keyboard,
     build_preset,
     build_user_data,
+    default_amd_form,
     fmt_boot_form_summary,
     fmt_form_text,
     generate_root_password,
+    get_deploy_defaults,
     new_form,
     set_custom,
     set_script,
@@ -85,6 +87,7 @@ from tgbot.keyboards import (
     keepalive_keyboard,
     oracle_menu_keyboard,
     profile_keyboard,
+    profile_regions_keyboard,
     quota_accounts_keyboard,
     quota_regions_keyboard,
     ssl_add_cancel_keyboard,
@@ -133,12 +136,14 @@ from tgbot.services import (
     get_cli,
     get_compartment,
     get_current_profile,
+    get_current_region,
     require_allowed,
     resolve_boot_backup,
     resolve_instance,
     resolve_volume,
     run_sync,
     set_current_profile,
+    set_current_region,
     store_boot_backups,
     store_instances,
     store_volumes,
@@ -1047,9 +1052,38 @@ async def _edit_boot_form(update, context, notice=None):
         pass
 
 
+def uniquify_display_name(base_name, count, existing_names):
+    """实例名去重：返回一个与已有实例名不冲突的基础名。
+
+    实例名是日期格式（AMD_2026-11-24）后，同日同类型再开机会重名。
+    count == 1 时检查基础名本身；count > 1 时检查 base-1..base-N（
+    抢机线程会给批量加 -1、-2 后缀）。冲突时依次试 base-2、base-3…，
+    直到整组名字都不冲突。existing_names 是已有实例显示名集合。
+    纯函数，可直接单元测试。
+    """
+    existing = set(existing_names or [])
+    candidate = base_name
+    suffix = 1
+    while True:
+        if count <= 1:
+            names = [candidate]
+        else:
+            names = [f"{candidate}-{i + 1}" for i in range(count)]
+        if not any(name in existing for name in names):
+            return candidate
+        suffix += 1
+        candidate = f"{base_name}-{suffix}"
+
+
 async def _boot_form_confirm(update, context, form):
-    """表单"确定开机"：校验 -> 配额预检 -> 配置摘要确认页。"""
-    errors = validate_form(form)
+    """表单"确定开机"：校验 -> 配额预检 -> 配置摘要确认页。
+
+    部署值按当前工作区域取（region_plans.json 有该区域配置时用该区域
+    的可用域 / 子网 / 镜像，否则用主区默认值）。
+    """
+    deploy = get_deploy_defaults(region=get_current_region(context),
+                                 profile=get_current_profile(context))
+    errors = validate_form(form, deploy)
     if errors:
         await _reply(update,
                      "❌ 配置还没填完：\n"
@@ -1058,7 +1092,7 @@ async def _boot_form_confirm(update, context, form):
                      reply_markup=boot_form_keyboard(form))
         return
     try:
-        preset = build_preset(form)
+        preset = build_preset(form, deploy)
     except ValueError as exc:
         await _reply(update, f"❌ {exc}", reply_markup=boot_form_keyboard(form))
         return
@@ -1127,6 +1161,11 @@ async def boot_form_callback(update, context):
                 await query.edit_message_text("已取消输入，表单未变。")
             except Exception:
                 pass
+        return
+    if action == "oneclick":
+        # 一键开机（默认 AMD）：预填表单直接进确认页（原菜单 1 预设一键
+        # 的模式），不覆盖用户正在填的表单。
+        await _boot_form_confirm(update, context, default_amd_form())
         return
     form = context.user_data.get("boot_form")
     if form is None:
@@ -1405,6 +1444,17 @@ async def boot_go_callback(update, context):
         except ValueError as exc:
             await _reply(update, f"❌ {exc}")
             return
+    # 实例名去重：日期格式（AMD_YYYY-MM-DD）同日再开会重名，先查已有
+    # 实例名，冲突时加 -2、-3 后缀。查不到也不阻塞开机（Grabber 的
+    # 15 分钟防重复建窗口是兜底）。
+    try:
+        existing = await run_sync(list_instances, get_cli(context),
+                                  get_compartment(context))
+        names = {inst.get("display-name") for inst in existing or []}
+        preset["display_name"] = uniquify_display_name(
+            preset["display_name"], preset.get("count", 1) or 1, names)
+    except Exception:  # noqa: BLE001 - 去重失败不阻塞开机
+        pass
     task_id = TASKS.register(
         "grab", detail=f"抢机准备中：{preset['display_name']}…")
     thread = threading.Thread(
@@ -1615,16 +1665,43 @@ async def handle_profiles(update, context):
     counts = await run_sync(get_profile_region_counts)
     labels = {name: bot_config.profile_display_name(name, counts.get(name))
               for name in bot_config.PROFILES}
-    await _reply(update, f"当前账号：{labels.get(current, current)}\n点下面切换账号：",
+    current_region = get_current_region(context)
+    home_region = bot_config.get_region(current)
+    current_label = labels.get(current, current)
+    if current_region != home_region:
+        current_label += f" · {bot_config.get_region_label(current_region)}"
+    await _reply(update,
+                 f"当前账号：{current_label}\n点下面切换账号"
+                 "（多区账号点开可切换工作区域）：",
                  reply_markup=profile_keyboard(list(bot_config.PROFILES),
                                                current, labels))
 
 
 @require_allowed
 async def profile_callback(update, context):
-    """回调 "p:<name>"：切换当前 profile。"""
+    """回调 "p:<name>"：切换当前 profile。
+
+    多区账号（订阅区域 > 1 个）先出二级区域菜单，点区域才切换工作
+    区域；单区账号直接切换。
+    """
     data = _callback_data(update)
     name = data.split(":", 1)[1] if ":" in data else ""
+    try:
+        bot_config.get_profile_config(name)
+    except ValueError as exc:
+        await _reply(update, f"❌ 切换失败：{exc}")
+        return
+    regions = await run_sync(get_profile_regions)
+    subs = regions.get(name) or []
+    if len(subs) > 1:
+        current_region = get_current_region(context)
+        current = (current_region if get_current_profile(context) == name
+                   else None)
+        label = bot_config.profile_display_name(name, len(subs))
+        await _reply(update, f"账号：{label}\n点下面切换工作区域：",
+                     reply_markup=profile_regions_keyboard(name, subs,
+                                                           current))
+        return
     try:
         set_current_profile(context, name)
     except ValueError as exc:
@@ -1632,6 +1709,41 @@ async def profile_callback(update, context):
         return
     label = get_cached_profile_display_name(name)
     await _reply(update, f"✅ 已切换到账号：{label}")
+
+
+@require_allowed
+async def profile_region_callback(update, context):
+    """回调 "pr:<profile>:<region>"：切换账号 + 工作区域。
+
+    区域必须在该账号的订阅列表里（否则拒绝）；先切账号（会重置区域
+    为主区），再切区域。
+    """
+    data = _callback_data(update)
+    parts = data.split(":")
+    if len(parts) != 3:
+        await _reply(update, "❌ 无效的区域切换。")
+        return
+    name, region = parts[1], parts[2]
+    regions = await run_sync(get_profile_regions)
+    subs = regions.get(name) or []
+    region_ids = {sub.get("region-name") for sub in subs}
+    if subs and region not in region_ids:
+        await _reply(update, f"❌ 账号未订阅该区域：{region}")
+        return
+    try:
+        set_current_profile(context, name)
+        set_current_region(context, region)
+    except ValueError as exc:
+        await _reply(update, f"❌ 切换失败：{exc}")
+        return
+    label = get_cached_profile_display_name(name)
+    region_label = bot_config.get_region_label(region)
+    home = bot_config.get_region(name)
+    if region == home:
+        await _reply(update, f"✅ 已切换到账号：{label}")
+    else:
+        await _reply(update,
+                     f"✅ 已切换到账号：{label} · {region_label}")
 
 
 # ---- 2. ip 管理 ----

@@ -174,9 +174,20 @@ def _current_account_label(context):
     if not callable(get_label):
         return get_current_profile(context)
     try:
-        return get_label(get_current_profile(context))
+        label = get_label(get_current_profile(context))
     except Exception:  # noqa: BLE001 - 读失败不影响菜单显示
         return get_current_profile(context)
+    # 工作区域不是主区时后缀区域名（如“新加坡 · 首尔”）。
+    try:
+        from tgbot.services import get_current_region
+        from tgbot.config import get_region, get_region_label
+        profile = get_current_profile(context)
+        region = get_current_region(context)
+        if region != get_region(profile):
+            label += f" · {get_region_label(region)}"
+    except Exception:  # noqa: BLE001 - 读失败不影响菜单显示
+        pass
+    return label
 
 
 def _unwrap(data):

@@ -77,10 +77,18 @@
     var isE2 = shape === SHAPE_E2;
     var name = $("display-name").value.trim();
     if (!name) {
-      // 实例名留空时自动生成（时间戳后缀，避免重名）
+      // 实例名留空时自动生成：免费实例按类型 + 日期（与机器人同规则，
+      // 如 AMD_2026-11-24 / ARM_2026-11-24）；其他形状沿用时间戳格式。
       var d = new Date();
-      name = "rbot-" + String(d.getMonth() + 1).padStart(2, "0") + String(d.getDate()).padStart(2, "0") +
-             "-" + String(d.getHours()).padStart(2, "0") + String(d.getMinutes()).padStart(2, "0");
+      if (shape === SHAPE_E2 || shape === SHAPE_A1) {
+        var prefix = shape === SHAPE_E2 ? "AMD" : "ARM";
+        name = prefix + "_" + d.getFullYear() + "-" +
+               String(d.getMonth() + 1).padStart(2, "0") + "-" +
+               String(d.getDate()).padStart(2, "0");
+      } else {
+        name = "rbot-" + String(d.getMonth() + 1).padStart(2, "0") + String(d.getDate()).padStart(2, "0") +
+               "-" + String(d.getHours()).padStart(2, "0") + String(d.getMinutes()).padStart(2, "0");
+      }
     }
     return {
       profile: $("profile").value || null,

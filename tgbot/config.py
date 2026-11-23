@@ -13,6 +13,7 @@
   - 白名单是硬规则：不在 ALLOWED_USER_IDS 里的用户发任何命令都直接拒绝。
 """
 
+import json
 import os
 import sys
 
@@ -106,6 +107,17 @@ PRESETS_FILE = os.path.expanduser("~/workspace/rbot-clone/tgbot/presets.json")
 # 部署时用 RBOT_TGBOT_DATA_DIR 指到部署路径（如 /opt/rbot-clone/tgbot/data）。
 DATA_DIR = os.path.expanduser(os.environ.get(
     "RBOT_TGBOT_DATA_DIR", "~/workspace/rbot-clone/tgbot/data"))
+# 区域开机配置（每个账号每个区域的可用域 / 子网 / 镜像 OCID）：JSON 文件，
+# 部署时填真实值，不进仓库。格式：
+#   {"DEFAULT": {"ap-seoul-1": {"availability_domain": "...",
+#                               "subnet_id": "...",
+#                               "image_aarch64": "...", "image_x86_64": "...",
+#                               "ol_aarch64": "...", "ol_x86_64": "..."}}}
+# 按 (profile, region) 双键查：子网/VCN 是按租户的，不同账号同区域的
+# 子网 OCID 不同，不能只按区域查。某 (profile, region) 未配时开机回退
+# 到环境变量的默认部署值（主区）。
+REGION_PLANS_FILE = os.path.expanduser(os.environ.get(
+    "RBOT_REGION_PLANS_FILE", os.path.join(DATA_DIR, "region_plans.json")))
 # 流量守护的 SSH 私钥：阻断 / 限速 / vnstat 查流量要 SSH 到实例上执行，
 # 用这把专用密钥（公钥需加到各实例的 authorized_keys）。未配置时
 # 流量守护只能“仅通知”，阻断/限速/解除按钮会提示未配置。
@@ -122,6 +134,23 @@ GUARD_SSH_USER = "root"
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
+
+
+def get_region_plan(profile, region):
+    """返回某账号某区域的开机配置 dict；文件不存在、格式不对或该
+    (profile, region) 未配时返回 {}（调用方回退到环境变量的默认部署值）。"""
+    try:
+        with open(REGION_PLANS_FILE, encoding="utf-8") as handle:
+            plans = json.load(handle)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(plans, dict):
+        return {}
+    by_region = plans.get(profile)
+    if not isinstance(by_region, dict):
+        return {}
+    plan = by_region.get(region)
+    return dict(plan) if isinstance(plan, dict) else {}
 
 
 def get_token():

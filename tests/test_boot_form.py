@@ -6,12 +6,17 @@
 表单校验、预设生成、展示与键盘。
 """
 
+import json
+import os
 import re
 import string
+import tempfile
 import unittest
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 from tgbot import boot_form as bf
+from tgbot import config as bot_config
 
 FAKE_IMAGE_AARCH64 = "ocid1.image.oc1.ap-singapore-1.aaa111"
 FAKE_IMAGE_X86_64 = "ocid1.image.oc1.ap-singapore-1.xxx222"
@@ -21,6 +26,10 @@ FAKE_DEPLOY = {
     "availability_domain": "wgwP:AP-SINGAPORE-1-AD-1",
     "subnet_id": "ocid1.subnet.oc1.ap-singapore-1.ssssss",
     "ssh_keys_file": "/opt/rbot-clone/web/data/ssh_keys.pub",
+    "image_aarch64": FAKE_IMAGE_AARCH64,
+    "image_x86_64": FAKE_IMAGE_X86_64,
+    "ol_aarch64": FAKE_OL_AARCH64,
+    "ol_x86_64": FAKE_OL_X86_64,
 }
 
 
@@ -67,7 +76,7 @@ class TestNewForm(unittest.TestCase):
         self.assertEqual(form["count"], 1)
         self.assertEqual(form["delays"], [])
         self.assertEqual(form["ssh_key"], "use")
-        self.assertFalse(form["root_login"])
+        self.assertTrue(form["root_login"])  # 默认开：建完实例一定能 root 登录
         self.assertTrue(form["public_ip"])
         self.assertFalse(form["ipv6"])
         self.assertIsNone(form["script"])
@@ -119,6 +128,11 @@ class TestToggleOption(unittest.TestCase):
         changed, _ = bf.toggle_option(form, "key", "none")
         self.assertTrue(changed)
         self.assertEqual(form["ssh_key"], "none")
+        changed, _ = bf.toggle_option(form, "root", "on")
+        self.assertFalse(changed)  # root 默认已开
+        changed, _ = bf.toggle_option(form, "root", "off")
+        self.assertTrue(changed)
+        self.assertFalse(form["root_login"])
         changed, _ = bf.toggle_option(form, "root", "on")
         self.assertTrue(changed)
         self.assertTrue(form["root_login"])
@@ -430,10 +444,13 @@ class TestBuildPreset(unittest.TestCase):
         self.assertIn("未选 CPU 类型", str(ctx.exception))
 
     def test_display_name_format(self):
-        name = bf.generate_display_name("VM.Standard.A1.Flex", 1, 6)
-        self.assertRegex(name, r"^bot-a1-1c6g-\d{8}-\d{6}$")
-        name = bf.generate_display_name("VM.Standard.E2.1.Micro", 1, 1)
-        self.assertRegex(name, r"^bot-e2-1c1g-\d{8}-\d{6}$")
+        # 免费实例：类型 + 北京时间日期（UTC 17:00 已是次日凌晨 1 点）。
+        now = datetime(2026, 11, 24, 17, 0, tzinfo=timezone.utc)
+        name = bf.generate_display_name("VM.Standard.A1.Flex", 1, 6, now=now)
+        self.assertEqual(name, "ARM_2026-11-25")
+        name = bf.generate_display_name("VM.Standard.E2.1.Micro", 1, 1, now=now)
+        self.assertEqual(name, "AMD_2026-11-25")
+        # 其他形状沿用旧格式。
         name = bf.generate_display_name("VM.Standard.E3.Flex", 2, 16)
         self.assertRegex(name, r"^bot-e3-flex-2c16g-\d{8}-\d{6}$")
 
@@ -526,9 +543,11 @@ class TestFmtAndKeyboard(unittest.TestCase):
         form = _filled_form()
         kb = bf.boot_form_keyboard(form)
         rows = kb.inline_keyboard
-        # 15 行：12 个选项行 + 确认/保存行 + 返回行。
-        self.assertEqual(len(rows), 15)
+        # 16 行：一键开机行 + 12 个选项行 + 确认/保存行 + 返回行。
+        self.assertEqual(len(rows), 16)
+        self.assertEqual(rows[0][0].callback_data, "bf:oneclick:amd")
         callbacks = [b.callback_data for row in rows for b in row]
+        self.assertIn("bf:oneclick:amd", callbacks)
         self.assertIn("bf:cpu:arm", callbacks)
         self.assertIn("bf:os:ubuntu", callbacks)
         self.assertIn("bf:delay:200", callbacks)
@@ -589,6 +608,122 @@ class TestFmtAndKeyboard(unittest.TestCase):
         self.assertIn("❌ E2 已满", text)
         self.assertIn("默认（47GB）", text)
         self.assertIn("默认 25±5 秒", text)
+
+
+class TestDefaultAmdForm(unittest.TestCase):
+    def test_oneclick_amd_preset(self):
+        form = bf.default_amd_form()
+        self.assertEqual(form["cpu"], "amd")
+        self.assertEqual(form["os"], "ubuntu")
+        self.assertEqual(form["count"], 1)
+        self.assertIsNone(form["disk_gb"])
+        self.assertEqual(form["ssh_key"], "use")
+        self.assertTrue(form["root_login"])
+        self.assertTrue(form["public_ip"])
+        self.assertFalse(form["ipv6"])
+
+    def test_oneclick_amd_builds_valid_preset(self):
+        _patched_images(self)
+        form = bf.default_amd_form()
+        self.assertEqual(bf.validate_form(form, FAKE_DEPLOY), [])
+        preset = bf.build_preset(form, FAKE_DEPLOY)
+        self.assertEqual(preset["shape"], "VM.Standard.E2.1.Micro")
+        self.assertEqual(preset["ocpus"], 1)
+        self.assertEqual(preset["memory_gb"], 1)
+        self.assertRegex(preset["display_name"], r"^AMD_\d{4}-\d{2}-\d{2}$")
+        self.assertTrue(preset["root_login"])
+
+
+class TestRegionDeployDefaults(unittest.TestCase):
+    def test_region_plan_overrides_deploy_values(self):
+        plan = {
+            "availability_domain": "wgwP:AP-SEOUL-1-AD-1",
+            "subnet_id": "ocid1.subnet.oc1.ap-seoul-1.seoul",
+            "image_aarch64": "ocid1.image.oc1.ap-seoul-1.arm",
+            "image_x86_64": "ocid1.image.oc1.ap-seoul-1.x86",
+            "ol_aarch64": "ocid1.image.oc1.ap-seoul-1.olarm",
+            "ol_x86_64": "ocid1.image.oc1.ap-seoul-1.olx86",
+        }
+        with patch("tgbot.config.get_region_plan", return_value=plan):
+            deploy = bf.get_deploy_defaults(region="ap-seoul-1",
+                                            profile="DEFAULT")
+        self.assertEqual(deploy["availability_domain"],
+                         "wgwP:AP-SEOUL-1-AD-1")
+        self.assertEqual(deploy["subnet_id"],
+                         "ocid1.subnet.oc1.ap-seoul-1.seoul")
+        self.assertEqual(deploy["image_aarch64"],
+                         "ocid1.image.oc1.ap-seoul-1.arm")
+        self.assertEqual(deploy["ol_x86_64"],
+                         "ocid1.image.oc1.ap-seoul-1.olx86")
+
+    def test_region_without_plan_falls_back_to_env(self):
+        _patched_images(self)
+        with patch("tgbot.config.get_region_plan", return_value={}), \
+                patch.dict("os.environ", {
+                    "RBOT_PLAN_AD": "wgwP:AP-SINGAPORE-1-AD-1",
+                    "RBOT_PLAN_SUBNET_ID": "ocid1.subnet.oc1.ap-singapore-1.s",
+                    "RBOT_PLAN_SSH_KEYS_FILE": "/opt/x/keys.pub"}):
+            deploy = bf.get_deploy_defaults(region="ap-seoul-1",
+                                            profile="DEFAULT")
+        self.assertEqual(deploy["availability_domain"],
+                         "wgwP:AP-SINGAPORE-1-AD-1")
+        self.assertEqual(deploy["image_aarch64"], FAKE_IMAGE_AARCH64)
+
+    def test_profile_not_passed_never_uses_region_plan(self):
+        # 不传 profile 时不查区域配置（子网按租户，不能跨账号用）
+        plan = {"availability_domain": "wgwP:AP-SEOUL-1-AD-1"}
+        with patch("tgbot.config.get_region_plan",
+                   return_value=plan) as mock_plan, \
+                patch.dict("os.environ",
+                           {"RBOT_PLAN_AD": "wgwP:AP-SINGAPORE-1-AD-1"}):
+            deploy = bf.get_deploy_defaults(region="ap-seoul-1")
+        mock_plan.assert_not_called()
+        self.assertEqual(deploy["availability_domain"],
+                         "wgwP:AP-SINGAPORE-1-AD-1")
+
+    def test_resolve_image_uses_region_deploy(self):
+        deploy = dict(FAKE_DEPLOY)
+        deploy["image_aarch64"] = "ocid1.image.oc1.ap-seoul-1.arm"
+        image, error = bf.resolve_image_id(
+            _filled_form(cpu="arm", os="ubuntu"), deploy)
+        self.assertIsNone(error)
+        self.assertEqual(image, "ocid1.image.oc1.ap-seoul-1.arm")
+
+
+class TestGetRegionPlan(unittest.TestCase):
+    def _write_plans(self, content):
+        tmp = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8")
+        with tmp:
+            tmp.write(content)
+        self.addCleanup(os.unlink, tmp.name)
+        return tmp.name
+
+    def test_double_key_lookup(self):
+        path = self._write_plans(json.dumps({
+            "DEFAULT": {"ap-seoul-1": {"subnet_id": "ocid1.subnet.seoul"}},
+            "ACCOUNT2": {"us-sanjose-1":
+                         {"subnet_id": "ocid1.subnet.sanjose"}},
+        }))
+        with patch.object(bot_config, "REGION_PLANS_FILE", path):
+            self.assertEqual(
+                bot_config.get_region_plan("DEFAULT", "ap-seoul-1"),
+                {"subnet_id": "ocid1.subnet.seoul"})
+            # 同区域不同账号不能串用
+            self.assertEqual(
+                bot_config.get_region_plan("ACCOUNT2", "ap-seoul-1"), {})
+            self.assertEqual(
+                bot_config.get_region_plan("DEFAULT", "us-sanjose-1"), {})
+
+    def test_missing_file_and_bad_json_return_empty(self):
+        with patch.object(bot_config, "REGION_PLANS_FILE",
+                          "/nonexistent/region_plans.json"):
+            self.assertEqual(
+                bot_config.get_region_plan("DEFAULT", "ap-seoul-1"), {})
+        path = self._write_plans("{not json")
+        with patch.object(bot_config, "REGION_PLANS_FILE", path):
+            self.assertEqual(
+                bot_config.get_region_plan("DEFAULT", "ap-seoul-1"), {})
 
 
 if __name__ == "__main__":

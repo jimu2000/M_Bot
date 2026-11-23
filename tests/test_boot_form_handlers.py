@@ -33,6 +33,10 @@ FAKE_DEPLOY = {
     "availability_domain": "wgwP:AP-SINGAPORE-1-AD-1",
     "subnet_id": "ocid1.subnet.oc1.ap-singapore-1.ssssss",
     "ssh_keys_file": "/opt/rbot-clone/web/data/ssh_keys.pub",
+    "image_aarch64": FAKE_IMAGE_AARCH64,
+    "image_x86_64": FAKE_IMAGE_X86_64,
+    "ol_aarch64": FAKE_OL_AARCH64,
+    "ol_x86_64": FAKE_OL_X86_64,
 }
 
 
@@ -132,6 +136,12 @@ class BootFormHandlersTestCase(unittest.IsolatedAsyncioTestCase):
                              return_value=dict(FAKE_DEPLOY))
         self._deploy.start()
         self.addCleanup(self._deploy.stop)
+        # handlers_extra 直接 from-import 了 get_deploy_defaults，要另 patch
+        # 它自己的命名空间（_boot_form_confirm 用的是这一份）。
+        self._deploy_he = patch("tgbot.handlers_extra.get_deploy_defaults",
+                                return_value=dict(FAKE_DEPLOY))
+        self._deploy_he.start()
+        self.addCleanup(self._deploy_he.stop)
 
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
@@ -271,6 +281,39 @@ class TestBootFormCallback(BootFormHandlersTestCase):
         self.assertIn("A1.Flex", text)
         self.assertIn("✅ 可以创建", text)
         self.assertIn("b:go", callbacks_of(reply_markup_of(update)))
+
+    async def test_oneclick_amd_goes_to_confirm_page(self):
+        # 一键开机（默认 AMD）：不依赖用户正在填的表单，直接进确认页
+        update = make_update(callback_data="bf:oneclick:amd")
+        context = make_context()
+        context.user_data["boot_form"] = bf.new_form()
+        with patch.object(he, "can_launch_batch",
+                          return_value=(True, "可以创建")):
+            await he.boot_form_callback(update, context)
+        preset = context.user_data["pending_boot"]
+        self.assertEqual(preset["shape"], "VM.Standard.E2.1.Micro")
+        self.assertEqual(preset["ocpus"], 1)
+        self.assertEqual(preset["memory_gb"], 1)
+        self.assertEqual(preset["image_id"], FAKE_IMAGE_X86_64)
+        self.assertTrue(preset["root_login"])
+        self.assertRegex(preset["display_name"],
+                         r"^AMD_\d{4}-\d{2}-\d{2}$")
+        text = reply_text_of(update)
+        self.assertIn("E2.1.Micro", text)
+        self.assertIn("✅ 可以创建", text)
+        self.assertIn("b:go", callbacks_of(reply_markup_of(update)))
+        # 一键开机不覆盖用户正在填的表单
+        self.assertIsNone(context.user_data["boot_form"]["cpu"])
+
+    async def test_oneclick_amd_works_without_open_form(self):
+        # 表单已过期（user_data 里没有 boot_form）时一键开机仍能用
+        update = make_update(callback_data="bf:oneclick:amd")
+        context = make_context()
+        with patch.object(he, "can_launch_batch",
+                          return_value=(True, "可以创建")):
+            await he.boot_form_callback(update, context)
+        self.assertEqual(context.user_data["pending_boot"]["shape"],
+                         "VM.Standard.E2.1.Micro")
 
     async def test_confirm_quota_blocked_shows_reason(self):
         update = make_update(callback_data="bf:confirm")
@@ -536,6 +579,25 @@ class TestBootGoWithRoot(BootFormHandlersTestCase):
         self.assertNotIn("user_data", saved[0])
         self.assertNotIn("root_password", saved[0])
         self.assertTrue(saved[0]["root_login"])
+
+    async def test_boot_go_uniquifies_taken_display_name(self):
+        # 已有同名实例时启动前加 -2 后缀（日期名同日再开机）
+        preset = bf.build_preset(filled_form(), FAKE_DEPLOY)
+        base_name = preset["display_name"]
+        with patch.object(he, "list_instances",
+                          return_value=[{"display-name": base_name}]):
+            _update, mock_grabber_cls, _task, _saved = \
+                await self._run_boot_go(preset)
+        self.assertEqual(mock_grabber_cls.call_args.args[6],
+                         f"{base_name}-2")
+
+    async def test_boot_go_keeps_name_when_no_conflict(self):
+        preset = bf.build_preset(filled_form(), FAKE_DEPLOY)
+        with patch.object(he, "list_instances", return_value=[]):
+            _update, mock_grabber_cls, _task, _saved = \
+                await self._run_boot_go(preset)
+        self.assertEqual(mock_grabber_cls.call_args.args[6],
+                         preset["display_name"])
 
     async def test_no_root_login_no_password(self):
         preset = bf.build_preset(filled_form(), FAKE_DEPLOY)

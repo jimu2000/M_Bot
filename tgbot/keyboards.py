@@ -39,11 +39,13 @@ callback_data 规范（Telegram 限制 64 字节，OCID 约 100 字节放不下�
     延迟可多选两个；点已选值取消选择）
   - "bf:confirm"     开机表单：显示配置摘要确认页
   - "bf:save"        开机表单：保存为快捷开机
+  - "bf:oneclick:amd" 开机表单：一键开机（默认 AMD，进确认页）
   - "bf:noop"        开机表单：行标签按钮（无操作）
   - "bf:cancel_input" 开机表单：取消自定义输入
   - "t:list"         任务列表
   - "t:cancel:<id>"  取消任务（id 是任务注册表里的短 ID，如 "g1"）
-  - "p:<profile>"    切换 profile
+  - "p:<profile>"    切换 profile（多区账号先出二级区域菜单）
+  - "pr:<profile>:<region>" 切换账号 + 工作区域
   - "q:list"         免费额度：回账号列表
   - "q:acct:<name>"  免费额度：点开某账号（多区账号出二级区域菜单，
     单区账号直接显示该区额度）
@@ -368,6 +370,30 @@ def profile_keyboard(profiles, current, labels=None):
         rows.append([InlineKeyboardButton(f"{mark}{text}",
                                           callback_data=f"p:{name}")])
     rows.append([InlineKeyboardButton("◀ Oracle 菜单", callback_data="o:menu")])
+    return InlineKeyboardMarkup(rows)
+
+
+def profile_regions_keyboard(profile, regions, current=None):
+    """切换账号的二级区域菜单：某账号的订阅区域列表。
+
+    regions 是 list_regions 的返回（region-name / is-home-region）。
+    每行一个区域按钮（pr:<profile>:<region>），Home 区域后缀“（Home）”，
+    当前工作区域前缀 ✅；最后一行回账号列表（o:profiles）。
+    """
+    from tgbot.config import get_region_label
+
+    rows = []
+    for region in regions:
+        code = region.get("region-name") or region.get("region-key") or "?"
+        label = get_region_label(code)
+        if region.get("is-home-region"):
+            label += "（Home）"
+        if current and code == current:
+            label = f"✅ {label}"
+        rows.append([InlineKeyboardButton(
+            label, callback_data=f"pr:{profile}:{code}")])
+    rows.append([InlineKeyboardButton("◀ 返回账号列表",
+                                     callback_data="o:profiles")])
     return InlineKeyboardMarkup(rows)
 
 

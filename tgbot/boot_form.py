@@ -19,10 +19,14 @@ async handler 在 tgbot/handlers_extra.py 里（boot_form_callback 等），
   count: int | None（默认 1）
   delays: list[int]（0–2 个）
   ssh_key: "use"（默认）| "none"
-  root_login: bool（默认 False）
+  root_login: bool（默认 True：用户要求建完实例一定能 root 登录）
   public_ip: bool（默认 True）
   ipv6: bool（默认 False）
   script: None | {"name": str, "content": str}
+
+实例名（用户 2026-11-24 定）：E2（AMD 免费）-> AMD_YYYY-MM-DD，
+A1（ARM）-> ARM_YYYY-MM-DD（北京时间日期）；其他形状沿用旧格式。
+表单顶部有一键开机（默认 AMD）按钮（bf:oneclick:amd），点后进确认页。
 
 映射关系（取舍见 build_preset / resolve_* 的注释）：
   - CPU：ARM → VM.Standard.A1.Flex；AMD / INTEL → VM.Standard.E2.1.Micro
@@ -47,12 +51,14 @@ import random
 import re
 import secrets
 import string
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from oci.grabber import TARGET_CPU
 from web.config import IMAGE_IDS
+
+BEIJING_TZ = timezone(timedelta(hours=8))
 
 # ================= 配置区（改这里） =================
 # 形状名。
@@ -140,27 +146,44 @@ _BINARY_ROWS = {
 _SHAPE_RE = re.compile(r"^(VM|BM)\.[A-Za-z0-9]+(\.[A-Za-z0-9_-]+)+$")
 
 
-def get_deploy_defaults():
-    """部署值（可用域 / 子网 / SSH 公钥文件）：每次调用时读环境变量。
+def get_deploy_defaults(region=None, profile=None):
+    """部署值（可用域 / 子网 / SSH 公钥文件 + 各架构镜像 OCID）。
 
     与 web/tasks.py 的 PLAN_DEFAULTS 用同一批环境变量，部署时只用配一次：
       RBOT_PLAN_AD / RBOT_PLAN_SUBNET_ID / RBOT_PLAN_SSH_KEYS_FILE。
+    传了 region + profile 且 region_plans.json 里有该 (profile, region)
+    配置时，可用域 / 子网 / 镜像用该区域的；否则用环境变量的默认部署值
+    （主区）。profile 未传时不查区域配置（子网是按租户的，不能跨账号用）。
     """
-    return {
+    defaults = {
         "availability_domain": os.environ.get(
             "RBOT_PLAN_AD", AD_PLACEHOLDER),
         "subnet_id": os.environ.get(
             "RBOT_PLAN_SUBNET_ID", SUBNET_PLACEHOLDER),
         "ssh_keys_file": os.environ.get(
             "RBOT_PLAN_SSH_KEYS_FILE", SSH_KEYS_PLACEHOLDER),
+        "image_aarch64": IMAGE_IDS.get("aarch64") or IMAGE_PLACEHOLDER,
+        "image_x86_64": IMAGE_IDS.get("x86_64") or IMAGE_PLACEHOLDER,
+        "ol_aarch64": OL_IMAGE_IDS.get("aarch64") or IMAGE_PLACEHOLDER,
+        "ol_x86_64": OL_IMAGE_IDS.get("x86_64") or IMAGE_PLACEHOLDER,
     }
+    if region and profile:
+        from tgbot.config import get_region_plan
+        plan = get_region_plan(profile, region)
+        for key in ("availability_domain", "subnet_id", "image_aarch64",
+                    "image_x86_64", "ol_aarch64", "ol_x86_64"):
+            if plan.get(key):
+                defaults[key] = plan[key]
+    return defaults
 
 
 # ---------------- 表单状态 ----------------
 
 def new_form():
     """新建一个空表单（带 R-Bot 风格的默认值：公网 IP 有、IPv6 无、
-    脚本无、公钥用机器人公钥、root 不开启、数量 1 台）。"""
+
+    脚本无、公钥用机器人公钥、root 默认开启（用户要求建完实例一定能
+    root 登录）、数量 1 台）。"""
     return {
         "cpu": None,
         "os": None,
@@ -170,11 +193,22 @@ def new_form():
         "count": 1,
         "delays": [],
         "ssh_key": "use",
-        "root_login": False,
+        "root_login": True,
         "public_ip": True,
         "ipv6": False,
         "script": None,
     }
+
+
+def default_amd_form():
+    """一键开机（默认 AMD）的预填表单：E2.1.Micro + Ubuntu + 1 台 +
+
+    镜像默认盘（47GB）+ 公钥 + root 登录开 + 公网 IP 有 + IPv6 关。
+    名字由 build_preset 按规则生成（AMD_YYYY-MM-DD）。
+    """
+    form = new_form()
+    form.update({"cpu": "amd", "os": "ubuntu"})
+    return form
 
 
 def _parse_int(raw, what):
@@ -325,27 +359,32 @@ def resolve_arch(form):
     return "aarch64" if form.get("cpu") == "arm" else "x86_64"
 
 
-def resolve_image_id(form):
+def resolve_image_id(form, deploy=None):
     """系统 -> 镜像 OCID。返回 (image_id, error)，error 非空时 image_id
-    为 None。Ubuntu 按架构取 IMAGE_IDS；CentOS 取 Oracle Linux 镜像；
-    自定义直接用输入的 OCID。"""
+
+    为 None。Ubuntu 按架构取 deploy 里的 image_*；CentOS 取 Oracle Linux
+    镜像（ol_*）；自定义直接用输入的 OCID。deploy 未传时用默认部署值。
+    """
     os_value = form.get("os")
     if os_value is None:
         return None, "未选系统"
+    deploy = deploy or get_deploy_defaults()
     arch = resolve_arch(form)
     if os_value == "ubuntu":
-        image_id = IMAGE_IDS.get(arch) or IMAGE_PLACEHOLDER
+        image_id = deploy.get(f"image_{arch}") or IMAGE_PLACEHOLDER
         if image_id == IMAGE_PLACEHOLDER:
             env = ("RBOT_IMAGE_AARCH64" if arch == "aarch64"
                    else "RBOT_IMAGE_X86_64")
-            return None, f"未配置 {arch} 的 Ubuntu 镜像（环境变量 {env}）"
+            return None, (f"未配置 {arch} 的 Ubuntu 镜像"
+                          f"（环境变量 {env} 或 region_plans.json）")
         return image_id, None
     if os_value == "centos":
-        image_id = OL_IMAGE_IDS.get(arch) or IMAGE_PLACEHOLDER
+        image_id = deploy.get(f"ol_{arch}") or IMAGE_PLACEHOLDER
         if image_id == IMAGE_PLACEHOLDER:
             env = ("RBOT_IMAGE_OL_AARCH64" if arch == "aarch64"
                    else "RBOT_IMAGE_OL_X86_64")
-            return None, f"未配置 {arch} 的 Oracle Linux 镜像（环境变量 {env}）"
+            return None, (f"未配置 {arch} 的 Oracle Linux 镜像"
+                          f"（环境变量 {env} 或 region_plans.json）")
         return image_id, None
     return os_value, None  # 自定义镜像 OCID
 
@@ -388,7 +427,7 @@ def validate_form(form, deploy=None):
     if form.get("os") is None:
         errors.append("未选系统")
     else:
-        _, image_error = resolve_image_id(form)
+        _, image_error = resolve_image_id(form, deploy)
         if image_error is not None:
             errors.append(image_error)
     if shape != SHAPE_E2_MICRO:
@@ -434,18 +473,23 @@ def validate_form(form, deploy=None):
     return errors
 
 
-def generate_display_name(shape, ocpus, memory_gb):
-    """生成实例显示名：bot-<形状缩写>-<核>c<内存>g-<UTC 时间戳>。
+def generate_display_name(shape, ocpus, memory_gb, now=None):
+    """生成实例显示名（用户 2026-11-24 定：免费实例按类型 + 北京时间日期）。
 
-    时间戳精确到秒，避免同规格连续开机重名（Grabber 按显示名防重复建）。
+    E2（AMD 免费）-> AMD_YYYY-MM-DD；A1（ARM）-> ARM_YYYY-MM-DD；
+    其他形状沿用旧格式 bot-<短名>-<核>c<内存>g-<UTC 时间戳>。
+    同日同类型第二台由调用方加后缀去重（见 handlers_extra 的
+    uniquify_display_name）；Grabber 的 find_existing 只认 15 分钟内
+    同名实例为重复响应，不会把旧实例误当新开的。
+    now 供测试注入（aware datetime，未传则取当前北京时间）。
     """
-    if shape == SHAPE_A1_FLEX:
-        short = "a1"
-    elif shape == SHAPE_E2_MICRO:
-        short = "e2"
-    else:
-        short = (shape or "vm").replace("VM.Standard.", "").replace(
-            "BM.Standard.", "").lower().replace(".", "-").replace("_", "-")[:20]
+    if shape in (SHAPE_A1_FLEX, SHAPE_E2_MICRO):
+        moment = now or datetime.now(BEIJING_TZ)
+        date = moment.astimezone(BEIJING_TZ).strftime("%Y-%m-%d")
+        prefix = "ARM" if shape == SHAPE_A1_FLEX else "AMD"
+        return f"{prefix}_{date}"
+    short = (shape or "vm").replace("VM.Standard.", "").replace(
+        "BM.Standard.", "").lower().replace(".", "-").replace("_", "-")[:20]
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     return f"bot-{short}-{ocpus}c{memory_gb}g-{stamp}"
 
@@ -459,7 +503,7 @@ def build_preset(form, deploy=None):
         raise ValueError("；".join(errors))
     deploy = deploy or get_deploy_defaults()
     shape, note = resolve_shape(form)
-    image_id, _ = resolve_image_id(form)
+    image_id, _ = resolve_image_id(form, deploy)
     ocpus, memory_gb = resolve_spec(form)
     min_delay, max_delay = resolve_delay(form)
     script = form.get("script") or {}
@@ -673,6 +717,7 @@ def boot_form_keyboard(form):
       bf:<row>:<value> 点选（row 见 ROW_FORM_KEY；value 是预设值或 custom）
       bf:confirm 确定开机（进配置摘要确认页）
       bf:save 保存为快捷开机
+      bf:oneclick:amd 一键开机（默认 AMD：E2.1.Micro + Ubuntu + root 开）
       bf:noop 行标签（无操作）
     """
     cpu = form.get("cpu")
@@ -683,6 +728,8 @@ def boot_form_keyboard(form):
     count = form.get("count")
     delays = form.get("delays") or []
     rows = [
+        [InlineKeyboardButton("🚀 一键开机（默认 AMD）",
+                              callback_data="bf:oneclick:amd")],
         [_label("CPU▸"),
          _opt("ARM", cpu == "arm", "bf:cpu:arm"),
          _opt("AMD", cpu == "amd", "bf:cpu:amd"),

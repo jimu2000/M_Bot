@@ -167,6 +167,9 @@ def build_application():
     application.add_handler(CallbackQueryHandler(
         handlers_extra.task_cancel_callback, pattern=r"^t:cancel:"))
     application.add_handler(CallbackQueryHandler(
+        handlers_extra.profile_region_callback, pattern=r"^pr:"))
+    # 注意：pr: 必须注册在 p: 之前（"pr:..." 也匹配 ^p:，先注册的先处理）。
+    application.add_handler(CallbackQueryHandler(
         handlers_extra.profile_callback, pattern=r"^p:"))
     application.add_handler(CallbackQueryHandler(
         handlers_extra.quota_callback, pattern=r"^q:"))

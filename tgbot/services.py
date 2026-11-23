@@ -64,15 +64,34 @@ def get_current_profile(context):
 
 
 def set_current_profile(context, profile):
-    """切换当前 profile（切换前先校验 profile 存在）。"""
+    """切换当前 profile（切换前先校验 profile 存在）。
+
+    切换账号时工作区域重置为新账号的主区（旧区域不带过去，避免
+    新加坡的首尔区域泄漏到芝加哥账号上）。
+    """
     bot_config.get_profile_config(profile)  # 未知 profile 抛 ValueError
     context.user_data["profile"] = profile
+    context.user_data["region"] = bot_config.get_region(profile)
+
+
+def get_current_region(context):
+    """当前工作区域（存在 user_data 里，默认当前账号的主区）。"""
+    region = context.user_data.get("region")
+    if region:
+        return region
+    return bot_config.get_region(get_current_profile(context))
+
+
+def set_current_region(context, region):
+    """切换当前工作区域（不校验订阅关系；回调层在切换前校验）。"""
+    context.user_data["region"] = region
 
 
 def get_cli(context):
-    """当前 profile 的 OCIClient。"""
+    """当前 profile + 当前工作区域的 OCIClient。"""
     profile = get_current_profile(context)
-    return bot_config.get_oci_client(profile=profile)
+    return bot_config.get_oci_client(profile=profile,
+                                     region=get_current_region(context))
 
 
 def get_compartment(context):

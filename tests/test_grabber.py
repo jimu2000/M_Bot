@@ -10,6 +10,7 @@ import json
 import os
 import sys
 import unittest
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -110,15 +111,45 @@ class TestTryLaunchOnce(unittest.TestCase):
         self.assertIn("VM.Standard.E2.1.Micro", launch_args[0])
 
     def test_existing_instance_reused_without_launch(self):
-        # 防重复建：同名实例已存在时直接返回，不调 launch
+        # 防重复建：同名实例在 15 分钟内创建时直接返回，不调 launch
+        created = datetime.now(timezone.utc).isoformat()
         cli = MagicMock(spec=OCIClient)
         cli.run_text.side_effect = _run_text_dispatch(
-            list_result=FAKE_INSTANCE_A)
+            list_result=json.dumps({"id": FAKE_INSTANCE_A,
+                                    "created": created}))
         grabber = _make_grabber(cli=cli)
         self.assertEqual(grabber.try_launch_once(), FAKE_INSTANCE_A)
         launch_calls = [c for c in cli.run_text.call_args_list
                         if "launch" in c.args[0]]
         self.assertEqual(launch_calls, [])
+
+    def test_old_same_name_instance_is_not_reused(self):
+        # 同名实例是 1 小时前建的（日期名重名）：不当重复响应，正常 launch
+        created = (datetime.now(timezone.utc)
+                   - timedelta(hours=1)).isoformat()
+        cli = MagicMock(spec=OCIClient)
+        cli.run_text.side_effect = _run_text_dispatch(
+            list_result=json.dumps({"id": FAKE_INSTANCE_A,
+                                    "created": created}),
+            launch_results=[FAKE_INSTANCE_B])
+        grabber = _make_grabber(cli=cli)
+        self.assertEqual(grabber.try_launch_once(), FAKE_INSTANCE_B)
+
+    def test_missing_created_falls_back_to_old_behavior(self):
+        # 查不到创建时间时按旧行为：有同名就返回，不冒险重复建
+        cli = MagicMock(spec=OCIClient)
+        cli.run_text.side_effect = _run_text_dispatch(
+            list_result=json.dumps({"id": FAKE_INSTANCE_A}))
+        grabber = _make_grabber(cli=cli)
+        self.assertEqual(grabber.try_launch_once(), FAKE_INSTANCE_A)
+
+    def test_find_existing_null_returns_none(self):
+        # 无同名实例时 list 返回 null，find_existing 返回 None
+        cli = MagicMock(spec=OCIClient)
+        cli.run_text.side_effect = _run_text_dispatch(
+            list_result="null", launch_results=[FAKE_INSTANCE_A])
+        grabber = _make_grabber(cli=cli)
+        self.assertEqual(grabber.try_launch_once(), FAKE_INSTANCE_A)
 
     def test_out_of_capacity_returns_none(self):
         # ② 无容量返回 None（不抛异常，由 run() 决定重试）

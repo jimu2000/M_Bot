@@ -79,6 +79,7 @@ import tempfile
 import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from oci.client import OCIError, OutOfCapacityError, QuotaExceededError, RateLimitError
 
@@ -101,6 +102,10 @@ PUBLIC_IP_POLL_INTERVAL = 20
 # 等实例终止：最多查多少次、每次间隔多少秒（默认 40 次 x 15 秒 = 10 分钟）。
 TERMINATE_MAX_POLLS = 40
 TERMINATE_POLL_INTERVAL = 15
+# 防重复建的时间窗（秒）：同名实例只有在最近这么久内创建的才算
+# “上次创建成功但响应丢失”（默认 15 分钟）。实例名改成日期格式
+# （AMD_YYYY-MM-DD）后，同名旧实例是之前建的，不能误当新开的。
+DEDUP_WINDOW_SECONDS = 900
 # =====================================================
 
 
@@ -254,18 +259,43 @@ class Grabber:
 
     # ---------------- OCI 查询 ----------------
 
-    def find_existing(self):
+    def find_existing(self, now=None):
         """按显示名查已有实例，防某次创建成功但响应丢失导致重复建。
 
-        有则返回实例 OCID，没有返回 None。
+        只有在 DEDUP_WINDOW_SECONDS（默认 15 分钟）内创建的同名实例
+        才算“上次创建成功但响应丢失”，返回它的 OCID；更早的同名实例
+        是之前建的，返回 None（调用方正常新建）。查不到创建时间或
+        时间解析失败时按旧行为处理（有同名就返回 OCID，不冒险重复建）。
+        now 供测试注入（aware datetime，未传则取当前 UTC 时间）。
         """
         out = self.cli.run_text(
             ["compute", "instance", "list",
              "--compartment-id", self.compartment_id,
              "--display-name", self.display_name,
-             "--query", "data[0].id", "--raw-output"])
-        if out and out != "null":
-            return out
+             "--query", "data[0].{id: id, created: \"time-created\"}"])
+        if not out or out.strip() in ("null", ""):
+            return None
+        try:
+            found = json.loads(out)
+        except ValueError:
+            return None
+        instance_id = found.get("id") if isinstance(found, dict) else None
+        if not instance_id:
+            return None
+        created = found.get("created")
+        if not created:
+            return instance_id  # 查不到创建时间：按旧行为，不冒险重复建
+        try:
+            created_at = datetime.fromisoformat(
+                str(created).replace("Z", "+00:00"))
+        except ValueError:
+            return instance_id
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        now = now or datetime.now(timezone.utc)
+        age = (now - created_at).total_seconds()
+        if 0 <= age <= DEDUP_WINDOW_SECONDS:
+            return instance_id
         return None
 
     def get_public_ip(self, instance_id):

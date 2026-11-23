@@ -426,6 +426,139 @@ class TestHealthTasksProfiles(HandlersExtraTestCase):
             await he.profile_callback(update3, context)
             self.assertIn("切换失败", reply_text_of(update3))
 
+    async def test_profile_switch_resets_region_to_home(self):
+        profiles = {
+            "DEFAULT": {"region": "ap-singapore-1",
+                        "compartment_id": "ocid1.tenancy.oc1..aaa"},
+            "ACCOUNT2": {"region": "us-sanjose-1",
+                         "compartment_id": "ocid1.tenancy.oc1..bbb"},
+        }
+        regions = {"DEFAULT": [{"region-name": "ap-singapore-1",
+                                "is-home-region": True}],
+                   "ACCOUNT2": [{"region-name": "us-sanjose-1",
+                                 "is-home-region": True}]}
+        with patch.object(bot_config, "PROFILES", profiles), \
+                patch.object(he, "get_profile_regions",
+                             return_value=regions):
+            context = make_context()
+            context.user_data["profile"] = "DEFAULT"
+            context.user_data["region"] = "ap-seoul-1"
+            update = make_update(callback_data="p:ACCOUNT2")
+            await he.profile_callback(update, context)
+            self.assertEqual(context.user_data["profile"], "ACCOUNT2")
+            # 切账号时区域重置为新账号主区，旧区域不带过去
+            self.assertEqual(context.user_data["region"], "us-sanjose-1")
+
+
+class TestProfileRegions(HandlersExtraTestCase):
+    """区域二级菜单：多区账号点开出区域菜单，点区域切换工作区域。"""
+
+    PROFILES = {
+        "DEFAULT": {"region": "ap-singapore-1",
+                    "compartment_id": "ocid1.tenancy.oc1..aaa"},
+        "ACCOUNT2": {"region": "us-sanjose-1",
+                     "compartment_id": "ocid1.tenancy.oc1..bbb"},
+    }
+    REGIONS = {
+        "DEFAULT": [{"region-name": "ap-singapore-1", "is-home-region": True},
+                    {"region-name": "ap-seoul-1", "is-home-region": False},
+                    {"region-name": "us-sanjose-1", "is-home-region": False}],
+        "ACCOUNT2": [{"region-name": "us-sanjose-1", "is-home-region": True}],
+    }
+
+    async def test_multi_region_opens_region_menu(self):
+        with patch.object(bot_config, "PROFILES", self.PROFILES), \
+                patch.object(he, "get_profile_regions",
+                             return_value=self.REGIONS):
+            context = make_context()
+            context.user_data["profile"] = "ACCOUNT2"
+            update = make_update(callback_data="p:DEFAULT")
+            await he.profile_callback(update, context)
+            # 多区账号不直接切换，只出二级菜单
+            self.assertEqual(context.user_data["profile"], "ACCOUNT2")
+            self.assertIn("切换工作区域", reply_text_of(update))
+            callbacks = reply_callback_data_of(update)
+            self.assertIn("pr:DEFAULT:ap-singapore-1", callbacks)
+            self.assertIn("pr:DEFAULT:ap-seoul-1", callbacks)
+            self.assertIn("pr:DEFAULT:us-sanjose-1", callbacks)
+            self.assertIn("o:profiles", callbacks)
+            buttons = reply_button_texts_of(update)
+            self.assertIn("新加坡（Home）", buttons)
+            self.assertIn("首尔", buttons)
+
+    async def test_region_switch_sets_profile_and_region(self):
+        with patch.object(bot_config, "PROFILES", self.PROFILES), \
+                patch.object(he, "get_profile_regions",
+                             return_value=self.REGIONS):
+            context = make_context()
+            context.user_data["profile"] = "ACCOUNT2"
+            update = make_update(callback_data="pr:DEFAULT:ap-seoul-1")
+            await he.profile_region_callback(update, context)
+            self.assertEqual(context.user_data["profile"], "DEFAULT")
+            self.assertEqual(context.user_data["region"], "ap-seoul-1")
+            self.assertIn("已切换到账号", reply_text_of(update))
+            self.assertIn("首尔", reply_text_of(update))
+
+    async def test_region_switch_to_home_region(self):
+        with patch.object(bot_config, "PROFILES", self.PROFILES), \
+                patch.object(he, "get_profile_regions",
+                             return_value=self.REGIONS):
+            context = make_context()
+            context.user_data["profile"] = "DEFAULT"
+            context.user_data["region"] = "ap-seoul-1"
+            update = make_update(
+                callback_data="pr:DEFAULT:ap-singapore-1")
+            await he.profile_region_callback(update, context)
+            self.assertEqual(context.user_data["region"], "ap-singapore-1")
+            self.assertIn("已切换到账号", reply_text_of(update))
+
+    async def test_region_switch_rejects_unsubscribed(self):
+        with patch.object(bot_config, "PROFILES", self.PROFILES), \
+                patch.object(he, "get_profile_regions",
+                             return_value=self.REGIONS):
+            context = make_context()
+            update = make_update(callback_data="pr:DEFAULT:eu-frankfurt-1")
+            await he.profile_region_callback(update, context)
+            self.assertIn("未订阅该区域", reply_text_of(update))
+            self.assertNotEqual(context.user_data.get("region"),
+                                "eu-frankfurt-1")
+
+
+class TestUniquifyDisplayName(unittest.TestCase):
+    """实例名去重（日期名同日再开会重名，加 -2、-3 后缀）。"""
+
+    def test_no_conflict_unchanged(self):
+        self.assertEqual(
+            he.uniquify_display_name("AMD_2026-11-24", 1, set()),
+            "AMD_2026-11-24")
+
+    def test_single_conflict_gets_suffix(self):
+        self.assertEqual(
+            he.uniquify_display_name("AMD_2026-11-24", 1,
+                                     {"AMD_2026-11-24"}),
+            "AMD_2026-11-24-2")
+
+    def test_double_conflict_gets_next_suffix(self):
+        self.assertEqual(
+            he.uniquify_display_name("AMD_2026-11-24", 1,
+                                     {"AMD_2026-11-24",
+                                      "AMD_2026-11-24-2"}),
+            "AMD_2026-11-24-3")
+
+    def test_batch_checks_all_suffixed_names(self):
+        # 批量 2 台：base-1 被占时整组移到 base-2（出 -2-1、-2-2）
+        self.assertEqual(
+            he.uniquify_display_name("ARM_2026-11-24", 2,
+                                     {"ARM_2026-11-24-1"}),
+            "ARM_2026-11-24-2")
+
+    def test_batch_skips_taken_second_group(self):
+        self.assertEqual(
+            he.uniquify_display_name("ARM_2026-11-24", 2,
+                                     {"ARM_2026-11-24-1",
+                                      "ARM_2026-11-24-2-2"}),
+            "ARM_2026-11-24-3")
+
 
 class TestBoot(HandlersExtraTestCase):
 
