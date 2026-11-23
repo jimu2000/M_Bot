@@ -7,6 +7,11 @@
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-11-24
+
+### 改动
+- 项目改名：M-探长 → **M_Bot Oracle开源管理面板**（仓库 jimu2000/m-tanzhang → jimu2000/M_Bot，旧地址自动跳转；Telegram 机器人仍叫 M-探长）
+
 ## [1.0.0] - 2026-11-24
 
 首个完整版本。Telegram 机器人 /oracle 菜单 42 项，Web 面板 + Web SSH，1318 个单元测试全过，已部署验证。

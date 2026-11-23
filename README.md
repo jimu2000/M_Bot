@@ -1,6 +1,6 @@
-# M-探长 / M-Tanzhang
+# M_Bot Oracle开源管理面板
 
-> **当前版本：v1.0.0** · 更新记录见 [CHANGELOG.md](CHANGELOG.md)
+> **当前版本：v1.0.1** · 更新记录见 [CHANGELOG.md](CHANGELOG.md)
 
 [中文](#中文) | [English](#english)
 
@@ -8,7 +8,7 @@
 
 ## 中文
 
-M-探长是一个 Oracle Cloud 管理工具：Telegram 机器人 + Web 面板 + Web SSH +
+M_Bot 是一个开源的 Oracle Cloud 管理面板：Telegram 机器人 + Web 面板 + Web SSH +
 抢机 + Cloudflare DNS + MCP 服务器。功能设计参考了 R-Bot（R 探长）的公开功能
 说明，代码全部独立编写、全部可见、可审计。
 
@@ -61,8 +61,8 @@ M-探长是一个 Oracle Cloud 管理工具：Telegram 机器人 + Web 面板 + 
 ### 快速开始
 
 ```bash
-git clone https://github.com/jimu2000/m-tanzhang.git
-cd m-tanzhang
+git clone https://github.com/jimu2000/M_Bot.git
+cd M_Bot
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 pip install oci-cli          # OCI 调用走官方 CLI
@@ -141,7 +141,7 @@ python3 -m unittest discover -s tests -t .
 ### 项目结构
 
 ```
-m-tanzhang/
+M_Bot/
   oci/          OCI 客户端（client/instance/network/volume/quota/grabber/email/objectstorage）
   tgbot/        Telegram 机器人（bot/handlers/handlers_extra/keyboards/services/monitoring）
   web/          Web 面板（FastAPI 路由、Web SSH、SFTP、任务调度）
@@ -163,7 +163,7 @@ m-tanzhang/
 
 ## English
 
-M-Tanzhang is an open-source Oracle Cloud management toolkit written in Python:
+M_Bot is an open-source Oracle Cloud management panel written in Python:
 Telegram bot + web panel + web SSH + instance grabber + Cloudflare DNS + MCP
 server. Its feature design references [R-Bot](https://github.com/semicons/java_oci_manage)'s
 (R 探长) public feature documentation; all code here is independently written,
@@ -225,8 +225,8 @@ verification needs accounts on those clouds).
 ### Quick start
 
 ```bash
-git clone https://github.com/jimu2000/m-tanzhang.git
-cd m-tanzhang
+git clone https://github.com/jimu2000/M_Bot.git
+cd M_Bot
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 pip install oci-cli          # OCI calls go through the official CLI
