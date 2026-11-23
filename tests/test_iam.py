@@ -1,0 +1,189 @@
+#!/usr/bin/env python3
+"""oci/iam.py 的单元测试（mock cli.run，不碰真实 API）。
+
+运行：python3 -m unittest tests.test_iam -v
+
+注意：update_user / delete_user / delete_api_key 是写操作，
+测试只 mock 命令构造检查，绝不对真实 API 执行。
+"""
+
+import os
+import sys
+import tempfile
+import unittest
+from unittest.mock import MagicMock
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from oci.iam import (
+    MAX_DESCRIPTION_LEN,
+    delete_api_key,
+    delete_user,
+    get_profile_user_id,
+    list_api_keys,
+    update_user,
+)
+
+# 占位符（测试里不出现真实 OCID）
+FAKE_USER = "ocid1.user.oc1..xxxxxxxx"
+FAKE_USER2 = "ocid1.user.oc1..yyyyyyyy"
+FAKE_FP = "aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99"
+
+
+def _mock_cli(return_value):
+    """造一个 cli.run 返回固定值的 mock OCIClient。"""
+    cli = MagicMock()
+    cli.run.return_value = return_value
+    return cli
+
+
+class TestUpdateUser(unittest.TestCase):
+    def test_description_only(self):
+        cli = _mock_cli({"data": {"id": FAKE_USER, "description": "new"}})
+        result = update_user(cli, FAKE_USER, description="new")
+        self.assertEqual(result["description"], "new")
+        cli.run.assert_called_once_with(
+            ["iam", "user", "update", "--user-id", FAKE_USER,
+             "--description", "new", "--force"])
+
+    def test_email_only(self):
+        cli = _mock_cli({"data": {"id": FAKE_USER,
+                                  "email": "a@example.com"}})
+        update_user(cli, FAKE_USER, email="a@example.com")
+        cli.run.assert_called_once_with(
+            ["iam", "user", "update", "--user-id", FAKE_USER,
+             "--email", "a@example.com", "--force"])
+
+    def test_both(self):
+        cli = _mock_cli({"data": {}})
+        update_user(cli, FAKE_USER, description="d",
+                    email="a@example.com")
+        cli.run.assert_called_once_with(
+            ["iam", "user", "update", "--user-id", FAKE_USER,
+             "--description", "d", "--email", "a@example.com", "--force"])
+
+    def test_neither_rejected(self):
+        cli = _mock_cli({"data": {}})
+        with self.assertRaises(ValueError):
+            update_user(cli, FAKE_USER)
+        cli.run.assert_not_called()
+
+    def test_empty_user_id_rejected(self):
+        cli = _mock_cli({"data": {}})
+        with self.assertRaises(ValueError):
+            update_user(cli, "", description="d")
+        cli.run.assert_not_called()
+
+    def test_description_too_long_rejected(self):
+        cli = _mock_cli({"data": {}})
+        with self.assertRaises(ValueError):
+            update_user(cli, FAKE_USER,
+                        description="x" * (MAX_DESCRIPTION_LEN + 1))
+        cli.run.assert_not_called()
+
+
+class TestDeleteUser(unittest.TestCase):
+    def test_command_args(self):
+        cli = _mock_cli(None)
+        self.assertIsNone(delete_user(cli, FAKE_USER))
+        cli.run.assert_called_once_with(
+            ["iam", "user", "delete", "--user-id", FAKE_USER, "--force"])
+
+    def test_empty_user_id_rejected(self):
+        cli = _mock_cli(None)
+        with self.assertRaises(ValueError):
+            delete_user(cli, "")
+        cli.run.assert_not_called()
+
+
+class TestListApiKeys(unittest.TestCase):
+    def test_returns_simplified_list(self):
+        cli = _mock_cli({"data": [{
+            "fingerprint": FAKE_FP,
+            "lifecycle-state": "ACTIVE",
+            "time-created": "2026-11-20T00:00:00Z",
+            "key-value": "ssh-rsa AAAA...（不应返回）",
+            "user-id": FAKE_USER,
+        }]})
+        result = list_api_keys(cli, FAKE_USER)
+        self.assertEqual(result, [{
+            "fingerprint": FAKE_FP,
+            "lifecycle-state": "ACTIVE",
+            "time-created": "2026-11-20T00:00:00Z",
+        }])
+        cli.run.assert_called_once_with(
+            ["iam", "user", "api-key", "list", "--user-id", FAKE_USER])
+
+    def test_empty(self):
+        cli = _mock_cli({"data": []})
+        self.assertEqual(list_api_keys(cli, FAKE_USER), [])
+
+    def test_empty_no_data_field(self):
+        """空列表时 OCI CLI 只返回 {"opc-total-items": "0"}。"""
+        cli = _mock_cli({"opc-total-items": "0"})
+        self.assertEqual(list_api_keys(cli, FAKE_USER), [])
+
+    def test_empty_user_id_rejected(self):
+        cli = _mock_cli({"data": []})
+        with self.assertRaises(ValueError):
+            list_api_keys(cli, "")
+        cli.run.assert_not_called()
+
+
+class TestDeleteApiKey(unittest.TestCase):
+    def test_command_args(self):
+        cli = _mock_cli(None)
+        self.assertIsNone(delete_api_key(cli, FAKE_USER, FAKE_FP))
+        cli.run.assert_called_once_with(
+            ["iam", "user", "api-key", "delete", "--user-id", FAKE_USER,
+             "--fingerprint", FAKE_FP, "--force"])
+
+    def test_empty_fingerprint_rejected(self):
+        cli = _mock_cli(None)
+        with self.assertRaises(ValueError):
+            delete_api_key(cli, FAKE_USER, "")
+        cli.run.assert_not_called()
+
+
+class TestGetProfileUserId(unittest.TestCase):
+    def _write_config(self, content):
+        tmp = tempfile.NamedTemporaryFile(
+            "w", suffix=".config", delete=False, encoding="utf-8")
+        tmp.write(content)
+        tmp.close()
+        self.addCleanup(os.unlink, tmp.name)
+        return tmp.name
+
+    def test_reads_default_profile(self):
+        path = self._write_config(
+            "[DEFAULT]\n"
+            f"user={FAKE_USER}\n"
+            "fingerprint=aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99\n"
+            "tenancy=ocid1.tenancy.oc1..xxxxxxxx\n"
+            "region=ap-singapore-1\n"
+            "key_file=/root/1.pem\n")
+        self.assertEqual(get_profile_user_id("DEFAULT", path), FAKE_USER)
+
+    def test_reads_other_profile(self):
+        path = self._write_config(
+            "[DEFAULT]\n"
+            f"user={FAKE_USER}\n"
+            "[ACCOUNT2]\n"
+            f"user={FAKE_USER2}\n")
+        self.assertEqual(get_profile_user_id("ACCOUNT2", path), FAKE_USER2)
+
+    def test_missing_profile_returns_none(self):
+        path = self._write_config(f"[DEFAULT]\nuser={FAKE_USER}\n")
+        self.assertIsNone(get_profile_user_id("NOSUCH", path))
+
+    def test_missing_user_field_returns_none(self):
+        path = self._write_config("[DEFAULT]\nregion=ap-singapore-1\n")
+        self.assertIsNone(get_profile_user_id("DEFAULT", path))
+
+    def test_missing_file_returns_none(self):
+        self.assertIsNone(get_profile_user_id(
+            "DEFAULT", "/tmp/no-such-oci-config-12345"))
+
+
+if __name__ == "__main__":
+    unittest.main()

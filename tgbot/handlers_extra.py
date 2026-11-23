@@ -18,9 +18,10 @@
     如何提示）。
   - "c:<action>:<idx>" 确认回调由 handlers.py 转发给
     handle_confirm(action, idx, update, context)。
-  - 其余回调（b:/t:/p:/r:/v:/ba:/g:/k:/s:/os:/pl:/cl:）由 bot.py 直接注册
-    到本模块的对应函数，不经过 handlers.py。
-  - 改名 / 重装 / SSL 添加域名 / Email 发件人需要用户回复文字：bot.py
+  - 其余回调（b:/t:/p:/r:/v:/ba:/g:/k:/s:/os:/pl:/cl:/ip_create/ip_delete:/u:）
+    由 bot.py 直接注册到本模块的对应函数，不经过 handlers.py。
+  - 改名 / 重装 / SSL 添加域名 / Email 发件人 / 用户改描述 / 用户改邮箱 /
+    用户删除需要用户回复文字：bot.py
     注册 text_input_callback（MessageHandler，filters.TEXT & ~filters.COMMAND），
     只在 user_data["pending_input"] 存在时处理，否则忽略。
   - 顶层命令 /domain（Cloudflare DNS 管理）也在本模块：
@@ -113,6 +114,14 @@ from tgbot.services import (
 from oci.client import QuotaExceededError
 from oci.email import create_sender, is_valid_email
 from oci.grabber import TARGET_CPU, Grabber, GrabCancelledError
+from oci.iam import (
+    MAX_DESCRIPTION_LEN,
+    delete_api_key,
+    delete_user,
+    get_profile_user_id,
+    list_api_keys,
+    update_user,
+)
 from oci.instance import (
     MAX_DISPLAY_NAME_LEN,
     batch_restart,
@@ -129,6 +138,8 @@ from oci.instance import (
 )
 from oci.network import (
     change_public_ip,
+    create_reserved_ip,
+    delete_public_ip,
     get_public_ip,
     list_public_ips,
     list_vnics,
@@ -238,6 +249,8 @@ WORKFLOW_LIST_LIMIT = 10
 RESIZE_PRESETS = [(1, 6), (2, 12), (4, 24)]
 # 启动盘扩容目标容量（GB）。
 VOLUME_RESIZE_TARGETS = [100, 200]
+# IP 管理：从菜单创建保留 IP 时的显示名（OCI 要求必填）。
+RESERVED_IP_DISPLAY_NAME = "bot-reserved-ip"
 # 规格名（升降配时判断用）。
 SHAPE_E2_MICRO = "VM.Standard.E2.1.Micro"
 SHAPE_A1_FLEX = "VM.Standard.A1.Flex"
@@ -1008,10 +1021,13 @@ async def handle_changeip_prompt(update, context):
 
 @require_allowed
 async def handle_ip(update, context):
-    """菜单 2：保留 IP 列表 + 各实例公网 IP。
+    """菜单 2：保留 IP 列表 + 各实例公网 IP，并挂创建/删除按钮。
 
     换 IP 流程：实例详情里点“换 IP”→ handle_changeip_prompt 弹确认
     → handle_confirm("changeip") 执行。本总览里不挂换 IP 按钮。
+    可删除的保留 IP（AVAILABLE 且未绑定）存
+    user_data["ip_reserved"]（{id, ip}），回调按下标取回；
+    已绑定的不挂删除按钮。
     """
     cli = get_cli(context)
     compartment = get_compartment(context)
@@ -1027,8 +1043,60 @@ async def handle_ip(update, context):
     except Exception as exc:  # noqa: BLE001
         await _reply(update, fmt_error(exc))
         return
+    deletable = [{"id": ip.get("id"), "ip": ip.get("ip-address", "?")}
+                 for ip in reserved
+                 if ip.get("lifecycle-state") == "AVAILABLE"
+                 and not ip.get("assigned-entity")]
+    context.user_data["ip_reserved"] = deletable
+    rows = [[InlineKeyboardButton("➕ 创建保留 IP",
+                                  callback_data="ip_create")]]
+    for idx, entry in enumerate(deletable):
+        rows.append([InlineKeyboardButton(
+            f"🗑 删除 {entry['ip']}",
+            callback_data=f"ip_delete:{idx}")])
+    rows.append([InlineKeyboardButton("◀ Oracle 菜单",
+                                      callback_data="o:menu")])
     await _reply(update, fmt_ip_overview(reserved, instance_ips),
+                 reply_markup=InlineKeyboardMarkup(rows))
+
+
+@require_allowed
+async def ip_create_callback(update, context):
+    """ip_create：直接创建一个保留公网 IP 并回显新地址。"""
+    try:
+        _ip_id, new_ip = await run_sync(
+            create_reserved_ip, get_cli(context),
+            get_compartment(context), RESERVED_IP_DISPLAY_NAME)
+    except Exception as exc:  # noqa: BLE001
+        await _reply(update, fmt_error(exc),
+                     reply_markup=back_to_oracle_keyboard())
+        return
+    await _reply(update,
+                 f"✅ 已创建保留 IP：{new_ip}\n"
+                 "⚠️ 保留 IP 是计费资源，不用了请及时删除。",
                  reply_markup=back_to_oracle_keyboard())
+
+
+@require_allowed
+async def ip_delete_callback(update, context):
+    """ip_delete:<idx>：删除保留 IP 先弹二次确认
+    （确认按钮 c:delpubip:<idx>，由 handle_confirm 执行）。"""
+    parts = _callback_data(update).split(":")
+    try:
+        idx = int(parts[1]) if len(parts) >= 2 else -1
+    except ValueError:
+        idx = -1
+    entries = context.user_data.get("ip_reserved") or []
+    if idx < 0 or idx >= len(entries):
+        await _reply(update, "目标已过期，请重新打开 IP 管理。",
+                     reply_markup=back_to_oracle_keyboard())
+        return
+    entry = entries[idx]
+    await _reply(update,
+                 f"🗑️ 确认删除保留 IP {entry['ip']}？\n\n"
+                 "删除后该 IP 立即释放，无法找回。",
+                 reply_markup=confirm_keyboard("delpubip", idx,
+                                               "🗑️ 确认删除"))
 
 
 # ---- 4. ipv6 管理 ----
@@ -1351,15 +1419,213 @@ async def volume_delete_callback(update, context):
 
 @require_allowed
 async def handle_users(update, context):
-    """菜单 8：只读列出 IAM 用户。"""
+    """菜单 8：列出 IAM 用户，每个用户挂详情按钮，详情页可修改。
+
+    用户列表存 user_data["iam_users"]（完整 dict），回调按下标取回——
+    用户 OCID 超过 Telegram callback_data 64 字节上限，不能直接放回调里。
+    """
     try:
         users = await run_sync(list_users,
                                get_cli(context), get_compartment(context))
     except Exception as exc:  # noqa: BLE001
         await _reply(update, fmt_error(exc))
         return
+    context.user_data["iam_users"] = users
+    rows = [[InlineKeyboardButton(f"👤 {u.get('name', '?')}",
+                                  callback_data=f"u:detail:{idx}")]
+            for idx, u in enumerate(users)]
+    rows.append([InlineKeyboardButton("◀ Oracle 菜单",
+                                      callback_data="o:menu")])
     await _reply(update, fmt_user_list(users),
-                 reply_markup=back_to_oracle_keyboard())
+                 reply_markup=InlineKeyboardMarkup(rows))
+
+
+def _resolve_iam_user(context, idx):
+    """按下标取 user_data["iam_users"] 里的用户 dict；越界/过期返回 None。"""
+    try:
+        idx_int = int(idx)
+    except (TypeError, ValueError):
+        return None
+    users = context.user_data.get("iam_users") or []
+    if idx_int < 0 or idx_int >= len(users):
+        return None
+    return users[idx_int]
+
+
+def _is_current_api_user(context, user_id):
+    """目标用户是不是机器人当前 profile 正在用的 API 用户。
+
+    从 ~/.oci/config 里读当前 profile 的 user OCID 比对；读不到时
+    返回 False（配置缺失时 OCI 调用本身也会失败，删操作到不了 OCI）。
+    """
+    if not user_id:
+        return False
+    current = get_profile_user_id(get_current_profile(context))
+    return current is not None and current == user_id
+
+
+def fmt_user_detail(user):
+    """单个 IAM 用户详情全文（不显示完整 OCID）。"""
+    lines = [
+        f"👤 {user.get('name', '?')}",
+        f"邮箱：{user.get('email') or '无邮箱'}",
+        f"状态：{user.get('lifecycle-state', '?')}",
+    ]
+    desc = user.get("description")
+    if desc:
+        lines.append(f"描述：{desc}")
+    created = (user.get("time-created") or "")[:19].replace("T", " ")
+    if created:
+        lines.append(f"创建时间：{created}")
+    return "\n".join(lines)
+
+
+def _user_detail_keyboard(idx):
+    """用户详情页的操作键盘。
+
+    注意：OCI 不允许改用户名（UpdateUser API 没有 name 字段），
+    所以这里提供的是改描述，不是改名。
+    """
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✏️ 改描述", callback_data=f"u:desc:{idx}"),
+         InlineKeyboardButton("📧 改邮箱", callback_data=f"u:email:{idx}")],
+        [InlineKeyboardButton("🔑 API 密钥", callback_data=f"u:keys:{idx}"),
+         InlineKeyboardButton("🗑️ 删除用户", callback_data=f"u:del:{idx}")],
+        [InlineKeyboardButton("◀ 返回云账户", callback_data="u:list")],
+    ])
+
+
+@require_allowed
+async def user_callback(update, context):
+    """u: 前缀回调总入口（云账户管理详情页的操作）。
+
+    u:detail:<idx> 用户详情；u:desc:<idx> 改描述（文字输入）；
+    u:email:<idx> 改邮箱（文字输入）；u:keys:<idx> API 密钥列表；
+    u:del:<idx> 删除用户（输入用户名确认）；u:keydel:<idx> 删 API
+    密钥（二次确认）；u:list 返回云账户列表。
+    """
+    parts = _callback_data(update).split(":")
+    action = parts[1] if len(parts) >= 2 else ""
+    idx = parts[2] if len(parts) >= 3 else ""
+    if action == "list":
+        await handle_users(update, context)
+        return
+    if action == "keydel":
+        await _user_key_delete_prompt(update, context, idx)
+        return
+    user = _resolve_iam_user(context, idx)
+    if user is None:
+        await _reply(update, "用户不存在或已过期，请重新打开云账户管理。",
+                     reply_markup=back_to_oracle_keyboard())
+        return
+    if action == "detail":
+        await _reply(update, fmt_user_detail(user),
+                     reply_markup=_user_detail_keyboard(idx))
+    elif action == "desc":
+        context.user_data["pending_input"] = {"kind": "user_desc",
+                                              "idx": idx}
+        await _reply(update,
+                     f"✏️ 请回复这条消息，输入用户「{user.get('name', '?')}」"
+                     f"的新描述（最多 {MAX_DESCRIPTION_LEN} 字符）：\n"
+                     "（直接发文字即可，不用加任何命令）")
+    elif action == "email":
+        context.user_data["pending_input"] = {"kind": "user_email",
+                                              "idx": idx}
+        await _reply(update,
+                     f"📧 请回复这条消息，输入用户「{user.get('name', '?')}」"
+                     "的新邮箱：\n"
+                     "（直接发文字即可，不用加任何命令）")
+    elif action == "keys":
+        await _user_keys_list(update, context, user, idx)
+    elif action == "del":
+        await _user_delete_prompt(update, context, user, idx)
+    else:
+        await _reply(update, "未知操作，请重新打开云账户管理。",
+                     reply_markup=back_to_oracle_keyboard())
+
+
+async def _user_keys_list(update, context, user, idx):
+    """u:keys:<idx>：列出该用户的 API 密钥，每个密钥挂删除按钮。
+
+    密钥列表存 user_data["iam_keys"]，所属用户存
+    user_data["iam_keys_user"]（{id, name}），删除确认时取回。
+    上传新密钥暂不支持（留待办）：上传要用户贴公钥，交互流程
+    与 /uploadapi 类似，后续版本再接。
+    """
+    name = user.get("name") or "?"
+    try:
+        keys = await run_sync(list_api_keys, get_cli(context), user["id"])
+    except Exception as exc:  # noqa: BLE001
+        await _reply(update, fmt_error(exc),
+                     reply_markup=back_to_oracle_keyboard())
+        return
+    context.user_data["iam_keys"] = keys
+    context.user_data["iam_keys_user"] = {"id": user.get("id"),
+                                          "name": name}
+    if not keys:
+        lines = [f"🔑 {name} 没有 API 密钥。"]
+    else:
+        lines = [f"🔑 {name} 的 API 密钥（{len(keys)} 个）：", ""]
+        for key in keys:
+            created = (key.get("time-created") or "")[:10]
+            lines.append(f"• {key.get('fingerprint', '?')}"
+                         f"（{key.get('lifecycle-state', '?')}"
+                         f"{'，' + created if created else ''}）")
+    lines.append("")
+    lines.append("上传新密钥请到 OCI 控制台操作（机器人暂不支持上传）。")
+    rows = []
+    for key_idx, key in enumerate(keys):
+        fp = key.get("fingerprint") or "?"
+        short = fp[:11] + "…" if len(fp) > 11 else fp
+        rows.append([InlineKeyboardButton(
+            f"🗑 删除密钥 {short}",
+            callback_data=f"u:keydel:{key_idx}")])
+    rows.append([InlineKeyboardButton("◀ 返回用户详情",
+                                      callback_data=f"u:detail:{idx}")])
+    rows.append([InlineKeyboardButton("◀ 返回云账户",
+                                      callback_data="u:list")])
+    await _reply(update, "\n".join(lines),
+                 reply_markup=InlineKeyboardMarkup(rows))
+
+
+async def _user_key_delete_prompt(update, context, idx):
+    """u:keydel:<idx>：删 API 密钥先弹二次确认
+    （确认按钮 c:delapikey:<idx>，由 handle_confirm 执行）。"""
+    try:
+        idx_int = int(idx)
+    except (TypeError, ValueError):
+        idx_int = -1
+    keys = context.user_data.get("iam_keys") or []
+    owner = context.user_data.get("iam_keys_user") or {}
+    if idx_int < 0 or idx_int >= len(keys):
+        await _reply(update, "密钥不存在或已过期，请重新打开 API 密钥列表。",
+                     reply_markup=back_to_oracle_keyboard())
+        return
+    key = keys[idx_int]
+    await _reply(update,
+                 f"🗑️ 确认删除用户「{owner.get('name', '?')}」的 API 密钥？\n\n"
+                 f"指纹：{key.get('fingerprint', '?')}\n"
+                 "删除后用该密钥的 API 调用立即失效。",
+                 reply_markup=confirm_keyboard("delapikey", idx_int,
+                                               "🗑️ 确认删除"))
+
+
+async def _user_delete_prompt(update, context, user, idx):
+    """u:del:<idx>：删除用户先做安全检查，再要求输入用户名确认
+    （像重装系统一样防误点），最后走 handle_confirm("deluser")。"""
+    name = user.get("name") or "?"
+    if _is_current_api_user(context, user.get("id")):
+        await _reply(update,
+                     f"❌ 不能删除用户「{name}」：它是机器人当前 profile "
+                     f"（{get_current_profile(context)}）正在使用的 API 用户，"
+                     "删了机器人会立刻失联。请先换 profile 或换 API 密钥。",
+                     reply_markup=back_to_oracle_keyboard())
+        return
+    context.user_data["pending_input"] = {"kind": "deluser", "idx": idx}
+    await _reply(update,
+                 f"⚠️ 删除用户「{name}」将同时删除它的全部 API 密钥与 "
+                 "MFA 设备，不可恢复。\n\n"
+                 f"请回复这条消息，完整输入用户名「{name}」确认删除：")
 
 
 @require_allowed
@@ -2059,13 +2325,15 @@ def fmt_serial_console(name, console):
 @require_allowed
 async def text_input_callback(update, context):
     """处理用户回复的纯文字输入（改名 / 重装确认 / SSL 添加域名 /
-    Email 发件人）。
+    Email 发件人 / 用户改描述 / 用户改邮箱 / 用户删除确认）。
 
     只在 user_data["pending_input"] 存在时处理；否则忽略
     （机器人平时不处理自由文字）。改名：校验后弹二次确认；
     重装：输入必须与实例名完全一致，否则取消；
     SSL 域名：校验格式后加入监控列表；
-    Email 发件人：校验邮箱格式后弹二次确认。
+    Email 发件人：校验邮箱格式后弹二次确认；
+    用户改描述 / 改邮箱：校验后弹二次确认；
+    用户删除：输入必须与用户名完全一致，否则取消。
     """
     pending = context.user_data.get("pending_input")
     if not pending:
@@ -2092,6 +2360,53 @@ async def text_input_callback(update, context):
                      "需点击链接后才能使用。",
                      reply_markup=confirm_keyboard(
                          "createsender", 0, "📧 确认创建发件人"))
+        return
+    if kind in ("user_desc", "user_email", "deluser"):
+        # 云账户管理：用户相关输入（不关联实例，直接处理）。
+        context.user_data.pop("pending_input", None)
+        user = _resolve_iam_user(context, pending.get("idx"))
+        if user is None:
+            await _reply(update, "用户不存在或已过期，请重新打开云账户管理。")
+            return
+        name = user.get("name") or "?"
+        if kind == "user_desc":
+            if not text:
+                await _reply(update, "新描述不能为空，改描述已取消。")
+                return
+            if len(text) > MAX_DESCRIPTION_LEN:
+                await _reply(update,
+                             f"新描述不能超过 {MAX_DESCRIPTION_LEN} 字符，"
+                             "改描述已取消。")
+                return
+            context.user_data["pending_user_desc"] = text
+            await _reply(update,
+                         f"确认把用户「{name}」的描述改为「{text}」？",
+                         reply_markup=confirm_keyboard(
+                             "userdesc", pending.get("idx"), "✅ 确认修改"))
+            return
+        if kind == "user_email":
+            if not is_valid_email(text):
+                await _reply(update,
+                             "❌ 邮箱格式不对，改邮箱已取消。"
+                             "请重新点“改邮箱”并发送正确的邮箱地址。")
+                return
+            context.user_data["pending_user_email"] = text
+            await _reply(update,
+                         f"确认把用户「{name}」的邮箱改为 {text}？",
+                         reply_markup=confirm_keyboard(
+                             "useremail", pending.get("idx"), "✅ 确认修改"))
+            return
+        # deluser：输入必须与用户名完全一致，否则取消。
+        if text != name:
+            await _reply(update,
+                         "输入的用户名与实际不符，删除已取消。\n"
+                         "请重新点“删除用户”再试。")
+            return
+        await _reply(update,
+                     f"⚠️ 最后确认：删除用户「{name}」？\n"
+                     "它的全部 API 密钥与 MFA 设备将一并删除，不可恢复。",
+                     reply_markup=confirm_keyboard(
+                         "deluser", pending.get("idx"), "🗑️ 确认删除"))
         return
     idx = pending.get("idx")
     inst = resolve_instance(context, idx)
@@ -2191,6 +2506,15 @@ async def handle_confirm(action, idx, update, context):
       - upgrade：升级客户端（idx 无用，传 0；git pull + pip + 重启
         两个服务；不是 git 仓库时提示手动升级）。
       - delipv6：删除 IPv6（idx 是 user_data["ipv6_entries"] 的下标）。
+      - delpubip：删除保留 IP（idx 是 user_data["ip_reserved"] 的下标）。
+      - userdesc：改用户描述（新描述在 user_data["pending_user_desc"]，
+        idx 是 user_data["iam_users"] 的下标）。
+      - useremail：改用户邮箱（新邮箱在 user_data["pending_user_email"]，
+        idx 是 user_data["iam_users"] 的下标）。
+      - delapikey：删除 API 密钥（idx 是 user_data["iam_keys"] 的下标，
+        所属用户在 user_data["iam_keys_user"]）。
+      - deluser：删除 IAM 用户（idx 是 user_data["iam_users"] 的下标；
+        执行前再次检查目标不是当前 profile 的 API 用户）。
     """
     if action == "changeip":
         inst = resolve_instance(context, idx)
@@ -2499,6 +2823,100 @@ async def handle_confirm(action, idx, update, context):
         await _reply(
             update,
             f"✅ 已删除 {entry['name']} 的 IPv6 {entry['ip']}。")
+        return True
+
+    if action == "delpubip":
+        entries = context.user_data.get("ip_reserved") or []
+        try:
+            idx_int = int(idx)
+        except (TypeError, ValueError):
+            idx_int = -1
+        if idx_int < 0 or idx_int >= len(entries):
+            await _reply(update, "目标已过期，请重新打开 IP 管理。")
+            return True
+        entry = entries[idx_int]
+        try:
+            await run_sync(delete_public_ip, get_cli(context), entry["id"])
+        except Exception as exc:  # noqa: BLE001
+            await _reply(update, fmt_error(exc))
+            return True
+        await _reply(update, f"✅ 已删除保留 IP {entry['ip']}。")
+        return True
+
+    if action == "userdesc":
+        user = _resolve_iam_user(context, idx)
+        new_desc = context.user_data.get("pending_user_desc")
+        if user is None or new_desc is None:
+            await _reply(update, "用户或新描述已过期，请重新操作。")
+            return True
+        try:
+            await run_sync(update_user, get_cli(context), user["id"],
+                           description=new_desc)
+        except Exception as exc:  # noqa: BLE001
+            await _reply(update, fmt_error(exc))
+            return True
+        context.user_data.pop("pending_user_desc", None)
+        await _reply(update,
+                     f"✅ 用户「{user.get('name', '?')}」描述已更新。")
+        return True
+
+    if action == "useremail":
+        user = _resolve_iam_user(context, idx)
+        new_email = context.user_data.get("pending_user_email")
+        if user is None or new_email is None:
+            await _reply(update, "用户或新邮箱已过期，请重新操作。")
+            return True
+        try:
+            await run_sync(update_user, get_cli(context), user["id"],
+                           email=new_email)
+        except Exception as exc:  # noqa: BLE001
+            await _reply(update, fmt_error(exc))
+            return True
+        context.user_data.pop("pending_user_email", None)
+        await _reply(update,
+                     f"✅ 用户「{user.get('name', '?')}」邮箱已改为 {new_email}。")
+        return True
+
+    if action == "delapikey":
+        keys = context.user_data.get("iam_keys") or []
+        owner = context.user_data.get("iam_keys_user") or {}
+        try:
+            idx_int = int(idx)
+        except (TypeError, ValueError):
+            idx_int = -1
+        if idx_int < 0 or idx_int >= len(keys) or not owner.get("id"):
+            await _reply(update, "密钥不存在或已过期，请重新打开 API 密钥列表。")
+            return True
+        key = keys[idx_int]
+        try:
+            await run_sync(delete_api_key, get_cli(context),
+                           owner["id"], key.get("fingerprint"))
+        except Exception as exc:  # noqa: BLE001
+            await _reply(update, fmt_error(exc))
+            return True
+        await _reply(update,
+                     f"✅ 已删除用户「{owner.get('name', '?')}」的 API 密钥 "
+                     f"{key.get('fingerprint', '?')}。")
+        return True
+
+    if action == "deluser":
+        user = _resolve_iam_user(context, idx)
+        if user is None:
+            await _reply(update, "用户不存在或已过期，请重新打开云账户管理。")
+            return True
+        if _is_current_api_user(context, user.get("id")):
+            await _reply(update,
+                         f"❌ 不能删除用户「{user.get('name', '?')}」：它是机器人"
+                         f"当前 profile（{get_current_profile(context)}）正在"
+                         "使用的 API 用户，删了机器人会立刻失联。")
+            return True
+        try:
+            await run_sync(delete_user, get_cli(context), user["id"])
+        except Exception as exc:  # noqa: BLE001
+            await _reply(update, fmt_error(exc))
+            return True
+        await _reply(update,
+                     f"✅ 用户「{user.get('name', '?')}」已删除。")
         return True
 
     return False

@@ -124,6 +124,12 @@ def build_application():
     application.add_handler(CallbackQueryHandler(
         handlers_extra.ipv6_delete_callback, pattern=r"^ipv6_delete:"))
     application.add_handler(CallbackQueryHandler(
+        handlers_extra.ip_create_callback, pattern=r"^ip_create$"))
+    application.add_handler(CallbackQueryHandler(
+        handlers_extra.ip_delete_callback, pattern=r"^ip_delete:"))
+    application.add_handler(CallbackQueryHandler(
+        handlers_extra.user_callback, pattern=r"^u:"))
+    application.add_handler(CallbackQueryHandler(
         handlers_extra.domain_callback, pattern=r"^domain:"))
     application.add_handler(CallbackQueryHandler(
         handlers_extra.batch_toggle_callback, pattern=r"^ba:toggle:"))

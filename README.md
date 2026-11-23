@@ -129,10 +129,10 @@ python3 mcp_server.py
 
 ```bash
 python3 -m unittest discover -s tests -t .
-# Ran 1268 tests ... OK
+# Ran 1318 tests ... OK
 ```
 
-1268 个单元测试（mock 为主，写操作零次碰生产）。真实 API 验证记录见
+1318 个单元测试（mock 为主，写操作零次碰生产）。真实 API 验证记录见
 `docs/verification*.md`：只读操作对真实 OCI / Cloudflare API 实测通过；
 写操作（创建 / 换 IP / 升降配 / 扩容 / 释放等）在测试实例上真实跑通过。
 
@@ -146,7 +146,7 @@ m-tanzhang/
   clouds/       Cloudflare 客户端 + 其他云抽象接口与 stub
   mcp_server.py MCP 服务器（JSON-RPC over stdio）
   scripts/      部署脚本（原子升级）
-  tests/        单元测试（1268 个）
+  tests/        单元测试（1318 个）
   docs/         设计与验证文档
 ```
 
@@ -296,10 +296,10 @@ For production, run both services under systemd — see `docs/deployment.md`
 
 ```bash
 python3 -m unittest discover -s tests -t .
-# Ran 1268 tests ... OK
+# Ran 1318 tests ... OK
 ```
 
-1268 unit tests (mostly mocked; write operations never touch production).
+1318 unit tests (mostly mocked; write operations never touch production).
 Real-API verification notes live in `docs/verification*.md`: read-only calls
 verified against the real OCI / Cloudflare APIs; write operations (create /
 change IP / resize / extend / terminate) verified for real on test instances.

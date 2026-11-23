@@ -1156,6 +1156,449 @@ class TestIpv6Buttons(HandlersExtraTestCase):
         self.cli.run.assert_not_called()
 
 
+class TestIpManagementButtons(HandlersExtraTestCase):
+    """菜单 2 IP 管理：创建保留 IP + 删除未绑定保留 IP。"""
+
+    def _callbacks_of(self, update):
+        _, kwargs = update.effective_message.reply_text.await_args
+        keyboard = kwargs.get("reply_markup")
+        if keyboard is None:
+            return []
+        return [b.callback_data for row in keyboard.inline_keyboard
+                for b in row]
+
+    async def test_handle_ip_shows_create_and_delete_buttons(self):
+        reserved = [
+            {"id": "ocid1.publicip.oc1..p1", "ip-address": "203.0.113.1",
+             "lifecycle-state": "AVAILABLE", "assigned-entity": None},
+            {"id": "ocid1.publicip.oc1..p2", "ip-address": "203.0.113.2",
+             "lifecycle-state": "AVAILABLE",
+             "assigned-entity": "ocid1.privateip.oc1..x1"},
+            {"id": "ocid1.publicip.oc1..p3", "ip-address": "203.0.113.3",
+             "lifecycle-state": "CREATING", "assigned-entity": None},
+        ]
+        instances = [
+            {"id": "ocid1.instance.oc1..aaa1", "display-name": "web-server",
+             "lifecycle-state": "RUNNING"},
+        ]
+        with patch.object(he, "list_public_ips",
+                          return_value=reserved), \
+             patch.object(he, "list_instances",
+                          return_value=instances), \
+             patch.object(he, "get_public_ip",
+                          return_value="203.0.113.9"):
+            update = make_update()
+            context = make_context()
+            await he.handle_ip(update, context)
+        text = reply_text_of(update)
+        # 现有列表文案与换 IP 提示保持不变。
+        self.assertIn("203.0.113.1", text)
+        self.assertIn("203.0.113.2", text)
+        self.assertIn("换 IP：请在实例列表里选一台实例", text)
+        callbacks = self._callbacks_of(update)
+        self.assertIn("ip_create", callbacks)
+        # 只有 AVAILABLE 且未绑定的那条挂删除按钮。
+        self.assertIn("ip_delete:0", callbacks)
+        self.assertNotIn("ip_delete:1", callbacks)
+        self.assertIn("o:menu", callbacks)
+        self.assertEqual(context.user_data["ip_reserved"], [
+            {"id": "ocid1.publicip.oc1..p1", "ip": "203.0.113.1"}])
+
+    async def test_ip_create_callback_success(self):
+        update = make_update(callback_data="ip_create")
+        context = make_context()
+        with patch.object(he, "create_reserved_ip",
+                          return_value=("ocid1.publicip.oc1..p9",
+                                        "203.0.113.5")) as mock_create:
+            await he.ip_create_callback(update, context)
+        mock_create.assert_called_once()
+        self.assertEqual(mock_create.call_args[0][2],
+                         he.RESERVED_IP_DISPLAY_NAME)
+        text = reply_text_of(update)
+        self.assertIn("已创建保留 IP", text)
+        self.assertIn("203.0.113.5", text)
+
+    async def test_ip_create_callback_error(self):
+        update = make_update(callback_data="ip_create")
+        context = make_context()
+        with patch.object(he, "create_reserved_ip",
+                          side_effect=Exception("quota boom")):
+            await he.ip_create_callback(update, context)
+        self.assertIn("❌", reply_text_of(update))
+
+    async def test_ip_delete_callback_shows_confirm(self):
+        update = make_update(callback_data="ip_delete:0")
+        context = make_context()
+        context.user_data["ip_reserved"] = [
+            {"id": "ocid1.publicip.oc1..p1", "ip": "203.0.113.1"}]
+        await he.ip_delete_callback(update, context)
+        text = reply_text_of(update)
+        self.assertIn("203.0.113.1", text)
+        self.assertIn("确认删除", text)
+        self.assertIn("c:delpubip:0", self._callbacks_of(update))
+
+    async def test_ip_delete_callback_expired(self):
+        update = make_update(callback_data="ip_delete:0")
+        context = make_context()
+        await he.ip_delete_callback(update, context)
+        self.assertIn("已过期", reply_text_of(update))
+
+    async def test_confirm_delpubip(self):
+        update = make_update(callback_data="c:delpubip:0")
+        context = make_context()
+        context.user_data["ip_reserved"] = [
+            {"id": "ocid1.publicip.oc1..p1", "ip": "203.0.113.1"}]
+        with patch.object(he, "delete_public_ip",
+                          return_value=None) as mock_delete:
+            handled = await he.handle_confirm("delpubip", "0",
+                                              update, context)
+        self.assertTrue(handled)
+        mock_delete.assert_called_once()
+        self.assertEqual(mock_delete.call_args[0][1],
+                         "ocid1.publicip.oc1..p1")
+        text = reply_text_of(update)
+        self.assertIn("已删除保留 IP", text)
+        self.assertIn("203.0.113.1", text)
+
+    async def test_confirm_delpubip_expired(self):
+        update = make_update()
+        context = make_context()
+        handled = await he.handle_confirm("delpubip", "0", update, context)
+        self.assertTrue(handled)
+        self.assertIn("已过期", reply_text_of(update))
+        self.cli.run.assert_not_called()
+
+
+class TestUserManagement(HandlersExtraTestCase):
+    """菜单 8 云账户管理：用户详情 + 改描述/改邮箱/API 密钥/删除用户。"""
+
+    FAKE_USERS = [
+        {"id": "ocid1.user.oc1..u1", "name": "alice",
+         "email": "alice@example.com", "lifecycle-state": "ACTIVE",
+         "description": "测试用户",
+         "time-created": "2026-11-20T00:00:00Z"},
+        {"id": "ocid1.user.oc1..u2", "name": "bob",
+         "email": None, "lifecycle-state": "ACTIVE",
+         "time-created": "2026-11-21T00:00:00Z"},
+    ]
+
+    FAKE_KEYS = [
+        {"fingerprint": "aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99",
+         "lifecycle-state": "ACTIVE",
+         "time-created": "2026-11-20T00:00:00Z"},
+        {"fingerprint": "11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11",
+         "lifecycle-state": "INACTIVE",
+         "time-created": "2026-11-19T00:00:00Z"},
+    ]
+
+    def _callbacks_of(self, update):
+        _, kwargs = update.effective_message.reply_text.await_args
+        keyboard = kwargs.get("reply_markup")
+        if keyboard is None:
+            return []
+        return [b.callback_data for row in keyboard.inline_keyboard
+                for b in row]
+
+    def _users_context(self):
+        context = make_context()
+        context.user_data["iam_users"] = [dict(u)
+                                          for u in self.FAKE_USERS]
+        return context
+
+    async def test_handle_users_shows_detail_buttons(self):
+        with patch.object(he, "list_users",
+                          return_value=[dict(u)
+                                        for u in self.FAKE_USERS]):
+            update = make_update()
+            context = make_context()
+            await he.handle_users(update, context)
+        text = reply_text_of(update)
+        self.assertIn("alice", text)
+        self.assertIn("bob", text)
+        callbacks = self._callbacks_of(update)
+        self.assertIn("u:detail:0", callbacks)
+        self.assertIn("u:detail:1", callbacks)
+        self.assertIn("o:menu", callbacks)
+        self.assertEqual(len(context.user_data["iam_users"]), 2)
+
+    async def test_user_detail_shows_actions(self):
+        update = make_update(callback_data="u:detail:0")
+        context = self._users_context()
+        await he.user_callback(update, context)
+        text = reply_text_of(update)
+        self.assertIn("alice", text)
+        self.assertIn("alice@example.com", text)
+        self.assertIn("测试用户", text)
+        callbacks = self._callbacks_of(update)
+        self.assertIn("u:desc:0", callbacks)
+        self.assertIn("u:email:0", callbacks)
+        self.assertIn("u:keys:0", callbacks)
+        self.assertIn("u:del:0", callbacks)
+        self.assertIn("u:list", callbacks)
+
+    async def test_user_detail_expired(self):
+        update = make_update(callback_data="u:detail:0")
+        context = make_context()
+        await he.user_callback(update, context)
+        self.assertIn("已过期", reply_text_of(update))
+
+    async def test_user_desc_prompt_sets_pending_input(self):
+        update = make_update(callback_data="u:desc:0")
+        context = self._users_context()
+        await he.user_callback(update, context)
+        self.assertEqual(context.user_data["pending_input"],
+                         {"kind": "user_desc", "idx": "0"})
+        self.assertIn("新描述", reply_text_of(update))
+
+    async def test_user_email_prompt_sets_pending_input(self):
+        update = make_update(callback_data="u:email:1")
+        context = self._users_context()
+        await he.user_callback(update, context)
+        self.assertEqual(context.user_data["pending_input"],
+                         {"kind": "user_email", "idx": "1"})
+        self.assertIn("新邮箱", reply_text_of(update))
+
+    async def test_text_input_user_desc_confirm(self):
+        update = make_update()
+        update.effective_message.text = "新来的测试描述"
+        context = self._users_context()
+        context.user_data["pending_input"] = {"kind": "user_desc",
+                                              "idx": "0"}
+        await he.text_input_callback(update, context)
+        self.assertEqual(context.user_data["pending_user_desc"],
+                         "新来的测试描述")
+        self.assertNotIn("pending_input", context.user_data)
+        self.assertIn("确认把用户「alice」的描述改为",
+                      reply_text_of(update))
+        self.assertIn("c:userdesc:0", self._callbacks_of(update))
+
+    async def test_text_input_user_desc_empty_cancels(self):
+        update = make_update()
+        update.effective_message.text = "   "
+        context = self._users_context()
+        context.user_data["pending_input"] = {"kind": "user_desc",
+                                              "idx": "0"}
+        await he.text_input_callback(update, context)
+        self.assertIn("不能为空", reply_text_of(update))
+        self.assertNotIn("pending_user_desc", context.user_data)
+
+    async def test_text_input_user_desc_too_long_cancels(self):
+        update = make_update()
+        update.effective_message.text = "x" * 256
+        context = self._users_context()
+        context.user_data["pending_input"] = {"kind": "user_desc",
+                                              "idx": "0"}
+        await he.text_input_callback(update, context)
+        self.assertIn("不能超过", reply_text_of(update))
+        self.assertNotIn("pending_user_desc", context.user_data)
+
+    async def test_text_input_user_email_confirm(self):
+        update = make_update()
+        update.effective_message.text = "new@example.com"
+        context = self._users_context()
+        context.user_data["pending_input"] = {"kind": "user_email",
+                                              "idx": "1"}
+        await he.text_input_callback(update, context)
+        self.assertEqual(context.user_data["pending_user_email"],
+                         "new@example.com")
+        self.assertIn("确认把用户「bob」的邮箱改为",
+                      reply_text_of(update))
+        self.assertIn("c:useremail:1", self._callbacks_of(update))
+
+    async def test_text_input_user_email_invalid(self):
+        update = make_update()
+        update.effective_message.text = "not-an-email"
+        context = self._users_context()
+        context.user_data["pending_input"] = {"kind": "user_email",
+                                              "idx": "0"}
+        await he.text_input_callback(update, context)
+        self.assertIn("邮箱格式不对", reply_text_of(update))
+        self.assertNotIn("pending_user_email", context.user_data)
+
+    async def test_confirm_userdesc(self):
+        update = make_update(callback_data="c:userdesc:0")
+        context = self._users_context()
+        context.user_data["pending_user_desc"] = "新来的测试描述"
+        with patch.object(he, "update_user",
+                          return_value={}) as mock_update:
+            handled = await he.handle_confirm("userdesc", "0",
+                                              update, context)
+        self.assertTrue(handled)
+        mock_update.assert_called_once()
+        args, kwargs = mock_update.call_args
+        self.assertEqual(args[1], "ocid1.user.oc1..u1")
+        self.assertEqual(kwargs["description"], "新来的测试描述")
+        self.assertNotIn("pending_user_desc", context.user_data)
+        self.assertIn("描述已更新", reply_text_of(update))
+
+    async def test_confirm_useremail(self):
+        update = make_update(callback_data="c:useremail:1")
+        context = self._users_context()
+        context.user_data["pending_user_email"] = "new@example.com"
+        with patch.object(he, "update_user",
+                          return_value={}) as mock_update:
+            handled = await he.handle_confirm("useremail", "1",
+                                              update, context)
+        self.assertTrue(handled)
+        mock_update.assert_called_once()
+        args, kwargs = mock_update.call_args
+        self.assertEqual(args[1], "ocid1.user.oc1..u2")
+        self.assertEqual(kwargs["email"], "new@example.com")
+        self.assertIn("邮箱已改为 new@example.com", reply_text_of(update))
+
+    async def test_user_keys_list(self):
+        update = make_update(callback_data="u:keys:0")
+        context = self._users_context()
+        with patch.object(he, "list_api_keys",
+                          return_value=[dict(k) for k in self.FAKE_KEYS]):
+            await he.user_callback(update, context)
+        text = reply_text_of(update)
+        self.assertIn("aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99",
+                      text)
+        self.assertIn("11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11",
+                      text)
+        self.assertIn("暂不支持上传", text)
+        callbacks = self._callbacks_of(update)
+        self.assertIn("u:keydel:0", callbacks)
+        self.assertIn("u:keydel:1", callbacks)
+        self.assertIn("u:detail:0", callbacks)
+        self.assertIn("u:list", callbacks)
+        self.assertEqual(len(context.user_data["iam_keys"]), 2)
+        self.assertEqual(context.user_data["iam_keys_user"],
+                         {"id": "ocid1.user.oc1..u1", "name": "alice"})
+
+    async def test_user_keys_empty(self):
+        update = make_update(callback_data="u:keys:1")
+        context = self._users_context()
+        with patch.object(he, "list_api_keys", return_value=[]):
+            await he.user_callback(update, context)
+        self.assertIn("没有 API 密钥", reply_text_of(update))
+
+    async def test_user_key_delete_prompt(self):
+        update = make_update(callback_data="u:keydel:0")
+        context = make_context()
+        context.user_data["iam_keys"] = [dict(k)
+                                         for k in self.FAKE_KEYS]
+        context.user_data["iam_keys_user"] = {"id": "ocid1.user.oc1..u1",
+                                              "name": "alice"}
+        await he.user_callback(update, context)
+        text = reply_text_of(update)
+        self.assertIn("alice", text)
+        self.assertIn("aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99",
+                      text)
+        self.assertIn("c:delapikey:0", self._callbacks_of(update))
+
+    async def test_confirm_delapikey(self):
+        update = make_update(callback_data="c:delapikey:1")
+        context = make_context()
+        context.user_data["iam_keys"] = [dict(k)
+                                         for k in self.FAKE_KEYS]
+        context.user_data["iam_keys_user"] = {"id": "ocid1.user.oc1..u1",
+                                              "name": "alice"}
+        with patch.object(he, "delete_api_key",
+                          return_value=None) as mock_delete:
+            handled = await he.handle_confirm("delapikey", "1",
+                                              update, context)
+        self.assertTrue(handled)
+        mock_delete.assert_called_once()
+        args, _kwargs = mock_delete.call_args
+        self.assertEqual(args[1], "ocid1.user.oc1..u1")
+        self.assertEqual(
+            args[2], "11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11")
+        text = reply_text_of(update)
+        self.assertIn("已删除", text)
+        self.assertIn("alice", text)
+
+    async def test_confirm_delapikey_expired(self):
+        update = make_update()
+        context = make_context()
+        handled = await he.handle_confirm("delapikey", "0", update, context)
+        self.assertTrue(handled)
+        self.assertIn("已过期", reply_text_of(update))
+        self.cli.run.assert_not_called()
+
+    async def test_user_delete_prompt_requires_typing(self):
+        update = make_update(callback_data="u:del:0")
+        context = self._users_context()
+        with patch.object(he, "get_profile_user_id", return_value=None):
+            await he.user_callback(update, context)
+        self.assertEqual(context.user_data["pending_input"],
+                         {"kind": "deluser", "idx": "0"})
+        text = reply_text_of(update)
+        self.assertIn("完整输入用户名「alice」", text)
+
+    async def test_user_delete_prompt_refuses_current_api_user(self):
+        update = make_update(callback_data="u:del:0")
+        context = self._users_context()
+        with patch.object(he, "get_profile_user_id",
+                          return_value="ocid1.user.oc1..u1"):
+            await he.user_callback(update, context)
+        self.assertNotIn("pending_input", context.user_data)
+        text = reply_text_of(update)
+        self.assertIn("不能删除", text)
+        self.assertIn("正在使用", text)
+
+    async def test_text_input_deluser_match(self):
+        update = make_update()
+        update.effective_message.text = "alice"
+        context = self._users_context()
+        context.user_data["pending_input"] = {"kind": "deluser",
+                                              "idx": "0"}
+        await he.text_input_callback(update, context)
+        self.assertIn("最后确认：删除用户「alice」", reply_text_of(update))
+        self.assertIn("c:deluser:0", self._callbacks_of(update))
+
+    async def test_text_input_deluser_mismatch(self):
+        update = make_update()
+        update.effective_message.text = "bob"
+        context = self._users_context()
+        context.user_data["pending_input"] = {"kind": "deluser",
+                                              "idx": "0"}
+        await he.text_input_callback(update, context)
+        self.assertIn("与实际不符", reply_text_of(update))
+        self.assertNotIn("pending_input", context.user_data)
+
+    async def test_confirm_deluser(self):
+        update = make_update(callback_data="c:deluser:1")
+        context = self._users_context()
+        with patch.object(he, "get_profile_user_id",
+                          return_value=None), \
+             patch.object(he, "delete_user",
+                          return_value=None) as mock_delete:
+            handled = await he.handle_confirm("deluser", "1",
+                                              update, context)
+        self.assertTrue(handled)
+        mock_delete.assert_called_once()
+        self.assertEqual(mock_delete.call_args[0][1],
+                         "ocid1.user.oc1..u2")
+        self.assertIn("用户「bob」已删除", reply_text_of(update))
+
+    async def test_confirm_deluser_refuses_current_api_user(self):
+        update = make_update(callback_data="c:deluser:0")
+        context = self._users_context()
+        with patch.object(he, "get_profile_user_id",
+                          return_value="ocid1.user.oc1..u1"), \
+             patch.object(he, "delete_user",
+                          return_value=None) as mock_delete:
+            handled = await he.handle_confirm("deluser", "0",
+                                              update, context)
+        self.assertTrue(handled)
+        mock_delete.assert_not_called()
+        self.assertIn("不能删除", reply_text_of(update))
+
+    async def test_user_list_back_button(self):
+        update = make_update(callback_data="u:list")
+        context = make_context()
+        with patch.object(he, "list_users",
+                          return_value=[dict(u)
+                                        for u in self.FAKE_USERS]):
+            await he.user_callback(update, context)
+        text = reply_text_of(update)
+        self.assertIn("alice", text)
+        self.assertIn("bob", text)
+        self.assertIn("u:detail:0", self._callbacks_of(update))
+
+
 class TestUsersWorkflowsRegionsSubscriptionMfa(HandlersExtraTestCase):
 
     async def test_handle_users(self):
