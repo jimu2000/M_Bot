@@ -238,6 +238,8 @@ def build_application():
     application.add_handler(CallbackQueryHandler(
         handlers_extra.domain_callback, pattern=r"^domain:"))
     application.add_handler(CallbackQueryHandler(
+        handlers_extra.cf_callback, pattern=r"^cf:"))
+    application.add_handler(CallbackQueryHandler(
         handlers_extra.batch_toggle_callback, pattern=r"^ba:toggle:"))
     application.add_handler(CallbackQueryHandler(
         handlers_extra.batch_next_callback, pattern=r"^ba:next$"))

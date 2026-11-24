@@ -93,6 +93,12 @@ class DnsApiTestCase(unittest.TestCase):
                                       return_value=self.cf)
         self._cf_patch.start()
         self.addCleanup(self._cf_patch.stop)
+        # v1.26.0：_get_client 优先走 tgbot.cf_config 的包装
+        # （文件优先，环境变量兜底），这里也要 mock 掉。
+        self._cf_cfg_patch = patch.object(
+            dns_routes, "get_configured_cf_client", return_value=self.cf)
+        self._cf_cfg_patch.start()
+        self.addCleanup(self._cf_cfg_patch.stop)
 
     def _login(self, username="admin", password=TEST_PASSWORD):
         return self.client.post("/api/auth/login",
@@ -131,8 +137,9 @@ class TestDnsZones(DnsApiTestCase):
         self.assertEqual(r.json()["error"], "Cloudflare 未配置或认证失败")
 
     def test_cf_client_not_ready_502(self):
-        """clouds.cloudflare 未就绪时（get_client 为 None）接口报 502。"""
-        with patch.object(dns_routes, "get_client", None):
+        """clouds.cloudflare 与 cf_config 都未就绪时接口报 502。"""
+        with patch.object(dns_routes, "get_client", None), \
+                patch.object(dns_routes, "get_configured_cf_client", None):
             r = self.client.get("/api/dns/zones")
         self.assertEqual(r.status_code, 502)
         self.assertEqual(r.json()["error"], "Cloudflare 未配置或认证失败")
@@ -308,6 +315,189 @@ class TestDnsPage(DnsApiTestCase):
         """/dns 页上 DNS 管理链接带 active 高亮。"""
         r = self.client.get("/dns")
         self.assertIn('href="/dns" data-page="dns" class="active"', r.text)
+
+
+# ================= v1.26.0：凭据管理接口 =================
+
+class TestDnsCredentials(DnsApiTestCase):
+    """GET/POST/DELETE /api/dns/credentials 与提取接口。"""
+
+    def test_get_credentials_file_token(self):
+        with patch.object(
+                dns_routes, "resolve_cf_credentials",
+                return_value=("fake-token", "", "", "file")):
+            r = self.client.get("/api/dns/credentials")
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertTrue(body["configured"])
+        self.assertEqual(body["source"], "file")
+        self.assertEqual(body["auth_mode"], "token")
+        self.assertIsNone(body["email_masked"])
+        # 响应里绝不出现凭据值。
+        self.assertNotIn("fake-token", r.text)
+
+    def test_get_credentials_env_key_masked_email(self):
+        with patch.object(
+                dns_routes, "resolve_cf_credentials",
+                return_value=("", "fake-key", "user@example.com", "env")):
+            r = self.client.get("/api/dns/credentials")
+        body = r.json()
+        self.assertTrue(body["configured"])
+        self.assertEqual(body["source"], "env")
+        self.assertEqual(body["auth_mode"], "api_key")
+        self.assertEqual(body["email_masked"], "u***@example.com")
+        self.assertNotIn("fake-key", r.text)
+        self.assertNotIn("user@example.com", r.text)
+
+    def test_get_credentials_unconfigured(self):
+        with patch.object(dns_routes, "resolve_cf_credentials",
+                          return_value=("", "", "", None)):
+            r = self.client.get("/api/dns/credentials")
+        body = r.json()
+        self.assertFalse(body["configured"])
+        self.assertIsNone(body["source"])
+        self.assertIsNone(body["auth_mode"])
+
+    def test_get_credentials_unauthorized_401(self):
+        r = self.anon.get("/api/dns/credentials")
+        self.assertEqual(r.status_code, 401)
+
+    def test_save_token_success(self):
+        with patch.object(dns_routes, "validate_and_save",
+                          return_value=(True, 6, None)) as mock_save:
+            r = self.client.post("/api/dns/credentials",
+                                 json={"mode": "token",
+                                       "api_token": "fake-token-123"})
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.json()["ok"])
+        self.assertEqual(r.json()["zones"], 6)
+        mock_save.assert_called_once_with("fake-token-123", "", "")
+        self.assertNotIn("fake-token-123", r.text)
+
+    def test_save_key_success(self):
+        with patch.object(dns_routes, "validate_and_save",
+                          return_value=(True, 6, None)) as mock_save:
+            r = self.client.post("/api/dns/credentials",
+                                 json={"mode": "key", "api_key": "fake-key",
+                                       "email": "user@example.com"})
+        self.assertEqual(r.status_code, 200)
+        mock_save.assert_called_once_with("", "fake-key",
+                                          "user@example.com")
+
+    def test_save_token_validate_failure_502(self):
+        with patch.object(dns_routes, "validate_and_save",
+                          return_value=(False, 0, "auth")):
+            r = self.client.post("/api/dns/credentials",
+                                 json={"mode": "token",
+                                       "api_token": "bad-token"})
+        self.assertEqual(r.status_code, 502)
+        self.assertIn("校验没通过", r.json()["error"])
+
+    def test_save_empty_token_400(self):
+        r = self.client.post("/api/dns/credentials",
+                             json={"mode": "token", "api_token": "   "})
+        self.assertEqual(r.status_code, 400)
+
+    def test_save_key_bad_email_400(self):
+        r = self.client.post("/api/dns/credentials",
+                             json={"mode": "key", "api_key": "fake-key",
+                                   "email": "not-an-email"})
+        self.assertEqual(r.status_code, 400)
+
+    def test_delete_file_config(self):
+        with patch.object(
+                dns_routes, "resolve_cf_credentials",
+                return_value=("fake-token", "", "", "file")), \
+                patch.object(dns_routes,
+                             "clear_cf_config") as mock_clear:
+            r = self.client.delete("/api/dns/credentials")
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.json()["ok"])
+        mock_clear.assert_called_once_with()
+
+    def test_delete_env_source_400(self):
+        with patch.object(
+                dns_routes, "resolve_cf_credentials",
+                return_value=("", "fake-key", "user@example.com", "env")):
+            r = self.client.delete("/api/dns/credentials")
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("没有已保存的凭据文件", r.json()["error"])
+
+    def test_extract_success(self):
+        with patch.object(dns_routes, "get_oci_client",
+                          return_value=MagicMock()), \
+                patch.object(dns_routes, "get_public_ip",
+                             return_value="203.0.113.10"), \
+                patch.object(dns_routes, "host_for_ip",
+                             return_value={"host": "203.0.113.10"}), \
+                patch.object(dns_routes, "extract_cf_from_host",
+                             return_value=("fake-key", "user@example.com",
+                                           None)), \
+                patch.object(dns_routes, "validate_and_save",
+                             return_value=(True, 6, None)):
+            r = self.client.post("/api/dns/credentials/extract",
+                                 json={"instance_id":
+                                       "ocid1.instance.oc1..fake"})
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["zones"], 6)
+        self.assertEqual(body["email_masked"], "u***@example.com")
+        self.assertNotIn("fake-key", r.text)
+
+    def test_extract_no_public_ip_400(self):
+        with patch.object(dns_routes, "get_oci_client",
+                          return_value=MagicMock()), \
+                patch.object(dns_routes, "get_public_ip",
+                             return_value=None):
+            r = self.client.post("/api/dns/credentials/extract",
+                                 json={"instance_id":
+                                       "ocid1.instance.oc1..fake"})
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("没有公网 IP", r.json()["error"])
+
+    def test_extract_host_failure_502(self):
+        with patch.object(dns_routes, "get_oci_client",
+                          return_value=MagicMock()), \
+                patch.object(dns_routes, "get_public_ip",
+                             return_value="203.0.113.10"), \
+                patch.object(dns_routes, "host_for_ip",
+                             return_value={"host": "203.0.113.10"}), \
+                patch.object(dns_routes, "extract_cf_from_host",
+                             return_value=(None, None, "该服务器上没有找到 1.sh")):
+            r = self.client.post("/api/dns/credentials/extract",
+                                 json={"instance_id":
+                                       "ocid1.instance.oc1..fake"})
+        self.assertEqual(r.status_code, 502)
+        self.assertIn("提取失败", r.json()["error"])
+
+    def test_extract_validate_failure_502(self):
+        with patch.object(dns_routes, "get_oci_client",
+                          return_value=MagicMock()), \
+                patch.object(dns_routes, "get_public_ip",
+                             return_value="203.0.113.10"), \
+                patch.object(dns_routes, "host_for_ip",
+                             return_value={"host": "203.0.113.10"}), \
+                patch.object(dns_routes, "extract_cf_from_host",
+                             return_value=("fake-key", "user@example.com",
+                                           None)), \
+                patch.object(dns_routes, "validate_and_save",
+                             return_value=(False, 0, "auth")):
+            r = self.client.post("/api/dns/credentials/extract",
+                                 json={"instance_id":
+                                       "ocid1.instance.oc1..fake"})
+        self.assertEqual(r.status_code, 502)
+        self.assertIn("校验没通过", r.json()["error"])
+
+    def test_dns_page_has_credentials_card(self):
+        """/dns 页含凭据卡片（状态、手动表单、提取下拉）。"""
+        r = self.client.get("/dns")
+        self.assertEqual(r.status_code, 200)
+        for marker in ("cf-status", "cf-mode", "cf-token", "cf-key",
+                       "cf-email", "btn-cf-save", "cf-extract-instance",
+                       "btn-cf-extract", "btn-cf-delete"):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, r.text)
 
 
 if __name__ == "__main__":

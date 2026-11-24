@@ -84,10 +84,13 @@ def make_update(callback_data=None, user_id=TEST_USER_ID):
 
 
 def make_context():
-    """mock Context：user_data / bot_data 用真实 dict。"""
+    """mock Context：user_data / bot_data 用真实 dict，bot.delete_message
+    用 AsyncMock（凭据输入流程会删用户发的含凭据消息）。"""
     context = MagicMock()
     context.user_data = {}
     context.bot_data = {}
+    context.bot = MagicMock()
+    context.bot.delete_message = AsyncMock()
     return context
 
 
@@ -133,6 +136,12 @@ class DomainTestCase(unittest.IsolatedAsyncioTestCase):
                                       return_value=self.cf)
         self._cf_patch.start()
         self.addCleanup(self._cf_patch.stop)
+        # v1.26.0：_get_cf_client 优先走 tgbot.cf_config 的包装
+        # （文件优先，环境变量兜底），这里也要 mock 掉。
+        self._cf_cfg_patch = patch.object(he, "get_configured_cf_client",
+                                          return_value=self.cf)
+        self._cf_cfg_patch.start()
+        self.addCleanup(self._cf_cfg_patch.stop)
 
 
 class TestDomainCommand(DomainTestCase):
@@ -177,8 +186,9 @@ class TestDomainCommand(DomainTestCase):
         self.assertIn("未配置或认证失败", reply_text_of(update))
 
     async def test_domain_cf_client_not_ready(self):
-        """clouds.cloudflare 未就绪时（get_client 为 None）报配置错误。"""
-        with patch.object(he, "get_client", None):
+        """clouds.cloudflare 与 cf_config 都未就绪时报配置错误。"""
+        with patch.object(he, "get_client", None), \
+                patch.object(he, "get_configured_cf_client", None):
             update = make_update()
             context = make_context()
             await he.handle_domain(update, context)
@@ -318,6 +328,344 @@ class TestDomainKeyboards(unittest.TestCase):
         markup = domain_zones_keyboard(FAKE_ZONES)
         for callback in button_callback_data(markup):
             self.assertLessEqual(len(callback.encode("utf-8")), 64)
+
+
+# ================= v1.26.0：Cloudflare 凭据管理 =================
+
+FAKE_INSTANCES = [
+    {"id": "ocid1.instance.oc1..fake0000000000000000000000000001",
+     "display-name": "host-a", "lifecycle-state": "RUNNING",
+     "public-ip": "203.0.113.10"},
+    {"id": "ocid1.instance.oc1..fake0000000000000000000000000002",
+     "display-name": "host-b", "lifecycle-state": "STOPPED",
+     "public-ip": "203.0.113.11"},
+    {"id": "ocid1.instance.oc1..fake0000000000000000000000000003",
+     "display-name": "host-c", "lifecycle-state": "RUNNING",
+     "public-ip": None},
+]
+
+
+class TestCfConfigErrorKeyboard(DomainTestCase):
+    """`/domain` 未配置/认证失败时，给出添加与提取按钮。"""
+
+    async def test_config_error_shows_add_and_extract(self):
+        self.cf.list_zones.side_effect = _cf_error("config")
+        update = make_update()
+        context = make_context()
+        await he.handle_domain(update, context)
+        self.assertIn("未配置或认证失败", reply_text_of(update))
+        callbacks = button_callback_data(reply_markup_of(update))
+        self.assertIn("cf:add", callbacks)
+        self.assertIn("cf:extract", callbacks)
+
+    async def test_auth_error_shows_add_and_extract(self):
+        self.cf.list_zones.side_effect = _cf_error("auth")
+        update = make_update()
+        context = make_context()
+        await he.handle_domain(update, context)
+        callbacks = button_callback_data(reply_markup_of(update))
+        self.assertIn("cf:add", callbacks)
+
+    async def test_not_found_error_has_no_cf_buttons(self):
+        self.cf.list_zones.side_effect = _cf_error("not_found")
+        update = make_update()
+        context = make_context()
+        await he.handle_domain(update, context)
+        callbacks = button_callback_data(reply_markup_of(update))
+        self.assertNotIn("cf:add", callbacks)
+
+    def test_zones_keyboard_has_manage_button(self):
+        markup = domain_zones_keyboard(FAKE_ZONES)
+        self.assertIn("cf:manage", button_callback_data(markup))
+
+
+class TestCfCallback(DomainTestCase):
+    """`cf:` 回调：添加 / 提取 / 管理 / 删除。"""
+
+    async def test_add_shows_mode_choice(self):
+        update = make_update(callback_data="cf:add")
+        context = make_context()
+        await he.cf_callback(update, context)
+        callbacks = button_callback_data(reply_markup_of(update))
+        self.assertIn("cf:add:token", callbacks)
+        self.assertIn("cf:add:key", callbacks)
+
+    async def test_add_token_prompts_input(self):
+        update = make_update(callback_data="cf:add:token")
+        context = make_context()
+        await he.cf_callback(update, context)
+        self.assertEqual(context.user_data["pending_input"]["kind"],
+                         "cf_token")
+        self.assertIn("API Token", reply_text_of(update))
+
+    async def test_add_key_prompts_input(self):
+        update = make_update(callback_data="cf:add:key")
+        context = make_context()
+        await he.cf_callback(update, context)
+        self.assertEqual(context.user_data["pending_input"]["kind"],
+                         "cf_key")
+        self.assertIn("Global API Key", reply_text_of(update))
+
+    async def test_manage_shows_file_status(self):
+        with patch.object(
+                he, "resolve_cf_credentials",
+                return_value=("fake-token", "", "", "file")):
+            update = make_update(callback_data="cf:manage")
+            context = make_context()
+            await he.cf_callback(update, context)
+        text = reply_text_of(update)
+        self.assertIn("已配置", text)
+        self.assertIn("机器人/面板里保存的", text)
+        self.assertIn("API Token", text)
+        callbacks = button_callback_data(reply_markup_of(update))
+        self.assertIn("cf:add", callbacks)
+        self.assertIn("cf:delete", callbacks)
+
+    async def test_manage_shows_env_status_with_masked_email(self):
+        with patch.object(
+                he, "resolve_cf_credentials",
+                return_value=("", "fake-key", "user@example.com", "env")):
+            update = make_update(callback_data="cf:manage")
+            context = make_context()
+            await he.cf_callback(update, context)
+        text = reply_text_of(update)
+        self.assertIn("服务器环境变量里的", text)
+        self.assertIn("Global API Key", text)
+        self.assertIn("u***@example.com", text)
+        self.assertNotIn("user@example.com", text)
+
+    async def test_manage_unconfigured(self):
+        with patch.object(he, "resolve_cf_credentials",
+                          return_value=("", "", "", None)):
+            update = make_update(callback_data="cf:manage")
+            context = make_context()
+            await he.cf_callback(update, context)
+        self.assertIn("未配置", reply_text_of(update))
+
+    async def test_delete_asks_confirm(self):
+        update = make_update(callback_data="cf:delete")
+        context = make_context()
+        await he.cf_callback(update, context)
+        callbacks = button_callback_data(reply_markup_of(update))
+        self.assertIn("cf:delete:yes", callbacks)
+
+    async def test_delete_yes_removes_file_config(self):
+        with patch.object(
+                he, "resolve_cf_credentials",
+                return_value=("fake-token", "", "", "file")), \
+                patch.object(he, "clear_cf_config") as mock_clear:
+            update = make_update(callback_data="cf:delete:yes")
+            context = make_context()
+            await he.cf_callback(update, context)
+        mock_clear.assert_called_once_with()
+        self.assertIn("已删除", reply_text_of(update))
+
+    async def test_delete_yes_env_source_refuses(self):
+        with patch.object(
+                he, "resolve_cf_credentials",
+                return_value=("", "fake-key", "user@example.com", "env")), \
+                patch.object(he, "clear_cf_config") as mock_clear:
+            update = make_update(callback_data="cf:delete:yes")
+            context = make_context()
+            await he.cf_callback(update, context)
+        mock_clear.assert_not_called()
+        self.assertIn("没有已保存的凭据文件", reply_text_of(update))
+
+    async def test_cancel_clears_pending(self):
+        update = make_update(callback_data="cf:cancel")
+        context = make_context()
+        context.user_data["pending_input"] = {"kind": "cf_token"}
+        context.user_data["cf_draft"] = {"api_key": "fake-key"}
+        await he.cf_callback(update, context)
+        self.assertNotIn("pending_input", context.user_data)
+        self.assertNotIn("cf_draft", context.user_data)
+        self.assertIn("已取消", reply_text_of(update))
+
+    async def test_extract_lists_running_hosts_only(self):
+        with patch.object(he, "get_cli", return_value=MagicMock()), \
+                patch.object(he, "get_compartment",
+                             return_value="ocid1.compartment.oc1..fake"), \
+                patch.object(he, "list_instances",
+                             return_value=FAKE_INSTANCES), \
+                patch.object(he, "attach_public_ips",
+                             side_effect=lambda _cli, insts: insts):
+            update = make_update(callback_data="cf:extract")
+            context = make_context()
+            await he.cf_callback(update, context)
+        # 只有 host-a（RUNNING + 有公网 IP）进列表。
+        hosts = context.user_data["cf_extract_hosts"]
+        self.assertEqual(len(hosts), 1)
+        self.assertEqual(hosts[0]["display-name"], "host-a")
+        callbacks = button_callback_data(reply_markup_of(update))
+        self.assertIn("cf:extract:0", callbacks)
+        labels = [btn.text for row in reply_markup_of(update).inline_keyboard
+                  for btn in row]
+        self.assertTrue(any("host-a" in label for label in labels))
+        self.assertTrue(any("203.0.113.10" in label for label in labels))
+
+    async def test_extract_no_hosts(self):
+        with patch.object(he, "get_cli", return_value=MagicMock()), \
+                patch.object(he, "get_compartment",
+                             return_value="ocid1.compartment.oc1..fake"), \
+                patch.object(he, "list_instances", return_value=[]), \
+                patch.object(he, "attach_public_ips",
+                             side_effect=lambda _cli, insts: insts):
+            update = make_update(callback_data="cf:extract")
+            context = make_context()
+            await he.cf_callback(update, context)
+        self.assertIn("没有运行中", reply_text_of(update))
+
+    async def test_extract_run_success(self):
+        context = make_context()
+        context.user_data["cf_extract_hosts"] = [FAKE_INSTANCES[0]]
+        with patch.object(he, "_guard_host_for_instance",
+                          return_value={"host": "203.0.113.10"}), \
+                patch.object(he, "extract_cf_from_host",
+                             return_value=("fake-key", "user@example.com",
+                                           None)), \
+                patch.object(he, "validate_and_save",
+                             return_value=(True, 6, None)):
+            update = make_update(callback_data="cf:extract:0")
+            await he.cf_callback(update, context)
+        text = reply_text_of(update)
+        self.assertIn("已从 host-a 提取", text)
+        self.assertIn("6 个 Zone", text)
+        self.assertIn("u***@example.com", text)
+        self.assertNotIn("fake-key", text)
+
+    async def test_extract_run_ssh_failure(self):
+        context = make_context()
+        context.user_data["cf_extract_hosts"] = [FAKE_INSTANCES[0]]
+        with patch.object(he, "_guard_host_for_instance",
+                          return_value={"host": "203.0.113.10"}), \
+                patch.object(he, "extract_cf_from_host",
+                             return_value=(None, None, "SSH 连接失败：超时")):
+            update = make_update(callback_data="cf:extract:0")
+            await he.cf_callback(update, context)
+        self.assertIn("提取失败", reply_text_of(update))
+
+    async def test_extract_run_validate_failure(self):
+        context = make_context()
+        context.user_data["cf_extract_hosts"] = [FAKE_INSTANCES[0]]
+        with patch.object(he, "_guard_host_for_instance",
+                          return_value={"host": "203.0.113.10"}), \
+                patch.object(he, "extract_cf_from_host",
+                             return_value=("fake-key", "user@example.com",
+                                           None)), \
+                patch.object(he, "validate_and_save",
+                             return_value=(False, 0, "auth")):
+            update = make_update(callback_data="cf:extract:0")
+            await he.cf_callback(update, context)
+        self.assertIn("校验没通过", reply_text_of(update))
+
+    async def test_extract_run_no_guard_key(self):
+        context = make_context()
+        context.user_data["cf_extract_hosts"] = [FAKE_INSTANCES[0]]
+        with patch.object(he, "_guard_host_for_instance", return_value=None):
+            update = make_update(callback_data="cf:extract:0")
+            await he.cf_callback(update, context)
+        self.assertIn("守护 SSH 密钥", reply_text_of(update))
+
+    async def test_extract_run_bad_index(self):
+        context = make_context()
+        context.user_data["cf_extract_hosts"] = [FAKE_INSTANCES[0]]
+        update = make_update(callback_data="cf:extract:9")
+        await he.cf_callback(update, context)
+        self.assertIn("不在列表里", reply_text_of(update))
+
+    async def test_unknown_cf_callback(self):
+        update = make_update(callback_data="cf:unknown")
+        context = make_context()
+        await he.cf_callback(update, context)
+        self.assertIn("参数错误", reply_text_of(update))
+
+
+class TestCfTextInput(DomainTestCase):
+    """text_input_callback 的 cf_token / cf_key / cf_email 三种输入。"""
+
+    def _text_update(self, text):
+        update = make_update()
+        update.effective_message.text = text
+        update.effective_message.chat_id = TEST_CHAT_ID
+        update.effective_message.message_id = 777
+        return update
+
+    async def test_cf_token_success(self):
+        with patch.object(he, "validate_and_save",
+                          return_value=(True, 6, None)) as mock_save:
+            update = self._text_update("fake-token-123")
+            context = make_context()
+            context.user_data["pending_input"] = {"kind": "cf_token"}
+            await he.text_input_callback(update, context)
+        mock_save.assert_called_once_with("fake-token-123", "", "")
+        text = reply_text_of(update)
+        self.assertIn("已保存并校验通过", text)
+        self.assertIn("6 个 Zone", text)
+        self.assertNotIn("fake-token-123", text)
+        self.assertNotIn("pending_input", context.user_data)
+        # 用户发的含凭据消息被删掉。
+        context.bot.delete_message.assert_awaited_once()
+
+    async def test_cf_token_validate_failure(self):
+        with patch.object(he, "validate_and_save",
+                          return_value=(False, 0, "auth")):
+            update = self._text_update("bad-token")
+            context = make_context()
+            context.user_data["pending_input"] = {"kind": "cf_token"}
+            await he.text_input_callback(update, context)
+        self.assertIn("校验没通过", reply_text_of(update))
+        callbacks = button_callback_data(reply_markup_of(update))
+        self.assertIn("cf:add", callbacks)
+
+    async def test_cf_token_blank_cancelled(self):
+        update = self._text_update("has space in it")
+        context = make_context()
+        context.user_data["pending_input"] = {"kind": "cf_token"}
+        await he.text_input_callback(update, context)
+        self.assertIn("不能为空也不能带空格", reply_text_of(update))
+
+    async def test_cf_key_stores_draft_and_asks_email(self):
+        update = self._text_update("fake-key-123")
+        context = make_context()
+        context.user_data["pending_input"] = {"kind": "cf_key"}
+        await he.text_input_callback(update, context)
+        self.assertEqual(context.user_data["cf_draft"]["api_key"],
+                         "fake-key-123")
+        self.assertEqual(context.user_data["pending_input"]["kind"],
+                         "cf_email")
+        self.assertIn("账号邮箱", reply_text_of(update))
+
+    async def test_cf_email_invalid_cancels(self):
+        update = self._text_update("not-an-email")
+        context = make_context()
+        context.user_data["pending_input"] = {"kind": "cf_email"}
+        context.user_data["cf_draft"] = {"api_key": "fake-key-123"}
+        await he.text_input_callback(update, context)
+        self.assertIn("邮箱格式不对", reply_text_of(update))
+        self.assertNotIn("cf_draft", context.user_data)
+
+    async def test_cf_email_success(self):
+        with patch.object(he, "validate_and_save",
+                          return_value=(True, 6, None)) as mock_save:
+            update = self._text_update("user@example.com")
+            context = make_context()
+            context.user_data["pending_input"] = {"kind": "cf_email"}
+            context.user_data["cf_draft"] = {"api_key": "fake-key-123"}
+            await he.text_input_callback(update, context)
+        mock_save.assert_called_once_with("", "fake-key-123",
+                                          "user@example.com")
+        text = reply_text_of(update)
+        self.assertIn("已保存并校验通过", text)
+        self.assertIn("u***@example.com", text)
+        self.assertNotIn("fake-key-123", text)
+        self.assertNotIn("cf_draft", context.user_data)
+
+    async def test_cf_email_without_draft_expired(self):
+        update = self._text_update("user@example.com")
+        context = make_context()
+        context.user_data["pending_input"] = {"kind": "cf_email"}
+        await he.text_input_callback(update, context)
+        self.assertIn("会话已过期", reply_text_of(update))
 
 
 if __name__ == "__main__":

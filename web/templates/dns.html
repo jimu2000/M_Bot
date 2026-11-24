@@ -16,6 +16,41 @@
 
 <div class="card" style="margin-bottom: 16px;">
   <div style="display: flex; gap: 12px; flex-wrap: wrap; align-items: center;">
+    <strong>Cloudflare 凭据</strong>
+    <span id="cf-status" style="color: var(--text-muted);">加载中…</span>
+    <div class="spacer"></div>
+    <button type="button" class="btn" id="btn-cf-delete" hidden>删除已保存凭据</button>
+  </div>
+  <div style="margin-top: 12px; display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end;">
+    <label style="color: var(--text-muted);">方式
+      <select id="cf-mode" style="width: auto;">
+        <option value="token" selected>API Token（推荐）</option>
+        <option value="key">Global API Key + 邮箱</option>
+      </select>
+    </label>
+    <label id="cf-token-wrap" style="flex: 1; min-width: 200px; color: var(--text-muted);">Token
+      <input type="password" id="cf-token" placeholder="Cloudflare API Token" autocomplete="off" style="width: 100%;">
+    </label>
+    <label id="cf-key-wrap" style="flex: 1; min-width: 200px; color: var(--text-muted);" hidden>Global API Key
+      <input type="password" id="cf-key" placeholder="Global API Key" autocomplete="off" style="width: 100%;">
+    </label>
+    <label id="cf-email-wrap" style="flex: 1; min-width: 200px; color: var(--text-muted);" hidden>账号邮箱
+      <input type="email" id="cf-email" placeholder="name@example.com" autocomplete="off" style="width: 100%;">
+    </label>
+    <button type="button" class="btn btn-primary" id="btn-cf-save">保存并校验</button>
+  </div>
+  <div style="margin-top: 12px; display: flex; gap: 12px; flex-wrap: wrap; align-items: center;">
+    <span style="color: var(--text-muted);">或从服务器的证书脚本（1.sh）自动提取：</span>
+    <select id="cf-extract-instance" style="flex: 1; min-width: 200px;">
+      <option value="" selected>加载实例中…</option>
+    </select>
+    <button type="button" class="btn" id="btn-cf-extract">提取并保存</button>
+  </div>
+  <p style="color: var(--text-muted); margin: 12px 0 0;">凭据只用于调用 Cloudflare API，保存前会先校验；提取只读 1.sh 里的 CF_Key / CF_Email 两行。</p>
+</div>
+
+<div class="card" style="margin-bottom: 16px;">
+  <div style="display: flex; gap: 12px; flex-wrap: wrap; align-items: center;">
     <label for="filter-type" style="color: var(--text-muted);">类型</label>
     <select id="filter-type" style="width: auto;">
       <option value="" selected>全部</option>

@@ -217,10 +217,125 @@
       });
   }
 
+  /* ---------- Cloudflare 凭据（v1.26.0） ---------- */
+
+  var cfProfile = "";
+  var cfRegion = "";
+
+  function renderCfStatus(res) {
+    var status = document.getElementById("cf-status");
+    var delBtn = document.getElementById("btn-cf-delete");
+    if (!res.configured) {
+      status.textContent = "未配置：请手动添加，或从服务器提取。";
+      delBtn.hidden = true;
+      return;
+    }
+    var where = res.source === "file" ? "面板/机器人里保存的" : "服务器环境变量里的";
+    var mode = res.auth_mode === "token" ? "API Token" : "Global API Key";
+    status.textContent = "已配置（" + where + "，" + mode +
+      (res.email_masked ? "，" + res.email_masked : "") + "）。";
+    delBtn.hidden = res.source !== "file";
+  }
+
+  function loadCfStatus() {
+    MBot.api("/api/dns/credentials").then(renderCfStatus).catch(function (err) {
+      document.getElementById("cf-status").textContent =
+        "状态加载失败：" + (err.message || err);
+    });
+  }
+
+  function loadCfInstances() {
+    var select = document.getElementById("cf-extract-instance");
+    MBot.api("/api/instances").then(function (res) {
+      cfProfile = res.profile || "";
+      cfRegion = res.region || "";
+      var list = (res.instances || []).filter(function (inst) { return inst.publicIp; });
+      select.innerHTML = "";
+      if (list.length === 0) {
+        select.appendChild(el("option", "暂无运行中且有公网 IP 的实例", null));
+        select.options[0].value = "";
+        return;
+      }
+      list.forEach(function (inst) {
+        var opt = document.createElement("option");
+        opt.value = inst.id;
+        opt.textContent = (inst.displayName || inst.id) + "（" + inst.publicIp + "）";
+        select.appendChild(opt);
+      });
+    }).catch(function () {
+      select.innerHTML = "";
+      select.appendChild(el("option", "实例加载失败", null));
+      select.options[0].value = "";
+    });
+  }
+
+  function toggleCfMode() {
+    var mode = document.getElementById("cf-mode").value;
+    document.getElementById("cf-token-wrap").hidden = mode !== "token";
+    document.getElementById("cf-key-wrap").hidden = mode !== "key";
+    document.getElementById("cf-email-wrap").hidden = mode !== "key";
+  }
+
+  function saveCfCredentials() {
+    var mode = document.getElementById("cf-mode").value;
+    var body = { mode: mode };
+    if (mode === "token") {
+      body.api_token = document.getElementById("cf-token").value.trim();
+      if (!body.api_token) { MBot.toast("请先输入 Token", "error"); return; }
+    } else {
+      body.api_key = document.getElementById("cf-key").value.trim();
+      body.email = document.getElementById("cf-email").value.trim();
+      if (!body.api_key || !body.email) { MBot.toast("请先输入 Key 与邮箱", "error"); return; }
+    }
+    MBot.api("/api/dns/credentials", { method: "POST", body: body }).then(function (res) {
+      document.getElementById("cf-token").value = "";
+      document.getElementById("cf-key").value = "";
+      document.getElementById("cf-email").value = "";
+      MBot.toast("凭据已保存并校验通过（" + (res.zones || 0) + " 个 Zone）", "success");
+      loadCfStatus();
+      loadZones();
+    }).catch(function (err) {
+      MBot.toast("保存失败：" + (err.message || err), "error");
+    });
+  }
+
+  function extractCfCredentials() {
+    var instanceId = document.getElementById("cf-extract-instance").value;
+    if (!instanceId) { MBot.toast("请先选择一台服务器", "error"); return; }
+    MBot.api("/api/dns/credentials/extract", {
+      method: "POST",
+      body: { instance_id: instanceId, profile: cfProfile || null, region: cfRegion || null }
+    }).then(function (res) {
+      MBot.toast("已提取并保存（" + (res.zones || 0) + " 个 Zone" +
+        (res.email_masked ? "，" + res.email_masked : "") + "）", "success");
+      loadCfStatus();
+      loadZones();
+    }).catch(function (err) {
+      MBot.toast("提取失败：" + (err.message || err), "error");
+    });
+  }
+
+  function deleteCfCredentials() {
+    if (!window.confirm("确认删除面板/机器人里保存的 Cloudflare 凭据？\n（只删保存的文件，不动环境变量。）")) return;
+    MBot.api("/api/dns/credentials", { method: "DELETE" }).then(function () {
+      MBot.toast("已保存的凭据已删除", "success");
+      loadCfStatus();
+      loadZones();
+    }).catch(function (err) {
+      MBot.toast("删除失败：" + (err.message || err), "error");
+    });
+  }
+
   /* ---------- 初始化 ---------- */
 
   document.addEventListener("DOMContentLoaded", function () {
     loadZones();
+    loadCfStatus();
+    loadCfInstances();
+    document.getElementById("cf-mode").addEventListener("change", toggleCfMode);
+    document.getElementById("btn-cf-save").addEventListener("click", saveCfCredentials);
+    document.getElementById("btn-cf-extract").addEventListener("click", extractCfCredentials);
+    document.getElementById("btn-cf-delete").addEventListener("click", deleteCfCredentials);
     document.getElementById("zone-select").addEventListener("change", function (e) {
       currentZoneId = e.target.value;
       loadRecords();

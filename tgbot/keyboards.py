@@ -490,8 +490,69 @@ def domain_zones_keyboard(zones):
         label = f"🌐 {name}" + (f"（{status}）" if status != "active" else "")
         rows.append([InlineKeyboardButton(
             label, callback_data=f"domain:zone:{zone.get('id')}")])
+    rows.append([InlineKeyboardButton("⚙️ 凭据管理", callback_data="cf:manage")])
     rows.append([InlineKeyboardButton("◀ Oracle 菜单", callback_data="o:menu")])
     return InlineKeyboardMarkup(rows)
+
+
+def cf_config_keyboard():
+    """`/domain` 未配置凭据时的键盘：手动添加 / 从服务器提取。"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("➕ 手动添加凭据", callback_data="cf:add")],
+        [InlineKeyboardButton("🔍 从服务器提取", callback_data="cf:extract")],
+        [InlineKeyboardButton("◀ Oracle 菜单", callback_data="o:menu")],
+    ])
+
+
+def cf_add_mode_keyboard():
+    """手动添加凭据：选 API Token 还是 Global API Key + 邮箱。"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("API Token（推荐）",
+                              callback_data="cf:add:token")],
+        [InlineKeyboardButton("Global API Key + 邮箱",
+                              callback_data="cf:add:key")],
+        [InlineKeyboardButton("❌ 取消", callback_data="cf:cancel")],
+    ])
+
+
+def cf_manage_keyboard():
+    """凭据管理页键盘。"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔄 更换凭据", callback_data="cf:add")],
+        [InlineKeyboardButton("🗑️ 删除已保存凭据",
+                              callback_data="cf:delete")],
+        [InlineKeyboardButton("🌐 查看 Zone 列表",
+                              callback_data="domain:back")],
+        [InlineKeyboardButton("◀ Oracle 菜单", callback_data="o:menu")],
+    ])
+
+
+def cf_delete_confirm_keyboard():
+    """删除已保存凭据的二次确认键盘。"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🗑️ 确认删除",
+                              callback_data="cf:delete:yes")],
+        [InlineKeyboardButton("❌ 取消", callback_data="cf:manage")],
+    ])
+
+
+def cf_extract_hosts_keyboard(hosts):
+    """从服务器提取：选一台运行中的实例（hosts 是精简实例列表）。"""
+    rows = []
+    for idx, inst in enumerate(hosts):
+        name = inst.get("display-name") or (inst.get("id") or "?")[-6:]
+        ip = inst.get("public-ip") or ""
+        rows.append([InlineKeyboardButton(
+            f"{name}（{ip}）", callback_data=f"cf:extract:{idx}")])
+    rows.append([InlineKeyboardButton("❌ 取消", callback_data="cf:cancel")])
+    return InlineKeyboardMarkup(rows)
+
+
+def cf_cancel_keyboard():
+    """输入凭据时的取消按钮。"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("❌ 取消", callback_data="cf:cancel")],
+    ])
 
 
 def domain_records_keyboard(zone_id, records):

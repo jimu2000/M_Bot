@@ -9,6 +9,20 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [1.26.0] - 2026-11-24
+
+### Added
+- Cloudflare credential management (bot + panel, in sync): when /domain finds no credentials it no longer just errors out — it offers "Add credentials manually" and "Extract from server" buttons; the zone list keyboard gains a "Credential management" entry
+- Manual add: API Token (recommended, one step) or Global API Key + email (two steps); credentials are validated against the Cloudflare API (list zones) before saving, and never saved when validation fails; the bot tries to delete the user's message containing the secret so no plaintext remains; credential values are never echoed or logged
+- Extract from server: pick a running instance with a public IP, and the bot/panel reads only the CF_Key / CF_Email lines from its certificate script (1.sh) over SSH, validates what it found, and saves it only when validation passes
+- Credential management page: shows the current credential source (saved in bot/panel vs. server environment variables), auth method and the masked email; credentials can be replaced, and the saved credential file can be deleted (file only, environment variables untouched)
+- New module tgbot/cf_config.py: credentials live in tgbot/data/cloudflare.json (0600, atomic writes), file takes precedence over environment variables; clouds/cloudflare.py itself is unchanged (it only accepts environment variables or explicit parameters) — the new module reads the credentials and passes them explicitly to the client constructor
+- The panel DNS page gains a credential card: status display, a manual add form (Token / Key+email toggle), extract from server (instance dropdown + extract button), and delete saved credentials; new endpoints GET/POST/DELETE /api/dns/credentials and POST /api/dns/credentials/extract
+
+### Verification
+- Full test suite: 2322 tests, all passing (including the new credential file storage/precedence/extraction-parsing/validation, bot add and extract flows, and web credential endpoint tests)
+- Live verification: the panel extract endpoint really extracted credentials from the 1.sh on a Singapore production host (.139), validation passed (6 zones) and the credentials were saved; the file config was deleted afterwards to restore the environment-variable source
+
 ## [1.25.0] - 2026-11-24
 
 ### Added

@@ -103,6 +103,12 @@ from tgbot.keyboards import (
     batch_select_keyboard,
     boot_confirm_keyboard,
     boot_preset_keyboard,
+    cf_add_mode_keyboard,
+    cf_cancel_keyboard,
+    cf_config_keyboard,
+    cf_delete_confirm_keyboard,
+    cf_extract_hosts_keyboard,
+    cf_manage_keyboard,
     confirm_keyboard,
     domain_records_keyboard,
     domain_zones_keyboard,
@@ -316,6 +322,26 @@ except ImportError:  # 未落地时 /domain 报配置错误，不让机器人崩
         def __init__(self, message="", kind="api"):
             super().__init__(message)
             self.kind = kind
+
+
+try:
+    # Cloudflare 凭据管理（v1.26.0）：配置文件优先，环境变量兜底；
+    # 手动添加 / 从服务器 1.sh 提取都走这里。
+    from tgbot.cf_config import (
+        clear_cf_config,
+        extract_cf_from_host,
+        get_cf_client as get_configured_cf_client,
+        mask_cf_email,
+        resolve_cf_credentials,
+        validate_and_save,
+    )
+except ImportError:  # 未落地时 /domain 回落到纯环境变量方式
+    clear_cf_config = None
+    extract_cf_from_host = None
+    get_configured_cf_client = None
+    mask_cf_email = None
+    resolve_cf_credentials = None
+    validate_and_save = None
 
 
 logger = logging.getLogger(__name__)
@@ -5122,6 +5148,74 @@ async def text_input_callback(update, context):
                      reply_markup=confirm_keyboard(
                          "deluser", pending.get("idx"), "🗑️ 确认删除"))
         return
+    if kind in ("cf_token", "cf_key", "cf_email"):
+        # Cloudflare 凭据手动添加：Token 一步，Key + 邮箱两步。
+        # 凭据值绝不回显；用户那条消息尽力删掉，不留明文。
+        context.user_data.pop("pending_input", None)
+        await _delete_secret_message(update, context)
+        if kind == "cf_token":
+            if not text or any(ch.isspace() for ch in text):
+                await _reply(update,
+                             "❌ Token 不能为空也不能带空格，已取消。"
+                             "请重新点“手动添加凭据”。")
+                return
+            ok, zones_total, _err = await run_sync(validate_and_save,
+                                                   text, "", "")
+            if not ok:
+                await _reply(
+                    update,
+                    "❌ Token 校验没通过（无效或权限不足），没有保存。\n"
+                    "请检查 Token 是否正确、是否有 Zone:Read 与 DNS:Edit "
+                    "权限，再重新添加。",
+                    reply_markup=cf_config_keyboard())
+                return
+            await _reply(
+                update,
+                f"✅ Cloudflare API Token 已保存并校验通过"
+                f"（{zones_total} 个 Zone）。",
+                reply_markup=cf_manage_keyboard())
+            return
+        if kind == "cf_key":
+            if not text or any(ch.isspace() for ch in text):
+                await _reply(update,
+                             "❌ Key 不能为空也不能带空格，已取消。"
+                             "请重新点“手动添加凭据”。")
+                return
+            context.user_data["cf_draft"] = {"api_key": text}
+            context.user_data["pending_input"] = {"kind": "cf_email"}
+            await _reply_prompt(
+                update, context,
+                "Key 已记下。再输入该 Key 对应的账号邮箱：\n"
+                "（直接发文字即可，不用加任何命令）")
+            return
+        # cf_email：第二步，校验邮箱格式后校验整组凭据并保存。
+        if not is_valid_email(text):
+            context.user_data.pop("cf_draft", None)
+            await _reply(update,
+                         "❌ 邮箱格式不对，已取消。"
+                         "请重新点“手动添加凭据”。")
+            return
+        draft = context.user_data.pop("cf_draft", None) or {}
+        api_key = draft.get("api_key") or ""
+        if not api_key:
+            await _reply(update, "会话已过期，请重新点“手动添加凭据”。")
+            return
+        ok, zones_total, _err = await run_sync(validate_and_save, "",
+                                               api_key, text)
+        if not ok:
+            await _reply(
+                update,
+                "❌ Key 或邮箱校验没通过（无效或不匹配），没有保存。\n"
+                "请检查后重新添加。",
+                reply_markup=cf_config_keyboard())
+            return
+        masked = mask_cf_email(text) if mask_cf_email is not None else "***"
+        await _reply(
+            update,
+            f"✅ Cloudflare 凭据已保存并校验通过"
+            f"（账号邮箱 {masked}，{zones_total} 个 Zone）。",
+            reply_markup=cf_manage_keyboard())
+        return
     if kind in ("add_admin_name", "add_admin_email"):
         # 增加管理员账号：两步输入（用户名 → 邮箱），最后弹二次确认。
         context.user_data.pop("pending_input", None)
@@ -6038,10 +6132,35 @@ async def _handle_confirm_inner(action, idx, update, context):
 # ================= /domain 命令（Cloudflare DNS 管理） =================
 
 def _get_cf_client():
-    """取 Cloudflare 客户端；clouds.cloudflare 未就绪时抛 config 错误。"""
+    """取 Cloudflare 客户端：配置文件优先，环境变量兜底。
+
+    tgbot.cf_config 未就绪时回落到 clouds 的 get_client()
+    （纯环境变量方式）；两者都没有时抛 config 错误。
+    """
+    if get_configured_cf_client is not None:
+        return get_configured_cf_client()
     if get_client is None:
         raise CloudflareError("Cloudflare 客户端未就绪", kind="config")
     return get_client()
+
+
+def fmt_cf_status():
+    """凭据管理页全文：来源 / 方式 / 脱敏邮箱（绝不显示凭据值）。"""
+    if resolve_cf_credentials is None:
+        return "⚙️ Cloudflare 凭据管理未就绪，请稍后再试。"
+    api_token, _api_key, email, source = resolve_cf_credentials()
+    if source is None:
+        return ("⚙️ Cloudflare 凭据：未配置。\n\n"
+                "手动添加 API Token（推荐）或 Global API Key + 邮箱，"
+                "也可以从服务器的证书脚本（1.sh）自动提取。")
+    mode = "API Token" if api_token else "Global API Key"
+    where = "机器人/面板里保存的" if source == "file" else "服务器环境变量里的"
+    lines = [f"⚙️ Cloudflare 凭据：已配置（{where}，{mode}）。"]
+    if email and mask_cf_email is not None:
+        lines.append(f"账号邮箱：{mask_cf_email(email)}")
+    if source == "file":
+        lines.append("删除已保存的凭据后，会回落到环境变量（如果里面有）。")
+    return "\n".join(lines)
 
 
 def fmt_cf_error(exc):
@@ -6111,7 +6230,14 @@ async def handle_domain(update, context):
         client = _get_cf_client()
         zones = await run_sync(client.list_zones)
     except CloudflareError as exc:
-        await _reply(update, fmt_cf_error(exc))
+        if getattr(exc, "kind", "") in ("config", "auth"):
+            await _reply(
+                update,
+                fmt_cf_error(exc)
+                + "\n\n可以在这里添加凭据，或从服务器的证书脚本自动提取。",
+                reply_markup=cf_config_keyboard())
+        else:
+            await _reply(update, fmt_cf_error(exc))
         return
     except Exception as exc:  # noqa: BLE001 - 其他异常也转成提示，不崩机器人
         await _reply(update, f"❌ 出错了：{exc}")
@@ -6148,6 +6274,162 @@ async def domain_callback(update, context):
     zone_name = _resolve_zone_name(context, zone_id, records)
     await _reply(update, fmt_domain_records(zone_name, records),
                  reply_markup=domain_records_keyboard(zone_id, records))
+
+
+async def _delete_secret_message(update, context):
+    """尽力删除用户刚发的含凭据的消息（删不掉就算了，不报错）。
+
+    凭据值只在用户那条消息里出现过一次；删掉后聊天记录里不再留明文。
+    """
+    msg = update.effective_message
+    if msg is None:
+        return
+    try:
+        await context.bot.delete_message(chat_id=msg.chat_id,
+                                         message_id=msg.message_id)
+    except Exception:  # noqa: BLE001 - 删不掉不影响流程
+        pass
+
+
+async def _cf_extract_pick(update, context):
+    """从服务器提取：列出当前账号/区域下运行中、有公网 IP 的实例供选择。"""
+    try:
+        cli = get_cli(context)
+        instances = await run_sync(list_instances, cli,
+                                   get_compartment(context))
+        instances = await run_sync(attach_public_ips, cli, instances)
+    except Exception as exc:  # noqa: BLE001 - OCI 异常统一转中文提示
+        await _reply(update, fmt_error(exc))
+        return
+    hosts = [inst for inst in instances
+             if inst.get("lifecycle-state") == "RUNNING"
+             and inst.get("public-ip")]
+    if not hosts:
+        await _reply(update,
+                     "当前账号/区域下没有运行中且有公网 IP 的实例。\n"
+                     "要换账号或区域请先用菜单 2 切换。")
+        return
+    context.user_data["cf_extract_hosts"] = hosts
+    await _reply(
+        update,
+        "选一台服务器，我去读它上面的证书脚本（1.sh）提取 CF_Key / CF_Email：\n"
+        "（只读这两行，提取到后先校验，通过才保存）",
+        reply_markup=cf_extract_hosts_keyboard(hosts))
+
+
+async def _cf_extract_run(update, context, idx_text):
+    """从服务器提取：按下标取实例，SSH 读 1.sh，校验后保存。"""
+    hosts = context.user_data.get("cf_extract_hosts") or []
+    try:
+        host_inst = hosts[int(idx_text)]
+    except (TypeError, ValueError, IndexError):
+        await _reply(update, "该服务器已不在列表里，请重新点“从服务器提取”。")
+        return
+    public_ip = host_inst.get("public-ip")
+    name = host_inst.get("display-name") or public_ip or "?"
+    host = _guard_host_for_instance(public_ip)
+    if host is None:
+        await _reply(update,
+                     "❌ 这台服务器没有配置守护 SSH 密钥，机器人连不上它。\n"
+                     "请先给它加上守护密钥，或换一台服务器。")
+        return
+    await _reply(update, f"正在从 {name}（{public_ip}）提取凭据…")
+    api_key, email, error = await run_sync(extract_cf_from_host, host)
+    if error:
+        await _reply(update, f"❌ 提取失败：{error}")
+        return
+    ok, zones_total, _err = await run_sync(validate_and_save, "",
+                                           api_key, email)
+    if not ok:
+        await _reply(update,
+                     "❌ 提取到的凭据校验没通过（可能已失效），没有保存。\n"
+                     "请手动添加，或去服务器上确认 1.sh 里的凭据是否有效。")
+        return
+    masked = mask_cf_email(email) if mask_cf_email is not None else "***"
+    await _reply(
+        update,
+        f"✅ 已从 {name} 提取并保存 Cloudflare 凭据"
+        f"（账号邮箱 {masked}，{zones_total} 个 Zone）。",
+        reply_markup=cf_manage_keyboard())
+
+
+@require_allowed
+async def cf_callback(update, context):
+    """回调 "cf:*"：Cloudflare 凭据添加 / 提取 / 管理（v1.26.0）。
+
+    add：选凭据方式（token/key 两步输入走 text_input_callback）；
+    extract：选服务器读 1.sh 提取；manage：看当前凭据状态；
+    delete：删除已保存的凭据文件（不动环境变量）；
+    cancel：取消当前输入。
+    """
+    data = _callback_data(update)
+    parts = data.split(":")
+    action = parts[1] if len(parts) > 1 else ""
+    if action == "cancel":
+        context.user_data.pop("pending_input", None)
+        context.user_data.pop("cf_draft", None)
+        await _reply(update, "已取消。")
+        return
+    if action == "manage":
+        await _reply(update, fmt_cf_status(),
+                     reply_markup=cf_manage_keyboard())
+        return
+    if action == "add":
+        if len(parts) >= 3 and parts[2] == "token":
+            context.user_data["pending_input"] = {"kind": "cf_token"}
+            await _reply_prompt(
+                update, context,
+                "请发送 Cloudflare API Token（直接发文字即可）：\n"
+                "Token 在 Cloudflare 后台 My Profile > API Tokens 里建，"
+                "需要 Zone:Read 与 DNS:Edit 权限。\n"
+                "收到后我会立即校验，校验通过才保存；"
+                "你这条消息我会尽力删掉，不留明文。",
+                reply_markup=cf_cancel_keyboard())
+            return
+        if len(parts) >= 3 and parts[2] == "key":
+            context.user_data.pop("cf_draft", None)
+            context.user_data["pending_input"] = {"kind": "cf_key"}
+            await _reply_prompt(
+                update, context,
+                "请发送 Global API Key（直接发文字即可）：\n"
+                "Key 在 Cloudflare 后台 My Profile > API Tokens 最下方查看。\n"
+                "收到后我会再问账号邮箱，两步都对了才校验保存；"
+                "你发的消息我会尽力删掉，不留明文。",
+                reply_markup=cf_cancel_keyboard())
+            return
+        await _reply(update, "选一种凭据方式：",
+                     reply_markup=cf_add_mode_keyboard())
+        return
+    if action == "delete":
+        if len(parts) >= 3 and parts[2] == "yes":
+            _t, _k, _e, source = resolve_cf_credentials()
+            if source != "file":
+                await _reply(update,
+                             "没有已保存的凭据文件（当前用的是服务器环境变量里"
+                             "的凭据，机器人删不了；要换请改服务器上的配置）。")
+                return
+            clear_cf_config()
+            await _reply(update,
+                         "已保存的凭据已删除。环境变量里如有凭据，/domain "
+                         "会继续用它；都没有时请重新添加。")
+            return
+        await _reply(
+            update,
+            "确认删除机器人/面板里保存的 Cloudflare 凭据？\n"
+            "（只删保存的文件，不动环境变量；删除后如环境变量里没有凭据，"
+            "/domain 会报未配置。）",
+            reply_markup=cf_delete_confirm_keyboard())
+        return
+    if action == "extract":
+        if extract_cf_from_host is None or validate_and_save is None:
+            await _reply(update, "凭据管理模块未就绪，请稍后再试。")
+            return
+        if len(parts) >= 3:
+            await _cf_extract_run(update, context, parts[2])
+            return
+        await _cf_extract_pick(update, context)
+        return
+    await _reply(update, "参数错误，请重新发送 /domain。")
 
 
 # ================= JobQueue 任务（bot.py 注册，开关在 bot_data） =================
