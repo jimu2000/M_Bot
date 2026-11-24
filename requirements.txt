@@ -27,3 +27,8 @@ apscheduler>=3.10
 # 自动用 openssl 命令行兜底，同样是可选依赖。
 Pillow>=10.0
 cryptography>=42.0
+
+# Bark 加密 Key 二维码（v1.12.0，tgbot/bark.py 的 make_key_qr_png）：
+# segno 纯 Python 生成二维码，自带 PNG 编码，不依赖 Pillow；
+# 未安装时自动生成 Key 仍可用，只是没有二维码（只显示文字 Key）。
+segno>=1.3

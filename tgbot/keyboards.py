@@ -48,6 +48,8 @@ callback_data 规范（Telegram 限制 64 字节，OCID 约 100 字节放不下�
   - "pr:<profile>:<region>" 切换账号 + 工作区域
   - "bark:url" / "bark:key" / "bark:test" / "bark:toggle" / "bark:cancel_input"
     Bark 通知设置：设地址 / 设加密 Key / 测试推送 / 开关 / 取消输入
+  - "bark:genkey" / "bark:genkey:go" / "bark:genkey:cancel"
+    Bark 自动生成 Key：确认页 / 确定生成 / 取消（生成后旧 Key 立即失效）
   - "q:list"         免费额度：回账号列表
   - "q:acct:<name>"  免费额度：点开某账号（多区账号出二级区域菜单，
     单区账号直接显示该区额度）
@@ -546,20 +548,31 @@ def ssl_add_cancel_keyboard():
 
 
 def bark_keyboard(enabled, configured):
-    """Bark 通知设置键盘：设地址 / 设 Key / 测试推送 / 开关。
+    """Bark 通知设置键盘：设地址 / 设 Key / 自动生成 Key /
+    测试推送 / 开关。
 
     enabled：推送开关；configured：地址 + 32 位 Key 是否配齐。
-    测试推送不依赖开关（配齐即可测）。
+    测试推送不依赖开关（配齐即可测）。自动生成 Key 先出确认页
+    （生成后旧 Key 立即失效）。
     """
     rows = [
         [InlineKeyboardButton("🔗 设置 Bark 地址", callback_data="bark:url"),
          InlineKeyboardButton("🔑 设置加密 Key", callback_data="bark:key")],
-        [InlineKeyboardButton("📲 测试推送", callback_data="bark:test")],
+        [InlineKeyboardButton("🎲 自动生成 Key", callback_data="bark:genkey"),
+         InlineKeyboardButton("📲 测试推送", callback_data="bark:test")],
         [InlineKeyboardButton("✅ 关闭 Bark 推送" if enabled else "🚀 开启 Bark 推送",
                               callback_data="bark:toggle")],
         [InlineKeyboardButton("◀ Oracle 菜单", callback_data="o:menu")],
     ]
     return InlineKeyboardMarkup(rows)
+
+
+def bark_genkey_confirm_keyboard():
+    """自动生成 Bark Key 前的确认键盘（生成后旧 Key 立即失效）。"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ 确定生成", callback_data="bark:genkey:go")],
+        [InlineKeyboardButton("❌ 取消", callback_data="bark:genkey:cancel")],
+    ])
 
 
 def bark_input_cancel_keyboard():

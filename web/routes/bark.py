@@ -10,17 +10,26 @@
     已配齐地址与 Key，否则 400。
   - POST /api/bark/test：发一条测试推送（不依赖开关），返回
     {ok, sent, error?}。
+  - POST /api/bark/generate-key：随机生成一个 32 位加密 Key 并保存，
+    返回 {ok, key, qr_png?, ...状态字段}。全站唯一会返回 Key 原文
+    的接口——生成后用户必须把 Key 同步到 Bark App（扫码或手动填），
+    页面只显示这一次；qr_png 是 Key 的二维码 PNG（data URI），
+    segno 未安装时为 None。
 
 配置存在 tgbot/data/bark.json（0600），与机器人端共用；网页端
 改的配置机器人定时任务立即生效，反之亦然。
 """
+
+import base64
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from tgbot.bark import (
     bark_configured,
+    generate_bark_key,
     load_bark_config,
+    make_key_qr_png,
     mask_bark_url,
     save_bark_config,
     send_bark_test,
@@ -94,6 +103,28 @@ def bark_toggle(body: BarkToggleBody,
     cfg["enabled"] = bool(body.enabled)
     save_bark_config(cfg)
     return _status_payload(cfg)
+
+
+@router.post("/api/bark/generate-key")
+def bark_generate_key(user: str = Depends(get_current_user)):
+    """随机生成一个 32 位 Bark 加密 Key 并保存，返回 Key 原文与二维码。
+
+    全站唯一会返回 Key 原文的接口——生成后用户必须把 Key 同步到
+    Bark App 的加密设置里（扫 qr_png 二维码或手动填），否则推送
+    解不开；页面只显示这一次。旧 Key 生成后立即失效，其他用旧
+    Key 的发送端需同步更新。
+    """
+    cfg = load_bark_config()
+    key = generate_bark_key()
+    cfg["key"] = key
+    save_bark_config(cfg)
+    qr_png = make_key_qr_png(key)
+    payload = _status_payload(cfg)
+    payload["key"] = key
+    payload["qr_png"] = (
+        "data:image/png;base64," + base64.b64encode(qr_png).decode("ascii")
+        if qr_png else None)
+    return payload
 
 
 @router.post("/api/bark/test")

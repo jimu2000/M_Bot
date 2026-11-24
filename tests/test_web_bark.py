@@ -168,6 +168,33 @@ class TestBarkTestApi(BarkWebTestCase):
         self.assertIn("boom", r.json()["error"])
 
 
+class TestBarkGenerateKeyApi(BarkWebTestCase):
+    """自动生成 Key 接口（v1.12.0）：返回 Key 原文 + 二维码，只显示一次。"""
+
+    def test_generate_returns_key_and_qr(self):
+        r = self.client.post("/api/bark/generate-key", json={})
+        self.assertEqual(r.status_code, 200)
+        data = r.json()
+        key = data["key"]
+        self.assertEqual(len(key), 32)
+        self.assertTrue(all(c in "0123456789abcdef" for c in key))
+        self.assertTrue(data["key_set"])
+        self.assertTrue(data["qr_png"].startswith("data:image/png;base64,"))
+        cfg = bark_mod.load_bark_config()
+        self.assertEqual(cfg["key"], key)
+
+    def test_generate_overwrites_old_key(self):
+        self._write_config(key=FAKE_KEY)
+        r = self.client.post("/api/bark/generate-key", json={})
+        self.assertEqual(r.status_code, 200)
+        self.assertNotEqual(r.json()["key"], FAKE_KEY)
+
+    def test_generate_requires_login(self):
+        anon = TestClient(self.app)
+        r = anon.post("/api/bark/generate-key", json={})
+        self.assertEqual(r.status_code, 401)
+
+
 class TestBarkPage(BarkWebTestCase):
     def test_bark_page_renders(self):
         r = self.client.get("/bark")
@@ -175,6 +202,7 @@ class TestBarkPage(BarkWebTestCase):
         self.assertIn("Bark 通知设置", r.text)
         self.assertIn("/static/js/bark.js", r.text)
         self.assertIn('data-page="bark" class="active"', r.text)
+        self.assertIn("btn-gen-bark-key", r.text)
 
     def test_bark_page_requires_login(self):
         anon = TestClient(self.app)

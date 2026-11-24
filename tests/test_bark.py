@@ -10,7 +10,9 @@ import base64
 import json
 import os
 import stat
+import string
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -93,6 +95,39 @@ class TestEncryptPayload(unittest.TestCase):
     def test_bad_iv_length_raises(self):
         with self.assertRaises(ValueError):
             bark_mod.encrypt_payload(b"hello", TEST_KEY, "short")
+
+
+class TestGenerateBarkKey(unittest.TestCase):
+    """自动生成 Bark Key（v1.12.0）：32 位 hex + 二维码。"""
+
+    def test_length_32_hex(self):
+        key = bark_mod.generate_bark_key()
+        self.assertEqual(len(key), 32)
+        self.assertTrue(all(c in string.hexdigits for c in key))
+
+    def test_unique(self):
+        keys = {bark_mod.generate_bark_key() for _ in range(100)}
+        self.assertEqual(len(keys), 100)
+
+    def test_usable_as_encrypt_key(self):
+        key = bark_mod.generate_bark_key()
+        ct, iv = bark_mod.encrypt_payload(b"hello", key)
+        self.assertTrue(ct)
+        self.assertEqual(len(iv), 16)
+
+    def test_qr_png_is_valid_png(self):
+        png = bark_mod.make_key_qr_png("a" * 32)
+        self.assertIsNotNone(png)
+        self.assertTrue(png.startswith(b"\x89PNG\r\n\x1a\n"))
+        self.assertGreater(len(png), 100)
+
+    def test_qr_png_differs_per_key(self):
+        self.assertNotEqual(bark_mod.make_key_qr_png("a" * 32),
+                            bark_mod.make_key_qr_png("b" * 32))
+
+    def test_qr_png_without_segno_returns_none(self):
+        with patch.dict(sys.modules, {"segno": None}):
+            self.assertIsNone(bark_mod.make_key_qr_png("a" * 32))
 
 
 class TestBarkConfig(unittest.TestCase):
@@ -338,6 +373,51 @@ class TestBarkCallback(BarkHandlerTestCase):
         await he.bark_callback(update, context)
         self.assertNotIn("pending_input", context.user_data)
         self.assertIn("Bark 通知设置", reply_text_of(update))
+
+    async def test_genkey_shows_confirmation(self):
+        update = make_update("bark:genkey")
+        context = make_context()
+        await he.bark_callback(update, context)
+        self.assertIn("确定生成新的", reply_text_of(update))
+        self.assertEqual(self.cfg["key"], "")  # 只出确认页，不改配置
+        kwargs = update.effective_message.reply_text.await_args_list[-1][1]
+        markup = kwargs.get("reply_markup")
+        callbacks = [b.callback_data for row in markup.inline_keyboard
+                     for b in row]
+        self.assertIn("bark:genkey:go", callbacks)
+        self.assertIn("bark:genkey:cancel", callbacks)
+
+    async def test_genkey_go_saves_and_shows_key_once(self):
+        update = make_update("bark:genkey:go")
+        context = make_context()
+        context.bot.send_photo = AsyncMock()
+        await he.bark_callback(update, context)
+        key = self.cfg["key"]
+        self.assertEqual(len(key), 32)
+        text = reply_text_of(update)
+        self.assertIn(key, text)  # 只显示这一次
+        self.assertIn("扫", text)
+        context.bot.send_photo.assert_awaited_once()
+        photo_kwargs = context.bot.send_photo.await_args[1]
+        self.assertEqual(photo_kwargs["chat_id"], TEST_CHAT_ID)
+        self.assertTrue(photo_kwargs["photo"].getvalue().startswith(
+            b"\x89PNG"))
+
+    async def test_genkey_go_photo_failure_still_shows_key(self):
+        update = make_update("bark:genkey:go")
+        context = make_context()
+        context.bot.send_photo = AsyncMock(
+            side_effect=RuntimeError("boom"))
+        await he.bark_callback(update, context)
+        self.assertEqual(len(self.cfg["key"]), 32)
+        self.assertIn(self.cfg["key"], reply_text_of(update))
+
+    async def test_genkey_cancel_returns_to_settings(self):
+        update = make_update("bark:genkey:cancel")
+        context = make_context()
+        await he.bark_callback(update, context)
+        self.assertIn("Bark 通知设置", reply_text_of(update))
+        self.assertEqual(self.cfg["key"], "")
 
 
 class TestBarkInputHandlers(BarkHandlerTestCase):

@@ -31,6 +31,33 @@ BARK_GROUP = "m-bot"
 _IV_ALPHABET = string.ascii_letters + string.digits
 
 
+def generate_bark_key():
+    """生成一个 32 位随机加密 Key（16 字节随机数 hex 编码）。
+
+    AES-256 需要 32 字节 Key；16 字节随机数 hex 编码后正好是
+    32 位可打印字符，等价于 openssl rand -hex 16。注意 openssl
+    rand -hex 32 会得到 64 位，太长了不能直接当 Key 用。
+    """
+    return secrets.token_hex(16)
+
+
+def make_key_qr_png(key):
+    """把 Bark 加密 Key 编成二维码 PNG（bytes），供 Bark App 扫码添加。
+
+    用 segno 纯 Python 生成（自带 PNG 编码，不依赖 Pillow）。
+    segno 未安装时返回 None，调用方退回只显示文字 Key。
+    二维码内容就是 Key 原文。
+    """
+    try:
+        import segno
+    except ImportError:
+        return None
+    import io
+    buf = io.BytesIO()
+    segno.make(key, error="m").save(buf, kind="png", scale=6, border=2)
+    return buf.getvalue()
+
+
 def _encrypt_cryptography(payload_bytes, key_bytes, iv_bytes):
     """用 cryptography 库做 AES-256-CBC + PKCS7 加密。"""
     from cryptography.hazmat.primitives import padding as sym_padding

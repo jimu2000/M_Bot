@@ -54,6 +54,7 @@ import os
 import threading
 import time
 from datetime import datetime, timedelta, timezone
+from io import BytesIO
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -61,7 +62,9 @@ from tgbot import config as bot_config
 from tgbot import handlers_client  # 菜单 23/24（内存占用/清除）由该模块实现
 from tgbot.bark import (
     bark_configured,
+    generate_bark_key,
     load_bark_config,
+    make_key_qr_png,
     mask_bark_url,
     save_bark_config,
     send_bark_test,
@@ -92,6 +95,7 @@ from tgbot.boot_form import (
 )
 from tgbot.keyboards import (
     back_to_oracle_keyboard,
+    bark_genkey_confirm_keyboard,
     bark_input_cancel_keyboard,
     bark_keyboard,
     batch_action_keyboard,
@@ -3661,7 +3665,9 @@ def fmt_bark_settings(cfg):
     ]
     if not configured:
         lines.append("先设置 Bark 地址和 32 位加密 Key，再点“测试推送”"
-                     "确认能收到，最后打开开关。")
+                     "确认能收到，最后打开开关。没有 Key 可以点"
+                     "“🎲 自动生成 Key”随机生成一个（生成后记得同步"
+                     "到 Bark App 里）。")
         lines.append("开启后，开机成功、账单超支、付费实例被停等通知"
                      "会同时推到 Bark 和 Telegram。")
     elif not enabled:
@@ -3694,10 +3700,12 @@ async def bark_command(update, context):
 @require_allowed
 async def bark_callback(update, context):
     """回调 bark:url / bark:key / bark:test / bark:toggle /
-    bark:cancel_input。
+    bark:cancel_input / bark:genkey[/go/cancel]。
 
     地址与 Key 走 text_input_callback（pending_input kind
     \"bark_url\" / \"bark_key\"）。测试推送不依赖开关。
+    自动生成 Key 先出确认页（生成后旧 Key 立即失效），确定后
+    生成 32 位随机 Key 并只显示一次（用户必须同步到 Bark App）。
     """
     parts = _callback_data(update).split(":")
     action = parts[1] if len(parts) > 1 else ""
@@ -3716,6 +3724,47 @@ async def bark_callback(update, context):
             "请发送 Bark 加密 Key（32 位，与 Bark App 里加密设置中的 Key 一致）：\n"
             "直接发文字消息即可。",
             reply_markup=bark_input_cancel_keyboard())
+        return
+    if action == "genkey":
+        sub = parts[2] if len(parts) > 2 else ""
+        if sub == "go":
+            new_key = generate_bark_key()
+            cfg = load_bark_config()
+            cfg["key"] = new_key
+            if update.effective_chat is not None:
+                cfg["chat_id"] = update.effective_chat.id
+            save_bark_config(cfg)
+            chat_id = update.effective_chat.id if update.effective_chat else None
+            qr_png = make_key_qr_png(new_key)
+            if qr_png and chat_id is not None:
+                try:
+                    await context.bot.send_photo(
+                        chat_id=chat_id, photo=BytesIO(qr_png),
+                        caption="Bark 加密 Key 二维码（用 Bark App 扫码添加）")
+                except Exception:  # noqa: BLE001 - 二维码发不出时文字 Key 照样可用
+                    pass
+            await _reply(
+                update,
+                "🎲 新的 Bark 加密 Key 已生成并保存（32 位）：\n"
+                f"{new_key}\n\n"
+                "⚠️ 请把这个 Key 同步到 Bark App 的加密设置里：直接用 "
+                "App 扫上面的二维码就能添加（也可以手动复制）。App 里的 "
+                "Key 必须和它一致，否则推送解不开。机器人只显示这一次。\n"
+                "另外：旧 Key 已失效，账单脚本、各主机流量脚本、邮件转发器"
+                "还在用旧 Key，需要同步换掉（告诉我一声，我来同步）。",
+                reply_markup=bark_keyboard(cfg.get("enabled"),
+                                           bark_configured(cfg)))
+            return
+        if sub == "cancel":
+            await handle_bark(update, context)
+            return
+        await _reply(
+            update,
+            "🎲 确定生成新的 Bark 加密 Key 吗？\n\n"
+            "生成后旧 Key 立即失效：Bark App 里要同步改成新 Key，"
+            "否则推送解不开；账单脚本、各主机流量脚本、邮件转发器"
+            "还在用旧 Key，也要同步更新。",
+            reply_markup=bark_genkey_confirm_keyboard())
         return
     if action == "cancel_input":
         context.user_data.pop("pending_input", None)

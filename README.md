@@ -1,6 +1,6 @@
 # M_Bot Oracle开源管理面板
 
-> **当前版本：v1.11.0** · 更新记录见 [CHANGELOG.md](CHANGELOG.md)（[英文版 / English](CHANGELOG.en.md)）
+> **当前版本：v1.12.0** · 更新记录见 [CHANGELOG.md](CHANGELOG.md)（[英文版 / English](CHANGELOG.en.md)）
 
 [中文](#中文) | [English](#english)
 
@@ -41,7 +41,8 @@ M_Bot 是一个开源的 Oracle Cloud 管理面板：Telegram 机器人 + Web �
   抢机成功后 Telegram + Bark 双通道通知里带密码（网页版开机同样双通道
   通知，提交后弹窗显示一次密码）
 - Bark 通知设置（菜单 43 / `/bark` 命令 / 面板“Bark 通知”页，三端共用
-  同一份配置）：AES-256-CBC 加密推送，地址 + 32 位 Key + 测试推送 + 开关
+  同一份配置）：AES-256-CBC 加密推送，地址 + 32 位 Key + 测试推送 + 开关；
+  Key 可一键自动生成（32 位随机 hex），生成后附二维码，Bark App 扫码添加
 - `/domain`：Cloudflare Zone 与 DNS 记录查询
 - 客户端工具：`/command` 远程 Shell（危险命令黑名单）、`/pubkey` 公钥管理、
   `/oproxy` 代理设置、`/uploadapi` 上传 OCI 配置
@@ -245,7 +246,8 @@ fully visible and auditable.
   password is shown once in a dialog after submit)
 - Bark notification settings (menu 43 / `/bark` command / panel "Bark"
   page, all sharing one config): AES-256-CBC encrypted push, with
-  address + 32-char key + test push + on/off switch
+  address + 32-char key + test push + on/off switch; the key can be
+  auto-generated (random 32-char hex) with a QR code the Bark app scans
 - `/domain`: Cloudflare zone and DNS record lookup
 - Client tools: `/command` remote shell (dangerous-command blocklist),
   `/pubkey` key management, `/oproxy` proxy settings, `/uploadapi` OCI config upload

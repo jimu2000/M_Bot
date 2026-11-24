@@ -9,6 +9,11 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [1.12.0] - 2026-11-24
+
+### Features
+- Auto-generate Bark encryption key (user request, 2026-11-24): menu 43 and the panel "Bark notifications" page gain a "🎲 Auto-generate Key" button that creates a random 32-char key (16 random bytes, hex-encoded — equivalent to `openssl rand -hex 16`; note `openssl rand -hex 32` produces 64 chars, too long to use as a key). A confirmation page comes first (the old key stops working immediately after generating); the new key is shown only once, with a QR code the Bark app can scan to add it (or copy it manually). The bot sends the QR as a photo, the web page shows it in the dialog; without segno installed there is no QR code, just the key text
+
 ## [1.11.0] - 2026-11-24
 
 ### Features
