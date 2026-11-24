@@ -1537,11 +1537,22 @@ class TestPages(WebApiTestCase):
                        "forgot-password-link", "login-form",
                        "telegram-form", "captcha-block", "login-error",
                        "lockout-info", "login-btn", "tg-send-btn",
-                       "tg-login-btn", "tab-password", "tab-telegram"):
+                       "tg-login-btn", "tab-password", "tab-telegram",
+                       "one-time-code"):
             self.assertIn(marker, html, marker)
         # 旧版左右分栏与终端装饰已移除。
         self.assertNotIn("login-side", html)
         self.assertNotIn("login-logo", html)
+
+    def test_login_page_tg_code_autofill(self):
+        """v1.25.0：验证码框用 one-time-code，手机浏览器才能在键盘上方
+        提示短信/邮件里的一次性验证码；Telegram 表单不能带
+        autocomplete="off"（会把这个提示压住）。"""
+        r = self.anon.get("/login")
+        html = r.text
+        self.assertIn('id="tg-code"', html)
+        self.assertIn('autocomplete="one-time-code"', html)
+        self.assertNotIn('id="telegram-form" autocomplete="off"', html)
 
     def test_root_redirects_to_overview(self):
         r = self.anon.get("/", follow_redirects=False)

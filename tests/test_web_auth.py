@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from web.auth import (
     HASH_ITERATIONS,
     LoginGuard,
+    MagicLoginStore,
     SessionStore,
     hash_password,
     verify_password,
@@ -198,6 +199,44 @@ class TestSessionStore(unittest.TestCase):
         self.assertGreater(remaining, 29 * 24 * 3600)
         self.assertLessEqual(remaining, 30 * 24 * 3600)
         self.assertEqual(self.store.get(token), "admin")
+
+
+class TestMagicLoginStore(unittest.TestCase):
+    """v1.25.0：一键登录 token 存储（一次性、5 分钟过期）。"""
+
+    def setUp(self):
+        self.store = MagicLoginStore()
+
+    def test_create_and_consume(self):
+        token = self.store.create()
+        self.assertTrue(token)
+        self.assertTrue(self.store.consume(token))
+
+    def test_consume_is_one_time(self):
+        token = self.store.create()
+        self.assertTrue(self.store.consume(token))
+        self.assertFalse(self.store.consume(token))
+
+    def test_consume_unknown_or_empty(self):
+        self.assertFalse(self.store.consume("no-such-token"))
+        self.assertFalse(self.store.consume(""))
+        self.assertFalse(self.store.consume(None))
+
+    def test_expired_token_rejected(self):
+        token = self.store.create()
+        self.store._tokens[token] = time.time() - 1
+        self.assertFalse(self.store.consume(token))
+        # 过期 token 已从字典里删除。
+        self.assertNotIn(token, self.store._tokens)
+
+    def test_revoke(self):
+        token = self.store.create()
+        self.store.revoke(token)
+        self.assertFalse(self.store.consume(token))
+
+    def test_tokens_are_unique(self):
+        tokens = {self.store.create() for _ in range(10)}
+        self.assertEqual(len(tokens), 10)
 
 
 if __name__ == "__main__":

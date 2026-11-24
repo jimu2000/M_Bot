@@ -179,6 +179,8 @@ class SessionStore:
 
 TELEGRAM_CODE_EXPIRE_SECONDS = 5 * 60
 TELEGRAM_CODE_COOLDOWN_SECONDS = 60
+# 一键登录链接有效期（秒）：与验证码一致，5 分钟。
+MAGIC_LOGIN_EXPIRE_SECONDS = 5 * 60
 
 
 class TelegramCodeStore:
@@ -252,10 +254,52 @@ class TelegramCodeStore:
         self._last_sent.clear()
 
 
+class MagicLoginStore:
+    """Telegram 一键登录链接的 token 内存存储。
+
+    token -> expires：发码时随验证码一起生成，链接形如
+    /login?token=...，点开即登录。token 32 字节随机（比 6 位
+    数字码强得多），5 分钟过期，consume() 无论成功失败都删除
+    该条（一次性，防重放）。token 值绝不写日志。
+    """
+
+    def __init__(self, expire_seconds=MAGIC_LOGIN_EXPIRE_SECONDS):
+        self.expire_seconds = expire_seconds
+        self._tokens = {}
+
+    def create(self):
+        """生成一个一键登录 token，返回 token 字符串。"""
+        token = secrets.token_urlsafe(32)
+        self._tokens[token] = time.time() + self.expire_seconds
+        return token
+
+    def consume(self, token):
+        """消费一个 token：存在且未过期返回 True，否则 False。
+
+        无论结果都删除该条（一次性）；空 token 直接返回 False。
+        """
+        if not token:
+            return False
+        expires = self._tokens.pop(token, None)
+        if expires is None:
+            return False
+        return expires > time.time()
+
+    def revoke(self, token):
+        """作废一个 token（发码失败时调用，与验证码一起作废）。"""
+        if token:
+            self._tokens.pop(token, None)
+
+    def reset(self):
+        """清空全部 token（测试用）。"""
+        self._tokens.clear()
+
+
 # 全局单例（单进程内共享）。
 LOGIN_GUARD = LoginGuard()
 SESSIONS = SessionStore()
 TELEGRAM_CODES = TelegramCodeStore()
+MAGIC_LOGIN_TOKENS = MagicLoginStore()
 
 
 # ---------------- 命令行：生成密码哈希 ----------------

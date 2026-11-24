@@ -1,4 +1,4 @@
-/* 登录页逻辑：密码登录（含可选图形验证码）+ Telegram 验证码登录 + 429 锁定倒计时 */
+/* 登录页逻辑：密码登录（含可选图形验证码）+ Telegram 验证码登录（一键登录链接）+ 429 锁定倒计时 */
 (function () {
   "use strict";
   var MBot = window.MBot;
@@ -112,6 +112,26 @@
     hideError();
   }
 
+  // 一键登录链接：/login?token=...（Telegram 消息里带的链接，点开即登录）
+  // 先用 replaceState 把 token 从地址栏抹掉（不进浏览器历史），再消费。
+  async function tryMagicLogin() {
+    var params = new URLSearchParams(window.location.search);
+    var token = params.get("token");
+    if (!token) return;
+    window.history.replaceState(null, "", window.location.pathname);
+    try {
+      await MBot.api("/api/auth/telegram/magic-login", {
+        method: "POST",
+        body: { token: token },
+        noRedirect: true,
+      });
+      window.location.href = "/overview";
+    } catch (err) {
+      switchTab("telegram");
+      showError(err.message || "登录链接已失效，请重新发送验证码");
+    }
+  }
+
   document.addEventListener("DOMContentLoaded", function () {
     var form = document.getElementById("login-form");
     var btn = document.getElementById("login-btn");
@@ -120,6 +140,7 @@
     var tabPassword = document.getElementById("tab-password");
 
     loadCaptcha();
+    tryMagicLogin();
 
     var captchaImg = document.getElementById("captcha-image");
     if (captchaImg) captchaImg.addEventListener("click", loadCaptcha);

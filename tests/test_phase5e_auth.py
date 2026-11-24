@@ -7,11 +7,15 @@
   - Telegram 验证码：TelegramCodeStore 一次性/过期/60 秒冷却、
     send-code（冷却 429、机器人未配置 503）、verify（正确建会话、
     错码/过期/重用 401）。
+  - Telegram 一键登录（v1.25.0）：发码消息里带 /login?token=... 链接，
+    magic-login（正确建会话、错 token/过期/重用 401），发码失败时
+    token 随验证码一起作废。
   - Telegram 发送全部 mock，不真发消息；验证码绝不出现在响应里。
 """
 
 import base64
 import os
+import re
 import secrets
 import sys
 import tempfile
@@ -26,8 +30,10 @@ from fastapi.testclient import TestClient
 from web.app import create_app
 from web.auth import (
     LOGIN_GUARD,
+    MAGIC_LOGIN_TOKENS,
     SESSIONS,
     TELEGRAM_CODES,
+    MagicLoginStore,
     TelegramCodeStore,
 )
 from web.auth import hash_password
@@ -175,6 +181,7 @@ class Phase5eAuthTestCase(unittest.TestCase):
         SESSIONS.reset()
         CAPTCHAS.reset()
         TELEGRAM_CODES.reset()
+        MAGIC_LOGIN_TOKENS.reset()
         self.client = TestClient(self.app)
 
     def tearDown(self):
@@ -277,8 +284,9 @@ class TestRememberMe(Phase5eAuthTestCase):
 class TestTelegramLoginApi(Phase5eAuthTestCase):
     """Telegram 验证码登录接口。"""
 
+    @patch("web.routes.auth.send_bark", return_value=(True, ""))
     @patch("web.routes.auth.send_to_allowed_users", return_value=1)
-    def test_send_code_ok(self, mock_send):
+    def test_send_code_ok(self, mock_send, mock_bark):
         r = self.client.post("/api/auth/telegram/send-code", json={})
         self.assertEqual(r.status_code, 200)
         body = r.json()
@@ -291,8 +299,9 @@ class TestTelegramLoginApi(Phase5eAuthTestCase):
         text = mock_send.call_args[0][0]
         self.assertIn("验证码", text)
 
+    @patch("web.routes.auth.send_bark", return_value=(True, ""))
     @patch("web.routes.auth.send_to_allowed_users", return_value=1)
-    def test_send_code_cooldown_429(self, mock_send):
+    def test_send_code_cooldown_429(self, mock_send, mock_bark):
         r1 = self.client.post("/api/auth/telegram/send-code", json={})
         self.assertEqual(r1.status_code, 200)
         r2 = self.client.post("/api/auth/telegram/send-code", json={})
@@ -349,6 +358,127 @@ class TestTelegramLoginApi(Phase5eAuthTestCase):
         r = self.client.post("/api/auth/telegram/verify",
                              json={"code_id": "nope", "code": "123456"})
         self.assertEqual(r.status_code, 401)
+
+
+class TestMagicLoginApi(Phase5eAuthTestCase):
+    """v1.25.0：Telegram 一键登录链接接口。"""
+
+    @patch("web.routes.auth.send_to_allowed_users", return_value=1)
+    def test_send_code_includes_magic_link(self, mock_send):
+        """发码消息里带一键登录链接，链接里的 token 能直接登录。"""
+        r = self.client.post("/api/auth/telegram/send-code", json={})
+        self.assertEqual(r.status_code, 200)
+        text = mock_send.call_args[0][0]
+        self.assertIn("验证码", text)
+        self.assertIn("/login?token=", text)
+        self.assertIn("直接登录", text)
+        # 从消息里抠出 token，走 magic-login 全链路登录成功。
+        match = re.search(r"/login\?token=([A-Za-z0-9_-]+)", text)
+        self.assertIsNotNone(match)
+        r = self.client.post("/api/auth/telegram/magic-login",
+                             json={"token": match.group(1)})
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.json()["ok"])
+        self.assertEqual(r.json()["username"], "admin")
+        # 会话 cookie 已设，/api/auth/me 能用。
+        r = self.client.get("/api/auth/me")
+        self.assertEqual(r.status_code, 200)
+
+    @patch("web.routes.auth.send_to_allowed_users", return_value=1)
+    def test_send_code_uses_configured_panel_url(self, mock_send):
+        """配置了 MBOT_PANEL_URL 时链接用该地址。"""
+        with patch("web.config.PANEL_URL", "https://panel.example.com"):
+            r = self.client.post("/api/auth/telegram/send-code", json={})
+        self.assertEqual(r.status_code, 200)
+        text = mock_send.call_args[0][0]
+        self.assertIn("https://panel.example.com/login?token=", text)
+
+    @patch("web.routes.auth.send_to_allowed_users", return_value=0)
+    def test_send_code_failure_revokes_token(self, mock_send):
+        """发码失败时 token 随验证码一起作废（不留可用链接）。"""
+        r = self.client.post("/api/auth/telegram/send-code", json={})
+        self.assertEqual(r.status_code, 503)
+        self.assertEqual(MAGIC_LOGIN_TOKENS._tokens, {})
+
+    def test_magic_login_ok_creates_session(self):
+        token = MAGIC_LOGIN_TOKENS.create()
+        r = self.client.post("/api/auth/telegram/magic-login",
+                             json={"token": token})
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.json()["ok"])
+        r = self.client.get("/api/auth/me")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["username"], "admin")
+
+    def test_magic_login_unknown_token_401(self):
+        r = self.client.post("/api/auth/telegram/magic-login",
+                             json={"token": "no-such-token"})
+        self.assertEqual(r.status_code, 401)
+
+    def test_magic_login_one_time(self):
+        token = MAGIC_LOGIN_TOKENS.create()
+        r1 = self.client.post("/api/auth/telegram/magic-login",
+                              json={"token": token})
+        self.assertEqual(r1.status_code, 200)
+        r2 = self.client.post("/api/auth/telegram/magic-login",
+                              json={"token": token})
+        self.assertEqual(r2.status_code, 401)
+
+    def test_magic_login_expired_401(self):
+        token = MAGIC_LOGIN_TOKENS.create()
+        MAGIC_LOGIN_TOKENS._tokens[token] = time.time() - 1
+        r = self.client.post("/api/auth/telegram/magic-login",
+                             json={"token": token})
+        self.assertEqual(r.status_code, 401)
+
+
+class TestSendCodeBarkChannel(Phase5eAuthTestCase):
+    """v1.25.0：发码时验证码同步推一条加密 Bark（双通道）。"""
+
+    @patch("web.routes.auth.send_bark", return_value=(True, ""))
+    @patch("web.routes.auth.send_to_allowed_users", return_value=1)
+    def test_send_code_pushes_bark(self, mock_send, mock_bark):
+        r = self.client.post("/api/auth/telegram/send-code", json={})
+        self.assertEqual(r.status_code, 200)
+        mock_bark.assert_called_once()
+        title, body = mock_bark.call_args[0][0], mock_bark.call_args[0][1]
+        self.assertEqual(title, "M_Bot 面板登录")
+        self.assertIn("验证码", body)
+        self.assertIn("/login?token=", body)
+
+    @patch("web.routes.auth.send_bark", return_value=(False, "boom"))
+    @patch("web.routes.auth.send_to_allowed_users", return_value=1)
+    def test_send_code_bark_failure_ignored(self, mock_send, mock_bark):
+        """Bark 推送失败不影响发码（Telegram 照常收到）。"""
+        r = self.client.post("/api/auth/telegram/send-code", json={})
+        self.assertEqual(r.status_code, 200)
+        mock_send.assert_called_once()
+
+    @patch("web.routes.auth.send_bark", side_effect=RuntimeError("boom"))
+    @patch("web.routes.auth.send_to_allowed_users", return_value=1)
+    def test_send_code_bark_exception_ignored(self, mock_send, mock_bark):
+        """Bark 抛异常也不影响发码。"""
+        r = self.client.post("/api/auth/telegram/send-code", json={})
+        self.assertEqual(r.status_code, 200)
+
+    @patch("web.routes.auth.send_bark", return_value=(True, ""))
+    @patch("web.routes.auth.send_to_allowed_users", return_value=1)
+    def test_send_code_bark_and_telegram_share_token(self, mock_send,
+                                                    mock_bark):
+        """Bark 与 Telegram 两条消息里的一键登录链接是同一个 token。"""
+        r = self.client.post("/api/auth/telegram/send-code", json={})
+        self.assertEqual(r.status_code, 200)
+        tg_text = mock_send.call_args[0][0]
+        bark_body = mock_bark.call_args[0][1]
+        tg_token = re.search(r"/login\?token=([A-Za-z0-9_-]+)",
+                             tg_text).group(1)
+        bark_token = re.search(r"/login\?token=([A-Za-z0-9_-]+)",
+                               bark_body).group(1)
+        self.assertEqual(tg_token, bark_token)
+        # 该 token 能登录（且只能用一次）。
+        r = self.client.post("/api/auth/telegram/magic-login",
+                             json={"token": bark_token})
+        self.assertEqual(r.status_code, 200)
 
 
 if __name__ == "__main__":

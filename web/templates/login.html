@@ -68,11 +68,13 @@
     </form>
 
     {# Telegram 验证码登录：点“发送验证码”后到 Telegram 收 6 位码 #}
-    <form id="telegram-form" autocomplete="off" hidden>
+    {# 注意：表单不要 autocomplete="off"，否则手机浏览器不会在键盘上方 #}
+    {# 提示短信/邮件里收到的一次性验证码（input 的 one-time-code 失效）。#}
+    <form id="telegram-form" hidden>
       <p class="login-note">验证码将发送到白名单用户的 Telegram（需面板服务器已配置机器人）。</p>
       <button type="button" class="login-btn" id="tg-send-btn">发送验证码</button>
       <div class="uv-field">
-        <input type="text" id="tg-code" name="tg_code" placeholder=" " inputmode="numeric" maxlength="6">
+        <input type="text" id="tg-code" name="tg_code" placeholder=" " inputmode="numeric" autocomplete="one-time-code" maxlength="6">
         <label for="tg-code">6 位验证码</label>
       </div>
       <button type="submit" class="login-btn" id="tg-login-btn">验证码登录</button>

@@ -58,6 +58,11 @@ CAPTCHA_ENABLED = os.environ.get("MBOT_CAPTCHA_ENABLED", "") == "1"
 # 公开仓库里不硬编码任何项目 ID。
 CLARITY_ID = os.environ.get("MBOT_CLARITY_ID", "")
 
+# 面板公网地址（如 https://panel.example.com）：Telegram 一键登录链接
+# 用它拼地址。为空时用请求自身的 Host 拼（反代需正确透传 Host 与
+# X-Forwarded-Proto，否则链接可能是 http 或内网地址）。
+PANEL_URL = os.environ.get("MBOT_PANEL_URL", "").rstrip("/")
+
 # 登录会话有效期（小时）。
 SESSION_EXPIRE_HOURS = 12
 # 勾选“记住我”时会话有效期（天）：服务端会话与 cookie 同时延长。

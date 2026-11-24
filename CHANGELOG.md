@@ -9,6 +9,17 @@
 
 ## [Unreleased]
 
+## [1.25.0] - 2026-11-24
+
+### 新增
+- Telegram 一键登录链接：发验证码时消息里同时带一条“点这里直接登录”链接（/login?token=...），点开即登录，不用再手动输 6 位码；链接一次性、5 分钟过期，token 32 字节随机，比 6 位数字码更难猜
+- 新接口 POST /api/auth/telegram/magic-login：消费一键登录 token，正确则建立会话；新存储 web/auth.py 的 MagicLoginStore（一次性、过期失效、发码失败时随验证码一起作废）；新配置 MBOT_PANEL_URL（面板公网地址，拼链接用；未配置时用请求 Host 拼）
+- 登录码双通道：发码时如 Bark 已配置且开启，验证码与一键登录链接同步推一条加密 Bark，Telegram 与 Bark 任一渠道收到都能进；Bark 推送失败或异常不影响登录
+- 验证码框加 autocomplete="one-time-code"，Telegram 表单去掉 autocomplete="off"：手机浏览器现在能在键盘上方提示短信/邮件里收到的一次性验证码，点一下自动填入（注意：Telegram 消息里的码不在手机系统的自动填充来源里，Telegram 场景请用上面的一键登录链接）
+
+### 验证
+- 全量测试 2237 个全过（含新增的一键登录 token 存储、发码链接、magic-login 接口、登录页自动填充标记测试）
+
 ## [1.24.0] - 2026-11-24
 
 ### 新增

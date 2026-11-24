@@ -9,6 +9,17 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [1.25.0] - 2026-11-24
+
+### Added
+- Telegram one-tap login link: the verification-code message now also carries a "tap here to log in directly" link (/login?token=...), which logs you in immediately — no need to type the 6-digit code; the link is single-use and expires in 5 minutes, and the 32-byte random token is far harder to guess than a 6-digit code
+- New endpoint POST /api/auth/telegram/magic-login: consumes a one-tap login token and creates a session; new store MagicLoginStore in web/auth.py (single-use, expires, revoked together with the code if sending fails); new setting MBOT_PANEL_URL (the panel's public address, used to build the link; falls back to the request Host when unset)
+- Dual-channel login codes: when Bark is configured and enabled, the code and the one-tap login link are also pushed over encrypted Bark, so either Telegram or Bark gets you in; a Bark push failure or exception never breaks the login flow
+- The code input now uses autocomplete="one-time-code" and the Telegram form no longer sets autocomplete="off": mobile browsers can now suggest one-time codes received by SMS or email above the keyboard, filling the field with one tap (note: codes in Telegram messages are not a source for the OS autofill, so use the one-tap login link for the Telegram flow)
+
+### Verification
+- Full test suite: 2237 tests, all passing (including the new one-tap login token store, send-code link, magic-login endpoint and login-page autofill marker tests)
+
 ## [1.24.0] - 2026-11-24
 
 ### Added

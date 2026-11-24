@@ -6,8 +6,12 @@
     （config.CAPTCHA_ENABLED）还需带 captchaId + captchaAnswer。
   - GET /api/auth/captcha：取图形验证码（未开启时返回 {enabled: false}）。
   - POST /api/auth/telegram/send-code：发 Telegram 登录验证码
-    （60 秒冷却，同一 IP 冷却期内返回 429）。
+    （60 秒冷却，同一 IP 冷却期内返回 429）。消息里同时带一条
+    一键登录链接（/login?token=...，点开即登录，一次性、5 分钟过期）。
+    Bark 已配置且开启时，验证码与链接同步推一条加密 Bark（双通道，
+    Bark 失败不影响登录）。
   - POST /api/auth/telegram/verify：验 Telegram 验证码，正确则建立会话。
+  - POST /api/auth/telegram/magic-login：消费一键登录 token，正确则建立会话。
   - POST /api/auth/logout：注销会话并清除 cookie。
   - GET /api/auth/me：返回当前登录用户（需登录）。
   - POST /api/auth/change-password：改管理员密码（需登录），验旧密码 +
@@ -27,6 +31,7 @@ from pydantic import BaseModel
 from web import config
 from web.auth import (
     LOGIN_GUARD,
+    MAGIC_LOGIN_TOKENS,
     SESSIONS,
     TELEGRAM_CODES,
     TELEGRAM_CODE_EXPIRE_SECONDS,
@@ -36,6 +41,8 @@ from web.auth import (
 from web.captcha import CAPTCHAS, generate_captcha
 from web.deps import error_response, get_current_user
 from web.telegram_notify import send_to_allowed_users
+
+from tgbot.bark import send_bark
 
 router = APIRouter()
 
@@ -58,6 +65,12 @@ class TelegramVerifyBody(BaseModel):
 
     code_id: str
     code: str
+
+
+class TelegramMagicLoginBody(BaseModel):
+    """Telegram 一键登录请求体：链接里的 token。"""
+
+    token: str
 
 
 class ChangePasswordBody(BaseModel):
@@ -188,6 +201,22 @@ def _client_key(request):
     return client.host if client else ""
 
 
+def _push_bark_login_code(code, base_url, magic_token):
+    """登录码同步推一条加密 Bark（双通道，尽力而为）。
+
+    Bark 未配置/未开启时 send_bark 直接返回失败，不发请求；
+    推送失败或异常都静默吞掉，绝不影响 Telegram 登录流程。
+    验证码绝不写日志。
+    """
+    try:
+        send_bark(
+            "M_Bot 面板登录",
+            f"验证码：{code}，5 分钟内有效。\n"
+            f"点这里直接登录：{base_url}/login?token={magic_token}")
+    except Exception:  # noqa: BLE001 - Bark 是辅助通道，失败不影响登录
+        pass
+
+
 @router.post("/api/auth/telegram/send-code")
 def telegram_send_code(request: Request):
     """发 Telegram 登录验证码：6 位数字码经 Bot API 发给白名单用户。
@@ -205,17 +234,25 @@ def telegram_send_code(request: Request):
                      "error": f"发送太频繁，请 {remaining} 秒后再试",
                      "retry_after_seconds": remaining})
     code_id, code = TELEGRAM_CODES.create()
+    magic_token = MAGIC_LOGIN_TOKENS.create()
+    # 一键登录链接地址：优先用配置的公网地址，否则用请求自身的 Host
+    # 拼（反代需透传 Host；链接点开即登录，与验证码同等效力）。
+    base_url = config.PANEL_URL or str(request.base_url).rstrip("/")
     sent = send_to_allowed_users(
         f"【M_Bot 面板登录】验证码：{code}，5 分钟内有效，"
-        f"请勿告诉他人。如非本人操作请忽略。")
+        f"请勿告诉他人。如非本人操作请忽略。\n"
+        f"点这里直接登录：{base_url}/login?token={magic_token}")
     if sent <= 0:
-        # 发送失败：作废这条码（不进冷却，用户可立即重试）。
+        # 发送失败：作废这条码与链接（不进冷却，用户可立即重试）。
         TELEGRAM_CODES.revoke(code_id)
+        MAGIC_LOGIN_TOKENS.revoke(magic_token)
         return error_response(
             "Telegram 机器人未配置或发送失败：请检查面板服务器的 "
             "MBOT_TELEGRAM_TOKEN 与 MBOT_ALLOWED_USERS",
             status_code=503)
     TELEGRAM_CODES.mark_sent(client_key)
+    # 双通道：Bark 已配置且开启时同步推一条（含验证码与一键登录链接）。
+    _push_bark_login_code(code, base_url, magic_token)
     return {"ok": True, "codeId": code_id,
             "expiresInSeconds": TELEGRAM_CODE_EXPIRE_SECONDS}
 
@@ -228,6 +265,20 @@ def telegram_verify(body: TelegramVerifyBody):
     """
     if not TELEGRAM_CODES.verify(body.code_id, body.code):
         return error_response("验证码错误或已过期，请重新发送",
+                              status_code=401)
+    return _set_session_cookie(
+        JSONResponse({"ok": True, "username": config.ADMIN_USERNAME}),
+        config.ADMIN_USERNAME)
+
+
+@router.post("/api/auth/telegram/magic-login")
+def telegram_magic_login(body: TelegramMagicLoginBody):
+    """一键登录：消费链接里的 token，正确则建立登录会话（管理员账号）。
+
+    token 一次性、5 分钟过期；错了或过期直接 401。token 值绝不写日志。
+    """
+    if not MAGIC_LOGIN_TOKENS.consume(body.token):
+        return error_response("登录链接已失效，请重新发送验证码",
                               status_code=401)
     return _set_session_cookie(
         JSONResponse({"ok": True, "username": config.ADMIN_USERNAME}),
