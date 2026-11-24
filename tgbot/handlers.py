@@ -28,6 +28,7 @@ from telegram.ext import ContextTypes
 from oci.instance import (get_instance, list_instances, restart_instance,
                           start_instance, stop_instance, terminate_instance)
 from oci.network import attach_public_ips, get_public_ip
+from tgbot import menu_tracker
 from tgbot.cpu_model import delete_cpu_model, get_cpu_model, host_for_ip
 from tgbot.handlers_client import run_remote_command
 from tgbot.keyboards import (ORACLE_MENU_ITEMS, back_to_oracle_keyboard,
@@ -228,8 +229,9 @@ async def _load_instance_list(context):
 @require_allowed
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """处理 /start：欢迎词 + 主菜单。"""
-    await update.effective_message.reply_text(
-        WELCOME_TEXT, reply_markup=main_menu_keyboard())
+    await menu_tracker.reply(update, context,
+                             WELCOME_TEXT,
+                             reply_markup=main_menu_keyboard())
 
 
 @require_allowed
@@ -241,8 +243,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @require_allowed
 async def oracle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """处理 /oracle：发送 Oracle 菜单（第 1 页，监控按钮带开关状态）。"""
-    await update.effective_message.reply_text(
-        ORACLE_MENU_TEXT,
+    await menu_tracker.reply(
+        update, context, ORACLE_MENU_TEXT,
         reply_markup=oracle_menu_keyboard(
             0, states=_menu_states(context),
             current_account=_current_account_label(context)))
@@ -252,7 +254,7 @@ async def oracle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def instances_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """处理 /instances：实例列表（回复命令消息，不编辑回调消息）。"""
     text, keyboard = await _load_instance_list(context)
-    await update.effective_message.reply_text(text, reply_markup=keyboard)
+    await menu_tracker.reply(update, context, text, reply_markup=keyboard)
 
 
 # ---------------- Oracle 菜单回调 ----------------
@@ -513,6 +515,8 @@ async def cancel_callback(update: Update,
     query = update.callback_query
     await query.answer()
     await query.edit_message_text("已取消。")
+    # 消息已变成纯文字结果，不再是选择框，清空跟踪。
+    menu_tracker.forget_live_menu(context)
 
 
 @require_allowed

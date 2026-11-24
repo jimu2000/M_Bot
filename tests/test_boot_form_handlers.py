@@ -66,6 +66,7 @@ def make_context():
     context.bot_data = {}
     context.bot = MagicMock()
     context.bot.send_message = AsyncMock()
+    context.bot.delete_message = AsyncMock()
     return context
 
 
@@ -239,13 +240,20 @@ class TestBootFormCallback(BootFormHandlersTestCase):
         self.assertIn("脚本", reply_text_of(update))
 
     async def test_cancel_input(self):
+        """取消自定义输入：清 pending_input，重发表单继续填。
+
+        v1.34.0：提示发出时旧表单已被选择框清理删掉，取消不再只
+        编辑提示说“表单未变”，而是重发表单（与输入完成后的做法一致）。
+        """
         update = make_update(callback_data="bf:cancel_input")
         context = make_context()
         context.user_data["pending_input"] = {"kind": "boot_cpu"}
+        context.user_data["boot_form"] = bf.new_form()
         await he.boot_form_callback(update, context)
         self.assertNotIn("pending_input", context.user_data)
-        query = update.callback_query
-        query.edit_message_text.assert_awaited_once()
+        self.assertIn("开机配置", reply_text_of(update))
+        self.assertIn("bf:confirm",
+                      callbacks_of(reply_markup_of(update)))
 
     async def test_expired_form_prompts_reopen(self):
         update = make_update(callback_data="bf:cpu:arm")

@@ -2772,7 +2772,8 @@ class TestMessageCleanup(HandlersExtraTestCase):
         sent = MagicMock(message_id=555)
         update.effective_message.reply_text = AsyncMock(
             return_value=sent)
-        result = await he._reply(update, "hi")
+        context = make_context()
+        result = await he._reply(update, context, "hi")
         self.assertIs(result, sent)
 
     async def test_reply_prompt_deletes_old_and_tracks_new(self):

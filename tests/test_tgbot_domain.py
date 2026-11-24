@@ -91,6 +91,7 @@ def make_context():
     context.bot_data = {}
     context.bot = MagicMock()
     context.bot.delete_message = AsyncMock()
+    context.bot.send_message = AsyncMock()
     return context
 
 
@@ -101,6 +102,17 @@ def reply_text_of(update):
         return None
     args, _kwargs = mock.await_args_list[-1]
     return args[0] if args else None
+
+
+def last_sent_text(update, context):
+    """取最后一条发出的文本：send_message 有调用时取它的最后一条，
+    否则取 reply_text 的最后一条（v1.34.0：同一回调里第二次 _reply
+    改走 send_message，被点的消息已删，回复它会报 Bad Request）。"""
+    send_mock = context.bot.send_message
+    if send_mock.await_args_list:
+        _args, kwargs = send_mock.await_args_list[-1]
+        return kwargs.get("text")
+    return reply_text_of(update)
 
 
 def reply_markup_of(update):
@@ -527,7 +539,7 @@ class TestCfCallback(DomainTestCase):
                              return_value=(True, 6, None)):
             update = make_update(callback_data="cf:extract:0")
             await he.cf_callback(update, context)
-        text = reply_text_of(update)
+        text = last_sent_text(update, context)
         self.assertIn("已从 host-a 提取", text)
         self.assertIn("6 个 Zone", text)
         self.assertIn("u***@example.com", text)
@@ -542,7 +554,7 @@ class TestCfCallback(DomainTestCase):
                              return_value=(None, None, "SSH 连接失败：超时")):
             update = make_update(callback_data="cf:extract:0")
             await he.cf_callback(update, context)
-        self.assertIn("提取失败", reply_text_of(update))
+        self.assertIn("提取失败", last_sent_text(update, context))
 
     async def test_extract_run_validate_failure(self):
         context = make_context()
@@ -556,7 +568,7 @@ class TestCfCallback(DomainTestCase):
                              return_value=(False, 0, "auth")):
             update = make_update(callback_data="cf:extract:0")
             await he.cf_callback(update, context)
-        self.assertIn("校验没通过", reply_text_of(update))
+        self.assertIn("校验没通过", last_sent_text(update, context))
 
     async def test_extract_run_no_guard_key(self):
         context = make_context()
@@ -843,7 +855,7 @@ class TestDnsAddFlow(DomainTestCase):
             FAKE_ZONE_ID, "A", "www", "203.0.113.10")
         self.assertNotIn("dns_add_draft", context.user_data)
         # 成功后刷新记录列表（最后一条消息是记录列表）。
-        self.assertIn("共 3 条", reply_text_of(update))
+        self.assertIn("共 3 条", last_sent_text(update, context))
 
     async def test_confirm_without_draft_expired(self):
         update = make_update(
@@ -927,7 +939,7 @@ class TestDnsDeleteFlow(DomainTestCase):
         self.cf.delete_dns_record.assert_called_once_with(
             FAKE_ZONE_ID, "recid000000000000000000000002")
         # 成功后刷新记录列表。
-        self.assertIn("共 3 条", reply_text_of(update))
+        self.assertIn("共 3 条", last_sent_text(update, context))
 
     async def test_del_yes_api_error_reported(self):
         self.cf.delete_dns_record.side_effect = _cf_error("not_found")

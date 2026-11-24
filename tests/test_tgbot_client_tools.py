@@ -107,6 +107,9 @@ def make_context():
     context = MagicMock()
     context.user_data = {}
     context.bot_data = {}
+    context.bot = MagicMock()
+    context.bot.send_message = AsyncMock()
+    context.bot.delete_message = AsyncMock()
     return context
 
 
@@ -120,6 +123,17 @@ def last_reply_text(update):
     """取 reply_text 最后一次调用的文本（没调过返回 None）。"""
     texts = all_reply_texts(update)
     return texts[-1] if texts else None
+
+
+def last_sent_text(update, context):
+    """取最后一条发出的文本：send_message 有调用时取它的最后一条，
+    否则取 reply_text 的最后一条（v1.34.0：同一回调里第二次 _reply
+    改走 send_message，被点的消息已删，回复它会报 Bad Request）。"""
+    send_mock = context.bot.send_message
+    if send_mock.await_args_list:
+        _args, kwargs = send_mock.await_args_list[-1]
+        return kwargs.get("text")
+    return last_reply_text(update)
 
 
 def reply_markup_of(update, call_index=-1):
@@ -1771,7 +1785,7 @@ class TestMemballoonHandlers(ClientHandlersTestCase):
         records = hc.load_mem_hogs(self.tmp_hogs)
         self.assertEqual(records[FAKE_INSTANCE_ID]["pid"], 4242)
         self.assertEqual(records[FAKE_INSTANCE_ID]["host"], FAKE_IP)
-        text = last_reply_text(update)
+        text = last_sent_text(update, context)
         self.assertIn("已在实例", text)
         self.assertIn("4242", text)
 
@@ -1794,12 +1808,13 @@ class TestMemballoonHandlers(ClientHandlersTestCase):
 
     async def test_go_start_failure(self):
         update = make_callback_update("mh:go:0")
+        context = self._stored_context()
         with patch.object(hc, "resolve_instance_ssh_target",
                           return_value=self._target()), \
              patch.object(hc, "start_memhog_on_host",
                           side_effect=RemoteCommandError("SSH 认证失败")):
-            await hc.memballoon_callback(update, self._stored_context())
-        self.assertIn("启动失败", last_reply_text(update))
+            await hc.memballoon_callback(update, context)
+        self.assertIn("启动失败", last_sent_text(update, context))
         self.assertEqual(hc.load_mem_hogs(self.tmp_hogs), {})
 
 
@@ -1846,34 +1861,36 @@ class TestMemclearHandlers(ClientHandlersTestCase):
             "pid": 4242, "started": "2026-11-23T00:00:00+00:00",
             "host": FAKE_IP}})
         update = make_callback_update("mc:go:0")
+        context = self._stored_context()
         clear_result = {"killed": True, "drop_caches_ok": True,
                         "drop_caches_output": ""}
         with patch.object(hc, "resolve_instance_ssh_target",
                           return_value=self._target()), \
              patch.object(hc, "clear_memhog_on_host",
                           return_value=clear_result) as mock_clear:
-            await hc.memclear_callback(update, self._stored_context())
+            await hc.memclear_callback(update, context)
         mock_clear.assert_called_once()
         args = mock_clear.call_args.args
         self.assertEqual(args[1], 4242)   # pid 传进去了
         self.assertEqual(args[2], False)  # root 不用 sudo
         self.assertEqual(hc.load_mem_hogs(self.tmp_hogs), {})
-        text = last_reply_text(update)
+        text = last_sent_text(update, context)
         self.assertIn("已杀掉占用进程 PID 4242", text)
         self.assertIn("清缓存成功", text)
         self.assertIn("已删除占用记录", text)
 
     async def test_go_without_record_only_clears_cache(self):
         update = make_callback_update("mc:go:0")
+        context = self._stored_context()
         clear_result = {"killed": None, "drop_caches_ok": True,
                         "drop_caches_output": ""}
         with patch.object(hc, "resolve_instance_ssh_target",
                           return_value=self._target()), \
              patch.object(hc, "clear_memhog_on_host",
                           return_value=clear_result) as mock_clear:
-            await hc.memclear_callback(update, self._stored_context())
+            await hc.memclear_callback(update, context)
         self.assertIsNone(mock_clear.call_args.args[1])  # pid 为 None
-        text = last_reply_text(update)
+        text = last_sent_text(update, context)
         self.assertIn("无占用进程", text)
         self.assertIn("清缓存成功", text)
         self.assertNotIn("已删除占用记录", text)
@@ -1894,26 +1911,28 @@ class TestMemclearHandlers(ClientHandlersTestCase):
             "pid": 4242, "started": "2026-11-23T00:00:00+00:00",
             "host": FAKE_IP}})
         update = make_callback_update("mc:go:0")
+        context = self._stored_context()
         clear_result = {"killed": False, "drop_caches_ok": True,
                         "drop_caches_output": ""}
         with patch.object(hc, "resolve_instance_ssh_target",
                           return_value=self._target()), \
              patch.object(hc, "clear_memhog_on_host",
                           return_value=clear_result):
-            await hc.memclear_callback(update, self._stored_context())
-        self.assertIn("已不存在", last_reply_text(update))
+            await hc.memclear_callback(update, context)
+        self.assertIn("已不存在", last_sent_text(update, context))
         self.assertEqual(hc.load_mem_hogs(self.tmp_hogs), {})
 
     async def test_go_drop_caches_failure_reported(self):
         update = make_callback_update("mc:go:0")
+        context = self._stored_context()
         clear_result = {"killed": None, "drop_caches_ok": False,
                         "drop_caches_output": "Permission denied"}
         with patch.object(hc, "resolve_instance_ssh_target",
                           return_value=self._target()), \
              patch.object(hc, "clear_memhog_on_host",
                           return_value=clear_result):
-            await hc.memclear_callback(update, self._stored_context())
-        text = last_reply_text(update)
+            await hc.memclear_callback(update, context)
+        text = last_sent_text(update, context)
         self.assertIn("清缓存失败", text)
         self.assertIn("Permission denied", text)
 
@@ -1922,12 +1941,13 @@ class TestMemclearHandlers(ClientHandlersTestCase):
             "pid": 4242, "started": "2026-11-23T00:00:00+00:00",
             "host": FAKE_IP}})
         update = make_callback_update("mc:go:0")
+        context = self._stored_context()
         with patch.object(hc, "resolve_instance_ssh_target",
                           return_value=self._target()), \
              patch.object(hc, "clear_memhog_on_host",
                           side_effect=RemoteCommandError("SSH 连接失败")):
-            await hc.memclear_callback(update, self._stored_context())
-        self.assertIn("清除失败", last_reply_text(update))
+            await hc.memclear_callback(update, context)
+        self.assertIn("清除失败", last_sent_text(update, context))
         # SSH 失败时不知道远端状态，记录保留（不误删）。
         self.assertIn(FAKE_INSTANCE_ID, hc.load_mem_hogs(self.tmp_hogs))
 

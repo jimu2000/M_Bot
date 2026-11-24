@@ -41,6 +41,7 @@ from clouds import (AWSProvider, AzureProvider, DOProvider, GCPProvider,
                     SolusVMProvider, VirtFusionProvider)
 from oci.instance import list_instances
 from tgbot import config as bot_config
+from tgbot import menu_tracker
 from tgbot.client_ops import (BOT_SERVICE, WEB_SERVICE, restart_service,
                               service_status)
 from tgbot.config import update_env_file_vars
@@ -101,13 +102,13 @@ SKIPPED_COMMANDS = ("bindclient", "qrcode", "codeflash", "flash",
                     "migrate", "getflash", "qb", "qs", "lang")
 
 
-async def _reply(update, text, reply_markup=None, parse_mode=None):
-    """统一回复：优先回复命令消息，否则回复回调消息。"""
-    message = update.effective_message
-    if message is None:
-        return
-    await message.reply_text(text, reply_markup=reply_markup,
-                             parse_mode=parse_mode)
+async def _reply(update, context, text, reply_markup=None,
+               parse_mode=None):
+    """统一回复：tgbot.menu_tracker.reply 的薄包装（带选择框清理，
+    每聊天只留一个活动选择框；点完删掉多余的选择框，只留结果）。"""
+    return await menu_tracker.reply(
+        update, context, text, reply_markup=reply_markup,
+        parse_mode=parse_mode)
 
 
 # ================= 其他云：/azure /aws /gcp /do /vf /solusvm =================
@@ -185,26 +186,26 @@ async def _handle_cloud_command(update, context, provider_name):
         if provider_name == "azure":
             # /oci 只支持 Oracle 与 Azure 两种配置，别家不要提示这一句。
             lines += ["", "已有账号时也可以用 /oci 上传 Azure 配置。"]
-        await _reply(update, "\n".join(lines))
+        await _reply(update, context, "\n".join(lines))
         return
     provider = spec["provider_cls"]()
     try:
         instances = await run_sync(provider.list_instances)
     except NotImplementedError:
         await _reply(
-            update,
+            update, context,
             f"ℹ️ {display} 账号已配置，但实例列表功能尚未实现：\n"
             f"{display} 模块目前还是 stub，列表 / 创建等接口待开发，"
             "有账号后按真实 API 接入。")
         return
     except Exception as exc:  # noqa: BLE001 - 云 API 异常统一转中文提示
         logger.warning("%s 列实例失败：%s", display, exc)
-        await _reply(update, fmt_error(exc))
+        await _reply(update, context, fmt_error(exc))
         return
     if not instances:
-        await _reply(update, f"{display} 账号下没有实例。")
+        await _reply(update, context, f"{display} 账号下没有实例。")
         return
-    await _reply(update, _fmt_cloud_instances(display, instances))
+    await _reply(update, context, _fmt_cloud_instances(display, instances))
 
 
 @require_allowed
@@ -273,7 +274,7 @@ async def oci_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("pending_input", None)
     context.user_data["oci_awaiting"] = True
     await _reply(
-        update,
+        update, context,
         "📤 上传甲骨文或 Azure 配置：\n\n"
         "请发送 config 文件（.ini / .txt / .conf），或直接粘贴 config 文本。\n"
         "支持 R-Bot 格式：oci=begin … oci=end 块里可一次放多个 [PROFILE]，"
@@ -297,7 +298,7 @@ async def _handle_oci_config_text(update, context, text):
     """待输入状态下的 config 文本：解析 -> 校验 -> 二次确认键盘。"""
     parsed = parse_oci_config_text(text)
     if parsed["error"]:
-        await _reply(update, f"❌ 配置格式不对：{parsed['error']}\n请重新发送。")
+        await _reply(update, context, f"❌ 配置格式不对：{parsed['error']}\n请重新发送。")
         return
     profile = parsed["profile"]
     fields = parsed["fields"]
@@ -306,21 +307,21 @@ async def _handle_oci_config_text(update, context, text):
         return
     new_profiles, skipped, error_text = prepare_oci_profiles(parsed)
     if error_text:
-        await _reply(update, f"❌ {error_text}")
+        await _reply(update, context, f"❌ {error_text}")
         return
     cloudflare = parsed.get("cloudflare")
     cf_exists = bool(cloudflare) and _has_section_ci(OCI_CONFIG_PATH,
                                                      "cloudflare")
     if not new_profiles and not (cloudflare and not cf_exists):
         _clear_oci_pending(context)
-        await _reply(update,
+        await _reply(update, context,
                      f"⚠️ profile「{'、'.join(skipped)}」已存在，不会覆盖。\n"
                      "请改名后重传（改 [PROFILE] 段名）。")
         return
     context.user_data["oci_pending"] = {"kind": "oci",
                                         "profiles": new_profiles,
                                         "cloudflare": cloudflare}
-    await _reply(update, build_oci_profiles_confirm_text(new_profiles,
+    await _reply(update, context, build_oci_profiles_confirm_text(new_profiles,
                                                          skipped,
                                                          cloudflare,
                                                          cf_exists),
@@ -334,7 +335,7 @@ async def _handle_oci_azure(update, context, fields):
     """[azure] 段：校验四个键 -> 二次确认（值不回显）。"""
     missing = [key for key in AZURE_REQUIRED_KEYS if not fields.get(key)]
     if missing:
-        await _reply(update,
+        await _reply(update, context,
                      f"❌ Azure 配置缺少必填键：{'、'.join(missing)}\n"
                      "请补全后重新发送。")
         return
@@ -348,7 +349,7 @@ async def _handle_oci_azure(update, context, fields):
              "",
              "⚠️ 写入后需重启机器人服务才生效。",
              "值不会在聊天里回显。"]
-    await _reply(update, "\n".join(lines),
+    await _reply(update, context, "\n".join(lines),
                  reply_markup=InlineKeyboardMarkup([
                      [InlineKeyboardButton("✅ 确认添加",
                                            callback_data="oci:confirm")],
@@ -362,11 +363,11 @@ async def oci_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query is not None:
         await query.answer()
     if query is None or query.data != "oci:confirm":
-        await _reply(update, "参数错误，请重新发送 /oci。")
+        await _reply(update, context, "参数错误，请重新发送 /oci。")
         return
     pending = context.user_data.get("oci_pending")
     if not pending:
-        await _reply(update, "待添加的配置已过期，请重新发送 /oci。")
+        await _reply(update, context, "待添加的配置已过期，请重新发送 /oci。")
         return
     if pending["kind"] == "azure":
         await _confirm_oci_azure(update, context, pending)
@@ -374,7 +375,7 @@ async def oci_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     profiles = pending.get("profiles") or []
     cloudflare = pending.get("cloudflare")
     if not profiles and not cloudflare:
-        await _reply(update, "待添加的配置已过期，请重新发送 /oci。")
+        await _reply(update, context, "待添加的配置已过期，请重新发送 /oci。")
         return
     results = []
     added_vars = {}
@@ -382,20 +383,20 @@ async def oci_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             results = await run_sync(commit_oci_profiles, profiles)
         except (ValueError, OSError) as exc:
-            await _reply(update, f"❌ 写入失败：{exc}")
+            await _reply(update, context, f"❌ 写入失败：{exc}")
             return
     cf_saved = None
     if cloudflare:
         try:
             cf_saved = await run_sync(commit_cf_section, cloudflare)
         except OSError as exc:
-            await _reply(update, f"❌ Cloudflare 凭据写入失败：{exc}")
+            await _reply(update, context, f"❌ Cloudflare 凭据写入失败：{exc}")
             return
     if profiles:
         try:
             added_vars = await run_sync(add_profile_compartments, profiles)
         except OSError as exc:
-            await _reply(update,
+            await _reply(update, context,
                          f"✅ 配置已写入，但账号切换变量添加失败：{exc}\n"
                          "请手动在 env 文件里加 MBOT_COMPARTMENT_<PROFILE> "
                          "后重启机器人。")
@@ -404,7 +405,7 @@ async def oci_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _clear_oci_pending(context)
     text = build_oci_profiles_result_text(results, added_vars,
                                           OCI_CONFIG_PATH, cf_saved)
-    await _reply(update, text + "\n\n生效方法：重启机器人服务"
+    await _reply(update, context, text + "\n\n生效方法：重启机器人服务"
                  "（/admin 里可重启），之后可在菜单里切换到新账号。")
 
 
@@ -415,11 +416,11 @@ async def _confirm_oci_azure(update, context, pending):
     try:
         await run_sync(update_env_file_vars, updates)
     except OSError as exc:
-        await _reply(update, f"❌ 写入失败：{exc}")
+        await _reply(update, context, f"❌ 写入失败：{exc}")
         return
     _clear_oci_pending(context)
     await _reply(
-        update,
+        update, context,
         "✅ Azure 配置已写进机器人 env 文件（4 项）。\n\n"
         "生效方法：重启机器人服务（/admin 里可重启），"
         "之后 /azure 会显示已配置；实例列表接口仍在开发中。")
@@ -446,7 +447,7 @@ async def handle_oci_document(update: Update,
         raw = await tg_file.download_as_bytearray()
         text = bytes(raw).decode("utf-8")
     except Exception as exc:  # noqa: BLE001 - 下载/解码失败都要提示用户
-        await _reply(update, f"❌ 文件读取失败：{exc}")
+        await _reply(update, context, f"❌ 文件读取失败：{exc}")
         return
     await _handle_oci_config_text(update, context, text)
 
@@ -489,13 +490,13 @@ def clear_login_lockout():
 async def clearlock_command(update: Update,
                             context: ContextTypes.DEFAULT_TYPE):
     """处理 /clearlock：重启面板服务清除登录失败锁定。"""
-    await _reply(update, "正在重启面板服务以清除登录锁定，请稍等…")
+    await _reply(update, context, "正在重启面板服务以清除登录锁定，请稍等…")
     try:
         result = await run_sync(clear_login_lockout)
     except RuntimeError as exc:
-        await _reply(update, f"❌ 清除锁定失败：{exc}")
+        await _reply(update, context, f"❌ 清除锁定失败：{exc}")
         return
-    await _reply(update, result)
+    await _reply(update, context, result)
 
 
 # ================= /raninfo：重置面板管理员密码 =================
@@ -558,14 +559,14 @@ def reset_admin_password(env_file=None, password_file=None):
 async def raninfo_command(update: Update,
                           context: ContextTypes.DEFAULT_TYPE):
     """处理 /raninfo：重置面板管理员密码，新密码只发一次。"""
-    await _reply(update, "正在重置面板管理员密码…")
+    await _reply(update, context, "正在重置面板管理员密码…")
     try:
         new_password = await run_sync(reset_admin_password)
     except (OSError, RuntimeError) as exc:
-        await _reply(update, f"❌ 重置失败：{exc}")
+        await _reply(update, context, f"❌ 重置失败：{exc}")
         return
     await _reply(
-        update,
+        update, context,
         "✅ 面板管理员密码已重置，面板服务已重启。\n\n"
         f"新密码：`{new_password}`\n\n"
         "⚠️ 请立即保存，新密码只显示这一次。",
@@ -618,7 +619,7 @@ async def me_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as exc:  # noqa: BLE001 - OCI 异常统一转中文提示
             logger.warning("%s 查实例数失败：%s", profile, exc)
             lines.append(f"• {label}：{fmt_error(exc)}")
-    await _reply(update, "\n".join(lines))
+    await _reply(update, context, "\n".join(lines))
 
 
 # ================= /admin：管理员菜单 =================
@@ -646,7 +647,7 @@ def _confirm_keyboard(confirm_data, confirm_text):
 @require_allowed
 async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """处理 /admin：管理员菜单（内联按钮）。"""
-    await _reply(update, "🛠 管理员菜单", reply_markup=admin_keyboard())
+    await _reply(update, context, "🛠 管理员菜单", reply_markup=admin_keyboard())
 
 
 @require_allowed

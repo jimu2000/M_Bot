@@ -83,6 +83,9 @@ def make_context():
     """mock Context：user_data 是真实 dict，其余字段按需 patch。"""
     context = MagicMock()
     context.user_data = {}
+    context.bot = MagicMock()
+    context.bot.send_message = AsyncMock()
+    context.bot.delete_message = AsyncMock()
     return context
 
 

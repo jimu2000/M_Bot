@@ -102,6 +102,9 @@ def make_context():
     context = MagicMock()
     context.user_data = {}
     context.bot_data = {}
+    context.bot = MagicMock()
+    context.bot.send_message = AsyncMock()
+    context.bot.delete_message = AsyncMock()
     return context
 
 

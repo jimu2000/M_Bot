@@ -59,6 +59,7 @@ def make_context():
     context.bot_data = {}
     context.bot = MagicMock()
     context.bot.send_message = AsyncMock()
+    context.bot.delete_message = AsyncMock()
     return context
 
 
@@ -227,9 +228,12 @@ class TestMonitorToggleRefresh(MonitoringBotTestCase):
         self.assertIn("已开启", reply_text_of(update))
         texts = button_texts(reply_markup_of(update))
         self.assertIn("9. 实例状态监控通知 (开启)", texts)
-        # 再切一次：按钮变回关闭。
-        await he.handle_monitor(update, context)
-        texts = button_texts(reply_markup_of(update))
+        # 再切一次：按钮变回关闭（生产上是另一次点按，用新 update
+        # 模拟新的回调 query.id；复用同一个 update 会被 v1.34.0 的
+        # 同回调去重当成同一次点按，走 send_message）。
+        update2 = make_update(callback_data="o:monitor")
+        await he.handle_monitor(update2, context)
+        texts = button_texts(reply_markup_of(update2))
         self.assertIn("9. 实例状态监控通知 (关闭)", texts)
 
     async def test_autostart_toggle_refreshes_both_buttons(self):

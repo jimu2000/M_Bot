@@ -9,6 +9,19 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [1.34.0] - 2026-11-24
+
+### Added
+- One live selection box per chat (user request, 2026-11-24: no more piles of stale menus; delete the redundant selection boxes after tapping). New module `tgbot/menu_tracker.py` manages it centrally: a message with an inline keyboard is a selection box, and sending a new one deletes the old one first; when a result message (no keyboard) is sent, the selection box has served its purpose and is deleted too, leaving only the result. On a button tap, the new message is sent first and the tapped message is deleted after (a reply must go out before its target is gone); when a callback replies more than once, only the first reply uses reply-to, and later ones go through `bot.send_message` (replying to a deleted message returns Bad Request). Deletion failures (message already deleted / older than 48 hours / no permission) are only logged and never break the main flow.
+- All three handler modules' `_reply` helpers (511 call sites) are now thin wrappers around `menu_tracker.reply` (with an added `context` parameter); the `/start`, `/oracle`, and `/instances` command entries use the same tracking; the `x` cancel callback clears tracking after editing the message to "Cancelled"; prompt cleanup also clears the live-menu tracking of deleted prompts.
+
+### Changed
+- Boot form "cancel custom input": it used to just edit the prompt to say the form was unchanged (the old form was still there). Now the old form is already deleted by the selection-box cleanup when the prompt is sent, so cancelling re-sends the form to continue filling it (same as after a completed input), and the prompt message is deleted by the `_reply` cleanup.
+
+### Verification
+- Full test suite: 2471 tests, all passing (new `tests/test_menu_tracker.py`, 10 tests: callback sending a selection box deletes the tapped message and tracks the new one, deletes the previously tracked box, sending a result deletes the box and clears tracking, a second reply in the same callback goes through `send_message`, command-sent box/result tracking, deletion failure does not break the reply, no message and no chat returns None, and `forget`/`delete_live_menu` except behaviour; 16 existing tests updated for the new behaviour: double-reply flows now check the merged channel, the form-cancel test asserts the re-sent form, the monitor-toggle test uses a fresh callback for the second tap, and the direct `_reply` call passes a context; `make_context` fixtures in 11 test files now set both `bot.send_message` and `bot.delete_message` as AsyncMock).
+- Live verification: deployed to .160 and restarted the bot; the service is up with no errors in the log. The tap-through cleanup effect needs confirming on the user's phone (instance detail → boot-volume restore → backup list should leave only the current selection box in the chat).
+
 ## [1.33.0] - 2026-11-24
 
 ### Changed

@@ -62,6 +62,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from tgbot import config as bot_config
 from tgbot import handlers_client  # 菜单 23/24（内存占用/清除）由该模块实现
+from tgbot import menu_tracker
 from tgbot.bark import (
     bark_configured,
     generate_bark_key,
@@ -467,23 +468,17 @@ def _unwrap(result):
     return result
 
 
-async def _reply(update, text, reply_markup=None, parse_mode=None):
-    """统一回复：回调时先 answer（防按钮转圈），再用消息回复。
+async def _reply(update, context, text, reply_markup=None,
+               parse_mode=None):
+    """统一回复：tgbot.menu_tracker.reply 的薄包装（带选择框清理，
+    每聊天只留一个活动选择框；点完删掉多余的选择框，只留结果）。
 
     返回新发送的消息（Message），供调用方记录 ID 以便后续清理；
     没有可回复的消息时返回 None。
     """
-    query = update.callback_query
-    if query is not None:
-        try:
-            await query.answer()
-        except Exception:
-            pass
-    message = update.effective_message
-    if message is not None:
-        return await message.reply_text(text, reply_markup=reply_markup,
-                                        parse_mode=parse_mode)
-    return None
+    return await menu_tracker.reply(
+        update, context, text, reply_markup=reply_markup,
+        parse_mode=parse_mode)
 
 
 # 流程中间消息清理（用户要求 2026-11-24：改完了只留这一条结果信息）。
@@ -509,6 +504,11 @@ async def _delete_tracked_prompts(context, chat_id):
     ids = context.user_data.pop(_PROMPT_IDS_KEY, None) or []
     for message_id in ids:
         await _delete_message_safe(context, chat_id, message_id)
+    # 带取消键盘的提示本身就是活动选择框，删了之后跟踪也要清掉，
+    # 否则下次回复还会去删一条已删的消息。
+    live_id = context.user_data.get(menu_tracker.LIVE_MENU_KEY)
+    if live_id is not None and live_id in ids:
+        menu_tracker.forget_live_menu(context)
 
 
 # 切换账号/区域流程的中间消息（账号列表 / 区域列表）：切换完成后
@@ -592,7 +592,7 @@ async def _show_oracle_menu_after_switch(update, context, confirm_line):
             return
         except Exception as exc:  # noqa: BLE001 - 编辑失败就新发一条
             logger.debug("切换后编辑主菜单失败，改发新消息：%s", exc)
-    await _reply(update, text, reply_markup=keyboard)
+    await _reply(update, context, text, reply_markup=keyboard)
 
 
 async def _reply_prompt(update, context, text, reply_markup=None):
@@ -605,7 +605,7 @@ async def _reply_prompt(update, context, text, reply_markup=None):
     chat_id = update.effective_chat.id if update.effective_chat else None
     if chat_id is not None:
         await _delete_tracked_prompts(context, chat_id)
-    msg = await _reply(update, text, reply_markup=reply_markup)
+    msg = await _reply(update, context, text, reply_markup=reply_markup)
     if msg is not None and getattr(msg, "message_id", None):
         context.user_data.setdefault(_PROMPT_IDS_KEY, []).append(
             msg.message_id)
@@ -1318,7 +1318,7 @@ async def handle_boot(update, context):
     """
     context.user_data["boot_form"] = new_form()
     form = context.user_data["boot_form"]
-    await _reply(update, fmt_form_text(form),
+    await _reply(update, context, fmt_form_text(form),
                  reply_markup=boot_form_keyboard(form))
 
 
@@ -1378,7 +1378,7 @@ async def _boot_form_confirm(update, context, form):
                            region=get_current_region(context),
                            profile=get_current_profile(context))
     if errors:
-        await _reply(update,
+        await _reply(update, context,
                      "❌ 配置还没填完：\n"
                      + "\n".join(f"• {error}" for error in errors)
                      + "\n\n请继续点选表单。",
@@ -1387,7 +1387,7 @@ async def _boot_form_confirm(update, context, form):
     try:
         preset = build_preset(form, deploy)
     except ValueError as exc:
-        await _reply(update, f"❌ {exc}", reply_markup=boot_form_keyboard(form))
+        await _reply(update, context, f"❌ {exc}", reply_markup=boot_form_keyboard(form))
         return
     # root 密码在确认页就生成（UUID，见 boot_form.generate_root_password）：
     # 确认页显示给用户看，点"开始抢机"后 boot_go_callback 复用同一份
@@ -1403,7 +1403,7 @@ async def _boot_form_confirm(update, context, form):
             preset.get("count", 1), preset.get("boot_volume_size_gbs"))
     except Exception as exc:  # noqa: BLE001 - 预检失败也要让用户看到
         ok, reason = False, fmt_error(exc)
-    await _reply(update, fmt_boot_form_summary(preset, ok, reason),
+    await _reply(update, context, fmt_boot_form_summary(preset, ok, reason),
                  reply_markup=boot_confirm_keyboard(preset))
 
 
@@ -1419,7 +1419,7 @@ async def _boot_form_save(update, context, form):
                            region=get_current_region(context),
                            profile=get_current_profile(context))
     if errors:
-        await _reply(update,
+        await _reply(update, context,
                      "❌ 配置还没填完：\n"
                      + "\n".join(f"• {error}" for error in errors)
                      + "\n\n请继续点选表单。",
@@ -1428,11 +1428,11 @@ async def _boot_form_save(update, context, form):
     try:
         preset = build_preset(form, deploy)
     except ValueError as exc:
-        await _reply(update, f"❌ {exc}", reply_markup=boot_form_keyboard(form))
+        await _reply(update, context, f"❌ {exc}", reply_markup=boot_form_keyboard(form))
         return
     save_preset(preset)
     shape = preset["shape"].replace("VM.Standard.", "")
-    await _reply(update,
+    await _reply(update, context,
                  f"💾 已保存为快捷开机：{preset['display_name']}（{shape}，"
                  f"{preset['ocpus']} 核 / {preset['memory_gb']}GB）。\n"
                  "菜单 17（快捷开机）里可以一键用它开机。",
@@ -1459,15 +1459,19 @@ async def boot_form_callback(update, context):
                 pass
         return
     if action == "cancel_input":
-        # 取消自定义输入：清 pending_input，编辑提示消息。
+        # 取消自定义输入：清 pending_input，重发表单继续填。
+        # （提示发出时旧表单已被选择框清理删掉，不能再像以前那样
+        # 只编辑提示说“表单未变”；重发表单与输入完成后的做法一致，
+        # 提示消息由 _reply 的清理删掉。）
         context.user_data.pop("pending_input", None)
-        query = update.callback_query
-        if query is not None:
-            try:
-                await query.answer()
-                await query.edit_message_text("已取消输入，表单未变。")
-            except Exception:
-                pass
+        form = context.user_data.get("boot_form")
+        if form is None:
+            await _reply(update, context,
+                         "表单已过期，请重新打开菜单 1（开机）。",
+                         reply_markup=back_to_oracle_keyboard())
+            return
+        await _reply(update, context, fmt_form_text(form),
+                     reply_markup=boot_form_keyboard(form))
         return
     if action == "oneclick":
         # 一键开机（默认 AMD）：预填表单直接进确认页（原菜单 1 预设一键
@@ -1476,7 +1480,7 @@ async def boot_form_callback(update, context):
         return
     form = context.user_data.get("boot_form")
     if form is None:
-        await _reply(update, "表单已过期，请重新打开菜单 1（开机）。",
+        await _reply(update, context, "表单已过期，请重新打开菜单 1（开机）。",
                      reply_markup=back_to_oracle_keyboard())
         return
     if action == "confirm":
@@ -1487,7 +1491,7 @@ async def boot_form_callback(update, context):
         return
     if action == "script" and len(parts) >= 3 and parts[2] == "upload":
         context.user_data["pending_input"] = {"kind": "boot_script"}
-        await _reply(update, _BOOT_CUSTOM_PROMPTS["boot_script"],
+        await _reply(update, context, _BOOT_CUSTOM_PROMPTS["boot_script"],
                      reply_markup=InlineKeyboardMarkup([[
                          InlineKeyboardButton("❌ 取消",
                                               callback_data="bf:cancel_input")]]))
@@ -1496,16 +1500,16 @@ async def boot_form_callback(update, context):
         kind = f"boot_{action}"
         prompt = _BOOT_CUSTOM_PROMPTS.get(kind)
         if prompt is None:
-            await _reply(update, "未知的自定义项。")
+            await _reply(update, context, "未知的自定义项。")
             return
         context.user_data["pending_input"] = {"kind": kind}
-        await _reply(update, prompt,
+        await _reply(update, context, prompt,
                      reply_markup=InlineKeyboardMarkup([[
                          InlineKeyboardButton("❌ 取消",
                                               callback_data="bf:cancel_input")]]))
         return
     if len(parts) < 3:
-        await _reply(update, "无效的表单操作。")
+        await _reply(update, context, "无效的表单操作。")
         return
     changed, notice = toggle_option(form, action, parts[2])
     if changed or notice:
@@ -1532,7 +1536,7 @@ async def boot_preset_load_callback(update, context):
         idx = -1
     presets = load_presets()
     if idx < 0 or idx >= len(presets):
-        await _reply(update, "该配置已不存在，请重新打开菜单 17。",
+        await _reply(update, context, "该配置已不存在，请重新打开菜单 17。",
                      reply_markup=back_to_oracle_keyboard())
         return
     preset = dict(presets[idx])
@@ -1547,7 +1551,7 @@ async def boot_preset_load_callback(update, context):
         {"availability_domain": preset.get("availability_domain")},
         get_current_region(context), get_current_profile(context))
     if mismatch is not None:
-        await _reply(update, f"❌ {mismatch}",
+        await _reply(update, context, f"❌ {mismatch}",
                      reply_markup=back_to_oracle_keyboard())
         return
     # root 密码在确认页就生成（与 _boot_form_confirm 同逻辑）：
@@ -1564,7 +1568,7 @@ async def boot_preset_load_callback(update, context):
             preset.get("boot_volume_size_gbs"))
     except Exception as exc:  # noqa: BLE001 - 预检失败也要让用户看到
         ok, reason = False, fmt_error(exc)
-    await _reply(update, fmt_boot_form_summary(preset, ok, reason),
+    await _reply(update, context, fmt_boot_form_summary(preset, ok, reason),
                  reply_markup=boot_confirm_keyboard(preset))
 
 
@@ -1577,31 +1581,31 @@ async def _handle_boot_form_input(update, context, kind, text):
     """
     form = context.user_data.get("boot_form")
     if form is None:
-        await _reply(update, "表单已过期，请重新打开菜单 1（开机）。",
+        await _reply(update, context, "表单已过期，请重新打开菜单 1（开机）。",
                      reply_markup=back_to_oracle_keyboard())
         return
     if kind == "boot_script":
         if not text:
-            await _reply(update, "脚本内容为空，已取消上传。",
+            await _reply(update, context, "脚本内容为空，已取消上传。",
                          reply_markup=boot_form_keyboard(form))
             return
         if len(text) > SCRIPT_MAX_CHARS:
-            await _reply(update,
+            await _reply(update, context,
                          f"脚本太长（{len(text)} 字符，上限 "
                          f"{SCRIPT_MAX_CHARS}），已取消上传。",
                          reply_markup=boot_form_keyboard(form))
             return
         set_script(form, text, name="粘贴的脚本")
-        await _reply(update, fmt_form_text(form),
+        await _reply(update, context, fmt_form_text(form),
                      reply_markup=boot_form_keyboard(form))
         return
     row = kind[len("boot_"):]
     ok, error = set_custom(form, row, text)
     if not ok:
-        await _reply(update, f"❌ {error}\n请重新点“自定义”再输入。",
+        await _reply(update, context, f"❌ {error}\n请重新点“自定义”再输入。",
                      reply_markup=boot_form_keyboard(form))
         return
-    await _reply(update, fmt_form_text(form),
+    await _reply(update, context, fmt_form_text(form),
                  reply_markup=boot_form_keyboard(form))
 
 
@@ -1623,12 +1627,12 @@ async def boot_form_document_callback(update, context):
     form = context.user_data.get("boot_form")
     if form is None:
         context.user_data.pop("pending_input", None)
-        await _reply(update, "表单已过期，请重新打开菜单 1（开机）。",
+        await _reply(update, context, "表单已过期，请重新打开菜单 1（开机）。",
                      reply_markup=back_to_oracle_keyboard())
         return
     if (document.file_size or 0) > SCRIPT_MAX_CHARS:
         context.user_data.pop("pending_input", None)
-        await _reply(update,
+        await _reply(update, context,
                      f"文件太大（上限 {SCRIPT_MAX_CHARS // 1024}KB），"
                      "已取消上传。",
                      reply_markup=boot_form_keyboard(form))
@@ -1639,12 +1643,12 @@ async def boot_form_document_callback(update, context):
         content = bytes(data).decode("utf-8")
     except Exception as exc:  # noqa: BLE001 - 下载/解码失败都要提示
         context.user_data.pop("pending_input", None)
-        await _reply(update, f"❌ 读取文件失败：{exc}",
+        await _reply(update, context, f"❌ 读取文件失败：{exc}",
                      reply_markup=boot_form_keyboard(form))
         return
     context.user_data.pop("pending_input", None)
     set_script(form, content, name=document.file_name or "上传的脚本")
-    await _reply(update, fmt_form_text(form),
+    await _reply(update, context, fmt_form_text(form),
                  reply_markup=boot_form_keyboard(form))
 
 
@@ -1655,7 +1659,7 @@ async def boot_preset_callback(update, context):
     preset_key = data.split(":")[-1] if ":" in data else ""
     preset = BOOT_PRESETS.get(preset_key)
     if preset is None:
-        await _reply(update, f"未知的开机预设：{preset_key}")
+        await _reply(update, context, f"未知的开机预设：{preset_key}")
         return
     context.user_data["pending_boot"] = dict(preset)
     context.user_data["pending_boot_summary"] = "preset"
@@ -1666,7 +1670,7 @@ async def boot_preset_callback(update, context):
     except Exception as exc:  # noqa: BLE001 - 预检失败也要让用户看到
         ok, reason = False, fmt_error(exc)
     text = fmt_boot_preset(preset, ok, reason)
-    await _reply(update, text, reply_markup=boot_confirm_keyboard(preset))
+    await _reply(update, context, text, reply_markup=boot_confirm_keyboard(preset))
 
 
 def _run_grabber_thread(task_id, cli, compartment_id, preset, notify=None):
@@ -1830,7 +1834,7 @@ async def boot_cpu_callback(update, context):
     preset = context.user_data.get("pending_boot")
     query = update.callback_query
     if preset is None:
-        await _reply(update, "配置已过期，请重新打开菜单 1（开机）。",
+        await _reply(update, context, "配置已过期，请重新打开菜单 1（开机）。",
                      reply_markup=back_to_oracle_keyboard())
         return
     if choice == "7j13":
@@ -1862,7 +1866,7 @@ async def boot_cpu_callback(update, context):
         except Exception:
             pass
         return
-    await _reply(update, text, reply_markup=boot_confirm_keyboard(preset))
+    await _reply(update, context, text, reply_markup=boot_confirm_keyboard(preset))
 
 
 @require_allowed
@@ -1879,7 +1883,7 @@ async def boot_go_callback(update, context):
     """
     preset = context.user_data.get("pending_boot")
     if not preset:
-        await _reply(update, "请先在菜单 1 里配好开机表单。")
+        await _reply(update, context, "请先在菜单 1 里配好开机表单。")
         return
     # 最后一道防线：确认页出来后用户可能切了账号/区域，pending_boot
     # 里还是旧区的部署值，直接开机会报 CannotParseRequest，这里拦住。
@@ -1887,7 +1891,7 @@ async def boot_go_callback(update, context):
         {"availability_domain": preset.get("availability_domain")},
         get_current_region(context), get_current_profile(context))
     if mismatch is not None:
-        await _reply(update, f"❌ {mismatch}",
+        await _reply(update, context, f"❌ {mismatch}",
                      reply_markup=back_to_oracle_keyboard())
         return
     root_password = None
@@ -1900,7 +1904,7 @@ async def boot_go_callback(update, context):
         try:
             preset["user_data"] = build_user_data(root_password, script)
         except ValueError as exc:
-            await _reply(update, f"❌ {exc}")
+            await _reply(update, context, f"❌ {exc}")
             return
     # 实例名去重：日期格式（AMD_YYYY-MM-DD）同日再开会重名，先查已有
     # 实例名，冲突时加 -2、-3 后缀。查不到也不阻塞开机（Grabber 的
@@ -1949,7 +1953,7 @@ async def boot_go_callback(update, context):
                  f"`{root_password}`\n"
                  "实例创建完成后用 root + 该密码登录。")
         parse_mode = "Markdown"
-    await _reply(update, text, parse_mode=parse_mode)
+    await _reply(update, context, text, parse_mode=parse_mode)
 
 
 # ---- 20. 查询配额 ----
@@ -1960,7 +1964,7 @@ async def handle_quota(update, context):
     counts = await run_sync(get_profile_region_counts)
     labels = {name: bot_config.profile_display_name(name, counts.get(name))
               for name in bot_config.PROFILES}
-    await _reply(update, "免费额度：点下面账号查看：",
+    await _reply(update, context, "免费额度：点下面账号查看：",
                  reply_markup=quota_accounts_keyboard(labels))
 
 
@@ -1982,14 +1986,14 @@ async def quota_callback(update, context):
     if action == "region" and len(parts) == 4:
         await _quota_region(update, context, parts[2], parts[3])
         return
-    await _reply(update, "无效的额度操作。",
+    await _reply(update, context, "无效的额度操作。",
                  reply_markup=back_to_oracle_keyboard())
 
 
 async def _quota_account(update, context, profile):
     """点开账号：多区订阅出二级区域菜单；单区直接显示该区额度。"""
     if profile not in bot_config.PROFILES:
-        await _reply(update, "账号不存在，请重新打开免费额度。",
+        await _reply(update, context, "账号不存在，请重新打开免费额度。",
                      reply_markup=back_to_oracle_keyboard())
         return
     regions = (await run_sync(get_profile_regions)).get(profile)
@@ -2004,14 +2008,14 @@ async def _quota_account(update, context, profile):
         await _show_quota(update, context, profile, code, multi=False)
         return
     label = bot_config.profile_display_name(profile, len(regions))
-    await _reply(update, f"{label} 的订阅区域：点下面区域查看额度：",
+    await _reply(update, context, f"{label} 的订阅区域：点下面区域查看额度：",
                  reply_markup=quota_regions_keyboard(profile, regions))
 
 
 async def _quota_region(update, context, profile, region):
     """点开区域：显示该账号在该区域的免费额度。"""
     if profile not in bot_config.PROFILES:
-        await _reply(update, "账号不存在，请重新打开免费额度。",
+        await _reply(update, context, "账号不存在，请重新打开免费额度。",
                      reply_markup=back_to_oracle_keyboard())
         return
     await _show_quota(update, context, profile, region, multi=True)
@@ -2025,7 +2029,7 @@ async def _show_quota(update, context, profile, region, multi):
         summary = await run_sync(get_free_tier_summary, cli,
                                  cfg["compartment_id"])
     except Exception as exc:  # noqa: BLE001 - 任何 OCI 异常都转成中文提示
-        await _reply(update, fmt_error(exc))
+        await _reply(update, context, fmt_error(exc))
         return
     label = bot_config.get_region_label(cfg["region"])
     if region != cfg["region"]:
@@ -2034,7 +2038,7 @@ async def _show_quota(update, context, profile, region, multi):
         "◀ 返回" + ("区域菜单" if multi else "账号列表"),
         callback_data=(f"q:acct:{profile}" if multi else "q:list"))],
         [InlineKeyboardButton("◀ Oracle 菜单", callback_data="o:menu")]]
-    await _reply(update, fmt_quota_summary(summary, label),
+    await _reply(update, context, fmt_quota_summary(summary, label),
                  reply_markup=InlineKeyboardMarkup(rows))
 
 
@@ -2186,10 +2190,10 @@ async def handle_traffic(update, context):
     try:
         entries = await _fetch_instance_traffic(context)
     except Exception as exc:  # noqa: BLE001
-        await _reply(update, fmt_error(exc))
+        await _reply(update, context, fmt_error(exc))
         return
     context.user_data["traffic_entries"] = entries
-    await _reply(update, fmt_instance_traffic(entries),
+    await _reply(update, context, fmt_instance_traffic(entries),
                  reply_markup=traffic_keyboard(entries))
 
 
@@ -2313,7 +2317,7 @@ async def handle_cost(update, context):
             entries.append((label, items))
         except Exception:  # noqa: BLE001 - 单账号失败不影响其他账号
             entries.append((label, None))
-    await _reply(update, fmt_usage_totals(entries),
+    await _reply(update, context, fmt_usage_totals(entries),
                  reply_markup=back_to_oracle_keyboard())
 
 
@@ -2334,7 +2338,7 @@ async def handle_subscription(update, context):
             entries.append((label, tenancy))
         except Exception:  # noqa: BLE001 - 单账号失败不影响其他账号
             entries.append((label, None))
-    await _reply(update, fmt_tenancies(entries),
+    await _reply(update, context, fmt_tenancies(entries),
                  reply_markup=back_to_oracle_keyboard())
 
 
@@ -2362,7 +2366,7 @@ async def handle_health(update, context):
                          f"{running} 台运行中 ✅")
         except Exception as exc:  # noqa: BLE001 - 单账号报错不影响其他账号
             lines.append(f"• {label}：{fmt_error(exc)}")
-    await _reply(update, "\n".join(lines),
+    await _reply(update, context, "\n".join(lines),
                  reply_markup=back_to_oracle_keyboard())
 
 
@@ -2372,7 +2376,7 @@ async def handle_health(update, context):
 async def handle_tasks(update, context):
     """菜单 21：任务列表 + 取消按钮。"""
     tasks = TASKS.list_all()
-    await _reply(update, fmt_task_list(tasks),
+    await _reply(update, context, fmt_task_list(tasks),
                  reply_markup=task_list_keyboard(tasks))
 
 
@@ -2384,9 +2388,9 @@ async def task_cancel_callback(update, context):
     task = TASKS.get(task_id)
     label = (task or {}).get("label") or task_id
     if TASKS.cancel(task_id):
-        await _reply(update, f"✅ 已取消：{label}。")
+        await _reply(update, context, f"✅ 已取消：{label}。")
     else:
-        await _reply(update, f"⚠️ {label} 不存在或已结束，无法取消。")
+        await _reply(update, context, f"⚠️ {label} 不存在或已结束，无法取消。")
 
 
 # ---- profile 管理（账号切换，/oracle 菜单顶行按钮） ----
@@ -2425,7 +2429,7 @@ async def handle_profiles(update, context):
             return
         except Exception as exc:  # noqa: BLE001 - 编辑失败就新发一条
             logger.debug("切换账号列表就地编辑失败，改发新消息：%s", exc)
-    msg = await _reply(update, text, reply_markup=keyboard)
+    msg = await _reply(update, context, text, reply_markup=keyboard)
     _track_switch_message(context, msg)
 
 
@@ -2450,7 +2454,7 @@ async def profile_callback(update, context):
     try:
         bot_config.get_profile_config(name)
     except ValueError as exc:
-        await _reply(update, f"❌ 切换失败：{exc}")
+        await _reply(update, context, f"❌ 切换失败：{exc}")
         return
     regions = await run_sync(get_profile_regions)
     subs = regions.get(name) or []
@@ -2469,13 +2473,13 @@ async def profile_callback(update, context):
                 return
             except Exception as exc:  # noqa: BLE001 - 编辑失败就新发一条
                 logger.debug("区域列表就地编辑失败，改发新消息：%s", exc)
-        msg = await _reply(update, text, reply_markup=keyboard)
+        msg = await _reply(update, context, text, reply_markup=keyboard)
         _track_switch_message(context, msg)
         return
     try:
         set_current_profile(context, name)
     except ValueError as exc:
-        await _reply(update, f"❌ 切换失败：{exc}")
+        await _reply(update, context, f"❌ 切换失败：{exc}")
         return
     label = get_cached_profile_display_name(name)
     await _show_oracle_menu_after_switch(
@@ -2501,20 +2505,20 @@ async def profile_region_callback(update, context):
         return
     parts = data.split(":")
     if len(parts) != 3:
-        await _reply(update, "❌ 无效的区域切换。")
+        await _reply(update, context, "❌ 无效的区域切换。")
         return
     name, region = parts[1], parts[2]
     regions = await run_sync(get_profile_regions)
     subs = regions.get(name) or []
     region_ids = {sub.get("region-name") for sub in subs}
     if subs and region not in region_ids:
-        await _reply(update, f"❌ 账号未订阅该区域：{region}")
+        await _reply(update, context, f"❌ 账号未订阅该区域：{region}")
         return
     try:
         set_current_profile(context, name)
         set_current_region(context, region)
     except ValueError as exc:
-        await _reply(update, f"❌ 切换失败：{exc}")
+        await _reply(update, context, f"❌ 切换失败：{exc}")
         return
     label = get_cached_profile_display_name(name)
     region_label = bot_config.get_region_label(region)
@@ -2539,7 +2543,7 @@ async def handle_changeip_prompt(update, context):
     idx = context.user_data.get("pending_idx")
     inst = resolve_instance(context, idx)
     if inst is None:
-        await _reply(update, "请先在实例列表里选一台实例，"
+        await _reply(update, context, "请先在实例列表里选一台实例，"
                      "再点“换 IP”。",
                      reply_markup=back_to_oracle_keyboard())
         return
@@ -2553,7 +2557,7 @@ async def handle_changeip_prompt(update, context):
             f"当前 IP：{current_ip or '无公网 IP'}\n"
             "⚠️ 换 IP 后旧 IP 立即释放，无法找回；"
             "请同步更新 DNS 记录、反代与客户端配置。")
-    await _reply(update, text,
+    await _reply(update, context, text,
                  reply_markup=confirm_keyboard("changeip", idx, "🔁 确认换 IP"))
 
 
@@ -2579,7 +2583,7 @@ async def handle_ip(update, context):
             ip = await run_sync(get_public_ip, cli, inst["id"])
             instance_ips.append((inst.get("display-name") or "?", ip))
     except Exception as exc:  # noqa: BLE001
-        await _reply(update, fmt_error(exc))
+        await _reply(update, context, fmt_error(exc))
         return
     deletable = [{"id": ip.get("id"), "ip": ip.get("ip-address", "?")}
                  for ip in reserved
@@ -2594,7 +2598,7 @@ async def handle_ip(update, context):
             callback_data=f"ip_delete:{idx}")])
     rows.append([InlineKeyboardButton("◀ Oracle 菜单",
                                       callback_data="o:menu")])
-    await _reply(update, fmt_ip_overview(reserved, instance_ips),
+    await _reply(update, context, fmt_ip_overview(reserved, instance_ips),
                  reply_markup=InlineKeyboardMarkup(rows))
 
 
@@ -2606,10 +2610,10 @@ async def ip_create_callback(update, context):
             create_reserved_ip, get_cli(context),
             get_compartment(context), RESERVED_IP_DISPLAY_NAME)
     except Exception as exc:  # noqa: BLE001
-        await _reply(update, fmt_error(exc),
+        await _reply(update, context, fmt_error(exc),
                      reply_markup=back_to_oracle_keyboard())
         return
-    await _reply(update,
+    await _reply(update, context,
                  f"✅ 已创建保留 IP：{new_ip}\n"
                  "⚠️ 保留 IP 是计费资源，不用了请及时删除。",
                  reply_markup=back_to_oracle_keyboard())
@@ -2626,11 +2630,11 @@ async def ip_delete_callback(update, context):
         idx = -1
     entries = context.user_data.get("ip_reserved") or []
     if idx < 0 or idx >= len(entries):
-        await _reply(update, "目标已过期，请重新打开 IP 管理。",
+        await _reply(update, context, "目标已过期，请重新打开 IP 管理。",
                      reply_markup=back_to_oracle_keyboard())
         return
     entry = entries[idx]
-    await _reply(update,
+    await _reply(update, context,
                  f"🗑️ 确认删除保留 IP {entry['ip']}？\n\n"
                  "删除后该 IP 立即释放，无法找回。",
                  reply_markup=confirm_keyboard("delpubip", idx,
@@ -2656,7 +2660,7 @@ async def handle_ipv6(update, context):
         instances = await run_sync(list_instances, cli,
                                    get_compartment(context))
     except Exception as exc:  # noqa: BLE001
-        await _reply(update, fmt_error(exc))
+        await _reply(update, context, fmt_error(exc))
         return
     lines = ["🌐 IPv6 管理：", ""]
     vnics = []
@@ -2701,7 +2705,7 @@ async def handle_ipv6(update, context):
     context.user_data["ipv6_entries"] = entries
     rows.append([InlineKeyboardButton("◀ Oracle 菜单",
                                       callback_data="o:menu")])
-    await _reply(update, "\n".join(lines),
+    await _reply(update, context, "\n".join(lines),
                  reply_markup=InlineKeyboardMarkup(rows))
 
 
@@ -2716,7 +2720,7 @@ async def ipv6_create_callback(update, context):
         idx = -1
     targets = context.user_data.get("ipv6_vnics") or []
     if idx < 0 or idx >= len(targets):
-        await _reply(update, "目标已过期，请重新打开 IPv6 管理。",
+        await _reply(update, context, "目标已过期，请重新打开 IPv6 管理。",
                      reply_markup=back_to_oracle_keyboard())
         return
     target = targets[idx]
@@ -2724,11 +2728,11 @@ async def ipv6_create_callback(update, context):
         created = await run_sync(create_ipv6, get_cli(context),
                                  target["vnic_id"])
     except Exception as exc:  # noqa: BLE001
-        await _reply(update, fmt_error(exc),
+        await _reply(update, context, fmt_error(exc),
                      reply_markup=back_to_oracle_keyboard())
         return
     addr = (created or {}).get("ip-address", "?")
-    await _reply(update, f"✅ {target['name']} 已分配 IPv6：{addr}",
+    await _reply(update, context, f"✅ {target['name']} 已分配 IPv6：{addr}",
                  reply_markup=back_to_oracle_keyboard())
 
 
@@ -2743,13 +2747,13 @@ async def ipv6_delete_callback(update, context):
         idx = -1
     entries = context.user_data.get("ipv6_entries") or []
     if idx < 0 or idx >= len(entries):
-        await _reply(update, "目标已过期，请重新打开 IPv6 管理。",
+        await _reply(update, context, "目标已过期，请重新打开 IPv6 管理。",
                      reply_markup=back_to_oracle_keyboard())
         return
     entry = entries[idx]
     text = (f"🗑️ 确认删除 {entry['name']} 的 IPv6 {entry['ip']}？\n\n"
             "删除后该地址立即不可达。")
-    await _reply(update, text,
+    await _reply(update, context, text,
                  reply_markup=confirm_keyboard("delipv6", idx,
                                                "🗑️ 确认删除"))
 
@@ -2763,18 +2767,18 @@ async def handle_resume(update, context):
         instances = await run_sync(list_instances,
                                    get_cli(context), get_compartment(context))
     except Exception as exc:  # noqa: BLE001
-        await _reply(update, fmt_error(exc))
+        await _reply(update, context, fmt_error(exc))
         return
     stopped = [i for i in instances
                if i.get("lifecycle-state") == "STOPPED"]
     if not stopped:
-        await _reply(update, "没有被暂停（STOPPED）的实例。",
+        await _reply(update, context, "没有被暂停（STOPPED）的实例。",
                      reply_markup=back_to_oracle_keyboard())
         return
     # 补公网 IP（并行查，单台失败记 None），再存、再格式化。
     stopped = await run_sync(attach_public_ips, get_cli(context), stopped)
     store_instances(context, stopped)
-    await _reply(update, fmt_instance_list(stopped,
+    await _reply(update, context, fmt_instance_list(stopped,
                                            _switch_menu_account_label(context)),
                  reply_markup=instance_list_keyboard(stopped))
 
@@ -2791,20 +2795,20 @@ async def handle_resize(update, context):
     idx = context.user_data.get("pending_idx")
     inst = resolve_instance(context, idx)
     if inst is None:
-        await _reply(update, "请先在实例列表里选一台实例，"
+        await _reply(update, context, "请先在实例列表里选一台实例，"
                      "再从菜单选 5. 升/降级实例。",
                      reply_markup=back_to_oracle_keyboard())
         return
     shape = inst.get("shape") or ""
     name = inst.get("display-name") or "?"
     if shape == SHAPE_E2_MICRO:
-        await _reply(update,
+        await _reply(update, context,
                      f"🖥️ {name} 是 E2.1.Micro（固定 1 核 / 1GB），"
                      "不支持升/降配。",
                      reply_markup=back_to_oracle_keyboard())
         return
     if shape != SHAPE_A1_FLEX:
-        await _reply(update,
+        await _reply(update, context,
                      f"🖥️ {name} 的规格是 {shape}，"
                      "本机器人只支持 A1.Flex 升/降配。",
                      reply_markup=back_to_oracle_keyboard())
@@ -2817,7 +2821,7 @@ async def handle_resize(update, context):
             current = f"{cfg.get('ocpus')} 核 / {cfg.get('memory-in-gbs')}GB"
     except Exception:  # noqa: BLE001 - 查不到当前配置也不阻塞选预设
         pass
-    await _reply(update,
+    await _reply(update, context,
                  f"📐 {name} 当前配置：{current}\n选目标规格：",
                  reply_markup=resize_preset_keyboard(idx))
 
@@ -2827,23 +2831,23 @@ async def resize_preset_callback(update, context):
     """回调 "r:<ocpus>:<mem>:<idx>"：存目标规格，弹二次确认键盘。"""
     parts = _callback_data(update).split(":")
     if len(parts) != 4:
-        await _reply(update, "参数错误，请重新选择。")
+        await _reply(update, context, "参数错误，请重新选择。")
         return
     _, ocpus, memory_gb, idx = parts
     try:
         target = {"ocpus": int(ocpus), "memory_gb": int(memory_gb)}
     except ValueError:
-        await _reply(update, "参数错误，请重新选择。")
+        await _reply(update, context, "参数错误，请重新选择。")
         return
     inst = resolve_instance(context, idx)
     if inst is None:
-        await _reply(update, "实例不存在或已过期，请重新打开实例列表。")
+        await _reply(update, context, "实例不存在或已过期，请重新打开实例列表。")
         return
     context.user_data["pending_resize"] = target
     context.user_data["pending_idx"] = idx
     name = inst.get("display-name") or "?"
     await _reply(
-        update,
+        update, context,
         f"⚠️ 确认把 {name} 改为 {target['ocpus']} 核 / "
         f"{target['memory_gb']}GB？\n改规格时实例可能会重启。",
         reply_markup=confirm_keyboard("resize", idx, "✅ 确认改规格"))
@@ -2866,13 +2870,13 @@ async def handle_volumes(update, context):
         orphans = await run_sync(list_orphan_boot_volumes, cli, compartment)
         total = await run_sync(total_boot_volume_gb, cli, compartment)
     except Exception as exc:  # noqa: BLE001
-        await _reply(update, fmt_error(exc))
+        await _reply(update, context, fmt_error(exc))
         return
     volumes = [v for v in volumes
                if (v.get("lifecycle-state") or "").upper()
                not in ("TERMINATED", "TERMINATING")]
     store_volumes(context, volumes)
-    await _reply(update, fmt_volume_list(volumes, orphans, total),
+    await _reply(update, context, fmt_volume_list(volumes, orphans, total),
                  reply_markup=volume_list_keyboard(volumes, orphans))
 
 
@@ -2882,16 +2886,16 @@ async def volume_detail_callback(update, context):
     idx = _callback_data(update).split(":")[-1]
     vol = resolve_volume(context, idx)
     if vol is None:
-        await _reply(update, "磁盘不存在或已过期，请重新打开磁盘列表。")
+        await _reply(update, context, "磁盘不存在或已过期，请重新打开磁盘列表。")
         return
     try:
         detail = await run_sync(get_boot_volume, get_cli(context), vol["id"])
     except Exception as exc:  # noqa: BLE001
-        await _reply(update, fmt_error(exc))
+        await _reply(update, context, fmt_error(exc))
         return
     state = (detail.get("lifecycle-state") if isinstance(detail, dict)
              else None) or vol.get("lifecycle-state")
-    await _reply(update, fmt_volume_detail(detail),
+    await _reply(update, context, fmt_volume_detail(detail),
                  reply_markup=volume_actions_keyboard(idx, state))
 
 
@@ -2901,13 +2905,13 @@ async def volume_resize_callback(update, context):
     idx = _callback_data(update).split(":")[-1]
     vol = resolve_volume(context, idx)
     if vol is None:
-        await _reply(update, "磁盘不存在或已过期，请重新打开磁盘列表。")
+        await _reply(update, context, "磁盘不存在或已过期，请重新打开磁盘列表。")
         return
     if (vol.get("lifecycle-state") or "").upper() in ("TERMINATED", "TERMINATING"):
-        await _reply(update, "该启动盘已删除，无法操作。")
+        await _reply(update, context, "该启动盘已删除，无法操作。")
         return
     name = vol.get("display-name") or "?"
-    await _reply(update,
+    await _reply(update, context,
                  f"📐 {name} 当前 {vol.get('size-in-gbs')}GB，"
                  "选目标容量（只能扩不能缩）：",
                  reply_markup=volume_resize_keyboard(idx))
@@ -2918,21 +2922,21 @@ async def volume_size_callback(update, context):
     """回调 "v:volsize:<idx>:<gb>"：执行扩容。"""
     parts = _callback_data(update).split(":")
     if len(parts) != 4:
-        await _reply(update, "参数错误，请重新选择。")
+        await _reply(update, context, "参数错误，请重新选择。")
         return
     _, _, idx, size = parts
     vol = resolve_volume(context, idx)
     if vol is None:
-        await _reply(update, "磁盘不存在或已过期，请重新打开磁盘列表。")
+        await _reply(update, context, "磁盘不存在或已过期，请重新打开磁盘列表。")
         return
     try:
         target_gb = int(size)
     except ValueError:
-        await _reply(update, "参数错误，请重新选择。")
+        await _reply(update, context, "参数错误，请重新选择。")
         return
     current_gb = vol.get("size-in-gbs") or 0
     if target_gb <= current_gb:
-        await _reply(update,
+        await _reply(update, context,
                      f"目标容量 {target_gb}GB 必须大于当前容量 {current_gb}GB，"
                      "启动盘只能扩不能缩。")
         return
@@ -2940,10 +2944,10 @@ async def volume_size_callback(update, context):
         await run_sync(resize_boot_volume, get_cli(context),
                        vol["id"], target_gb)
     except Exception as exc:  # noqa: BLE001
-        await _reply(update, fmt_error(exc))
+        await _reply(update, context, fmt_error(exc))
         return
     name = vol.get("display-name") or "?"
-    await _reply(update,
+    await _reply(update, context,
                  f"✅ {name} 已扩容到 {target_gb}GB。\n"
                  "注意：系统里还要跑 resize2fs（ext4）扩文件系统，"
                  "df 看到的容量才会变大。")
@@ -2958,14 +2962,14 @@ async def volume_delete_callback(update, context):
     idx = _callback_data(update).split(":")[-1]
     vol = resolve_volume(context, idx)
     if vol is None:
-        await _reply(update, "磁盘不存在或已过期，请重新打开磁盘列表。")
+        await _reply(update, context, "磁盘不存在或已过期，请重新打开磁盘列表。")
         return
     if (vol.get("lifecycle-state") or "").upper() in ("TERMINATED", "TERMINATING"):
-        await _reply(update, "该启动盘已删除，无法操作。")
+        await _reply(update, context, "该启动盘已删除，无法操作。")
         return
     name = vol.get("display-name") or "?"
     await _reply(
-        update,
+        update, context,
         f"⚠️ 即将删除启动盘 {name}（{vol.get('size-in-gbs')}GB）！\n"
         "删除后数据永久丢失，无法恢复。\n"
         "挂在实例上的盘删不掉，必须先终止实例（或先分离）。",
@@ -2985,10 +2989,10 @@ async def boot_backups_callback(update, context):
         count, limit, full, _oldest = await run_sync(
             check_backup_quota, cli, compartment)
     except Exception as exc:  # noqa: BLE001
-        await _reply(update, fmt_error(exc))
+        await _reply(update, context, fmt_error(exc))
         return
     store_boot_backups(context, backups)
-    await _reply(update, fmt_boot_backup_list(backups, count, limit, full,
+    await _reply(update, context, fmt_boot_backup_list(backups, count, limit, full,
                                               paid),
                  reply_markup=boot_backup_list_keyboard(backups, paid))
 
@@ -3033,10 +3037,10 @@ async def volume_backup_callback(update, context):
     idx = _callback_data(update).split(":")[-1]
     vol = resolve_volume(context, idx)
     if vol is None:
-        await _reply(update, "磁盘不存在或已过期，请重新打开磁盘列表。")
+        await _reply(update, context, "磁盘不存在或已过期，请重新打开磁盘列表。")
         return
     if (vol.get("lifecycle-state") or "").upper() in ("TERMINATED", "TERMINATING"):
-        await _reply(update, "该启动盘已删除，无法操作。")
+        await _reply(update, context, "该启动盘已删除，无法操作。")
         return
     cli = get_cli(context)
     compartment = get_compartment(context)
@@ -3052,7 +3056,7 @@ async def volume_backup_callback(update, context):
                 check_backup_quota, cli, compartment)
             if full:
                 if oldest is None:
-                    await _reply(update,
+                    await _reply(update, context,
                                  "免费备份已满，但未找到可删除的最早备份，"
                                  "请手动清理。")
                     return
@@ -3067,20 +3071,20 @@ async def volume_backup_callback(update, context):
                 backup = await run_sync(create_boot_volume_backup,
                                         cli, vol["id"])
     except Exception as exc:  # noqa: BLE001
-        await _reply(update, fmt_error(exc))
+        await _reply(update, context, fmt_error(exc))
         return
     backup_name = backup.get("display-name") or "?"
     if paid:
-        await _reply(update,
+        await _reply(update, context,
                      f"✅ {name} 的备份「{backup_name}」创建中，"
                      "几分钟后可用（付费账号，备份不限 5 个）。")
     elif deleted_oldest is not None:
-        await _reply(update,
+        await _reply(update, context,
                      f"✅ 免费备份已满，已自动删除最早备份"
                      f"「{deleted_oldest}」，新备份「{backup_name}」"
                      "创建中，几分钟后可用。")
     else:
-        await _reply(update,
+        await _reply(update, context,
                      f"✅ {name} 的备份「{backup_name}」创建中，"
                      f"几分钟后可用（免费额度 {count + 1}/{limit}）。")
 
@@ -3097,10 +3101,10 @@ async def boot_backup_restore_callback(update, context):
     idx = _callback_data(update).split(":")[-1]
     backup = resolve_boot_backup(context, idx)
     if backup is None:
-        await _reply(update, "备份不存在或已过期，请重新打开启动卷备份列表。")
+        await _reply(update, context, "备份不存在或已过期，请重新打开启动卷备份列表。")
         return
     if (backup.get("lifecycle-state") or "").upper() != "AVAILABLE":
-        await _reply(update,
+        await _reply(update, context,
                      f"备份「{backup.get('display-name') or '?'}」当前状态是 "
                      f"{backup.get('lifecycle-state') or '未知'}，"
                      "只有 AVAILABLE 状态的备份才能恢复。")
@@ -3125,11 +3129,11 @@ async def boot_backup_delete_callback(update, context):
     idx = _callback_data(update).split(":")[-1]
     backup = resolve_boot_backup(context, idx)
     if backup is None:
-        await _reply(update, "备份不存在或已过期，请重新打开启动卷备份列表。")
+        await _reply(update, context, "备份不存在或已过期，请重新打开启动卷备份列表。")
         return
     name = backup.get("display-name") or "?"
     await _reply(
-        update,
+        update, context,
         f"⚠️ 即将删除备份 {name}（{backup.get('size-in-gbs')}GB）！\n"
         "删除后无法再用它恢复实例，不可恢复。",
         reply_markup=confirm_keyboard("delbb", idx, "🗑️ 确认删除备份"))
@@ -3148,7 +3152,7 @@ async def instance_boot_backup_callback(update, context):
     idx = context.user_data.get("pending_idx")
     inst = resolve_instance(context, idx)
     if inst is None:
-        await _reply(update, "实例不存在或已过期，请重新打开实例列表。")
+        await _reply(update, context, "实例不存在或已过期，请重新打开实例列表。")
         return
     name = inst.get("display-name") or "?"
     cli = get_cli(context)
@@ -3157,10 +3161,10 @@ async def instance_boot_backup_callback(update, context):
         attachment = await run_sync(get_boot_volume_attachment, cli,
                                     compartment, inst["id"])
     except Exception as exc:  # noqa: BLE001
-        await _reply(update, fmt_error(exc))
+        await _reply(update, context, fmt_error(exc))
         return
     if attachment is None:
-        await _reply(update, f"找不到实例「{name}」当前挂载的启动盘。")
+        await _reply(update, context, f"找不到实例「{name}」当前挂载的启动盘。")
         return
     boot_volume_id = attachment.get("boot-volume-id")
     paid = is_paid_profile(get_current_profile(context))
@@ -3171,7 +3175,7 @@ async def instance_boot_backup_callback(update, context):
                 check_backup_quota, cli, compartment)
             if full:
                 await _reply(
-                    update,
+                    update, context,
                     f"⚠️ 备份已满 {count}/{limit} 个（免费额度），请先删除"
                     "旧备份再创建。",
                     reply_markup=InlineKeyboardMarkup([
@@ -3186,15 +3190,15 @@ async def instance_boot_backup_callback(update, context):
         backup = await run_sync(create_boot_volume_backup, cli,
                                 boot_volume_id)
     except Exception as exc:  # noqa: BLE001
-        await _reply(update, fmt_error(exc))
+        await _reply(update, context, fmt_error(exc))
         return
     backup_name = backup.get("display-name") or "?"
     if paid:
-        await _reply(update,
+        await _reply(update, context,
                      f"✅ {name} 的备份「{backup_name}」创建中，"
                      "几分钟后可用（付费账号，备份不限 5 个）。")
     else:
-        await _reply(update,
+        await _reply(update, context,
                      f"✅ {name} 的备份「{backup_name}」创建中，"
                      f"几分钟后可用（免费额度 {count + 1}/{limit}）。")
 
@@ -3210,7 +3214,7 @@ async def instance_boot_backup_delete_callback(update, context):
     idx = context.user_data.get("pending_idx")
     inst = resolve_instance(context, idx)
     if inst is None:
-        await _reply(update, "实例不存在或已过期，请重新打开实例列表。")
+        await _reply(update, context, "实例不存在或已过期，请重新打开实例列表。")
         return
     name = inst.get("display-name") or "?"
     cli = get_cli(context)
@@ -3219,22 +3223,22 @@ async def instance_boot_backup_delete_callback(update, context):
         attachment = await run_sync(get_boot_volume_attachment, cli,
                                     compartment, inst["id"])
         if attachment is None:
-            await _reply(update, f"找不到实例「{name}」当前挂载的启动盘。")
+            await _reply(update, context, f"找不到实例「{name}」当前挂载的启动盘。")
             return
         backups = await run_sync(
             list_boot_volume_backups, cli, compartment,
             boot_volume_id=attachment.get("boot-volume-id"))
     except Exception as exc:  # noqa: BLE001
-        await _reply(update, fmt_error(exc))
+        await _reply(update, context, fmt_error(exc))
         return
     if not backups:
-        await _reply(update, f"实例「{name}」的启动盘还没有备份。")
+        await _reply(update, context, f"实例「{name}」的启动盘还没有备份。")
         return
     context.user_data["ib_backups"] = backups
     context.user_data["ib_idx"] = idx
     context.user_data["ib_title"] = f"「{name}」的历史备份"
     context.user_data["ib_ms_selected"] = set()
-    await _reply(update,
+    await _reply(update, context,
                  _fmt_boot_backup_multiselect(
                      backups, set(), title=f"「{name}」的历史备份"),
                  reply_markup=boot_backup_multiselect_keyboard(
@@ -3284,11 +3288,11 @@ async def instance_boot_backup_msdelete_callback(update, context):
         if 0 <= idx < len(backups):
             names.append(backups[idx].get("display-name") or "?")
     if not names:
-        await _reply(update, "所选备份已过期，请重新打开列表。")
+        await _reply(update, context, "所选备份已过期，请重新打开列表。")
         return
     idx_arg = ",".join(str(i) for i in sorted(selected))
     await _reply(
-        update,
+        update, context,
         f"⚠️ 即将删除 {len(names)} 个备份：\n"
         + "\n".join(f"• {n}" for n in names)
         + "\n删除后无法再用它们恢复实例，不可恢复。",
@@ -3329,14 +3333,14 @@ async def handle_bootswap(update, context):
     idx = context.user_data.get("pending_idx")
     inst = resolve_instance(context, idx)
     if inst is None:
-        await _reply(update, "请先在实例列表里选一台实例，"
+        await _reply(update, context, "请先在实例列表里选一台实例，"
                      "再点“引导卷恢复”。",
                      reply_markup=back_to_oracle_keyboard())
         return
     name = inst.get("display-name") or "?"
     state = (inst.get("lifecycle-state") or "").upper()
     if state not in ("RUNNING", "STOPPED"):
-        await _reply(update,
+        await _reply(update, context,
                      f"实例「{name}」当前状态是 {state or '未知'}，"
                      "只有运行中或已停止的实例才能恢复引导卷。")
         return
@@ -3346,10 +3350,10 @@ async def handle_bootswap(update, context):
         attachment = await run_sync(get_boot_volume_attachment, cli,
                                     compartment, inst["id"])
     except Exception as exc:  # noqa: BLE001 - OCI 异常统一转中文提示
-        await _reply(update, fmt_error(exc))
+        await _reply(update, context, fmt_error(exc))
         return
     if attachment is None:
-        await _reply(update,
+        await _reply(update, context,
                      f"找不到实例「{name}」当前挂载的启动盘，无法恢复引导卷。")
         return
     try:
@@ -3357,13 +3361,13 @@ async def handle_bootswap(update, context):
             list_boot_volume_backups, cli, compartment,
             boot_volume_id=attachment.get("boot-volume-id"))
     except Exception as exc:  # noqa: BLE001 - OCI 异常统一转中文提示
-        await _reply(update, fmt_error(exc))
+        await _reply(update, context, fmt_error(exc))
         return
     available = [b for b in backups
                  if (b.get("lifecycle-state") or "").upper() == "AVAILABLE"]
     if not available:
         await _reply(
-            update,
+            update, context,
             f"实例「{name}」的启动盘还没有可用备份（AVAILABLE）。\n"
             "请先在菜单 7（启动盘）里给它创建一个备份，几分钟后可用。",
             reply_markup=back_to_oracle_keyboard())
@@ -3380,7 +3384,7 @@ async def handle_bootswap(update, context):
     rows.append([InlineKeyboardButton("◀ 返回实例",
                                       callback_data=f"i:detail:{idx}")])
     await _reply(
-        update,
+        update, context,
         f"💾 引导卷恢复：给实例「{name}」选一个备份：\n\n"
         "恢复流程：从备份建新启动盘 → 停机 → 换盘 → 开机。\n"
         "旧盘只拆不删，仍占启动盘额度。",
@@ -3404,7 +3408,7 @@ async def bootswap_callback(update, context):
     backups = context.user_data.get("bootswap_backups") or []
     inst = resolve_instance(context, context.user_data.get("bootswap_idx"))
     if bidx < 0 or bidx >= len(backups) or inst is None:
-        await _reply(update,
+        await _reply(update, context,
                      "备份选择已过期，请重新打开实例详情再点“引导卷恢复”。")
         return
     backup = backups[bidx]
@@ -3423,7 +3427,7 @@ async def bootswap_callback(update, context):
         "旧盘只拆不删，仍占启动盘额度，确认新盘没问题后请手动删除。\n"
         "整个过程约几分钟，完成后会发通知。"
     )
-    await _reply(update, text,
+    await _reply(update, context, text,
                  reply_markup=confirm_keyboard("bootswap", bidx, "💾 确认恢复"))
 
 
@@ -3533,11 +3537,11 @@ async def boot_backup_msdelete_callback(update, context):
         if 0 <= idx < len(backups):
             names.append(backups[idx].get("display-name") or "?")
     if not names:
-        await _reply(update, "所选备份已过期，请重新打开列表。")
+        await _reply(update, context, "所选备份已过期，请重新打开列表。")
         return
     idx_arg = ",".join(str(i) for i in sorted(selected))
     await _reply(
-        update,
+        update, context,
         f"⚠️ 即将删除 {len(names)} 个备份：\n"
         + "\n".join(f"• {n}" for n in names)
         + "\n删除后无法再用它们恢复实例，不可恢复。",
@@ -3565,7 +3569,7 @@ async def handle_users(update, context):
         users = await run_sync(list_users,
                                get_cli(context), get_compartment(context))
     except Exception as exc:  # noqa: BLE001
-        await _reply(update, fmt_error(exc))
+        await _reply(update, context, fmt_error(exc))
         return
     context.user_data["iam_users"] = users
     rows = [[InlineKeyboardButton(_user_button_text(u),
@@ -3575,7 +3579,7 @@ async def handle_users(update, context):
                                       callback_data="u:add")])
     rows.append([InlineKeyboardButton("◀ Oracle 菜单",
                                       callback_data="o:menu")])
-    await _reply(update, fmt_user_list(users),
+    await _reply(update, context, fmt_user_list(users),
                  reply_markup=InlineKeyboardMarkup(rows))
 
 
@@ -3664,11 +3668,11 @@ async def user_callback(update, context):
         return
     user = _resolve_iam_user(context, idx)
     if user is None:
-        await _reply(update, "用户不存在或已过期，请重新打开云账户管理。",
+        await _reply(update, context, "用户不存在或已过期，请重新打开云账户管理。",
                      reply_markup=back_to_oracle_keyboard())
         return
     if action == "detail":
-        await _reply(update, fmt_user_detail(user),
+        await _reply(update, context, fmt_user_detail(user),
                      reply_markup=_user_detail_keyboard(idx))
     elif action == "desc":
         context.user_data["pending_input"] = {"kind": "user_desc",
@@ -3689,7 +3693,7 @@ async def user_callback(update, context):
     elif action == "del":
         await _user_delete_prompt(update, context, user, idx)
     else:
-        await _reply(update, "未知操作，请重新打开云账户管理。",
+        await _reply(update, context, "未知操作，请重新打开云账户管理。",
                      reply_markup=back_to_oracle_keyboard())
 
 
@@ -3705,7 +3709,7 @@ async def _user_keys_list(update, context, user, idx):
     try:
         keys = await run_sync(list_api_keys, get_cli(context), user["id"])
     except Exception as exc:  # noqa: BLE001
-        await _reply(update, fmt_error(exc),
+        await _reply(update, context, fmt_error(exc),
                      reply_markup=back_to_oracle_keyboard())
         return
     context.user_data["iam_keys"] = keys
@@ -3733,7 +3737,7 @@ async def _user_keys_list(update, context, user, idx):
                                       callback_data=f"u:detail:{idx}")])
     rows.append([InlineKeyboardButton("◀ 返回云账户",
                                       callback_data="u:list")])
-    await _reply(update, "\n".join(lines),
+    await _reply(update, context, "\n".join(lines),
                  reply_markup=InlineKeyboardMarkup(rows))
 
 
@@ -3747,11 +3751,11 @@ async def _user_key_delete_prompt(update, context, idx):
     keys = context.user_data.get("iam_keys") or []
     owner = context.user_data.get("iam_keys_user") or {}
     if idx_int < 0 or idx_int >= len(keys):
-        await _reply(update, "密钥不存在或已过期，请重新打开 API 密钥列表。",
+        await _reply(update, context, "密钥不存在或已过期，请重新打开 API 密钥列表。",
                      reply_markup=back_to_oracle_keyboard())
         return
     key = keys[idx_int]
-    await _reply(update,
+    await _reply(update, context,
                  f"🗑️ 确认删除用户「{owner.get('name', '?')}」的 API 密钥？\n\n"
                  f"指纹：{key.get('fingerprint', '?')}\n"
                  "删除后用该密钥的 API 调用立即失效。",
@@ -3764,7 +3768,7 @@ async def _user_delete_prompt(update, context, user, idx):
     （像重装系统一样防误点），最后走 handle_confirm("deluser")。"""
     name = user.get("name") or "?"
     if _is_current_api_user(context, user.get("id")):
-        await _reply(update,
+        await _reply(update, context,
                      f"❌ 不能删除用户「{name}」：它是机器人当前账号 "
                      f"（{get_cached_profile_display_name(get_current_profile(context))}）"
                      "正在使用的 API 用户，"
@@ -3785,9 +3789,9 @@ async def handle_emails(update, context):
         users = await run_sync(list_users,
                                get_cli(context), get_compartment(context))
     except Exception as exc:  # noqa: BLE001
-        await _reply(update, fmt_error(exc))
+        await _reply(update, context, fmt_error(exc))
         return
-    await _reply(update, fmt_email_list(users),
+    await _reply(update, context, fmt_email_list(users),
                  reply_markup=back_to_oracle_keyboard())
 
 
@@ -3800,9 +3804,9 @@ async def handle_workflows(update, context):
         requests = await run_sync(list_work_requests,
                                   get_cli(context), get_compartment(context))
     except Exception as exc:  # noqa: BLE001
-        await _reply(update, fmt_error(exc))
+        await _reply(update, context, fmt_error(exc))
         return
-    await _reply(update, fmt_work_requests(requests),
+    await _reply(update, context, fmt_work_requests(requests),
                  reply_markup=back_to_oracle_keyboard())
 
 
@@ -3819,9 +3823,9 @@ async def handle_regions(update, context):
         regions = await run_sync(list_regions,
                                  get_cli(context), get_compartment(context))
     except Exception as exc:  # noqa: BLE001
-        await _reply(update, fmt_error(exc))
+        await _reply(update, context, fmt_error(exc))
         return
-    await _reply(update, fmt_regions(regions),
+    await _reply(update, context, fmt_regions(regions),
                  reply_markup=back_to_oracle_keyboard())
 
 
@@ -3830,7 +3834,7 @@ async def handle_regions(update, context):
 @require_allowed
 async def handle_load(update, context):
     """菜单 22：本机负载与内存（读 /proc，不调 OCI）。"""
-    await _reply(update, fmt_local_load(read_local_load()),
+    await _reply(update, context, fmt_local_load(read_local_load()),
                  reply_markup=back_to_oracle_keyboard())
 
 
@@ -3841,17 +3845,17 @@ async def handle_logs(update, context):
     """菜单 34：读机器人日志尾部 30 行，代码块回复。"""
     tail = read_log_tail()
     if tail is None:
-        await _reply(update,
+        await _reply(update, context,
                      f"日志文件不存在：{bot_config.LOG_FILE}\n"
                      "机器人还没写过日志。",
                      reply_markup=back_to_oracle_keyboard())
         return
     if not tail.strip():
-        await _reply(update, "日志文件为空。",
+        await _reply(update, context, "日志文件为空。",
                      reply_markup=back_to_oracle_keyboard())
         return
     text = tail[-LOG_MAX_CHARS:].replace("`", "'")
-    await _reply(update, f"📋 最新日志（尾部 {LOG_TAIL_LINES} 行）：\n\n```\n{text}\n```",
+    await _reply(update, context, f"📋 最新日志（尾部 {LOG_TAIL_LINES} 行）：\n\n```\n{text}\n```",
                  reply_markup=back_to_oracle_keyboard(),
                  parse_mode="Markdown")
 
@@ -3868,7 +3872,7 @@ async def handle_presets(update, context):
     """
     presets = load_presets()
     if not presets:
-        await _reply(update,
+        await _reply(update, context,
                      "还没有保存的快捷开机配置。\n"
                      "抢机成功后会自动保存本次配置到这里，"
                      "也可以在菜单 1 的表单里点“保存为快捷开机”。",
@@ -3887,7 +3891,7 @@ async def handle_presets(update, context):
             f"🚀 {preset.get('display_name', '?')}",
             callback_data=f"b:load:{idx}")])
     rows.append([InlineKeyboardButton("◀ Oracle 菜单", callback_data="o:menu")])
-    await _reply(update, "\n".join(lines),
+    await _reply(update, context, "\n".join(lines),
                  reply_markup=InlineKeyboardMarkup(rows))
 
 
@@ -3922,7 +3926,7 @@ async def handle_monitor(update, context):
     state["on"] = not state["on"]
     if update.effective_chat is not None:
         state["chat_id"] = update.effective_chat.id
-    await _reply(update,
+    await _reply(update, context,
                  f"🔔 实例状态监控通知已{'开启' if state['on'] else '关闭'}。"
                  + ("（每 10 分钟检查一次）" if state["on"] else ""),
                  reply_markup=oracle_menu_keyboard(
@@ -3946,7 +3950,7 @@ async def handle_autostart(update, context):
         text = "▶️ 实例状态监控自启已开启（监控通知也已一并开启）。"
     else:
         text = "⏸️ 实例状态监控自启已关闭（监控通知保持原状态）。"
-    await _reply(update, text,
+    await _reply(update, context, text,
                  reply_markup=oracle_menu_keyboard(
                      0, states=get_menu_states(context)))
 
@@ -3958,7 +3962,7 @@ async def handle_daily(update, context):
     state["on"] = not state["on"]
     if update.effective_chat is not None:
         state["chat_id"] = update.effective_chat.id
-    await _reply(update,
+    await _reply(update, context,
                  f"📰 每日报告已{'开启' if state['on'] else '关闭'}。"
                  + ("（每天发一次配额 + 费用摘要）" if state["on"] else ""))
 
@@ -4125,7 +4129,7 @@ async def handle_traffic_guard(update, context):
     """
     cfg = load_traffic_guard()
     used_gb, used_note = await _fetch_guard_monthly_gb(context)
-    await _reply(update, fmt_traffic_guard(cfg, used_gb, used_note),
+    await _reply(update, context, fmt_traffic_guard(cfg, used_gb, used_note),
                  reply_markup=traffic_guard_keyboard(cfg))
 
 
@@ -4149,10 +4153,10 @@ async def traffic_guard_callback(update, context):
         try:
             threshold = int(parts[2])
         except ValueError:
-            await _reply(update, "阈值参数错误，请重新选择。")
+            await _reply(update, context, "阈值参数错误，请重新选择。")
             return
         if threshold <= 0:
-            await _reply(update, "阈值必须大于 0，请重新选择。")
+            await _reply(update, context, "阈值必须大于 0，请重新选择。")
             return
         cfg["threshold_gb"] = threshold
     elif action == "unblock":
@@ -4160,7 +4164,7 @@ async def traffic_guard_callback(update, context):
         await _guard_unblock(update, context)
         return
     else:
-        await _reply(update, "参数错误，请重新打开流量守护菜单。")
+        await _reply(update, context, "参数错误，请重新打开流量守护菜单。")
         return
     save_traffic_guard(cfg)
     await handle_traffic_guard(update, context)
@@ -4174,7 +4178,7 @@ async def _guard_unblock(update, context):
         instances = await run_sync(
             attach_public_ips, get_cli(context), instances)
     except Exception as exc:  # noqa: BLE001
-        await _reply(update, f"❌ 查实例列表失败：{fmt_error(exc)}")
+        await _reply(update, context, f"❌ 查实例列表失败：{fmt_error(exc)}")
         return
     ok_names, failed = await _run_guard_command_on_instances(
         guard_unblock_command(), instances)
@@ -4185,7 +4189,7 @@ async def _guard_unblock(update, context):
         lines.append(f"{name}：未解除（{reason}）")
     if not ok_names and not failed:
         lines.append("当前没有运行中的实例，无需解除。")
-    await _reply(update, "\n".join(lines))
+    await _reply(update, context, "\n".join(lines))
     await handle_traffic_guard(update, context)
 
 
@@ -4229,11 +4233,11 @@ async def handle_keepalive(update, context):
         instances = await run_sync(list_instances,
                                    get_cli(context), get_compartment(context))
     except Exception as exc:  # noqa: BLE001
-        await _reply(update, fmt_error(exc))
+        await _reply(update, context, fmt_error(exc))
         return
     store_instances(context, instances)
     text, keyboard = _keepalive_menu_text_and_keyboard(context)
-    await _reply(update, text, reply_markup=keyboard)
+    await _reply(update, context, text, reply_markup=keyboard)
 
 
 @require_allowed
@@ -4245,11 +4249,11 @@ async def keepalive_callback(update, context):
     """
     parts = _callback_data(update).split(":")
     if len(parts) != 3 or parts[1] != "toggle":
-        await _reply(update, "参数错误，请重新打开停机保活菜单。")
+        await _reply(update, context, "参数错误，请重新打开停机保活菜单。")
         return
     inst = resolve_instance(context, parts[2])
     if inst is None:
-        await _reply(update, "实例不存在或已过期，请重新打开停机保活菜单。")
+        await _reply(update, context, "实例不存在或已过期，请重新打开停机保活菜单。")
         return
     instance_id = inst.get("id")
     cfg = load_keepalive()
@@ -4261,7 +4265,7 @@ async def keepalive_callback(update, context):
         state["chat_id"] = update.effective_chat.id
     save_keepalive_state(state)
     text, keyboard = _keepalive_menu_text_and_keyboard(context)
-    await _reply(update, text, reply_markup=keyboard)
+    await _reply(update, context, text, reply_markup=keyboard)
 
 
 def fmt_ssl_watch(results):
@@ -4299,7 +4303,7 @@ async def handle_sslwatch(update, context):
             results.append((domain, await run_sync(check_ssl_expiry, domain)))
         except Exception:  # noqa: BLE001 - 单个域名失败显示为检查失败
             results.append((domain, None))
-    await _reply(update, fmt_ssl_watch(results),
+    await _reply(update, context, fmt_ssl_watch(results),
                  reply_markup=ssl_watch_keyboard(cfg.get("domains") or []))
 
 
@@ -4344,7 +4348,7 @@ async def ssl_watch_callback(update, context):
     if action == "refresh":
         await handle_sslwatch(update, context)
         return
-    await _reply(update, "参数错误，请重新打开 SSL 监控菜单。")
+    await _reply(update, context, "参数错误，请重新打开 SSL 监控菜单。")
 
 
 async def _handle_ssl_domain_input(update, context, text):
@@ -4355,7 +4359,7 @@ async def _handle_ssl_domain_input(update, context, text):
     """
     domain = normalize_domain(text)
     if not is_valid_domain(domain):
-        await _reply(update,
+        await _reply(update, context,
                      f"域名格式不正确：{text}\n"
                      "请重新点“➕ 添加域名”再试（例如 example.com）。",
                      reply_markup=back_to_oracle_keyboard())
@@ -4363,7 +4367,7 @@ async def _handle_ssl_domain_input(update, context, text):
     cfg = load_ssl_watch()
     domains = cfg.get("domains") or []
     if domain in domains:
-        await _reply(update, f"{domain} 已在 SSL 监控列表里。",
+        await _reply(update, context, f"{domain} 已在 SSL 监控列表里。",
                      reply_markup=ssl_watch_keyboard(domains))
         return
     domains.append(domain)
@@ -4408,7 +4412,7 @@ def fmt_bark_settings(cfg):
 async def handle_bark(update, context):
     """菜单 43：Bark 通知设置——地址 / 加密 Key / 测试推送 / 开关。"""
     cfg = load_bark_config()
-    await _reply(update, fmt_bark_settings(cfg),
+    await _reply(update, context, fmt_bark_settings(cfg),
                  reply_markup=bark_keyboard(cfg.get("enabled"),
                                             bark_configured(cfg)))
 
@@ -4470,7 +4474,7 @@ async def bark_callback(update, context):
                 except Exception:  # noqa: BLE001 - 二维码发不出时文字 Key 照样可用
                     pass
             await _reply(
-                update,
+                update, context,
                 "🎲 新的 Bark 加密 Key 已生成并保存（32 位）：\n"
                 f"{new_key}\n\n"
                 "⚠️ 请把这个 Key 同步到 Bark App 的加密设置里：直接用 "
@@ -4485,7 +4489,7 @@ async def bark_callback(update, context):
             await handle_bark(update, context)
             return
         await _reply(
-            update,
+            update, context,
             "🎲 确定生成新的 Bark 加密 Key 吗？\n\n"
             "生成后旧 Key 立即失效：Bark App 里要同步改成新 Key，"
             "否则推送解不开；账单脚本、各主机流量脚本、邮件转发器"
@@ -4502,12 +4506,12 @@ async def bark_callback(update, context):
     if action == "test":
         ok, err = await run_sync(send_bark_test)
         if ok:
-            await _reply(update, "✅ 测试推送已发出，请查看手机 Bark 是否收到。",
+            await _reply(update, context, "✅ 测试推送已发出，请查看手机 Bark 是否收到。",
                          reply_markup=bark_keyboard(
                              load_bark_config().get("enabled"),
                              bark_configured()))
         else:
-            await _reply(update, f"❌ 测试推送失败：{err}",
+            await _reply(update, context, f"❌ 测试推送失败：{err}",
                          reply_markup=bark_keyboard(
                              load_bark_config().get("enabled"),
                              bark_configured()))
@@ -4515,7 +4519,7 @@ async def bark_callback(update, context):
     if action == "toggle":
         cfg = load_bark_config()
         if not cfg.get("enabled") and not bark_configured(cfg):
-            await _reply(update,
+            await _reply(update, context,
                          "❌ 还没配齐：请先设置 Bark 地址和 32 位加密 Key。",
                          reply_markup=bark_keyboard(False, False))
             return
@@ -4530,7 +4534,7 @@ async def bark_callback(update, context):
 async def _handle_bark_url_input(update, context, text):
     """text_input_callback 的 bark_url 分支：校验后保存 Bark 地址。"""
     if not (text.startswith("http://") or text.startswith("https://")):
-        await _reply(update,
+        await _reply(update, context,
                      "地址格式不正确：请以 http:// 或 https:// 开头。\n"
                      "请重新点“🔗 设置 Bark 地址”再试。",
                      reply_markup=back_to_oracle_keyboard())
@@ -4540,7 +4544,7 @@ async def _handle_bark_url_input(update, context, text):
     if update.effective_chat is not None:
         cfg["chat_id"] = update.effective_chat.id
     save_bark_config(cfg)
-    await _reply(update,
+    await _reply(update, context,
                  f"✅ Bark 地址已保存：{mask_bark_url(text)}",
                  reply_markup=bark_keyboard(cfg.get("enabled"),
                                             bark_configured(cfg)))
@@ -4552,7 +4556,7 @@ async def _handle_bark_key_input(update, context, text):
     Key 值绝不回显（只在消息里确认已保存）。
     """
     if len(text) != 32:
-        await _reply(update,
+        await _reply(update, context,
                      f"加密 Key 必须是 32 位（你发的是 {len(text)} 位）。\n"
                      "请重新点“🔑 设置加密 Key”再试。",
                      reply_markup=back_to_oracle_keyboard())
@@ -4562,7 +4566,7 @@ async def _handle_bark_key_input(update, context, text):
     if update.effective_chat is not None:
         cfg["chat_id"] = update.effective_chat.id
     save_bark_config(cfg)
-    await _reply(update,
+    await _reply(update, context,
                  "✅ 加密 Key 已保存（32 位）。",
                  reply_markup=bark_keyboard(cfg.get("enabled"),
                                             bark_configured(cfg)))
@@ -4626,14 +4630,14 @@ async def handle_autoip(update, context):
         instances = await run_sync(
             attach_public_ips, get_cli(context), instances)
     except Exception as exc:  # noqa: BLE001
-        await _reply(update, fmt_error(exc))
+        await _reply(update, context, fmt_error(exc))
         return
     running = [i for i in (instances or [])
                if i.get("lifecycle-state") == "RUNNING"
                and i.get("public-ip")]
     context.user_data["gfw_instances"] = running
     cfg = load_gfw_config()
-    await _reply(update, fmt_gfw_status(cfg, running),
+    await _reply(update, context, fmt_gfw_status(cfg, running),
                  reply_markup=gfw_keyboard(
                      running, set((cfg.get("enabled") or {}).keys()),
                      is_gfw_configured(cfg)))
@@ -4710,16 +4714,16 @@ async def gfw_callback(update, context):
         return
     if action == "check":
         if not is_gfw_configured():
-            await _reply(update, "❌ 还没设置 RIPE Atlas API Key，"
+            await _reply(update, context, "❌ 还没设置 RIPE Atlas API Key，"
                          "请先点“🔑 设置 API Key”。")
             return
         cfg = load_gfw_config()
         if not cfg.get("enabled"):
-            await _reply(update, "❌ 还没开启任何实例的监控，"
+            await _reply(update, context, "❌ 还没开启任何实例的监控，"
                          "请先点实例打开开关。")
             return
         chat_id = update.effective_chat.id if update.effective_chat else None
-        await _reply(update, "🔍 已开始检查（每台约 1-2 分钟），"
+        await _reply(update, context, "🔍 已开始检查（每台约 1-2 分钟），"
                      "完成后发通知告诉你。")
         if chat_id is not None:
             thread = threading.Thread(
@@ -4735,7 +4739,7 @@ async def gfw_callback(update, context):
             idx = -1
         instances = context.user_data.get("gfw_instances") or []
         if idx < 0 or idx >= len(instances):
-            await _reply(update, "实例列表已过期，请重新打开菜单 16。")
+            await _reply(update, context, "实例列表已过期，请重新打开菜单 16。")
             return
         inst = instances[idx]
         inst_id = inst.get("id")
@@ -4761,13 +4765,13 @@ async def _handle_gfw_key_input(update, context, text):
     """
     key = text.strip()
     if len(key) < 8 or any(ch.isspace() for ch in key):
-        await _reply(update,
+        await _reply(update, context,
                      "API Key 格式不正确（太短或含有空白字符）。\n"
                      "请重新点“🔑 设置 API Key”再试。",
                      reply_markup=back_to_oracle_keyboard())
         return
     masked = set_api_key(key)
-    await _reply(update,
+    await _reply(update, context,
                  f"✅ API Key 已保存（{masked}）。\n"
                  "点实例打开监控开关，每 30 分钟自动检查一次；"
                  "也可以点“🔍 立即检查”马上测一次。",
@@ -4804,14 +4808,14 @@ async def handle_mfa(update, context):
         devices = await run_sync(list_mfa_devices,
                                  get_cli(context), get_compartment(context))
     except Exception as exc:  # noqa: BLE001
-        await _reply(update, fmt_error(exc))
+        await _reply(update, context, fmt_error(exc))
         return
     if not devices:
-        await _reply(update, "没有任何 MFA TOTP 设备，无需清除。",
+        await _reply(update, context, "没有任何 MFA TOTP 设备，无需清除。",
                      reply_markup=back_to_oracle_keyboard())
         return
     await _reply(
-        update,
+        update, context,
         fmt_mfa_devices(devices)
         + "\n\n⚠️ 点确认将删除上面全部 MFA 设备，"
           "用户下次登录控制台需重新绑定验证器。",
@@ -4837,15 +4841,15 @@ async def handle_batch(update, context):
         instances = await run_sync(list_instances, get_cli(context),
                                    get_compartment(context))
     except Exception as exc:  # noqa: BLE001
-        await _reply(update, fmt_error(exc))
+        await _reply(update, context, fmt_error(exc))
         return
     if not instances:
-        await _reply(update, "该账号下没有实例，无需批量操作。",
+        await _reply(update, context, "该账号下没有实例，无需批量操作。",
                      reply_markup=back_to_oracle_keyboard())
         return
     store_instances(context, instances)
     context.user_data["batch_selected"] = set()
-    await _reply(update, _batch_select_text(instances, set()),
+    await _reply(update, context, _batch_select_text(instances, set()),
                  reply_markup=batch_select_keyboard(instances, set()))
 
 
@@ -4862,7 +4866,7 @@ async def batch_toggle_callback(update, context):
     idx = parts[2] if len(parts) >= 3 else ""
     inst = resolve_instance(context, idx)
     if inst is None:
-        await _reply(update, "实例不存在或已过期，请重新打开批量操作。")
+        await _reply(update, context, "实例不存在或已过期，请重新打开批量操作。")
         return
     selected = context.user_data.setdefault("batch_selected", set())
     idx_int = int(idx)
@@ -4879,7 +4883,7 @@ async def batch_toggle_callback(update, context):
             return
         except Exception:  # noqa: BLE001 - 编辑失败时改发新消息
             pass
-    await _reply(update, text, reply_markup=keyboard)
+    await _reply(update, context, text, reply_markup=keyboard)
 
 
 @require_allowed
@@ -4887,7 +4891,7 @@ async def batch_next_callback(update, context):
     """回调 "ba:next"：有选中时显示动作选择键盘。"""
     selected = context.user_data.get("batch_selected") or set()
     if not selected:
-        await _reply(update, "请先选至少一台实例（点实例名切换选中）。")
+        await _reply(update, context, "请先选至少一台实例（点实例名切换选中）。")
         return
     names = []
     for idx in sorted(selected):
@@ -4895,9 +4899,9 @@ async def batch_next_callback(update, context):
         if inst is not None:
             names.append(inst.get("display-name") or "?")
     if not names:
-        await _reply(update, "选中的实例已过期，请重新打开批量操作。")
+        await _reply(update, context, "选中的实例已过期，请重新打开批量操作。")
         return
-    await _reply(update,
+    await _reply(update, context,
                  "已选实例：\n" + "\n".join(f"• {name}" for name in names)
                  + "\n\n选批量动作：",
                  reply_markup=batch_action_keyboard())
@@ -4912,13 +4916,13 @@ async def batch_action_callback(update, context):
     parts = _callback_data(update).split(":")
     action = parts[2] if len(parts) >= 3 else ""
     if action not in _BATCH_ACTION_TEXT:
-        await _reply(update, "未知的批量动作，请重新选择。")
+        await _reply(update, context, "未知的批量动作，请重新选择。")
         return
     selected = context.user_data.get("batch_selected") or set()
     instances = [resolve_instance(context, idx) for idx in sorted(selected)]
     instances = [inst for inst in instances if inst is not None]
     if not instances:
-        await _reply(update, "选中的实例已过期，请重新打开批量操作。")
+        await _reply(update, context, "选中的实例已过期，请重新打开批量操作。")
         return
     context.user_data["pending_batch_action"] = action
     names = "\n".join(f"• {inst.get('display-name') or '?'}"
@@ -4926,14 +4930,14 @@ async def batch_action_callback(update, context):
     verb = _BATCH_ACTION_TEXT[action]
     if action == "terminate":
         await _reply(
-            update,
+            update, context,
             f"⚠️ 确认批量删除以下 {len(instances)} 台实例？\n\n{names}\n\n"
             "<b>删除后将永久删除各实例的引导卷，数据无法恢复！</b>",
             parse_mode="HTML",
             reply_markup=confirm_keyboard("batchterminate", 0,
                                           "🗑️ 确认批量删除"))
         return
-    await _reply(update,
+    await _reply(update, context,
                  f"确认批量{verb}以下 {len(instances)} 台实例？\n\n{names}",
                  reply_markup=confirm_keyboard("batch" + action, 0,
                                                f"✅ 确认批量{verb}"))
@@ -4969,7 +4973,7 @@ async def handle_rename_prompt(update, context):
     idx = context.user_data.get("pending_idx")
     inst = resolve_instance(context, idx)
     if inst is None:
-        await _reply(update, "请先在实例列表里选一台实例，再点“改名”。",
+        await _reply(update, context, "请先在实例列表里选一台实例，再点“改名”。",
                      reply_markup=back_to_oracle_keyboard())
         return
     name = inst.get("display-name") or "?"
@@ -4989,7 +4993,7 @@ async def handle_reinstall_prompt(update, context):
     idx = context.user_data.get("pending_idx")
     inst = resolve_instance(context, idx)
     if inst is None:
-        await _reply(update, "请先在实例列表里选一台实例，再点“重装系统”。",
+        await _reply(update, context, "请先在实例列表里选一台实例，再点“重装系统”。",
                      reply_markup=back_to_oracle_keyboard())
         return
     name = inst.get("display-name") or "?"
@@ -5010,7 +5014,7 @@ async def handle_console(update, context):
     idx = context.user_data.get("pending_idx")
     inst = resolve_instance(context, idx)
     if inst is None:
-        await _reply(update, "请先在实例列表里选一台实例，再点“串行控制台”。",
+        await _reply(update, context, "请先在实例列表里选一台实例，再点“串行控制台”。",
                      reply_markup=back_to_oracle_keyboard())
         return
     name = inst.get("display-name") or "?"
@@ -5018,9 +5022,9 @@ async def handle_console(update, context):
         console = await run_sync(get_serial_console, get_cli(context),
                                  inst["id"])
     except Exception as exc:  # noqa: BLE001
-        await _reply(update, fmt_error(exc))
+        await _reply(update, context, fmt_error(exc))
         return
-    await _reply(update, fmt_serial_console(name, console),
+    await _reply(update, context, fmt_serial_console(name, console),
                  reply_markup=back_to_oracle_keyboard())
 
 
@@ -5096,12 +5100,12 @@ async def text_input_callback(update, context):
         # Email 发件人：不关联实例，校验邮箱格式后弹二次确认。
         context.user_data.pop("pending_input", None)
         if not is_valid_email(text):
-            await _reply(update,
+            await _reply(update, context,
                          "❌ 邮箱格式不对，请重新从菜单进入并发送正确的"
                          "邮箱地址（例如 noreply@example.com）。")
             return
         context.user_data["pending_sender"] = text
-        await _reply(update,
+        await _reply(update, context,
                      f"📧 确认创建发件人 {text}？\n"
                      "创建后 OCI 会向该邮箱发送验证邮件，"
                      "需点击链接后才能使用。",
@@ -5113,43 +5117,43 @@ async def text_input_callback(update, context):
         context.user_data.pop("pending_input", None)
         user = _resolve_iam_user(context, pending.get("idx"))
         if user is None:
-            await _reply(update, "用户不存在或已过期，请重新打开云账户管理。")
+            await _reply(update, context, "用户不存在或已过期，请重新打开云账户管理。")
             return
         name = user.get("name") or "?"
         if kind == "user_desc":
             if not text:
-                await _reply(update, "新描述不能为空，改描述已取消。")
+                await _reply(update, context, "新描述不能为空，改描述已取消。")
                 return
             if len(text) > MAX_DESCRIPTION_LEN:
-                await _reply(update,
+                await _reply(update, context,
                              f"新描述不能超过 {MAX_DESCRIPTION_LEN} 字符，"
                              "改描述已取消。")
                 return
             context.user_data["pending_user_desc"] = text
-            await _reply(update,
+            await _reply(update, context,
                          f"确认把用户「{name}」的描述改为「{text}」？",
                          reply_markup=confirm_keyboard(
                              "userdesc", pending.get("idx"), "✅ 确认修改"))
             return
         if kind == "user_email":
             if not is_valid_email(text):
-                await _reply(update,
+                await _reply(update, context,
                              "❌ 邮箱格式不对，改邮箱已取消。"
                              "请重新点“改邮箱”并发送正确的邮箱地址。")
                 return
             context.user_data["pending_user_email"] = text
-            await _reply(update,
+            await _reply(update, context,
                          f"确认把用户「{name}」的邮箱改为 {text}？",
                          reply_markup=confirm_keyboard(
                              "useremail", pending.get("idx"), "✅ 确认修改"))
             return
         # deluser：输入必须与用户名完全一致，否则取消。
         if text != name:
-            await _reply(update,
+            await _reply(update, context,
                          "输入的用户名与实际不符，删除已取消。\n"
                          "请重新点“删除用户”再试。")
             return
-        await _reply(update,
+        await _reply(update, context,
                      f"⚠️ 最后确认：删除用户「{name}」？\n"
                      "它的全部 API 密钥与 MFA 设备将一并删除，不可恢复。",
                      reply_markup=confirm_keyboard(
@@ -5162,7 +5166,7 @@ async def text_input_callback(update, context):
         await _delete_secret_message(update, context)
         if kind == "cf_token":
             if not text or any(ch.isspace() for ch in text):
-                await _reply(update,
+                await _reply(update, context,
                              "❌ Token 不能为空也不能带空格，已取消。"
                              "请重新点“手动添加凭据”。")
                 return
@@ -5170,21 +5174,21 @@ async def text_input_callback(update, context):
                                                    text, "", "")
             if not ok:
                 await _reply(
-                    update,
+                    update, context,
                     "❌ Token 校验没通过（无效或权限不足），没有保存。\n"
                     "请检查 Token 是否正确、是否有 Zone:Read 与 DNS:Edit "
                     "权限，再重新添加。",
                     reply_markup=cf_config_keyboard())
                 return
             await _reply(
-                update,
+                update, context,
                 f"✅ Cloudflare API Token 已保存并校验通过"
                 f"（{zones_total} 个 Zone）。",
                 reply_markup=cf_manage_keyboard())
             return
         if kind == "cf_key":
             if not text or any(ch.isspace() for ch in text):
-                await _reply(update,
+                await _reply(update, context,
                              "❌ Key 不能为空也不能带空格，已取消。"
                              "请重新点“手动添加凭据”。")
                 return
@@ -5198,27 +5202,27 @@ async def text_input_callback(update, context):
         # cf_email：第二步，校验邮箱格式后校验整组凭据并保存。
         if not is_valid_email(text):
             context.user_data.pop("cf_draft", None)
-            await _reply(update,
+            await _reply(update, context,
                          "❌ 邮箱格式不对，已取消。"
                          "请重新点“手动添加凭据”。")
             return
         draft = context.user_data.pop("cf_draft", None) or {}
         api_key = draft.get("api_key") or ""
         if not api_key:
-            await _reply(update, "会话已过期，请重新点“手动添加凭据”。")
+            await _reply(update, context, "会话已过期，请重新点“手动添加凭据”。")
             return
         ok, zones_total, _err = await run_sync(validate_and_save, "",
                                                api_key, text)
         if not ok:
             await _reply(
-                update,
+                update, context,
                 "❌ Key 或邮箱校验没通过（无效或不匹配），没有保存。\n"
                 "请检查后重新添加。",
                 reply_markup=cf_config_keyboard())
             return
         masked = mask_cf_email(text) if mask_cf_email is not None else "***"
         await _reply(
-            update,
+            update, context,
             f"✅ Cloudflare 凭据已保存并校验通过"
             f"（账号邮箱 {masked}，{zones_total} 个 Zone）。",
             reply_markup=cf_manage_keyboard())
@@ -5236,7 +5240,7 @@ async def text_input_callback(update, context):
         context.user_data.pop("pending_input", None)
         if kind == "add_admin_name":
             if not text or any(ch.isspace() for ch in text):
-                await _reply(update,
+                await _reply(update, context,
                              "❌ 用户名不能为空也不能带空格，增加管理员"
                              "账号已取消。请重新点“增加管理员账号”。")
                 return
@@ -5249,7 +5253,7 @@ async def text_input_callback(update, context):
                 "（直接发文字即可，不用加任何命令）")
             return
         if not is_valid_email(text):
-            await _reply(update,
+            await _reply(update, context,
                          "❌ 邮箱格式不对，增加管理员账号已取消。"
                          "请重新点“增加管理员账号”。")
             return
@@ -5257,7 +5261,7 @@ async def text_input_callback(update, context):
         admin["email"] = text
         context.user_data["add_admin"] = admin
         name = admin.get("name") or "?"
-        await _reply(update,
+        await _reply(update, context,
                      f"确认增加管理员账号？\n"
                      f"用户名：{name}\n"
                      f"邮箱：{text}\n"
@@ -5271,23 +5275,23 @@ async def text_input_callback(update, context):
         context.user_data.pop("pending_input", None)
         backup = resolve_boot_backup(context, pending.get("idx"))
         if backup is None:
-            await _reply(update, "备份不存在或已过期，请重新打开启动卷备份列表。")
+            await _reply(update, context, "备份不存在或已过期，请重新打开启动卷备份列表。")
             return
         backup_name = backup.get("display-name") or "backup"
         if text in ("默认", "default"):
             new_name = f"{backup_name}-restored"
         else:
             if not text:
-                await _reply(update, "新实例名不能为空，恢复已取消。")
+                await _reply(update, context, "新实例名不能为空，恢复已取消。")
                 return
             if len(text) > MAX_DISPLAY_NAME_LEN:
-                await _reply(update,
+                await _reply(update, context,
                              f"新实例名不能超过 {MAX_DISPLAY_NAME_LEN} 字符，"
                              "恢复已取消。")
                 return
             new_name = text
         context.user_data["pending_restore_name"] = new_name
-        await _reply(update,
+        await _reply(update, context,
                      f"确认从备份「{backup_name}」恢复出新实例"
                      f"「{new_name}」？\n"
                      "原机不动，恢复会占用免费实例与启动盘额度。",
@@ -5298,21 +5302,21 @@ async def text_input_callback(update, context):
     inst = resolve_instance(context, idx)
     if inst is None:
         context.user_data.pop("pending_input", None)
-        await _reply(update, "实例不存在或已过期，请重新打开实例列表。")
+        await _reply(update, context, "实例不存在或已过期，请重新打开实例列表。")
         return
     name = inst.get("display-name") or "?"
     if kind == "rename":
         context.user_data.pop("pending_input", None)
         if not text:
-            await _reply(update, "新实例名不能为空，改名已取消。")
+            await _reply(update, context, "新实例名不能为空，改名已取消。")
             return
         if len(text) > MAX_DISPLAY_NAME_LEN:
-            await _reply(update,
+            await _reply(update, context,
                          f"新实例名不能超过 {MAX_DISPLAY_NAME_LEN} 字符，"
                          "改名已取消。")
             return
         context.user_data["pending_rename_name"] = text
-        await _reply(update,
+        await _reply(update, context,
                      f"确认把实例「{name}」改名为「{text}」？",
                      reply_markup=confirm_keyboard("rename", idx,
                                                    "✅ 确认改名"))
@@ -5320,11 +5324,11 @@ async def text_input_callback(update, context):
     if kind == "reinstall":
         context.user_data.pop("pending_input", None)
         if text != name:
-            await _reply(update,
+            await _reply(update, context,
                          "输入的实例名与实际不符，重装已取消。\n"
                          "请重新点“重装系统”再试。")
             return
-        await _reply(update,
+        await _reply(update, context,
                      f"⚠️ 最后确认：重装实例「{name}」？\n"
                      "系统盘数据将全部清空，不可恢复；"
                      "实例 OCID 与 IP 地址保留不变。",
@@ -5343,9 +5347,9 @@ async def handle_a1_health(update, context):
         result = await run_sync(a1_health_check,
                                 get_cli(context), get_compartment(context))
     except Exception as exc:  # noqa: BLE001
-        await _reply(update, fmt_error(exc))
+        await _reply(update, context, fmt_error(exc))
         return
-    await _reply(update, fmt_a1_health(
+    await _reply(update, context, fmt_a1_health(
         result, get_cached_profile_display_name(get_current_profile(context))),
                  reply_markup=back_to_oracle_keyboard())
 
@@ -5440,18 +5444,18 @@ async def _handle_confirm_inner(action, idx, update, context):
     if action == "changeip":
         inst = resolve_instance(context, idx)
         if inst is None:
-            await _reply(update, "实例不存在或已过期，请重新打开实例列表。")
+            await _reply(update, context, "实例不存在或已过期，请重新打开实例列表。")
             return True
         try:
             new_ip = await run_sync(
                 change_public_ip, get_cli(context),
                 get_compartment(context), inst["id"])
         except Exception as exc:  # noqa: BLE001
-            await _reply(update, fmt_error(exc))
+            await _reply(update, context, fmt_error(exc))
             return True
         name = inst.get("display-name") or "?"
         await _reply(
-            update,
+            update, context,
             f"✅ {name} 已换 IP，新公网 IP：{new_ip}\n"
             "⚠️ 旧 IP 已释放，无法找回；"
             "请同步更新 DNS 记录、反代与客户端配置。")
@@ -5461,7 +5465,7 @@ async def _handle_confirm_inner(action, idx, update, context):
         inst = resolve_instance(context, idx)
         target = context.user_data.get("pending_resize")
         if inst is None or not target:
-            await _reply(update, "实例或目标规格已过期，请重新选择。")
+            await _reply(update, context, "实例或目标规格已过期，请重新选择。")
             return True
         shape_config = json.dumps({
             "ocpus": target["ocpus"],
@@ -5479,12 +5483,12 @@ async def _handle_confirm_inner(action, idx, update, context):
                  # （2026-11-23 真实验证：不加 --force 超时 120 秒）。
                  "--force"])
         except Exception as exc:  # noqa: BLE001
-            await _reply(update, fmt_error(exc))
+            await _reply(update, context, fmt_error(exc))
             return True
         context.user_data.pop("pending_resize", None)
         name = inst.get("display-name") or "?"
         await _reply(
-            update,
+            update, context,
             f"✅ {name} 已改为 {target['ocpus']} 核 / "
             f"{target['memory_gb']}GB。\n"
             "改规格时实例可能会重启，请稍后查看状态。")
@@ -5493,30 +5497,30 @@ async def _handle_confirm_inner(action, idx, update, context):
     if action == "delvol":
         vol = resolve_volume(context, idx)
         if vol is None:
-            await _reply(update, "磁盘不存在或已过期，请重新打开磁盘列表。")
+            await _reply(update, context, "磁盘不存在或已过期，请重新打开磁盘列表。")
             return True
         try:
             await run_sync(delete_boot_volume, get_cli(context), vol["id"])
         except Exception as exc:  # noqa: BLE001
-            await _reply(update, fmt_error(exc))
+            await _reply(update, context, fmt_error(exc))
             return True
         name = vol.get("display-name") or "?"
-        await _reply(update, f"✅ 启动盘 {name} 已删除。")
+        await _reply(update, context, f"✅ 启动盘 {name} 已删除。")
         return True
 
     if action == "delbb":
         backup = resolve_boot_backup(context, idx)
         if backup is None:
-            await _reply(update, "备份不存在或已过期，请重新打开启动卷备份列表。")
+            await _reply(update, context, "备份不存在或已过期，请重新打开启动卷备份列表。")
             return True
         try:
             await run_sync(delete_boot_volume_backup, get_cli(context),
                            backup["id"])
         except Exception as exc:  # noqa: BLE001
-            await _reply(update, fmt_error(exc))
+            await _reply(update, context, fmt_error(exc))
             return True
         name = backup.get("display-name") or "?"
-        await _reply(update, f"✅ 备份 {name} 已删除。")
+        await _reply(update, context, f"✅ 备份 {name} 已删除。")
         return True
 
     if action == "delbbsel":
@@ -5525,7 +5529,7 @@ async def _handle_confirm_inner(action, idx, update, context):
         try:
             indices = [int(p) for p in str(idx).split(",") if p.strip()]
         except ValueError:
-            await _reply(update, "参数错误，请重新选择要删除的备份。")
+            await _reply(update, context, "参数错误，请重新选择要删除的备份。")
             return True
         backups = context.user_data.get("boot_backups") or []
         context.user_data.pop("bb_ms_selected", None)
@@ -5549,7 +5553,7 @@ async def _handle_confirm_inner(action, idx, update, context):
         if failed:
             lines.append(f"⚠️ {len(failed)} 个删除失败："
                          + "、".join(failed))
-        await _reply(update, "\n".join(lines) or "没有删除任何备份。")
+        await _reply(update, context, "\n".join(lines) or "没有删除任何备份。")
         return True
 
     if action == "delibbsel":
@@ -5559,7 +5563,7 @@ async def _handle_confirm_inner(action, idx, update, context):
         try:
             indices = [int(p) for p in str(idx).split(",") if p.strip()]
         except ValueError:
-            await _reply(update, "参数错误，请重新选择要删除的备份。")
+            await _reply(update, context, "参数错误，请重新选择要删除的备份。")
             return True
         backups = context.user_data.get("ib_backups") or []
         context.user_data.pop("ib_ms_selected", None)
@@ -5583,13 +5587,13 @@ async def _handle_confirm_inner(action, idx, update, context):
         if failed:
             lines.append(f"⚠️ {len(failed)} 个删除失败："
                          + "、".join(failed))
-        await _reply(update, "\n".join(lines) or "没有删除任何备份。")
+        await _reply(update, context, "\n".join(lines) or "没有删除任何备份。")
         return True
 
     if action == "deloldestbb":
         vol = resolve_volume(context, idx)
         if vol is None:
-            await _reply(update, "磁盘不存在或已过期，请重新打开磁盘列表。")
+            await _reply(update, context, "磁盘不存在或已过期，请重新打开磁盘列表。")
             return True
         cli = get_cli(context)
         compartment = get_compartment(context)
@@ -5598,7 +5602,7 @@ async def _handle_confirm_inner(action, idx, update, context):
             _count, _limit, _full, oldest = await run_sync(
                 check_backup_quota, cli, compartment)
             if oldest is None:
-                await _reply(update, "没有可删除的备份，请重新点备份。")
+                await _reply(update, context, "没有可删除的备份，请重新点备份。")
                 return True
             await run_sync(delete_boot_volume_backup, cli, oldest["id"])
             # 删完立即创建可能撞上 OCI 配额同步延迟（LimitExceeded），
@@ -5606,11 +5610,11 @@ async def _handle_confirm_inner(action, idx, update, context):
             backup = await run_sync(
                 create_boot_volume_backup_with_limit_retry, cli, vol["id"])
         except Exception as exc:  # noqa: BLE001
-            await _reply(update, fmt_error(exc))
+            await _reply(update, context, fmt_error(exc))
             return True
         old_name = oldest.get("display-name") or "?"
         new_name = backup.get("display-name") or "?"
-        await _reply(update,
+        await _reply(update, context,
                      f"✅ 已删除最早备份「{old_name}」，"
                      f"新备份「{new_name}」创建中，几分钟后可用。")
         return True
@@ -5618,11 +5622,11 @@ async def _handle_confirm_inner(action, idx, update, context):
     if action == "restorebb":
         backup = resolve_boot_backup(context, idx)
         if backup is None:
-            await _reply(update, "备份不存在或已过期，请重新打开启动卷备份列表。")
+            await _reply(update, context, "备份不存在或已过期，请重新打开启动卷备份列表。")
             return True
         display_name = context.user_data.pop("pending_restore_name", None)
         if not display_name:
-            await _reply(update, "新实例名已过期，请重新点恢复并输入实例名。")
+            await _reply(update, context, "新实例名已过期，请重新点恢复并输入实例名。")
             return True
         cli = get_cli(context)
         compartment = get_compartment(context)
@@ -5647,7 +5651,7 @@ async def _handle_confirm_inner(action, idx, update, context):
         if shape == SHAPE_A1_FLEX:
             cap_error = check_a1_single_instance_cap(ocpus, memory_gb)
             if cap_error:
-                await _reply(update, f"❌ {cap_error}")
+                await _reply(update, context, f"❌ {cap_error}")
                 return True
         try:
             ok, reason = await run_sync(
@@ -5655,20 +5659,20 @@ async def _handle_confirm_inner(action, idx, update, context):
                 ocpus=ocpus or 0, memory_gb=memory_gb or 0, count=1,
                 boot_volume_size_gbs=backup.get("size-in-gbs") or 47)
         except Exception as exc:  # noqa: BLE001
-            await _reply(update, fmt_error(exc))
+            await _reply(update, context, fmt_error(exc))
             return True
         if not ok:
-            await _reply(update, f"❌ 配额预检不通过：{reason}")
+            await _reply(update, context, f"❌ 配额预检不通过：{reason}")
             return True
         availability_domain = PLAN_DEFAULTS["availability_domain"]
         subnet_id = PLAN_DEFAULTS["subnet_id"]
         ssh_keys_file = PLAN_DEFAULTS["ssh_keys_file"]
         if availability_domain in (None, "", "xxxx:AP-SINGAPORE-1-AD-1"):
-            await _reply(update,
+            await _reply(update, context,
                          "❌ 未配置可用域：请在部署环境变量 MBOT_PLAN_AD 里配置。")
             return True
         if subnet_id in (None, "", "ocid1.subnet.oc1..xxxxxxxx"):
-            await _reply(update,
+            await _reply(update, context,
                          "❌ 未配置子网：请在部署环境变量 "
                          "MBOT_PLAN_SUBNET_ID 里配置。")
             return True
@@ -5676,7 +5680,7 @@ async def _handle_confirm_inner(action, idx, update, context):
             # 恢复出来的系统保留原机的 authorized_keys，原密钥照样能登录，
             # 所以 SSH 公钥文件不是必须的；没配就传空字符串。
             ssh_keys_file = ""
-        await _reply(update,
+        await _reply(update, context,
                      f"♻️ 正在从备份重建启动盘并开机「{display_name}」，"
                      "需要几分钟，请稍候…")
         try:
@@ -5687,10 +5691,10 @@ async def _handle_confirm_inner(action, idx, update, context):
                 ssh_keys_file=ssh_keys_file, shape=shape, ocpus=ocpus,
                 memory_gb=memory_gb, assign_public_ip=True)
         except Exception as exc:  # noqa: BLE001
-            await _reply(update, fmt_error(exc))
+            await _reply(update, context, fmt_error(exc))
             return True
         instance_id = result.get("instance_id") or ""
-        await _reply(update,
+        await _reply(update, context,
                      f"✅ 恢复成功，新实例「{display_name}」已开机"
                      f"（{shape}）。\n实例 ID：…{instance_id[-12:]}")
         return True
@@ -5704,7 +5708,7 @@ async def _handle_confirm_inner(action, idx, update, context):
         except (TypeError, ValueError):
             bidx = -1
         if inst is None or bidx < 0 or bidx >= len(backups):
-            await _reply(update,
+            await _reply(update, context,
                          "备份选择已过期，请重新打开实例详情再点“引导卷恢复”。")
             return True
         backup = backups[bidx]
@@ -5716,11 +5720,11 @@ async def _handle_confirm_inner(action, idx, update, context):
                 check_boot_volume_space, cli, compartment,
                 backup.get("size-in-gbs") or 0)
         except Exception as exc:  # noqa: BLE001
-            await _reply(update, fmt_error(exc))
+            await _reply(update, context, fmt_error(exc))
             return True
         if not ok:
             await _reply(
-                update,
+                update, context,
                 f"❌ 启动盘额度不足：还剩 {remaining}GB，"
                 f"新盘需要 {backup.get('size-in-gbs')}GB。"
                 "请先删除不用的启动盘再恢复。")
@@ -5728,12 +5732,12 @@ async def _handle_confirm_inner(action, idx, update, context):
         instance_id = inst["id"]
         with _BOOTSWAP_LOCK:
             if instance_id in _BOOTSWAP_RUNNING:
-                await _reply(update, "这台实例正在换盘，请等它完成后再试。")
+                await _reply(update, context, "这台实例正在换盘，请等它完成后再试。")
                 return True
             _BOOTSWAP_RUNNING.add(instance_id)
         name = inst.get("display-name") or "?"
         await _reply(
-            update,
+            update, context,
             f"♻️ 已开始恢复实例「{name}」的引导卷（约几分钟），"
             "完成后会发通知告诉你。")
         chat_id = (update.effective_chat.id
@@ -5751,7 +5755,7 @@ async def _handle_confirm_inner(action, idx, update, context):
         except Exception:  # noqa: BLE001 - 线程起不来就放掉锁并报错
             with _BOOTSWAP_LOCK:
                 _BOOTSWAP_RUNNING.discard(instance_id)
-            await _reply(update, "❌ 启动恢复任务失败，请稍后再试。")
+            await _reply(update, context, "❌ 启动恢复任务失败，请稍后再试。")
         return True
 
     if action == "delmfa":
@@ -5759,10 +5763,10 @@ async def _handle_confirm_inner(action, idx, update, context):
             devices = await run_sync(
                 list_mfa_devices, get_cli(context), get_compartment(context))
         except Exception as exc:  # noqa: BLE001
-            await _reply(update, fmt_error(exc))
+            await _reply(update, context, fmt_error(exc))
             return True
         if not devices:
-            await _reply(update, "没有任何 MFA 设备，无需清除。")
+            await _reply(update, context, "没有任何 MFA 设备，无需清除。")
             return True
         cli = get_cli(context)
         deleted, failed = 0, 0
@@ -5777,38 +5781,38 @@ async def _handle_confirm_inner(action, idx, update, context):
         if failed:
             text += f"，失败 {failed} 个（请在控制台手动处理）"
         text += "。"
-        await _reply(update, text)
+        await _reply(update, context, text)
         return True
 
     if action == "rename":
         inst = resolve_instance(context, idx)
         new_name = context.user_data.get("pending_rename_name")
         if inst is None or not new_name:
-            await _reply(update, "实例或新名字已过期，请重新改名。")
+            await _reply(update, context, "实例或新名字已过期，请重新改名。")
             return True
         try:
             await run_sync(rename_instance, get_cli(context),
                            inst["id"], new_name)
         except Exception as exc:  # noqa: BLE001
-            await _reply(update, fmt_error(exc))
+            await _reply(update, context, fmt_error(exc))
             return True
         context.user_data.pop("pending_rename_name", None)
         old_name = inst.get("display-name") or "?"
-        await _reply(update, f"✅ 实例「{old_name}」已改名为「{new_name}」。")
+        await _reply(update, context, f"✅ 实例「{old_name}」已改名为「{new_name}」。")
         return True
 
     if action == "reinstall":
         inst = resolve_instance(context, idx)
         if inst is None:
-            await _reply(update, "实例不存在或已过期，请重新打开实例列表。")
+            await _reply(update, context, "实例不存在或已过期，请重新打开实例列表。")
             return True
         try:
             await run_sync(reinstall_instance, get_cli(context), inst["id"])
         except Exception as exc:  # noqa: BLE001
-            await _reply(update, fmt_error(exc))
+            await _reply(update, context, fmt_error(exc))
             return True
         name = inst.get("display-name") or "?"
-        await _reply(update,
+        await _reply(update, context,
                      f"✅ 实例「{name}」重装已提交，系统盘正在重建。\n"
                      "请等待实例重启完成后再连接。")
         return True
@@ -5818,7 +5822,7 @@ async def _handle_confirm_inner(action, idx, update, context):
         instances = [resolve_instance(context, i) for i in sorted(selected)]
         instances = [inst for inst in instances if inst is not None]
         if not instances:
-            await _reply(update, "选中的实例已过期，请重新打开批量操作。")
+            await _reply(update, context, "选中的实例已过期，请重新打开批量操作。")
             return True
         ids = [inst["id"] for inst in instances]
         names = {inst["id"]: (inst.get("display-name") or "?")
@@ -5835,11 +5839,11 @@ async def _handle_confirm_inner(action, idx, update, context):
             else:
                 result = await run_sync(batch_terminate, get_cli(context), ids)
         except Exception as exc:  # noqa: BLE001
-            await _reply(update, fmt_error(exc))
+            await _reply(update, context, fmt_error(exc))
             return True
         context.user_data.pop("batch_selected", None)
         context.user_data.pop("pending_batch_action", None)
-        await _reply(update, fmt_batch_result(verb, result, names))
+        await _reply(update, context, fmt_batch_result(verb, result, names))
         return True
 
     if action == "delbucket":
@@ -5849,15 +5853,15 @@ async def _handle_confirm_inner(action, idx, update, context):
         except (TypeError, ValueError, IndexError):
             bucket = None
         if bucket is None:
-            await _reply(update, "Bucket 不存在或已过期，请重新打开对象存储列表。")
+            await _reply(update, context, "Bucket 不存在或已过期，请重新打开对象存储列表。")
             return True
         name = bucket.get("name") or "?"
         try:
             await run_sync(delete_bucket, get_cli(context), name)
         except Exception as exc:  # noqa: BLE001
-            await _reply(update, fmt_error(exc))
+            await _reply(update, context, fmt_error(exc))
             return True
-        await _reply(update, f"✅ Bucket {name} 已删除。")
+        await _reply(update, context, f"✅ Bucket {name} 已删除。")
         return True
 
     if action == "delobj":
@@ -5869,7 +5873,7 @@ async def _handle_confirm_inner(action, idx, update, context):
         except (TypeError, ValueError, IndexError):
             bucket, obj = None, None
         if bucket is None or obj is None:
-            await _reply(update, "对象不存在或已过期，请重新打开对象列表。")
+            await _reply(update, context, "对象不存在或已过期，请重新打开对象列表。")
             return True
         bucket_name = bucket.get("name") or "?"
         object_name = obj.get("name") or "?"
@@ -5877,24 +5881,24 @@ async def _handle_confirm_inner(action, idx, update, context):
             await run_sync(delete_object, get_cli(context),
                            bucket_name, object_name)
         except Exception as exc:  # noqa: BLE001
-            await _reply(update, fmt_error(exc))
+            await _reply(update, context, fmt_error(exc))
             return True
-        await _reply(update, f"✅ 对象 {object_name} 已删除。")
+        await _reply(update, context, f"✅ 对象 {object_name} 已删除。")
         return True
 
     if action == "createsender":
         email = context.user_data.get("pending_sender")
         if not email:
-            await _reply(update, "发件人邮箱已过期，请重新从菜单进入。")
+            await _reply(update, context, "发件人邮箱已过期，请重新从菜单进入。")
             return True
         try:
             await run_sync(create_sender, get_cli(context),
                            get_compartment(context), email)
         except Exception as exc:  # noqa: BLE001
-            await _reply(update, fmt_error(exc))
+            await _reply(update, context, fmt_error(exc))
             return True
         context.user_data.pop("pending_sender", None)
-        await _reply(update,
+        await _reply(update, context,
                      f"✅ 发件人 {email} 已创建。\n"
                      "请到该邮箱点击 OCI 的验证链接，验证后才能使用。")
         return True
@@ -5902,9 +5906,9 @@ async def _handle_confirm_inner(action, idx, update, context):
     if action == "delplan":
         plan_id = str(idx)
         if not PLANS.delete(plan_id):
-            await _reply(update, f"抢机计划 {plan_id} 不存在，可能已被删除。")
+            await _reply(update, context, f"抢机计划 {plan_id} 不存在，可能已被删除。")
             return True
-        await _reply(update, f"✅ 抢机计划 {plan_id} 已删除。")
+        await _reply(update, context, f"✅ 抢机计划 {plan_id} 已删除。")
         return True
 
     if action in ("restartsvc", "restartbot"):
@@ -5914,24 +5918,24 @@ async def _handle_confirm_inner(action, idx, update, context):
             try:
                 service = SERVICES[int(idx)]
             except (TypeError, ValueError, IndexError):
-                await _reply(update, "服务不存在，请重新打开客户端管理。")
+                await _reply(update, context, "服务不存在，请重新打开客户端管理。")
                 return True
         # 重启机器人会杀掉当前进程：先把“正在重启”发出去再执行。
-        await _reply(update, f"🔄 正在重启服务 {service}…")
+        await _reply(update, context, f"🔄 正在重启服务 {service}…")
         try:
             await run_sync(restart_service, service)
         except Exception as exc:  # noqa: BLE001
-            await _reply(update, f"❌ 重启 {service} 失败：{exc}")
+            await _reply(update, context, f"❌ 重启 {service} 失败：{exc}")
             return True
         if service != BOT_SERVICE:
-            await _reply(update, f"✅ 服务 {service} 已重启。")
+            await _reply(update, context, f"✅ 服务 {service} 已重启。")
         # 重启机器人时进程即将被 systemd 杀掉，不再发第二条消息；
         # 用户已收到“正在重启”，服务恢复后即代表重启完成。
         return True
 
     if action == "openport":
         if "xxxxxxxx" in PANEL_SECURITY_LIST_ID:
-            await _reply(update,
+            await _reply(update, context,
                          "⚠️ 未配置面板安全组：请先在 "
                          "tgbot/handlers_extra.py 的 PANEL_SECURITY_LIST_ID "
                          "里填入面板服务器所在子网的安全组 OCID，"
@@ -5944,11 +5948,11 @@ async def _handle_confirm_inner(action, idx, update, context):
             await run_sync(ufw_allow_port, PANEL_PORT,
                            PANEL_SSH_HOST or None)
         except Exception as exc:  # noqa: BLE001
-            await _reply(update, fmt_error(exc))
+            await _reply(update, context, fmt_error(exc))
             return True
         rule_text = "已新增放行规则" if added else "放行规则已存在"
         await _reply(
-            update,
+            update, context,
             f"✅ {PANEL_PORT} 端口已放行（OCI 安全组{rule_text} + UFW）。\n"
             f"⚠️ {PANEL_PORT} 端口已暴露到公网，任何人可访问登录页，"
             "请确保密码足够强。")
@@ -5957,23 +5961,23 @@ async def _handle_confirm_inner(action, idx, update, context):
     if action == "upgrade":
         if not await run_sync(is_git_repo, PROJECT_ROOT):
             await _reply(
-                update,
+                update, context,
                 "⚠️ 当前目录不是 git 仓库，无法自动升级，请手动升级：\n"
                 "git pull && pip install -r requirements.txt，"
                 "然后重启 rbot-clone-web 与 rbot-clone-bot 两个服务。")
             return True
         # 升级最后会重启机器人（杀掉当前进程）：先把消息发出去再执行。
-        await _reply(update,
+        await _reply(update, context,
                      "⬆️ 开始升级：拉取最新代码并安装依赖，"
                      "随后重启面板与机器人，约 1 分钟不可用…")
         try:
             await run_sync(upgrade_client, PROJECT_ROOT)
         except Exception as exc:  # noqa: BLE001
-            await _reply(update, fmt_error(exc))
+            await _reply(update, context, fmt_error(exc))
             return True
         # 正常情况下 upgrade_client 最后重启机器人，本行可能发不出去；
         # 用户已收到“开始升级”消息，服务恢复后即代表升级完成。
-        await _reply(update, "✅ 升级完成，面板与机器人正在重启。")
+        await _reply(update, context, "✅ 升级完成，面板与机器人正在重启。")
         return True
 
     if action == "delipv6":
@@ -5983,16 +5987,16 @@ async def _handle_confirm_inner(action, idx, update, context):
         except (TypeError, ValueError):
             idx_int = -1
         if idx_int < 0 or idx_int >= len(entries):
-            await _reply(update, "目标已过期，请重新打开 IPv6 管理。")
+            await _reply(update, context, "目标已过期，请重新打开 IPv6 管理。")
             return True
         entry = entries[idx_int]
         try:
             await run_sync(delete_ipv6, get_cli(context), entry["id"])
         except Exception as exc:  # noqa: BLE001
-            await _reply(update, fmt_error(exc))
+            await _reply(update, context, fmt_error(exc))
             return True
         await _reply(
-            update,
+            update, context,
             f"✅ 已删除 {entry['name']} 的 IPv6 {entry['ip']}。")
         return True
 
@@ -6003,31 +6007,31 @@ async def _handle_confirm_inner(action, idx, update, context):
         except (TypeError, ValueError):
             idx_int = -1
         if idx_int < 0 or idx_int >= len(entries):
-            await _reply(update, "目标已过期，请重新打开 IP 管理。")
+            await _reply(update, context, "目标已过期，请重新打开 IP 管理。")
             return True
         entry = entries[idx_int]
         try:
             await run_sync(delete_public_ip, get_cli(context), entry["id"])
         except Exception as exc:  # noqa: BLE001
-            await _reply(update, fmt_error(exc))
+            await _reply(update, context, fmt_error(exc))
             return True
-        await _reply(update, f"✅ 已删除保留 IP {entry['ip']}。")
+        await _reply(update, context, f"✅ 已删除保留 IP {entry['ip']}。")
         return True
 
     if action == "userdesc":
         user = _resolve_iam_user(context, idx)
         new_desc = context.user_data.get("pending_user_desc")
         if user is None or new_desc is None:
-            await _reply(update, "用户或新描述已过期，请重新操作。")
+            await _reply(update, context, "用户或新描述已过期，请重新操作。")
             return True
         try:
             await run_sync(update_user, get_cli(context), user["id"],
                            description=new_desc)
         except Exception as exc:  # noqa: BLE001
-            await _reply(update, fmt_error(exc))
+            await _reply(update, context, fmt_error(exc))
             return True
         context.user_data.pop("pending_user_desc", None)
-        await _reply(update,
+        await _reply(update, context,
                      f"✅ 用户「{user.get('name', '?')}」描述已更新。")
         return True
 
@@ -6035,16 +6039,16 @@ async def _handle_confirm_inner(action, idx, update, context):
         user = _resolve_iam_user(context, idx)
         new_email = context.user_data.get("pending_user_email")
         if user is None or new_email is None:
-            await _reply(update, "用户或新邮箱已过期，请重新操作。")
+            await _reply(update, context, "用户或新邮箱已过期，请重新操作。")
             return True
         try:
             await run_sync(update_user, get_cli(context), user["id"],
                            email=new_email)
         except Exception as exc:  # noqa: BLE001
-            await _reply(update, fmt_error(exc))
+            await _reply(update, context, fmt_error(exc))
             return True
         context.user_data.pop("pending_user_email", None)
-        await _reply(update,
+        await _reply(update, context,
                      f"✅ 用户「{user.get('name', '?')}」邮箱已改为 {new_email}。")
         return True
 
@@ -6056,16 +6060,16 @@ async def _handle_confirm_inner(action, idx, update, context):
         except (TypeError, ValueError):
             idx_int = -1
         if idx_int < 0 or idx_int >= len(keys) or not owner.get("id"):
-            await _reply(update, "密钥不存在或已过期，请重新打开 API 密钥列表。")
+            await _reply(update, context, "密钥不存在或已过期，请重新打开 API 密钥列表。")
             return True
         key = keys[idx_int]
         try:
             await run_sync(delete_api_key, get_cli(context),
                            owner["id"], key.get("fingerprint"))
         except Exception as exc:  # noqa: BLE001
-            await _reply(update, fmt_error(exc))
+            await _reply(update, context, fmt_error(exc))
             return True
-        await _reply(update,
+        await _reply(update, context,
                      f"✅ 已删除用户「{owner.get('name', '?')}」的 API 密钥 "
                      f"{key.get('fingerprint', '?')}。")
         return True
@@ -6073,10 +6077,10 @@ async def _handle_confirm_inner(action, idx, update, context):
     if action == "deluser":
         user = _resolve_iam_user(context, idx)
         if user is None:
-            await _reply(update, "用户不存在或已过期，请重新打开云账户管理。")
+            await _reply(update, context, "用户不存在或已过期，请重新打开云账户管理。")
             return True
         if _is_current_api_user(context, user.get("id")):
-            await _reply(update,
+            await _reply(update, context,
                          f"❌ 不能删除用户「{user.get('name', '?')}」：它是机器人"
                          f"当前账号（{get_cached_profile_display_name(get_current_profile(context))}）"
                          "正在使用的 API 用户，删了机器人会立刻失联。")
@@ -6084,9 +6088,9 @@ async def _handle_confirm_inner(action, idx, update, context):
         try:
             await run_sync(delete_user, get_cli(context), user["id"])
         except Exception as exc:  # noqa: BLE001
-            await _reply(update, fmt_error(exc))
+            await _reply(update, context, fmt_error(exc))
             return True
-        await _reply(update,
+        await _reply(update, context,
                      f"✅ 用户「{user.get('name', '?')}」已删除。")
         return True
 
@@ -6098,7 +6102,7 @@ async def _handle_confirm_inner(action, idx, update, context):
         name = admin.get("name") or ""
         email = admin.get("email") or ""
         if not name or not email:
-            await _reply(update,
+            await _reply(update, context,
                          "增加管理员账号的信息已过期，请重新点"
                          "“增加管理员账号”。")
             return True
@@ -6108,7 +6112,7 @@ async def _handle_confirm_inner(action, idx, update, context):
             user = await run_sync(create_user, cli, compartment, name,
                                   email)
         except Exception as exc:  # noqa: BLE001
-            await _reply(update, fmt_error(exc))
+            await _reply(update, context, fmt_error(exc))
             return True
         user_id = (user or {}).get("id")
         group_id = None
@@ -6116,13 +6120,13 @@ async def _handle_confirm_inner(action, idx, update, context):
             group_id = await run_sync(get_group_id_by_name, cli,
                                       compartment, "Administrators")
         except Exception as exc:  # noqa: BLE001 - 查组失败也如实汇报
-            await _reply(update,
+            await _reply(update, context,
                          f"⚠️ 用户「{name}」已创建，但查 Administrators 组"
                          f"失败（{exc}），未加进管理员组。请在控制台手动"
                          "加组。")
             return True
         if group_id is None:
-            await _reply(update,
+            await _reply(update, context,
                          f"⚠️ 用户「{name}」已创建，但租户下找不到 "
                          "Administrators 组，未加进管理员组。请在控制台"
                          "手动加组。")
@@ -6130,11 +6134,11 @@ async def _handle_confirm_inner(action, idx, update, context):
         try:
             await run_sync(add_user_to_group, cli, user_id, group_id)
         except Exception as exc:  # noqa: BLE001
-            await _reply(update,
+            await _reply(update, context,
                          f"⚠️ 用户「{name}」已创建，但加进 Administrators "
                          f"组失败（{exc}）。请在控制台手动加组。")
             return True
-        await _reply(update,
+        await _reply(update, context,
                      f"✅ 管理员账号「{name}」已创建（邮箱 {email}），"
                      "已加进 Administrators 组。\n"
                      "控制台密码尚未设置：请在控制台给该用户设置临时密码，"
@@ -6249,18 +6253,18 @@ async def handle_domain(update, context):
     except CloudflareError as exc:
         if getattr(exc, "kind", "") in ("config", "auth"):
             await _reply(
-                update,
+                update, context,
                 fmt_cf_error(exc)
                 + "\n\n可以在这里添加凭据，或从服务器的证书脚本自动提取。",
                 reply_markup=cf_config_keyboard())
         else:
-            await _reply(update, fmt_cf_error(exc))
+            await _reply(update, context, fmt_cf_error(exc))
         return
     except Exception as exc:  # noqa: BLE001 - 其他异常也转成提示，不崩机器人
-        await _reply(update, f"❌ 出错了：{exc}")
+        await _reply(update, context, f"❌ 出错了：{exc}")
         return
     context.user_data["domain_zones"] = list(zones)
-    await _reply(update, fmt_domain_zones(zones),
+    await _reply(update, context, fmt_domain_zones(zones),
                  reply_markup=domain_zones_keyboard(zones))
 
 
@@ -6329,15 +6333,15 @@ async def _show_domain_records(update, context, zone_id):
         client = _get_cf_client()
         records = await run_sync(client.list_dns_records, zone_id)
     except CloudflareError as exc:
-        await _reply(update, fmt_cf_error(exc))
+        await _reply(update, context, fmt_cf_error(exc))
         return
     except Exception as exc:  # noqa: BLE001
-        await _reply(update, f"❌ 出错了：{exc}")
+        await _reply(update, context, f"❌ 出错了：{exc}")
         return
     stored = context.user_data.setdefault("domain_records", {})
     stored[zone_id] = list(records)
     zone_name = _resolve_zone_name(context, zone_id, records)
-    await _reply(update, fmt_domain_records(zone_name, records),
+    await _reply(update, context, fmt_domain_records(zone_name, records),
                  reply_markup=domain_records_keyboard(zone_id, records))
 
 
@@ -6352,22 +6356,22 @@ async def _dns_add_do(update, context, zone_id):
     draft = context.user_data.get("dns_add_draft") or {}
     if (draft.get("zone_id") != zone_id or not draft.get("type")
             or not draft.get("name") or not draft.get("content")):
-        await _reply(update, "添加信息已过期，请重新点“添加记录”。")
+        await _reply(update, context, "添加信息已过期，请重新点“添加记录”。")
         return
     try:
         client = _get_cf_client()
         await run_sync(client.create_dns_record, zone_id, draft["type"],
                        draft["name"], draft["content"])
     except CloudflareError as exc:
-        await _reply(update, fmt_cf_error(exc))
+        await _reply(update, context, fmt_cf_error(exc))
         return
     except Exception as exc:  # noqa: BLE001
-        await _reply(update, f"❌ 出错了：{exc}")
+        await _reply(update, context, f"❌ 出错了：{exc}")
         return
     context.user_data.pop("dns_add_draft", None)
     zone_name = _resolve_zone_name(
         context, zone_id, _domain_stored_records(context, zone_id))
-    await _reply(update,
+    await _reply(update, context,
                  f"✅ 已添加：{draft['type']} {draft['name']} "
                  f"-> {draft['content']}（{zone_name}）")
     await _show_domain_records(update, context, zone_id)
@@ -6381,19 +6385,19 @@ async def _dns_delete_pick(update, context, zone_id):
             client = _get_cf_client()
             records = await run_sync(client.list_dns_records, zone_id)
         except CloudflareError as exc:
-            await _reply(update, fmt_cf_error(exc))
+            await _reply(update, context, fmt_cf_error(exc))
             return
         except Exception as exc:  # noqa: BLE001
-            await _reply(update, f"❌ 出错了：{exc}")
+            await _reply(update, context, f"❌ 出错了：{exc}")
             return
         context.user_data.setdefault("domain_records", {})[zone_id] = \
             list(records)
     if not records:
-        await _reply(update, "这个 Zone 下没有 DNS 记录，无需删除。",
+        await _reply(update, context, "这个 Zone 下没有 DNS 记录，无需删除。",
                      reply_markup=domain_records_keyboard(zone_id, records))
         return
     zone_name = _resolve_zone_name(context, zone_id, records)
-    await _reply(update,
+    await _reply(update, context,
                  f"🗑️ 删除 {zone_name} 的 DNS 记录：\n点一条记录进入确认。",
                  reply_markup=domain_delete_pick_keyboard(zone_id, records))
 
@@ -6405,11 +6409,11 @@ async def _dns_delete_confirm(update, context, zone_id, idx_text):
         idx = int(idx_text)
         record = records[idx]
     except (ValueError, IndexError):
-        await _reply(update, "记录不存在或已过期，请刷新列表后再试。")
+        await _reply(update, context, "记录不存在或已过期，请刷新列表后再试。")
         return
     zone_name = _resolve_zone_name(context, zone_id, records)
     await _reply(
-        update,
+        update, context,
         "⚠️ 确认删除这条 DNS 记录？\n\n"
         f"Zone：{zone_name}\n"
         f"{fmt_domain_record_line(record)}\n\n"
@@ -6424,18 +6428,18 @@ async def _dns_delete_do(update, context, zone_id, idx_text):
         idx = int(idx_text)
         record = records[idx]
     except (ValueError, IndexError):
-        await _reply(update, "记录不存在或已过期，请刷新列表后再试。")
+        await _reply(update, context, "记录不存在或已过期，请刷新列表后再试。")
         return
     try:
         client = _get_cf_client()
         await run_sync(client.delete_dns_record, zone_id, record.get("id"))
     except CloudflareError as exc:
-        await _reply(update, fmt_cf_error(exc))
+        await _reply(update, context, fmt_cf_error(exc))
         return
     except Exception as exc:  # noqa: BLE001
-        await _reply(update, f"❌ 出错了：{exc}")
+        await _reply(update, context, f"❌ 出错了：{exc}")
         return
-    await _reply(update, f"🗑️ 已删除：{fmt_domain_record_line(record)}")
+    await _reply(update, context, f"🗑️ 已删除：{fmt_domain_record_line(record)}")
     await _show_domain_records(update, context, zone_id)
 
 
@@ -6444,7 +6448,7 @@ async def _handle_dns_add_name_input(update, context, text):
     draft = context.user_data.get("dns_add_draft") or {}
     zone_id = draft.get("zone_id")
     if not zone_id or not draft.get("type"):
-        await _reply(update, "添加信息已过期，请重新点“添加记录”。")
+        await _reply(update, context, "添加信息已过期，请重新点“添加记录”。")
         return
     if not _validate_dns_record_name(text):
         context.user_data["pending_input"] = {"kind": "dns_add_name"}
@@ -6469,7 +6473,7 @@ async def _handle_dns_add_content_input(update, context, text):
     draft = context.user_data.get("dns_add_draft") or {}
     zone_id = draft.get("zone_id")
     if not zone_id or not draft.get("type") or not draft.get("name"):
-        await _reply(update, "添加信息已过期，请重新点“添加记录”。")
+        await _reply(update, context, "添加信息已过期，请重新点“添加记录”。")
         return
     error = _validate_dns_record_content(draft["type"], text)
     if error:
@@ -6483,7 +6487,7 @@ async def _handle_dns_add_content_input(update, context, text):
     context.user_data["dns_add_draft"] = draft
     zone_name = _resolve_zone_name(
         context, zone_id, _domain_stored_records(context, zone_id))
-    await _reply(update, fmt_dns_add_summary(zone_name, draft),
+    await _reply(update, context, fmt_dns_add_summary(zone_name, draft),
                  reply_markup=domain_add_confirm_keyboard(zone_id))
 
 
@@ -6514,14 +6518,14 @@ async def domain_callback(update, context):
             zone_name = _resolve_zone_name(
                 context, zone_id,
                 _domain_stored_records(context, zone_id))
-            await _reply(update,
+            await _reply(update, context,
                          f"➕ 给 {zone_name} 添加 DNS 记录：\n先选记录类型。",
                          reply_markup=domain_add_type_keyboard(zone_id))
             return
     if action == "addtype" and len(parts) == 4:
         zone_id, rtype = parts[2], parts[3]
         if rtype not in DNS_ADD_TYPES:
-            await _reply(update, "不支持的记录类型，请重新选择。")
+            await _reply(update, context, "不支持的记录类型，请重新选择。")
             return
         context.user_data["dns_add_draft"] = {"zone_id": zone_id,
                                               "type": rtype}
@@ -6544,7 +6548,7 @@ async def domain_callback(update, context):
         if len(parts) == 4:
             await _dns_delete_confirm(update, context, parts[2], parts[3])
             return
-    await _reply(update, "参数错误，请重新发送 /domain。")
+    await _reply(update, context, "参数错误，请重新发送 /domain。")
 
 
 async def _delete_secret_message(update, context):
@@ -6570,19 +6574,19 @@ async def _cf_extract_pick(update, context):
                                    get_compartment(context))
         instances = await run_sync(attach_public_ips, cli, instances)
     except Exception as exc:  # noqa: BLE001 - OCI 异常统一转中文提示
-        await _reply(update, fmt_error(exc))
+        await _reply(update, context, fmt_error(exc))
         return
     hosts = [inst for inst in instances
              if inst.get("lifecycle-state") == "RUNNING"
              and inst.get("public-ip")]
     if not hosts:
-        await _reply(update,
+        await _reply(update, context,
                      "当前账号/区域下没有运行中且有公网 IP 的实例。\n"
                      "要换账号或区域请先用菜单 2 切换。")
         return
     context.user_data["cf_extract_hosts"] = hosts
     await _reply(
-        update,
+        update, context,
         "选一台服务器，我去读它上面的证书脚本（1.sh）提取 CF_Key / CF_Email：\n"
         "（只读这两行，提取到后先校验，通过才保存）",
         reply_markup=cf_extract_hosts_keyboard(hosts))
@@ -6594,31 +6598,31 @@ async def _cf_extract_run(update, context, idx_text):
     try:
         host_inst = hosts[int(idx_text)]
     except (TypeError, ValueError, IndexError):
-        await _reply(update, "该服务器已不在列表里，请重新点“从服务器提取”。")
+        await _reply(update, context, "该服务器已不在列表里，请重新点“从服务器提取”。")
         return
     public_ip = host_inst.get("public-ip")
     name = host_inst.get("display-name") or public_ip or "?"
     host = _guard_host_for_instance(public_ip)
     if host is None:
-        await _reply(update,
+        await _reply(update, context,
                      "❌ 这台服务器没有配置守护 SSH 密钥，机器人连不上它。\n"
                      "请先给它加上守护密钥，或换一台服务器。")
         return
-    await _reply(update, f"正在从 {name}（{public_ip}）提取凭据…")
+    await _reply(update, context, f"正在从 {name}（{public_ip}）提取凭据…")
     api_key, email, error = await run_sync(extract_cf_from_host, host)
     if error:
-        await _reply(update, f"❌ 提取失败：{error}")
+        await _reply(update, context, f"❌ 提取失败：{error}")
         return
     ok, zones_total, _err = await run_sync(validate_and_save, "",
                                            api_key, email)
     if not ok:
-        await _reply(update,
+        await _reply(update, context,
                      "❌ 提取到的凭据校验没通过（可能已失效），没有保存。\n"
                      "请手动添加，或去服务器上确认 1.sh 里的凭据是否有效。")
         return
     masked = mask_cf_email(email) if mask_cf_email is not None else "***"
     await _reply(
-        update,
+        update, context,
         f"✅ 已从 {name} 提取并保存 Cloudflare 凭据"
         f"（账号邮箱 {masked}，{zones_total} 个 Zone）。",
         reply_markup=cf_manage_keyboard())
@@ -6639,10 +6643,10 @@ async def cf_callback(update, context):
     if action == "cancel":
         context.user_data.pop("pending_input", None)
         context.user_data.pop("cf_draft", None)
-        await _reply(update, "已取消。")
+        await _reply(update, context, "已取消。")
         return
     if action == "manage":
-        await _reply(update, fmt_cf_status(),
+        await _reply(update, context, fmt_cf_status(),
                      reply_markup=cf_manage_keyboard())
         return
     if action == "add":
@@ -6668,24 +6672,24 @@ async def cf_callback(update, context):
                 "你发的消息我会尽力删掉，不留明文。",
                 reply_markup=cf_cancel_keyboard())
             return
-        await _reply(update, "选一种凭据方式：",
+        await _reply(update, context, "选一种凭据方式：",
                      reply_markup=cf_add_mode_keyboard())
         return
     if action == "delete":
         if len(parts) >= 3 and parts[2] == "yes":
             _t, _k, _e, source = resolve_cf_credentials()
             if source != "file":
-                await _reply(update,
+                await _reply(update, context,
                              "没有已保存的凭据文件（当前用的是服务器环境变量里"
                              "的凭据，机器人删不了；要换请改服务器上的配置）。")
                 return
             clear_cf_config()
-            await _reply(update,
+            await _reply(update, context,
                          "已保存的凭据已删除。环境变量里如有凭据，/domain "
                          "会继续用它；都没有时请重新添加。")
             return
         await _reply(
-            update,
+            update, context,
             "确认删除机器人/面板里保存的 Cloudflare 凭据？\n"
             "（只删保存的文件，不动环境变量；删除后如环境变量里没有凭据，"
             "/domain 会报未配置。）",
@@ -6693,14 +6697,14 @@ async def cf_callback(update, context):
         return
     if action == "extract":
         if extract_cf_from_host is None or validate_and_save is None:
-            await _reply(update, "凭据管理模块未就绪，请稍后再试。")
+            await _reply(update, context, "凭据管理模块未就绪，请稍后再试。")
             return
         if len(parts) >= 3:
             await _cf_extract_run(update, context, parts[2])
             return
         await _cf_extract_pick(update, context)
         return
-    await _reply(update, "参数错误，请重新发送 /domain。")
+    await _reply(update, context, "参数错误，请重新发送 /domain。")
 
 
 # ================= JobQueue 任务（bot.py 注册，开关在 bot_data） =================
@@ -7211,10 +7215,10 @@ async def handle_objectstorage(update, context):
         buckets = await run_sync(list_buckets,
                                  get_cli(context), get_compartment(context))
     except Exception as exc:  # noqa: BLE001
-        await _reply(update, fmt_error(exc))
+        await _reply(update, context, fmt_error(exc))
         return
     context.user_data["os_buckets"] = list(buckets)
-    await _reply(update, fmt_bucket_list(buckets),
+    await _reply(update, context, fmt_bucket_list(buckets),
                  reply_markup=bucket_list_keyboard(buckets))
 
 
@@ -7232,7 +7236,7 @@ async def objectstorage_callback(update, context):
         await handle_objectstorage(update, context)
         return
     if len(parts) != 3:
-        await _reply(update, "参数错误，请重新打开对象存储列表。")
+        await _reply(update, context, "参数错误，请重新打开对象存储列表。")
         return
     _, action, idx = parts
     buckets = context.user_data.get("os_buckets") or []
@@ -7247,16 +7251,16 @@ async def objectstorage_callback(update, context):
         except (TypeError, ValueError, IndexError):
             obj = None
         if obj is None:
-            await _reply(update, "对象不存在或已过期，请重新打开对象列表。")
+            await _reply(update, context, "对象不存在或已过期，请重新打开对象列表。")
             return
         name = obj.get("name") or "?"
         await _reply(
-            update,
+            update, context,
             f"⚠️ 即将删除对象 {name}！\n删除后无法恢复。",
             reply_markup=confirm_keyboard("delobj", idx, "🗑️ 确认删除对象"))
         return
     if bucket is None:
-        await _reply(update, "Bucket 不存在或已过期，请重新打开对象存储列表。")
+        await _reply(update, context, "Bucket 不存在或已过期，请重新打开对象存储列表。")
         return
     bucket_name = bucket.get("name") or "?"
     if action == "objects":
@@ -7264,23 +7268,23 @@ async def objectstorage_callback(update, context):
             objects = await run_sync(list_objects, get_cli(context),
                                      bucket_name)
         except Exception as exc:  # noqa: BLE001
-            await _reply(update, fmt_error(exc))
+            await _reply(update, context, fmt_error(exc))
             return
         context.user_data["os_objects"] = list(objects)
         context.user_data["os_bucket_idx"] = idx
-        await _reply(update, fmt_object_list(bucket_name, objects),
+        await _reply(update, context, fmt_object_list(bucket_name, objects),
                      reply_markup=object_list_keyboard(objects))
         return
     if action == "delbucket":
         await _reply(
-            update,
+            update, context,
             f"⚠️ 即将删除 Bucket {bucket_name}！\n"
             "删除后无法恢复；Bucket 里还有对象时删除会失败，"
             "请先清空对象（或到 Web 面板勾选“同时删除全部对象”）。",
             reply_markup=confirm_keyboard("delbucket", idx,
                                           "🗑️ 确认删除 Bucket"))
         return
-    await _reply(update, "未知操作，请重新打开对象存储列表。")
+    await _reply(update, context, "未知操作，请重新打开对象存储列表。")
 
 
 # ---- 41. Email 发件人 ----
@@ -7312,7 +7316,7 @@ async def handle_plans(update, context):
     新增计划请到 Web 面板任务页添加。
     """
     plans = PLANS.list()
-    await _reply(update, fmt_plan_list(plans),
+    await _reply(update, context, fmt_plan_list(plans),
                  reply_markup=plan_list_keyboard(plans))
 
 
@@ -7326,23 +7330,23 @@ async def plan_callback(update, context):
     data = _callback_data(update)
     parts = data.split(":", 2)
     if len(parts) != 3:
-        await _reply(update, "参数错误，请重新打开抢机计划列表。")
+        await _reply(update, context, "参数错误，请重新打开抢机计划列表。")
         return
     _, action, plan_id = parts
     plan = PLANS.get(plan_id)
     if plan is None:
-        await _reply(update, f"抢机计划 {plan_id} 不存在，可能已被删除。")
+        await _reply(update, context, f"抢机计划 {plan_id} 不存在，可能已被删除。")
         return
     if action == "toggle":
         updated = PLANS.set_enabled(plan_id, not plan.get("enabled"))
         state = "已启用" if updated.get("enabled") else "已停用"
-        await _reply(update, f"✅ 抢机计划 {plan_id} {state}。")
+        await _reply(update, context, f"✅ 抢机计划 {plan_id} {state}。")
         await handle_plans(update, context)
         return
     if action == "delete":
         shape = (plan.get("shape") or "?").replace("VM.Standard.", "")
         await _reply(
-            update,
+            update, context,
             f"⚠️ 确认删除抢机计划 {plan_id}？\n"
             f"cron `{plan.get('cron')}`，{shape} "
             f"{plan.get('ocpus')} 核 / {plan.get('memory_gb')}GB。\n"
@@ -7350,7 +7354,7 @@ async def plan_callback(update, context):
             reply_markup=confirm_keyboard("delplan", plan_id,
                                           "🗑️ 确认删除计划"))
         return
-    await _reply(update, "未知操作，请重新打开抢机计划列表。")
+    await _reply(update, context, "未知操作，请重新打开抢机计划列表。")
 
 
 # ---- 11. 开放云面板端口 ----
@@ -7363,7 +7367,7 @@ async def handle_openport(update, context):
     真正执行在 handle_confirm("openport")：OCI 安全组放行 + UFW 放行。
     """
     if "xxxxxxxx" in PANEL_SECURITY_LIST_ID:
-        await _reply(update,
+        await _reply(update, context,
                      "⚠️ 未配置面板安全组：请先在 tgbot/handlers_extra.py 的 "
                      "PANEL_SECURITY_LIST_ID 里填入面板服务器所在子网的"
                      "安全组 OCID，再使用本功能。\n"
@@ -7371,7 +7375,7 @@ async def handle_openport(update, context):
                      "--compartment-id <你的 compartment OCID>",
                      reply_markup=back_to_oracle_keyboard())
         return
-    await _reply(update,
+    await _reply(update, context,
                  f"⚠️ 确认开放云面板端口 {PANEL_PORT}？\n\n"
                  "将执行两步：\n"
                  f"1. OCI 安全组放行 {PANEL_PORT}/tcp（来源 0.0.0.0/0）；\n"
@@ -7390,7 +7394,7 @@ async def handle_clients(update, context):
     statuses = {}
     for service in SERVICES:
         statuses[service] = await run_sync(service_status, service)
-    await _reply(update, fmt_client_status(statuses),
+    await _reply(update, context, fmt_client_status(statuses),
                  reply_markup=client_actions_keyboard())
 
 
@@ -7402,15 +7406,15 @@ async def client_callback(update, context):
     """
     parts = _callback_data(update).split(":")
     if len(parts) != 3 or parts[1] != "restart":
-        await _reply(update, "参数错误，请重新打开客户端管理。")
+        await _reply(update, context, "参数错误，请重新打开客户端管理。")
         return
     try:
         service = SERVICES[int(parts[2])]
     except (TypeError, ValueError, IndexError):
-        await _reply(update, "服务不存在，请重新打开客户端管理。")
+        await _reply(update, context, "服务不存在，请重新打开客户端管理。")
         return
     label = "面板" if service == WEB_SERVICE else "机器人"
-    await _reply(update,
+    await _reply(update, context,
                  f"⚠️ 确认重启服务 {service}？\n"
                  f"重启期间{label}会短暂不可用（约几秒）；"
                  "重启机器人后它会自动恢复。",
@@ -7427,7 +7431,7 @@ async def handle_restart(update, context):
     真正执行在 handle_confirm("restartbot")：先回复“正在重启”再执行，
     systemd 会自动拉起机器人。
     """
-    await _reply(update,
+    await _reply(update, context,
                  "⚠️ 确认重启机器人服务（rbot-clone-bot）？\n"
                  "重启期间机器人约 10 秒无响应，systemd 会自动拉起。",
                  reply_markup=confirm_keyboard("restartbot", 0,
@@ -7443,7 +7447,7 @@ async def handle_upgrade(update, context):
     真正执行在 handle_confirm("upgrade")：git pull + pip install +
     重启两个服务；不是 git 仓库时提示手动升级。
     """
-    await _reply(update,
+    await _reply(update, context,
                  "⚠️ 确认升级客户端？\n"
                  "升级会拉取最新代码、安装依赖，然后重启面板与机器人，"
                  "约 1 分钟不可用。",

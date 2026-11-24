@@ -59,6 +59,7 @@ from telegram.ext import ContextTypes
 from oci.client import OCI_CONFIG_LEGACY_PATH, OCI_CONFIG_ROOT_PATH
 from oci.instance import list_instances
 from oci.network import get_public_ip
+from tgbot import menu_tracker
 from tgbot.config import update_env_file_vars
 from tgbot.services import (
     fmt_error,
@@ -161,18 +162,13 @@ MEMHOG_SSH_KEY = os.path.expanduser(
 
 # ---------------- 通用小工具 ----------------
 
-async def _reply(update, text, reply_markup=None, parse_mode=None):
-    """统一回复：回调时先 answer（防按钮转圈），再用消息回复。"""
-    query = update.callback_query
-    if query is not None:
-        try:
-            await query.answer()
-        except Exception:
-            pass
-    message = update.effective_message
-    if message is not None:
-        await message.reply_text(text, reply_markup=reply_markup,
-                                 parse_mode=parse_mode)
+async def _reply(update, context, text, reply_markup=None,
+               parse_mode=None):
+    """统一回复：tgbot.menu_tracker.reply 的薄包装（带选择框清理，
+    每聊天只留一个活动选择框；点完删掉多余的选择框，只留结果）。"""
+    return await menu_tracker.reply(
+        update, context, text, reply_markup=reply_markup,
+        parse_mode=parse_mode)
 
 
 def _callback_data(update):
@@ -419,7 +415,7 @@ async def command_command(update, context):
     _clear_pending(context)
     hosts = load_hosts()
     if not hosts:
-        await _reply(update,
+        await _reply(update, context,
                      "还没有已保存的主机。\n"
                      "请先在 Web 面板（主机管理）里添加主机，"
                      "再用 /command 远程执行命令。")
@@ -430,7 +426,7 @@ async def command_command(update, context):
         name = record.get("name") or record.get("host")
         lines.append(f"{idx + 1}. {name}（{record.get('username', 'root')}"
                      f"@{record.get('host')}:{record.get('port', 22)}）")
-    await _reply(update, "\n".join(lines),
+    await _reply(update, context, "\n".join(lines),
                  reply_markup=host_select_keyboard(hosts))
 
 
@@ -441,10 +437,10 @@ async def command_host_callback(update, context):
     action = parts[1] if len(parts) >= 2 else ""
     if action == "done":
         _clear_pending(context)
-        await _reply(update, "已结束远程执行会话。")
+        await _reply(update, context, "已结束远程执行会话。")
         return
     if action != "host":
-        await _reply(update, "参数错误，请重新发送 /command。")
+        await _reply(update, context, "参数错误，请重新发送 /command。")
         return
     idx = parts[2] if len(parts) >= 3 else ""
     hosts = context.user_data.get("cmd_hosts") or []
@@ -453,10 +449,10 @@ async def command_host_callback(update, context):
     except (ValueError, IndexError, TypeError):
         host = None
     if host is None:
-        await _reply(update, "主机不存在或已过期，请重新发送 /command。")
+        await _reply(update, context, "主机不存在或已过期，请重新发送 /command。")
         return
     if host.get("auth_type") == "password":
-        await _reply(update,
+        await _reply(update, context,
                      f"⚠️ 主机「{host.get('name') or host.get('host')}」"
                      "是密码认证，机器人不保存密码，无法用 /command 连接。\n"
                      "请在 Web 面板里把该主机改成密钥认证，"
@@ -465,7 +461,7 @@ async def command_host_callback(update, context):
     context.user_data["cmd_host_idx"] = int(idx)
     context.user_data["cmd_awaiting"] = True
     await _reply(
-        update,
+        update, context,
         f"🖥️ 已选主机「{host.get('name') or host.get('host')}」\n"
         "请直接发送要执行的命令（纯文本）。\n"
         "危险命令（删根目录、格式化、关机等）会被直接拒绝。\n"
@@ -478,7 +474,7 @@ async def _handle_command_text(update, context, text):
     """待输入状态下的命令文本：黑名单检查 -> Paramiko 执行 -> 分段回显。"""
     command = (text or "").strip()
     if not command:
-        await _reply(update, "命令为空，请重新发送。")
+        await _reply(update, context, "命令为空，请重新发送。")
         return
     hosts = context.user_data.get("cmd_hosts") or []
     idx = context.user_data.get("cmd_host_idx")
@@ -487,33 +483,33 @@ async def _handle_command_text(update, context, text):
         host = hosts[idx]
     if host is None:
         context.user_data.pop("cmd_awaiting", None)
-        await _reply(update, "主机选择已过期，请重新发送 /command。")
+        await _reply(update, context, "主机选择已过期，请重新发送 /command。")
         return
     blocked = find_dangerous_pattern(command)
     if blocked:
-        await _reply(update,
+        await _reply(update, context,
                      f"⛔ 危险命令，已拒绝执行：{blocked}\n"
                      "请发送其他命令，或点“结束会话”。")
         return
     name = host.get("name") or host.get("host")
-    await _reply(update, f"⏳ 正在 {name} 上执行：{command}")
+    await _reply(update, context, f"⏳ 正在 {name} 上执行：{command}")
     try:
         exit_code, stdout, stderr = await run_sync(
             run_remote_command, host, command)
     except CommandTimeoutError as exc:
-        await _reply(update, f"⏰ {exc}")
+        await _reply(update, context, f"⏰ {exc}")
         return
     except RemoteCommandError as exc:
-        await _reply(update, f"❌ 执行失败：{exc}")
+        await _reply(update, context, f"❌ 执行失败：{exc}")
         return
     output = stdout or ""
     if (stderr or "").strip():
         output += ("\n" if output else "") + "[stderr]\n" + stderr
     if not output.strip():
         output = "（命令无输出）"
-    await _reply(update, f"🖥️ {name} $ {command}\n退出码：{exit_code}")
+    await _reply(update, context, f"🖥️ {name} $ {command}\n退出码：{exit_code}")
     for chunk in chunk_output(output):
-        await _reply(update, chunk)
+        await _reply(update, context, chunk)
 
 
 # ================= /pubkey SSH 公钥管理 =================
@@ -651,7 +647,7 @@ async def pubkey_command(update, context):
     """处理 /pubkey：列出已保存公钥 + 添加/删除按钮。"""
     _clear_pending(context)
     keys = load_ssh_keys()
-    await _reply(update, fmt_ssh_key_list(keys),
+    await _reply(update, context, fmt_ssh_key_list(keys),
                  reply_markup=pubkey_list_keyboard(keys))
 
 
@@ -665,7 +661,7 @@ async def pubkey_callback(update, context):
     action = parts[1] if len(parts) >= 2 else ""
     if action == "add":
         context.user_data["pk_awaiting"] = True
-        await _reply(update,
+        await _reply(update, context,
                      "请直接发送 SSH 公钥内容（纯文本，一行）：\n"
                      "例如：ssh-ed25519 AAAA... user@host\n\n"
                      "⚠️ 只传公钥（.pub 文件内容），绝不要发私钥！")
@@ -679,11 +675,11 @@ async def pubkey_callback(update, context):
         except (ValueError, IndexError, TypeError):
             entry, idx_int = None, 0
         if entry is None:
-            await _reply(update, "公钥不存在或已过期，请重新发送 /pubkey。")
+            await _reply(update, context, "公钥不存在或已过期，请重新发送 /pubkey。")
             return
         if action == "del":
             await _reply(
-                update,
+                update, context,
                 f"⚠️ 确认删除这条公钥？\n\n{fmt_ssh_key_line(entry, idx_int)}",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton(
@@ -693,26 +689,26 @@ async def pubkey_callback(update, context):
             return
         _keys, removed = remove_ssh_key(idx)
         if removed is None:
-            await _reply(update, "公钥不存在或已删除。")
+            await _reply(update, context, "公钥不存在或已删除。")
         else:
-            await _reply(update,
+            await _reply(update, context,
                          f"✅ 已删除公钥：\n{fmt_ssh_key_line(removed, idx_int)}")
         return
-    await _reply(update, "参数错误，请重新发送 /pubkey。")
+    await _reply(update, context, "参数错误，请重新发送 /pubkey。")
 
 
 async def _handle_pubkey_text(update, context, text):
     """待输入状态下的公钥文本：校验格式 -> 保存（去重）。"""
     ok, error = validate_ssh_public_key(text)
     if not ok:
-        await _reply(update, f"❌ 公钥格式不对：{error}\n请重新发送，或发 /pubkey 返回。")
+        await _reply(update, context, f"❌ 公钥格式不对：{error}\n请重新发送，或发 /pubkey 返回。")
         return
     _keys, added = add_ssh_key(text)
     context.user_data.pop("pk_awaiting", None)
     if not added:
-        await _reply(update, "⚠️ 这条公钥已保存过，未重复添加。")
+        await _reply(update, context, "⚠️ 这条公钥已保存过，未重复添加。")
     else:
-        await _reply(update, "✅ 公钥已保存。")
+        await _reply(update, context, "✅ 公钥已保存。")
 
 
 # ================= /oproxy 代理设置 =================
@@ -774,7 +770,7 @@ async def oproxy_command(update, context):
     else:
         text = ("🌐 机器人出站代理：\n\n当前：未设置（直连）\n\n"
                 "设置后需重启机器人服务才生效。")
-    await _reply(update, text, reply_markup=proxy_keyboard(current))
+    await _reply(update, context, text, reply_markup=proxy_keyboard(current))
 
 
 @require_allowed
@@ -787,7 +783,7 @@ async def oproxy_callback(update, context):
     action = parts[1] if len(parts) >= 2 else ""
     if action == "set":
         context.user_data["px_awaiting"] = True
-        await _reply(update,
+        await _reply(update, context,
                      "请直接发送代理地址（纯文本）：\n"
                      "例如：http://127.0.0.1:7890 或 socks5://127.0.0.1:1080\n\n"
                      "必须以 http://、https:// 或 socks5:// 开头。")
@@ -795,10 +791,10 @@ async def oproxy_callback(update, context):
     if action == "clear":
         current = load_proxy()
         if not current:
-            await _reply(update, "当前未设置代理，无需清除。")
+            await _reply(update, context, "当前未设置代理，无需清除。")
             return
         await _reply(
-            update,
+            update, context,
             f"⚠️ 确认清除出站代理？\n\n当前：{current}",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🚫 确认清除",
@@ -807,9 +803,9 @@ async def oproxy_callback(update, context):
         return
     if action == "confirmclear":
         save_proxy(None)
-        await _reply(update, "✅ 出站代理已清除（直连）。\n⚠️ 重启机器人服务后生效。")
+        await _reply(update, context, "✅ 出站代理已清除（直连）。\n⚠️ 重启机器人服务后生效。")
         return
-    await _reply(update, "参数错误，请重新发送 /oproxy。")
+    await _reply(update, context, "参数错误，请重新发送 /oproxy。")
 
 
 async def _handle_proxy_text(update, context, text):
@@ -817,11 +813,11 @@ async def _handle_proxy_text(update, context, text):
     url = (text or "").strip()
     ok, error = validate_proxy_url(url)
     if not ok:
-        await _reply(update, f"❌ {error}\n请重新发送，或发 /oproxy 返回。")
+        await _reply(update, context, f"❌ {error}\n请重新发送，或发 /oproxy 返回。")
         return
     save_proxy(url)
     context.user_data.pop("px_awaiting", None)
-    await _reply(update, f"✅ 出站代理已设置为：{url}\n⚠️ 重启机器人服务后生效。")
+    await _reply(update, context, f"✅ 出站代理已设置为：{url}\n⚠️ 重启机器人服务后生效。")
 
 
 # ================= /uploadapi 添加 API =================
@@ -1179,7 +1175,7 @@ async def uploadapi_command(update, context):
     """处理 /uploadapi：提示发 config 文件或粘贴文本，进入等待状态。"""
     _clear_pending(context)
     context.user_data["ua_awaiting"] = True
-    await _reply(update,
+    await _reply(update, context,
                  "📤 添加 OCI API 配置：\n\n"
                  "请发送 config 文件（.txt / .conf），或直接粘贴 config 文本。\n"
                  "支持 R-Bot 格式：oci=begin … oci=end 块里可一次放多个 "
@@ -1275,24 +1271,24 @@ async def _handle_uploadapi_text(update, context, text):
     """待输入状态下的 config 文本：解析 -> 校验 -> 二次确认键盘。"""
     parsed = parse_oci_config_text(text)
     if parsed["error"]:
-        await _reply(update, f"❌ 配置格式不对：{parsed['error']}\n请重新发送。")
+        await _reply(update, context, f"❌ 配置格式不对：{parsed['error']}\n请重新发送。")
         return
     new_profiles, skipped, error_text = prepare_oci_profiles(parsed)
     if error_text:
-        await _reply(update, f"❌ {error_text}")
+        await _reply(update, context, f"❌ {error_text}")
         return
     cloudflare = parsed.get("cloudflare")
     cf_exists = bool(cloudflare) and _has_section_ci(OCI_CONFIG_PATH,
                                                      "cloudflare")
     if not new_profiles and not (cloudflare and not cf_exists):
         context.user_data.pop("ua_awaiting", None)
-        await _reply(update,
+        await _reply(update, context,
                      f"⚠️ profile「{'、'.join(skipped)}」已存在，不会覆盖。\n"
                      "请改名后重传（改 [PROFILE] 段名）。")
         return
     context.user_data["ua_pending"] = {"profiles": new_profiles,
                                        "cloudflare": cloudflare}
-    await _reply(update, build_oci_profiles_confirm_text(new_profiles,
+    await _reply(update, context, build_oci_profiles_confirm_text(new_profiles,
                                                          skipped,
                                                          cloudflare,
                                                          cf_exists),
@@ -1306,12 +1302,12 @@ async def _handle_uploadapi_text(update, context, text):
 async def uploadapi_callback(update, context):
     """回调 ua:confirm：二次确认后真正写入 OCI 配置文件。"""
     if _callback_data(update) != "ua:confirm":
-        await _reply(update, "参数错误，请重新发送 /uploadapi。")
+        await _reply(update, context, "参数错误，请重新发送 /uploadapi。")
         return
     pending = context.user_data.get("ua_pending")
     if not pending or (not pending.get("profiles")
                        and not pending.get("cloudflare")):
-        await _reply(update, "待添加的配置已过期，请重新发送 /uploadapi。")
+        await _reply(update, context, "待添加的配置已过期，请重新发送 /uploadapi。")
         return
     profiles = pending.get("profiles") or []
     cloudflare = pending.get("cloudflare")
@@ -1321,20 +1317,20 @@ async def uploadapi_callback(update, context):
         try:
             results = await run_sync(commit_oci_profiles, profiles)
         except (ValueError, OSError) as exc:
-            await _reply(update, f"❌ 写入失败：{exc}")
+            await _reply(update, context, f"❌ 写入失败：{exc}")
             return
     cf_saved = None
     if cloudflare:
         try:
             cf_saved = await run_sync(commit_cf_section, cloudflare)
         except OSError as exc:
-            await _reply(update, f"❌ Cloudflare 凭据写入失败：{exc}")
+            await _reply(update, context, f"❌ Cloudflare 凭据写入失败：{exc}")
             return
     if profiles:
         try:
             added_vars = await run_sync(add_profile_compartments, profiles)
         except OSError as exc:
-            await _reply(update,
+            await _reply(update, context,
                          f"✅ 配置已写入，但账号切换变量添加失败：{exc}\n"
                          "请手动在 env 文件里加 MBOT_COMPARTMENT_<PROFILE> "
                          "后重启机器人。")
@@ -1343,7 +1339,7 @@ async def uploadapi_callback(update, context):
             return
     context.user_data.pop("ua_pending", None)
     context.user_data.pop("ua_awaiting", None)
-    await _reply(update, build_oci_profiles_result_text(
+    await _reply(update, context, build_oci_profiles_result_text(
         results, added_vars, OCI_CONFIG_PATH, cf_saved))
 
 
@@ -1364,7 +1360,7 @@ async def handle_client_document(update, context):
         raw = await tg_file.download_as_bytearray()
         text = bytes(raw).decode("utf-8")
     except Exception as exc:  # noqa: BLE001 - 下载/解码失败都要提示用户
-        await _reply(update, f"❌ 文件读取失败：{exc}")
+        await _reply(update, context, f"❌ 文件读取失败：{exc}")
         return
     await _handle_uploadapi_text(update, context, text)
 
@@ -1597,10 +1593,10 @@ async def handle_memballoon(update, context):
     """菜单 23：占用 25% 内存——列运行中实例，选一台。"""
     running, error = await _load_running_instances(context)
     if error is not None:
-        await _reply(update, error)
+        await _reply(update, context, error)
         return
     if not running:
-        await _reply(update, "没有运行中的实例，无法占用内存。")
+        await _reply(update, context, "没有运行中的实例，无法占用内存。")
         return
     store_instances(context, running)
     hogs = load_mem_hogs()
@@ -1613,7 +1609,7 @@ async def handle_memballoon(update, context):
     lines.append("")
     lines.append("占用进程约占总内存的 25%，用于防止闲置回收；"
                  "已占用的实例会拒绝重复启动。")
-    await _reply(update, "\n".join(lines),
+    await _reply(update, context, "\n".join(lines),
                  reply_markup=_mem_pick_keyboard(running, "mh", hogs))
 
 
@@ -1625,19 +1621,19 @@ async def memballoon_callback(update, context):
     idx = parts[2] if len(parts) >= 3 else ""
     inst = resolve_instance(context, idx)
     if inst is None:
-        await _reply(update, "实例不存在或已过期，请重新打开菜单 23。")
+        await _reply(update, context, "实例不存在或已过期，请重新打开菜单 23。")
         return
     name = inst.get("display-name") or "?"
     if action == "pick":
         record = load_mem_hogs().get(inst.get("id"))
         if record:
-            await _reply(update,
+            await _reply(update, context,
                          "⚠️ 该实例已在占用内存中，拒绝重复启动。\n\n"
                          f"实例：{name}\nPID：{record.get('pid')}\n"
                          f"启动时间：{record.get('started')}\n"
                          "如需停止，请用菜单 24（清除缓存和占用）。")
             return
-        await _reply(update,
+        await _reply(update, context,
                      f"🧠 确认在实例「{name}」上占用 25% 内存？\n\n"
                      "将通过 SSH 启动一个后台进程，分配约 25% 总内存并长期持有，"
                      "用于防止 OCI 回收闲置实例。\n"
@@ -1648,7 +1644,7 @@ async def memballoon_callback(update, context):
     if action == "go":
         await _memballoon_go(update, context, inst, name)
         return
-    await _reply(update, "参数错误，请重新打开菜单 23。")
+    await _reply(update, context, "参数错误，请重新打开菜单 23。")
 
 
 async def _memballoon_go(update, context, inst, name):
@@ -1656,7 +1652,7 @@ async def _memballoon_go(update, context, inst, name):
     instance_id = inst.get("id")
     hogs = load_mem_hogs()
     if instance_id in hogs:
-        await _reply(update,
+        await _reply(update, context,
                      f"⚠️ 该实例已在占用内存中"
                      f"（PID {hogs[instance_id].get('pid')}），拒绝重复启动。")
         return
@@ -1664,19 +1660,19 @@ async def _memballoon_go(update, context, inst, name):
         target, error = await run_sync(
             resolve_instance_ssh_target, get_cli(context), inst)
     except Exception as exc:  # noqa: BLE001 - 查 IP 失败也要提示用户
-        await _reply(update, fmt_error(exc))
+        await _reply(update, context, fmt_error(exc))
         return
     if error:
-        await _reply(update, f"❌ {error}")
+        await _reply(update, context, f"❌ {error}")
         return
-    await _reply(update, f"⏳ 正在 {name} 上启动内存占用进程…")
+    await _reply(update, context, f"⏳ 正在 {name} 上启动内存占用进程…")
     try:
         pid = await run_sync(start_memhog_on_host, target)
     except RemoteCommandError as exc:
-        await _reply(update, f"❌ 启动失败：{exc}")
+        await _reply(update, context, f"❌ 启动失败：{exc}")
         return
     record_memhog(instance_id, pid, target["host"])
-    await _reply(update,
+    await _reply(update, context,
                  f"✅ 已在实例「{name}」上启动内存占用进程。\n"
                  f"PID：{pid}\n占用：约 25% 总内存\n"
                  "停止方法：菜单 24（清除缓存和占用）。")
@@ -1687,10 +1683,10 @@ async def handle_memclear(update, context):
     """菜单 24：清除缓存和占用——列运行中实例，选一台。"""
     running, error = await _load_running_instances(context)
     if error is not None:
-        await _reply(update, error)
+        await _reply(update, context, error)
         return
     if not running:
-        await _reply(update, "没有运行中的实例，无法清除缓存和占用。")
+        await _reply(update, context, "没有运行中的实例，无法清除缓存和占用。")
         return
     store_instances(context, running)
     hogs = load_mem_hogs()
@@ -1703,7 +1699,7 @@ async def handle_memclear(update, context):
     lines.append("")
     lines.append("执行内容：杀掉该实例的占用进程（如有），"
                  "再执行 sync + drop_caches 清缓存。")
-    await _reply(update, "\n".join(lines),
+    await _reply(update, context, "\n".join(lines),
                  reply_markup=_mem_pick_keyboard(running, "mc", hogs))
 
 
@@ -1715,7 +1711,7 @@ async def memclear_callback(update, context):
     idx = parts[2] if len(parts) >= 3 else ""
     inst = resolve_instance(context, idx)
     if inst is None:
-        await _reply(update, "实例不存在或已过期，请重新打开菜单 24。")
+        await _reply(update, context, "实例不存在或已过期，请重新打开菜单 24。")
         return
     name = inst.get("display-name") or "?"
     if action == "pick":
@@ -1725,7 +1721,7 @@ async def memclear_callback(update, context):
                         f"启动于 {record.get('started')}，将被杀掉。")
         else:
             hog_line = "该实例无占用进程，只清缓存。"
-        await _reply(update,
+        await _reply(update, context,
                      f"🧹 确认清除实例「{name}」的缓存和占用？\n\n"
                      f"{hog_line}\n"
                      "还将执行 sync + drop_caches 清理系统缓存。",
@@ -1735,7 +1731,7 @@ async def memclear_callback(update, context):
     if action == "go":
         await _memclear_go(update, context, inst, name)
         return
-    await _reply(update, "参数错误，请重新打开菜单 24。")
+    await _reply(update, context, "参数错误，请重新打开菜单 24。")
 
 
 async def _memclear_go(update, context, inst, name):
@@ -1747,17 +1743,17 @@ async def _memclear_go(update, context, inst, name):
         target, error = await run_sync(
             resolve_instance_ssh_target, get_cli(context), inst)
     except Exception as exc:  # noqa: BLE001 - 查 IP 失败也要提示用户
-        await _reply(update, fmt_error(exc))
+        await _reply(update, context, fmt_error(exc))
         return
     if error:
-        await _reply(update, f"❌ {error}")
+        await _reply(update, context, f"❌ {error}")
         return
     use_sudo = (target.get("username") or "root") != "root"
-    await _reply(update, f"⏳ 正在 {name} 上清除缓存和占用…")
+    await _reply(update, context, f"⏳ 正在 {name} 上清除缓存和占用…")
     try:
         result = await run_sync(clear_memhog_on_host, target, pid, use_sudo)
     except RemoteCommandError as exc:
-        await _reply(update, f"❌ 清除失败：{exc}")
+        await _reply(update, context, f"❌ 清除失败：{exc}")
         return
     removed = remove_memhog(instance_id)
     lines = [f"🧹 「{name}」清除完成：", ""]
@@ -1774,4 +1770,4 @@ async def _memclear_go(update, context, inst, name):
         lines.append(f"• 清缓存失败：{detail}")
     if removed:
         lines.append("• 已删除占用记录。")
-    await _reply(update, "\n".join(lines))
+    await _reply(update, context, "\n".join(lines))

@@ -68,6 +68,7 @@ def make_context():
     context.bot_data = {}
     context.bot = MagicMock()
     context.bot.send_message = AsyncMock()
+    context.bot.delete_message = AsyncMock()
     return context
 
 
@@ -85,6 +86,18 @@ def all_reply_texts(update):
     texts = []
     for args, _kwargs in update.effective_message.reply_text.await_args_list:
         texts.append(args[0] if args else None)
+    return texts
+
+
+def all_sent_texts(update, context):
+    """取本次交互发出的全部文本：reply_text + bot.send_message。
+
+    v1.34.0：同一回调里第二次 _reply 改走 send_message（被点的消息
+    已删，回复它会报 Bad Request），所以双回复的流程要两边一起查。
+    """
+    texts = all_reply_texts(update)
+    for _args, kwargs in context.bot.send_message.await_args_list:
+        texts.append(kwargs.get("text"))
     return texts
 
 
@@ -658,7 +671,11 @@ class TestClientsHandlers(PackageDTestCase):
         self.assertIn("不存在", reply_text_of(update))
 
     async def test_confirm_restartsvc_web(self):
-        """重启面板：先回“正在重启”，执行后回“已重启”。"""
+        """重启面板：先回“正在重启”，执行后回“已重启”。
+
+        两条是同一回调里的两次 _reply：第一条走 reply_text，第二条
+        走 bot.send_message（v1.34.0：被点的确认消息已被删掉）。
+        """
         with patch.object(he, "restart_service") as mock_restart:
             update = make_update(callback_data="c:restartsvc:0")
             context = make_context()
@@ -666,7 +683,7 @@ class TestClientsHandlers(PackageDTestCase):
                                               update, context)
             self.assertTrue(handled)
             mock_restart.assert_called_once_with("rbot-clone-web")
-            texts = all_reply_texts(update)
+            texts = all_sent_texts(update, context)
             self.assertTrue(any("正在重启" in t for t in texts))
             self.assertTrue(any("已重启" in t for t in texts))
 
