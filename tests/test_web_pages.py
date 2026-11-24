@@ -284,6 +284,29 @@ class TestRealBackendIntegration(unittest.TestCase):
         self.assertIn('id="login-btn"', resp.text)
         self.assertIn("M_Bot Oracle开源管理面板", resp.text)
 
+    def test_login_page_clarity_when_configured(self):
+        # 配置了 MBOT_CLARITY_ID 时登录页加载 Clarity 脚本（带项目 ID）。
+        from unittest.mock import patch
+
+        from web import config
+
+        with patch.object(config, "CLARITY_ID", "testclarityid"):
+            resp = self.client.get("/login")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("clarity.ms/tag/", resp.text)
+        self.assertIn("testclarityid", resp.text)
+
+    def test_login_page_no_clarity_when_unconfigured(self):
+        # 未配置时不加载 Clarity（默认行为，不追踪）。
+        from unittest.mock import patch
+
+        from web import config
+
+        with patch.object(config, "CLARITY_ID", ""):
+            resp = self.client.get("/login")
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotIn("clarity.ms", resp.text)
+
     def test_overview_redirects_when_anonymous(self):
         # 用全新 client（不带登录 cookie，避免其他测试的会话串用）
         anon = TestClient(self.app, raise_server_exceptions=False)

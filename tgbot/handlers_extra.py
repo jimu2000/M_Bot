@@ -217,8 +217,11 @@ from oci.email import create_sender, is_valid_email
 from oci.grabber import TARGET_CPU, Grabber, GrabCancelledError
 from oci.iam import (
     MAX_DESCRIPTION_LEN,
+    add_user_to_group,
+    create_user,
     delete_api_key,
     delete_user,
+    get_group_id_by_name,
     get_profile_user_id,
     list_api_keys,
     update_user,
@@ -641,6 +644,20 @@ def fetch_usage_summary(cli, compartment_id, granularity,
     return []
 
 
+def _usage_currency(items, fallback=""):
+    """从用量 items 里取第一个非空币种。
+
+    OCI 有时在 0 元项里返回单个空格当币种（" " 是真值，直接用会
+    覆盖掉真正的 SGD，2026-11-24 真实数据实测 ACCOUNT2 的 0 元项
+    带 " "）——必须 strip 后再判断。
+    """
+    for item in items:
+        currency = str(item.get("currency") or "").strip()
+        if currency:
+            return currency
+    return fallback
+
+
 def fmt_usage_monthly(items, months=USAGE_MONTHS):
     """按月汇总费用与流量（service 含 "Data Transfer" 的
     computed-quantity，按 API 返回值以 GB 计）。"""
@@ -652,7 +669,7 @@ def fmt_usage_monthly(items, months=USAGE_MONTHS):
     for item in items:
         month = (item.get("time-usage-started") or "")[:7] or "未知"
         amount = float(item.get("computed-amount") or 0)
-        currency = item.get("currency") or currency
+        currency = _usage_currency([item], currency)
         entry = by_month.setdefault(month, {"amount": 0.0, "transfer": 0.0})
         entry["amount"] += amount
         if "Data Transfer" in (item.get("service") or ""):
@@ -673,9 +690,33 @@ def fmt_usage_total(items, months=USAGE_MONTHS):
     if not items:
         return f"近 {months} 个月没有用量记录。"
     total = sum(float(i.get("computed-amount") or 0) for i in items)
-    currency = next((i.get("currency") for i in items if i.get("currency")),
-                    "")
+    currency = _usage_currency(items)
     return f"💰 近 {months} 个月总花费：{total:.2f} {currency}"
+
+
+def fmt_usage_totals(entries, months=USAGE_MONTHS):
+    """多账号近 N 个月总费用：entries 是 [(显示名, items 或 None)]。
+
+    显示名是账号的主区中文名（多区账号后缀区数），与订阅信息页一致；
+    查失败的账号（items 为 None）显示“查询失败”，不影响其他账号；
+    最后附全部账号合计（用户要求 2026-11-24：默认一次查全部账号）。
+    """
+    if not entries:
+        return "没有配置任何账号。"
+    sections = [f"💰 近 {months} 个月总花费（{len(entries)} 个账号）："]
+    grand_total = 0.0
+    currency = ""
+    for label, items in entries:
+        if items is None:
+            sections.append(f"• {label}：查询失败")
+            continue
+        total = sum(float(i.get("computed-amount") or 0) for i in items)
+        currency = _usage_currency(items, currency)
+        grand_total += total
+        sections.append(f"• {label}：{total:.2f} {currency}".rstrip())
+    sections.append("")
+    sections.append(f"合计：{grand_total:.2f} {currency}".rstrip())
+    return "\n".join(sections)
 
 
 # ---------------- 订阅 / 用户 / 工作流 / 区域（cli.run 直调） ----------------
@@ -1168,24 +1209,25 @@ def boot_backup_list_keyboard(backups, paid=False):
     return InlineKeyboardMarkup(rows)
 
 
-def boot_backup_multiselect_keyboard(backups, selected):
+def boot_backup_multiselect_keyboard(backups, selected, prefix="bb"):
     """备份多选删除键盘：每行一个勾选按钮 + 删除所选 + 退出多选。
 
     selected 是已选备份下标的集合。删除所选按钮带已选数量，
-    未选任何备份时不显示（防误删空选）。
+    未选任何备份时不显示（防误删空选）。prefix 是回调前缀：
+    全部备份列表用 "bb"，本实例备份列表用 "ib"。
     """
     rows = []
     for idx, backup in enumerate(backups):
         name = backup.get("display-name") or (backup.get("id") or "")[-4:]
         mark = "☑️" if idx in selected else "☐"
         rows.append([InlineKeyboardButton(
-            f"{mark} {name}", callback_data=f"bb:mst:{idx}")])
+            f"{mark} {name}", callback_data=f"{prefix}:mst:{idx}")])
     if selected:
         rows.append([InlineKeyboardButton(
             f"🗑️ 删除所选（{len(selected)} 个）",
-            callback_data="bb:msdel")])
+            callback_data=f"{prefix}:msdel")])
     rows.append([InlineKeyboardButton("✖️ 退出多选",
-                                     callback_data="bb:mscancel")])
+                                     callback_data=f"{prefix}:mscancel")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -2039,15 +2081,24 @@ async def handle_traffic(update, context):
 
 @require_allowed
 async def handle_cost(update, context):
-    """菜单 25：用量 API 汇总近 3 个月总费用。"""
-    try:
-        items = await run_sync(fetch_usage_summary,
-                               get_cli(context), get_compartment(context),
-                               "MONTHLY")
-    except Exception as exc:  # noqa: BLE001
-        await _reply(update, fmt_error(exc))
-        return
-    await _reply(update, fmt_usage_total(items),
+    """菜单 25：全部账号近 3 个月总费用（默认一次查全部账号）。
+
+    与订阅信息 / 一键测活同款：遍历全部 profile，单账号失败不影响
+    其他账号，最后附合计。
+    """
+    counts = await run_sync(get_profile_region_counts)
+    entries = []
+    for name in bot_config.PROFILES:
+        label = bot_config.profile_display_name(name, counts.get(name))
+        try:
+            cfg = bot_config.get_profile_config(name)
+            cli = bot_config.get_oci_client(profile=name)
+            items = await run_sync(fetch_usage_summary, cli,
+                                   cfg["compartment_id"], "MONTHLY")
+            entries.append((label, items))
+        except Exception:  # noqa: BLE001 - 单账号失败不影响其他账号
+            entries.append((label, None))
+    await _reply(update, fmt_usage_totals(entries),
                  reply_markup=back_to_oracle_keyboard())
 
 
@@ -2136,15 +2187,28 @@ async def handle_profiles(update, context):
         current, counts.get(current))
     if current_region != home_region:
         current_label += f" · {bot_config.get_region_label(current_region)}"
-    # 先清掉上次切换流程残留的中间消息（来回点切换攒下的），再发新的。
+    # 先清掉上次切换流程残留的中间消息（来回点切换攒下的）。
     chat_id = update.effective_chat.id if update.effective_chat else None
     if chat_id is not None:
         await _delete_tracked_switch_messages(context, chat_id)
-    msg = await _reply(update,
-                       f"当前账号：{current_label}\n点下面切换账号"
-                       "（多区账号点开可切换工作区域）：",
-                       reply_markup=profile_keyboard(
-                           list(bot_config.PROFILES), current, labels))
+    text = (f"当前账号：{current_label}\n点下面切换账号"
+            "（多区账号点开可切换工作区域）：")
+    keyboard = profile_keyboard(
+        list(bot_config.PROFILES), current, labels)
+    # 在原来那条消息里改，不弹新框（用户要求 2026-11-24）；没有回调
+    # 消息（命令触发）或编辑失败时退回新发一条。
+    query = update.callback_query
+    if query is not None:
+        try:
+            await query.answer()
+        except Exception:
+            pass
+        try:
+            await query.edit_message_text(text, reply_markup=keyboard)
+            return
+        except Exception as exc:  # noqa: BLE001 - 编辑失败就新发一条
+            logger.debug("切换账号列表就地编辑失败，改发新消息：%s", exc)
+    msg = await _reply(update, text, reply_markup=keyboard)
     _track_switch_message(context, msg)
 
 
@@ -2178,9 +2242,17 @@ async def profile_callback(update, context):
         current = (current_region if get_current_profile(context) == name
                    else None)
         label = bot_config.profile_display_name(name, len(subs))
-        msg = await _reply(update, f"账号：{label}\n点下面切换工作区域：",
-                           reply_markup=profile_regions_keyboard(
-                               name, subs, current))
+        text = f"账号：{label}\n点下面切换工作区域："
+        keyboard = profile_regions_keyboard(name, subs, current)
+        # 在原来那条消息里改，不弹新框（用户要求 2026-11-24）。
+        query = update.callback_query
+        if query is not None:
+            try:
+                await query.edit_message_text(text, reply_markup=keyboard)
+                return
+            except Exception as exc:  # noqa: BLE001 - 编辑失败就新发一条
+                logger.debug("区域列表就地编辑失败，改发新消息：%s", exc)
+        msg = await _reply(update, text, reply_markup=keyboard)
         _track_switch_message(context, msg)
         return
     try:
@@ -2846,6 +2918,182 @@ async def boot_backup_delete_callback(update, context):
         reply_markup=confirm_keyboard("delbb", idx, "🗑️ 确认删除备份"))
 
 
+# ---------------- 实例详情：引导卷备份与删除历史备份 ----------------
+
+@require_allowed
+async def instance_boot_backup_callback(update, context):
+    """实例操作“引导卷备份”（dispatch 项 "bootbackup"）。
+
+    由 handlers.py 的 "i:bootbackup:<idx>" 回调转发（pending_idx 已写入）。
+    付费账号直接创建；免费账号满 5 个时不自动删，提示先删除再创建，
+    并给“删除历史备份”按钮（用户要求 2026-11-24）；未满直接创建。
+    """
+    idx = context.user_data.get("pending_idx")
+    inst = resolve_instance(context, idx)
+    if inst is None:
+        await _reply(update, "实例不存在或已过期，请重新打开实例列表。")
+        return
+    name = inst.get("display-name") or "?"
+    cli = get_cli(context)
+    compartment = get_compartment(context)
+    try:
+        attachment = await run_sync(get_boot_volume_attachment, cli,
+                                    compartment, inst["id"])
+    except Exception as exc:  # noqa: BLE001
+        await _reply(update, fmt_error(exc))
+        return
+    if attachment is None:
+        await _reply(update, f"找不到实例「{name}」当前挂载的启动盘。")
+        return
+    boot_volume_id = attachment.get("boot-volume-id")
+    paid = is_paid_profile(get_current_profile(context))
+    count = limit = 0
+    try:
+        if not paid:
+            count, limit, full, _oldest = await run_sync(
+                check_backup_quota, cli, compartment)
+            if full:
+                await _reply(
+                    update,
+                    f"⚠️ 备份已满 {count}/{limit} 个（免费额度），请先删除"
+                    "旧备份再创建。",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton(
+                            "🗑️ 删除历史备份",
+                            callback_data=f"i:bootbackup-del:{idx}")],
+                        [InlineKeyboardButton(
+                            "◀ 返回实例详情",
+                            callback_data=f"i:detail:{idx}")],
+                    ]))
+                return
+        backup = await run_sync(create_boot_volume_backup, cli,
+                                boot_volume_id)
+    except Exception as exc:  # noqa: BLE001
+        await _reply(update, fmt_error(exc))
+        return
+    backup_name = backup.get("display-name") or "?"
+    if paid:
+        await _reply(update,
+                     f"✅ {name} 的备份「{backup_name}」创建中，"
+                     "几分钟后可用（付费账号，备份不限 5 个）。")
+    else:
+        await _reply(update,
+                     f"✅ {name} 的备份「{backup_name}」创建中，"
+                     f"几分钟后可用（免费额度 {count + 1}/{limit}）。")
+
+
+@require_allowed
+async def instance_boot_backup_delete_callback(update, context):
+    """实例操作“删除历史备份”（dispatch 项 "bootbackup-del"）。
+
+    列出本实例当前启动盘的备份（未删除的），多选删除（与菜单 7 的
+    多选模式同款，回调前缀 "ib"）。由 handlers.py 的
+    "i:bootbackup-del:<idx>" 回调转发（pending_idx 已写入）。
+    """
+    idx = context.user_data.get("pending_idx")
+    inst = resolve_instance(context, idx)
+    if inst is None:
+        await _reply(update, "实例不存在或已过期，请重新打开实例列表。")
+        return
+    name = inst.get("display-name") or "?"
+    cli = get_cli(context)
+    compartment = get_compartment(context)
+    try:
+        attachment = await run_sync(get_boot_volume_attachment, cli,
+                                    compartment, inst["id"])
+        if attachment is None:
+            await _reply(update, f"找不到实例「{name}」当前挂载的启动盘。")
+            return
+        backups = await run_sync(
+            list_boot_volume_backups, cli, compartment,
+            boot_volume_id=attachment.get("boot-volume-id"))
+    except Exception as exc:  # noqa: BLE001
+        await _reply(update, fmt_error(exc))
+        return
+    if not backups:
+        await _reply(update, f"实例「{name}」的启动盘还没有备份。")
+        return
+    context.user_data["ib_backups"] = backups
+    context.user_data["ib_idx"] = idx
+    context.user_data["ib_title"] = f"「{name}」的历史备份"
+    context.user_data["ib_ms_selected"] = set()
+    await _reply(update,
+                 _fmt_boot_backup_multiselect(
+                     backups, set(), title=f"「{name}」的历史备份"),
+                 reply_markup=boot_backup_multiselect_keyboard(
+                     backups, set(), prefix="ib"))
+
+
+@require_allowed
+async def instance_boot_backup_mstoggle_callback(update, context):
+    """回调 "ib:mst:<idx>"：勾选 / 取消勾选一个本实例备份。"""
+    query = update.callback_query
+    backups = context.user_data.get("ib_backups") or []
+    try:
+        idx = int(_callback_data(update).split(":")[-1])
+    except ValueError:
+        await query.answer("参数错误")
+        return
+    if not 0 <= idx < len(backups):
+        await query.answer("备份已过期，请重新打开列表")
+        return
+    selected = context.user_data.get("ib_ms_selected")
+    if not isinstance(selected, set):
+        selected = set()
+        context.user_data["ib_ms_selected"] = selected
+    if idx in selected:
+        selected.discard(idx)
+    else:
+        selected.add(idx)
+    await query.edit_message_text(
+        _fmt_boot_backup_multiselect(
+            backups, selected,
+            title=context.user_data.get("ib_title")),
+        reply_markup=boot_backup_multiselect_keyboard(backups, selected,
+                                                      prefix="ib"))
+
+
+@require_allowed
+async def instance_boot_backup_msdelete_callback(update, context):
+    """回调 "ib:msdel"：多选删除二次确认（真正执行在 handle_confirm
+    的 "delibbsel"，idx 是逗号分隔的下标，如 "0,2,3"）。"""
+    selected = context.user_data.get("ib_ms_selected") or set()
+    backups = context.user_data.get("ib_backups") or []
+    if not selected:
+        await update.callback_query.answer("还没选任何备份")
+        return
+    names = []
+    for idx in sorted(selected):
+        if 0 <= idx < len(backups):
+            names.append(backups[idx].get("display-name") or "?")
+    if not names:
+        await _reply(update, "所选备份已过期，请重新打开列表。")
+        return
+    idx_arg = ",".join(str(i) for i in sorted(selected))
+    await _reply(
+        update,
+        f"⚠️ 即将删除 {len(names)} 个备份：\n"
+        + "\n".join(f"• {n}" for n in names)
+        + "\n删除后无法再用它们恢复实例，不可恢复。",
+        reply_markup=confirm_keyboard(
+            "delibbsel", idx_arg, f"🗑️ 确认删除 {len(names)} 个备份"))
+
+
+@require_allowed
+async def instance_boot_backup_mscancel_callback(update, context):
+    """回调 "ib:mscancel"：退出多选删除模式，回到实例详情入口。"""
+    query = update.callback_query
+    idx = context.user_data.get("ib_idx")
+    context.user_data.pop("ib_ms_selected", None)
+    rows = []
+    if idx is not None:
+        rows.append([InlineKeyboardButton(
+            "◀ 返回实例详情", callback_data=f"i:detail:{idx}")])
+    rows.append([InlineKeyboardButton("◀ 实例列表", callback_data="i:list")])
+    await query.edit_message_text("已退出多选。",
+                                  reply_markup=InlineKeyboardMarkup(rows))
+
+
 # ---------------- 引导卷恢复（停机换盘，原地恢复） ----------------
 
 # 正在换盘的实例 OCID 集合（同一实例同时只允许一个换盘任务）。
@@ -3006,9 +3254,10 @@ def _bootswap_thread(token, chat_id, profile, region, compartment,
             _BOOTSWAP_RUNNING.discard(instance_id)
 
 
-def _fmt_boot_backup_multiselect(backups, selected):
+def _fmt_boot_backup_multiselect(backups, selected, title=None):
     """多选删除模式的列表文字：标题 + 已选数量 + 操作提示。"""
-    return (f"💾 启动卷备份（多选删除，共 {len(backups)} 个）：\n"
+    head = title or "启动卷备份"
+    return (f"💾 {head}（多选删除，共 {len(backups)} 个）：\n"
             f"已选 {len(selected)} 个，点备份勾选 / 取消勾选，"
             "再点「删除所选」。")
 
@@ -3105,6 +3354,8 @@ async def handle_users(update, context):
     rows = [[InlineKeyboardButton(_user_button_text(u),
                                   callback_data=f"u:detail:{idx}")]
             for idx, u in enumerate(users)]
+    rows.append([InlineKeyboardButton("➕ 增加管理员账号",
+                                      callback_data="u:add")])
     rows.append([InlineKeyboardButton("◀ Oracle 菜单",
                                       callback_data="o:menu")])
     await _reply(update, fmt_user_list(users),
@@ -3173,13 +3424,23 @@ async def user_callback(update, context):
     u:detail:<idx> 用户详情；u:desc:<idx> 改描述（文字输入）；
     u:email:<idx> 改邮箱（文字输入）；u:keys:<idx> API 密钥列表；
     u:del:<idx> 删除用户（输入用户名确认）；u:keydel:<idx> 删 API
-    密钥（二次确认）；u:list 返回云账户列表。
+    密钥（二次确认）；u:add 增加管理员账号（用户名+邮箱两步输入）；
+    u:list 返回云账户列表。
     """
     parts = _callback_data(update).split(":")
     action = parts[1] if len(parts) >= 2 else ""
     idx = parts[2] if len(parts) >= 3 else ""
     if action == "list":
         await handle_users(update, context)
+        return
+    if action == "add":
+        context.user_data["pending_input"] = {"kind": "add_admin_name"}
+        context.user_data.pop("add_admin", None)
+        await _reply_prompt(
+            update, context,
+            "➕ 增加管理员账号：先输入新用户的用户名（字母/数字/下划线，"
+            "不要带空格）：\n"
+            "（直接发文字即可，不用加任何命令）")
         return
     if action == "keydel":
         await _user_key_delete_prompt(update, context, idx)
@@ -4677,6 +4938,41 @@ async def text_input_callback(update, context):
                      reply_markup=confirm_keyboard(
                          "deluser", pending.get("idx"), "🗑️ 确认删除"))
         return
+    if kind in ("add_admin_name", "add_admin_email"):
+        # 增加管理员账号：两步输入（用户名 → 邮箱），最后弹二次确认。
+        context.user_data.pop("pending_input", None)
+        if kind == "add_admin_name":
+            if not text or any(ch.isspace() for ch in text):
+                await _reply(update,
+                             "❌ 用户名不能为空也不能带空格，增加管理员"
+                             "账号已取消。请重新点“增加管理员账号”。")
+                return
+            context.user_data["add_admin"] = {"name": text}
+            context.user_data["pending_input"] = {
+                "kind": "add_admin_email"}
+            await _reply_prompt(
+                update, context,
+                f"用户名「{text}」已记下。再输入新用户的邮箱：\n"
+                "（直接发文字即可，不用加任何命令）")
+            return
+        if not is_valid_email(text):
+            await _reply(update,
+                         "❌ 邮箱格式不对，增加管理员账号已取消。"
+                         "请重新点“增加管理员账号”。")
+            return
+        admin = context.user_data.get("add_admin") or {}
+        admin["email"] = text
+        context.user_data["add_admin"] = admin
+        name = admin.get("name") or "?"
+        await _reply(update,
+                     f"确认增加管理员账号？\n"
+                     f"用户名：{name}\n"
+                     f"邮箱：{text}\n"
+                     "创建后会把该用户加进 Administrators 组（租户管理员）；"
+                     "控制台密码需另行设置（控制台或临时密码命令）。",
+                     reply_markup=confirm_keyboard(
+                         "addadmin", 0, "➕ 确认增加管理员账号"))
+        return
     if kind == "restore_name":
         # 从备份恢复：输入新实例名（发"默认"用"<备份名>-restored"）。
         context.user_data.pop("pending_input", None)
@@ -4844,6 +5140,9 @@ async def _handle_confirm_inner(action, idx, update, context):
         所属用户在 user_data["iam_keys_user"]）。
       - deluser：删除 IAM 用户（idx 是 user_data["iam_users"] 的下标；
         执行前再次检查目标不是当前 profile 的 API 用户）。
+      - addadmin：增加管理员账号（用户名+邮箱在
+        user_data["add_admin"]，idx 无用，传 0；创建用户后加进
+        Administrators 组）。
     """
     if action == "changeip":
         inst = resolve_instance(context, idx)
@@ -4937,6 +5236,40 @@ async def _handle_confirm_inner(action, idx, update, context):
             return True
         backups = context.user_data.get("boot_backups") or []
         context.user_data.pop("bb_ms_selected", None)
+        deleted, failed = [], []
+        for i in indices:
+            if not 0 <= i < len(backups):
+                failed.append(f"下标 {i}（已过期）")
+                continue
+            backup = backups[i]
+            try:
+                await run_sync(delete_boot_volume_backup, get_cli(context),
+                               backup["id"])
+                deleted.append(backup.get("display-name") or "?")
+            except Exception as exc:  # noqa: BLE001 - 单个失败继续删其余
+                failed.append(f"{backup.get('display-name') or '?'}"
+                              f"（{exc}）")
+        lines = []
+        if deleted:
+            lines.append(f"✅ 已删除 {len(deleted)} 个备份："
+                         + "、".join(deleted))
+        if failed:
+            lines.append(f"⚠️ {len(failed)} 个删除失败："
+                         + "、".join(failed))
+        await _reply(update, "\n".join(lines) or "没有删除任何备份。")
+        return True
+
+    if action == "delibbsel":
+        # 本实例备份多选删除（与 delbbsel 同款，读 ib_backups）。
+        # idx 是逗号分隔的下标，如 "0,2,3"。逐个删除，单个失败不影响
+        # 其他；结束后清多选状态并汇报成功/失败数。
+        try:
+            indices = [int(p) for p in str(idx).split(",") if p.strip()]
+        except ValueError:
+            await _reply(update, "参数错误，请重新选择要删除的备份。")
+            return True
+        backups = context.user_data.get("ib_backups") or []
+        context.user_data.pop("ib_ms_selected", None)
         deleted, failed = [], []
         for i in indices:
             if not 0 <= i < len(backups):
@@ -5462,6 +5795,57 @@ async def _handle_confirm_inner(action, idx, update, context):
             return True
         await _reply(update,
                      f"✅ 用户「{user.get('name', '?')}」已删除。")
+        return True
+
+    if action == "addadmin":
+        # 增加管理员账号：用户名+邮箱在 user_data["add_admin"] 里。
+        # 先创建用户，再加进 Administrators 组；加组失败时用户已创建，
+        # 如实汇报（用户在列表里可见，可手动加组或删除）。
+        admin = context.user_data.pop("add_admin", None) or {}
+        name = admin.get("name") or ""
+        email = admin.get("email") or ""
+        if not name or not email:
+            await _reply(update,
+                         "增加管理员账号的信息已过期，请重新点"
+                         "“增加管理员账号”。")
+            return True
+        cli = get_cli(context)
+        compartment = get_compartment(context)
+        try:
+            user = await run_sync(create_user, cli, compartment, name,
+                                  email)
+        except Exception as exc:  # noqa: BLE001
+            await _reply(update, fmt_error(exc))
+            return True
+        user_id = (user or {}).get("id")
+        group_id = None
+        try:
+            group_id = await run_sync(get_group_id_by_name, cli,
+                                      compartment, "Administrators")
+        except Exception as exc:  # noqa: BLE001 - 查组失败也如实汇报
+            await _reply(update,
+                         f"⚠️ 用户「{name}」已创建，但查 Administrators 组"
+                         f"失败（{exc}），未加进管理员组。请在控制台手动"
+                         "加组。")
+            return True
+        if group_id is None:
+            await _reply(update,
+                         f"⚠️ 用户「{name}」已创建，但租户下找不到 "
+                         "Administrators 组，未加进管理员组。请在控制台"
+                         "手动加组。")
+            return True
+        try:
+            await run_sync(add_user_to_group, cli, user_id, group_id)
+        except Exception as exc:  # noqa: BLE001
+            await _reply(update,
+                         f"⚠️ 用户「{name}」已创建，但加进 Administrators "
+                         f"组失败（{exc}）。请在控制台手动加组。")
+            return True
+        await _reply(update,
+                     f"✅ 管理员账号「{name}」已创建（邮箱 {email}），"
+                     "已加进 Administrators 组。\n"
+                     "控制台密码尚未设置：请在控制台给该用户设置临时密码，"
+                     "或用 `oci iam user create-or-reset-ui-password` 生成。")
         return True
 
     return False
@@ -6386,6 +6770,8 @@ _DISPATCH = {
     "reinstall": handle_reinstall_prompt,
     "console": handle_console,
     "bootswap": handle_bootswap,
+    "bootbackup": instance_boot_backup_callback,
+    "bootbackup-del": instance_boot_backup_delete_callback,
     "memballoon": handlers_client.handle_memballoon,
     "memclear": handlers_client.handle_memclear,
 }

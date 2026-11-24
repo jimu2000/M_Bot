@@ -17,8 +17,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from oci.iam import (
     MAX_DESCRIPTION_LEN,
+    add_user_to_group,
+    create_user,
     delete_api_key,
     delete_user,
+    get_group_id_by_name,
     get_profile_user_id,
     list_api_keys,
     update_user,
@@ -183,6 +186,67 @@ class TestGetProfileUserId(unittest.TestCase):
     def test_missing_file_returns_none(self):
         self.assertIsNone(get_profile_user_id(
             "DEFAULT", "/tmp/no-such-oci-config-12345"))
+
+
+class TestCreateUser(unittest.TestCase):
+    """create_user：命令构造（写操作，只 mock 检查，不真执行）。"""
+
+    def test_with_email_and_description(self):
+        cli = _mock_cli({"data": {"id": FAKE_USER, "name": "newadmin",
+                                  "email": "a@example.com"}})
+        result = create_user(cli, "ocid1.tenancy.oc1..xxxx", "newadmin",
+                             "a@example.com", description="admin user")
+        self.assertEqual(result["name"], "newadmin")
+        cli.run.assert_called_once_with(
+            ["iam", "user", "create",
+             "--compartment-id", "ocid1.tenancy.oc1..xxxx",
+             "--name", "newadmin", "--email", "a@example.com",
+             "--description", "admin user"])
+
+    def test_email_only_no_description(self):
+        cli = _mock_cli({"data": {"id": FAKE_USER}})
+        create_user(cli, "ocid1.tenancy.oc1..xxxx", "newadmin",
+                    "a@example.com")
+        cli.run.assert_called_once_with(
+            ["iam", "user", "create",
+             "--compartment-id", "ocid1.tenancy.oc1..xxxx",
+             "--name", "newadmin", "--email", "a@example.com"])
+
+
+class TestGroupHelpers(unittest.TestCase):
+    """get_group_id_by_name / add_user_to_group。"""
+
+    def test_find_admin_group(self):
+        cli = _mock_cli({"data": [
+            {"id": "ocid1.group.oc1..aaaa", "name": "Group_for_Api_used"},
+            {"id": "ocid1.group.oc1..bbbb", "name": "Administrators"},
+        ]})
+        self.assertEqual(
+            get_group_id_by_name(cli, "ocid1.tenancy.oc1..xxxx",
+                                 "Administrators"),
+            "ocid1.group.oc1..bbbb")
+        cli.run.assert_called_once_with(
+            ["iam", "group", "list",
+             "--compartment-id", "ocid1.tenancy.oc1..xxxx"])
+
+    def test_group_not_found_returns_none(self):
+        cli = _mock_cli({"data": [
+            {"id": "ocid1.group.oc1..aaaa", "name": "Other"},
+        ]})
+        self.assertIsNone(get_group_id_by_name(
+            cli, "ocid1.tenancy.oc1..xxxx", "Administrators"))
+
+    def test_empty_group_list_returns_none(self):
+        cli = _mock_cli({"opc-total-items": "0"})
+        self.assertIsNone(get_group_id_by_name(
+            cli, "ocid1.tenancy.oc1..xxxx", "Administrators"))
+
+    def test_add_user_to_group(self):
+        cli = _mock_cli({})
+        add_user_to_group(cli, FAKE_USER, "ocid1.group.oc1..bbbb")
+        cli.run.assert_called_once_with(
+            ["iam", "group", "add-user", "--user-id", FAKE_USER,
+             "--group-id", "ocid1.group.oc1..bbbb"])
 
 
 if __name__ == "__main__":

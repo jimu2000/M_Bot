@@ -9,6 +9,16 @@
 <title>登录 · M_Bot Oracle开源管理面板</title>
 <link rel="stylesheet" href="/static/css/themes.css">
 <link rel="stylesheet" href="/static/css/base.css">
+{% if clarity_id %}
+{# Microsoft Clarity：仅配置了 MBOT_CLARITY_ID 时加载（登录页统计） #}
+<script type="text/javascript">
+    (function(c,l,a,r,i,t,y){
+        c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+        t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+        y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+    })(window, document, "clarity", "script", "{{ clarity_id }}");
+</script>
+{% endif %}
 </head>
 <body>
 <div class="login-page">

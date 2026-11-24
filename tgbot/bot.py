@@ -158,7 +158,7 @@ def build_application():
         handlers.instance_detail_callback, pattern=r"^i:detail:"))
     application.add_handler(CallbackQueryHandler(
         handlers.instance_action_callback,
-        pattern=r"^i:(start|stop|restart|terminate|ip|resize|rename|reinstall|console|bootswap):"))
+        pattern=r"^i:(start|stop|restart|terminate|ip|resize|rename|reinstall|console|bootswap|bootbackup-del|bootbackup):"))
     application.add_handler(CallbackQueryHandler(
         handlers.confirm_callback, pattern=r"^c:"))
     application.add_handler(CallbackQueryHandler(
@@ -212,6 +212,15 @@ def build_application():
         handlers_extra.boot_backup_delete_callback, pattern=r"^bb:delete:"))
     application.add_handler(CallbackQueryHandler(
         handlers_extra.bootswap_callback, pattern=r"^bs:"))
+    application.add_handler(CallbackQueryHandler(
+        handlers_extra.instance_boot_backup_mstoggle_callback,
+        pattern=r"^ib:mst:"))
+    application.add_handler(CallbackQueryHandler(
+        handlers_extra.instance_boot_backup_msdelete_callback,
+        pattern=r"^ib:msdel$"))
+    application.add_handler(CallbackQueryHandler(
+        handlers_extra.instance_boot_backup_mscancel_callback,
+        pattern=r"^ib:mscancel$"))
     application.add_handler(CallbackQueryHandler(
         handlers_extra.ipv6_create_callback, pattern=r"^ipv6_create:"))
     application.add_handler(CallbackQueryHandler(

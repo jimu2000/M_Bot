@@ -133,7 +133,7 @@ ORACLE_MENU_ITEMS = [
     ("bark", "43. Bark 通知设置"),
 ]
 # 每页显示的菜单项数（2 列，自动分页；总页数随菜单项数变化）。
-MENU_PAGE_SIZE = 18
+MENU_PAGE_SIZE = 22
 # 按钮文字带动态开关状态的菜单项：key -> states 字典里的键。
 # 生成菜单时传 states={...}，对应按钮会带上“(开启)”/“(关闭)”后缀；
 # states 不传或不是 dict 时显示原文字（兼容旧调用）。
@@ -275,10 +275,17 @@ def instance_actions_keyboard(idx, state="RUNNING"):
         InlineKeyboardButton("💿 重装系统", callback_data=f"i:reinstall:{idx}"),
     ])
     if state in ("RUNNING", "STOPPED"):
-        # 引导卷恢复（停机换盘）：只有运行中 / 已停止的实例能换盘。
+        # 引导卷备份与恢复放一排，备份在前面；删除历史备份单独一行。
+        # 三个都要找实例当前挂载的启动盘，只有运行中 / 已停止的实例有。
         rows.append([
+            InlineKeyboardButton("💾 引导卷备份",
+                                 callback_data=f"i:bootbackup:{idx}"),
             InlineKeyboardButton("💾 引导卷恢复",
                                  callback_data=f"i:bootswap:{idx}"),
+        ])
+        rows.append([
+            InlineKeyboardButton("🗑️ 删除历史备份",
+                                 callback_data=f"i:bootbackup-del:{idx}"),
         ])
     rows.append([
         InlineKeyboardButton("🖥️ 串行控制台", callback_data=f"i:console:{idx}"),

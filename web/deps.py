@@ -131,10 +131,16 @@ def oci_status(exc):
     return 502
 
 
-def error_response(message, status_code=400):
-    """统一错误响应：{"ok": false, "error": "..."}。"""
-    return JSONResponse(status_code=status_code,
-                        content={"ok": False, "error": message})
+def error_response(message, status_code=400, extra=None):
+    """统一错误响应：{"ok": false, "error": "..."}。
+
+    extra 是可选的附加字段字典（原样并进响应体，如备份已满时的
+    full/count/limit，前端据此决定弹什么弹窗）。
+    """
+    content = {"ok": False, "error": message}
+    if extra:
+        content.update(extra)
+    return JSONResponse(status_code=status_code, content=content)
 
 
 def oci_error_response(exc):

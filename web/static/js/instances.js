@@ -22,6 +22,7 @@
   var detailTarget = null; // 详情弹窗当前实例 {id, name, state}
   var bootswapTarget = null; // 待恢复引导卷的实例
   var bootswapSelected = null; // 已选备份的 OCID
+  var bootBackupDelTarget = null; // 待删历史备份的实例
   var consoleCommand = ""; // 当前串行控制台连接命令（供复制）
 
   var BATCH_LABEL = {
@@ -267,9 +268,11 @@
         name: inst["display-name"] || "—",
         state: inst["lifecycle-state"] || "",
       };
-      // 引导卷恢复只对运行中 / 已停止的实例可用
-      document.getElementById("detail-bootswap-btn").hidden =
-        !(detailTarget.state === "RUNNING" || detailTarget.state === "STOPPED");
+      // 引导卷备份 / 恢复 / 删除历史备份只对运行中 / 已停止的实例可用
+      var bootButtonsOn = detailTarget.state === "RUNNING" || detailTarget.state === "STOPPED";
+      document.getElementById("detail-bootbackup-btn").hidden = !bootButtonsOn;
+      document.getElementById("detail-bootswap-btn").hidden = !bootButtonsOn;
+      document.getElementById("detail-bootbackup-del-btn").hidden = !bootButtonsOn;
       MBot.openModal("detail-modal");
     } catch (err) {
       MBot.toast("加载实例详情失败：" + err.message, "error");
@@ -314,6 +317,76 @@
           (b["size-in-gbs"] != null ? b["size-in-gbs"] + "GB" : "—") +
           "，" + created + "）";
         label.appendChild(radio);
+        label.appendChild(text);
+        listEl.appendChild(label);
+      });
+    } catch (err) {
+      listEl.textContent = "加载备份失败：" + err.message;
+    }
+  }
+
+  // 引导卷备份：给详情里的实例做 FULL 备份；免费额度满了（409 + full）
+  // 时改弹删除历史备份弹窗，让用户先删再建
+  async function createBootBackup() {
+    if (!detailTarget) return;
+    var btn = document.getElementById("detail-bootbackup-btn");
+    btn.disabled = true;
+    try {
+      var res = await MBot.api(MBot.withProfile(
+        "/api/instances/" + encodeURIComponent(detailTarget.id) + "/boot-backups",
+        currentProfile, currentRegion), { method: "POST" });
+      var name = (res.backup && res.backup["display-name"]) || "备份";
+      var quota = (res.count != null && res.limit != null)
+        ? "（免费额度 " + res.count + "/" + res.limit + "）" : "";
+      MBot.toast("备份「" + name + "」创建中，几分钟后可用" + quota, "success");
+    } catch (err) {
+      if (err.status === 409 && err.data && err.data.full) {
+        MBot.toast(err.message, "error");
+        showBootBackupDelete();
+      } else {
+        MBot.toast("创建备份失败：" + err.message, "error");
+      }
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  // 删除历史备份弹窗：列本实例启动盘的备份，多选后批量删除
+  async function showBootBackupDelete() {
+    if (!detailTarget) return;
+    bootBackupDelTarget = detailTarget;
+    document.getElementById("bootbackup-del-name").textContent = bootBackupDelTarget.name;
+    document.getElementById("bootbackup-del-confirm-btn").disabled = true;
+    var listEl = document.getElementById("bootbackup-del-list");
+    listEl.textContent = "加载中…";
+    MBot.closeModal("detail-modal");
+    MBot.openModal("bootbackup-del-modal");
+    try {
+      var res = await MBot.api(MBot.withProfile(
+        "/api/instances/" + encodeURIComponent(bootBackupDelTarget.id) + "/boot-backups?include_all=true",
+        currentProfile, currentRegion));
+      var backups = res.backups || [];
+      if (!backups.length) {
+        listEl.textContent = "这台实例的启动盘还没有备份。";
+        return;
+      }
+      listEl.innerHTML = "";
+      backups.forEach(function (b) {
+        var label = document.createElement("label");
+        label.className = "check-row";
+        var box = document.createElement("input");
+        box.type = "checkbox";
+        box.value = b.id;
+        box.addEventListener("change", function () {
+          var checked = listEl.querySelectorAll("input[type=checkbox]:checked").length;
+          document.getElementById("bootbackup-del-confirm-btn").disabled = checked === 0;
+        });
+        var text = document.createElement("span");
+        var created = b["time-created"] ? MBot.formatTime(b["time-created"]) : "—";
+        text.textContent = (b["display-name"] || "—") + "（" +
+          (b["size-in-gbs"] != null ? b["size-in-gbs"] + "GB" : "—") +
+          "，" + (b["lifecycle-state"] || "—") + "，" + created + "）";
+        label.appendChild(box);
         label.appendChild(text);
         listEl.appendChild(label);
       });
@@ -693,6 +766,42 @@
     // 详情弹窗里的“引导卷恢复”按钮：打开备份选择弹窗
     document.getElementById("detail-bootswap-btn").addEventListener("click", function () {
       showBootswap();
+    });
+
+    // 详情弹窗里的“引导卷备份”按钮：直接创建备份（满 5 个时改弹删除弹窗）
+    document.getElementById("detail-bootbackup-btn").addEventListener("click", function () {
+      createBootBackup();
+    });
+
+    // 详情弹窗里的“删除历史备份”按钮：打开多选删除弹窗
+    document.getElementById("detail-bootbackup-del-btn").addEventListener("click", function () {
+      showBootBackupDelete();
+    });
+
+    // 删除历史备份确认：批量删除所选备份
+    document.getElementById("bootbackup-del-confirm-btn").addEventListener("click", async function () {
+      if (!bootBackupDelTarget) return;
+      var ids = Array.prototype.slice.call(
+        document.querySelectorAll("#bootbackup-del-list input[type=checkbox]:checked")
+      ).map(function (box) { return box.value; });
+      if (!ids.length) return;
+      var btn = document.getElementById("bootbackup-del-confirm-btn");
+      btn.disabled = true;
+      try {
+        var res = await MBot.api(MBot.withProfile("/api/boot-backups/delete-batch", currentProfile, currentRegion), {
+          method: "POST",
+          body: { backup_ids: ids },
+        });
+        var deleted = (res.deleted || []).length;
+        var failed = (res.failed || []).length;
+        MBot.toast("已删除 " + deleted + " 个备份" + (failed ? "，" + failed + " 个失败" : ""), failed ? "error" : "success");
+        MBot.closeModal("bootbackup-del-modal");
+        MBot.cacheClear("vol:");
+      } catch (err) {
+        MBot.toast("删除备份失败：" + err.message, "error");
+      } finally {
+        btn.disabled = false;
+      }
     });
 
     // 引导卷恢复确认：起后台任务，跳任务页看进度

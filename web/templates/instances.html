@@ -305,7 +305,9 @@
       </table>
     </div>
     <div class="modal-foot">
+      <button type="button" class="btn" id="detail-bootbackup-btn" hidden>💾 引导卷备份</button>
       <button type="button" class="btn" id="detail-bootswap-btn" hidden>💾 引导卷恢复</button>
+      <button type="button" class="btn" id="detail-bootbackup-del-btn" hidden>🗑️ 删除历史备份</button>
       <button type="button" class="btn btn-primary" data-close-modal="detail-modal">关闭</button>
     </div>
   </div>
@@ -326,6 +328,24 @@
     <div class="modal-foot">
       <button type="button" class="btn" data-close-modal="bootswap-modal">取消</button>
       <button type="button" class="btn btn-danger" id="bootswap-confirm-btn" disabled>确认恢复</button>
+    </div>
+  </div>
+</div>
+
+{# 删除历史备份弹窗：列本实例启动盘的备份，多选删除 #}
+<div class="modal-overlay" id="bootbackup-del-modal" hidden>
+  <div class="modal-box">
+    <div class="modal-head">
+      <span>删除历史备份</span>
+      <button type="button" class="modal-close" data-close-modal="bootbackup-del-modal" aria-label="关闭">×</button>
+    </div>
+    <div class="modal-body">
+      <p>实例 <b id="bootbackup-del-name"></b> 的启动盘备份，勾选后删除（删了无法再用它们恢复实例）。</p>
+      <div id="bootbackup-del-list">加载中…</div>
+    </div>
+    <div class="modal-foot">
+      <button type="button" class="btn" data-close-modal="bootbackup-del-modal">取消</button>
+      <button type="button" class="btn btn-danger" id="bootbackup-del-confirm-btn" disabled>删除所选</button>
     </div>
   </div>
 </div>

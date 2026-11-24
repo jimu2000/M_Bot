@@ -54,6 +54,50 @@ def _extract_list(result):
     return []
 
 
+def create_user(cli, compartment_id, name, email, description=None):
+    """创建 IAM 用户。
+
+    对应命令：oci iam user create --compartment-id <租户 OCID>
+              --name <用户名> --email <邮箱> [--description <描述>]
+
+    compartment_id 传 tenancy OCID（IAM 用户属于租户，不属于子
+    compartment）。创建后用户没有控制台密码，需另行设置临时密码
+    （`oci iam user create-or-reset-ui-password` 或控制台）。
+    返回新建用户的字典（id / name / email / lifecycle-state 等）。
+    """
+    args = ["iam", "user", "create",
+            "--compartment-id", compartment_id,
+            "--name", name]
+    if email:
+        args += ["--email", email]
+    if description:
+        args += ["--description", description]
+    return _extract_data(cli.run(args)) or {}
+
+
+def get_group_id_by_name(cli, compartment_id, group_name):
+    """按名字找 IAM 组，返回组 OCID（找不到返回 None）。
+
+    对应命令：oci iam group list --compartment-id <租户 OCID>。
+    """
+    result = cli.run(["iam", "group", "list",
+                      "--compartment-id", compartment_id])
+    for group in _extract_list(result):
+        if group.get("name") == group_name:
+            return group.get("id")
+    return None
+
+
+def add_user_to_group(cli, user_id, group_id):
+    """把 IAM 用户加进组。
+
+    对应命令：oci iam group add-user --user-id <用户 OCID>
+              --group-id <组 OCID>。
+    """
+    return cli.run(["iam", "group", "add-user",
+                    "--user-id", user_id, "--group-id", group_id])
+
+
 def update_user(cli, user_id, description=None, email=None):
     """更新 IAM 用户的描述 / 邮箱。
 

@@ -132,6 +132,22 @@ def edit_button_texts_of(update):
             for row in keyboard.inline_keyboard for btn in row]
 
 
+def edit_callback_data_of(update):
+    """取 update 上 query.edit_message_text 最后一次调用的键盘 callback_data。"""
+    query = update.callback_query
+    if query is None:
+        return []
+    mock = query.edit_message_text
+    if not mock.await_args_list:
+        return []
+    _args, kwargs = mock.await_args_list[-1]
+    keyboard = kwargs.get("reply_markup")
+    if keyboard is None:
+        return []
+    return [btn.callback_data
+            for row in keyboard.inline_keyboard for btn in row]
+
+
 def reply_text_of(update):
     """取 update 上 reply_text 最后一次调用的文本（没调过返回 None）。"""
     mock = update.effective_message.reply_text
@@ -247,8 +263,10 @@ class TestDispatch(HandlersExtraTestCase):
                     handled = await he.dispatch_oracle_action(
                         item, update, context)
                     self.assertTrue(handled, f"{item} 应返回 True")
+                    # profiles 切换账号在原消息里改（就地编辑），其余发新消息。
                     self.assertIsNotNone(
-                        reply_text_of(update), f"{item} 应回复消息")
+                        reply_text_of(update) or edit_text_of(update),
+                        f"{item} 应回复消息")
 
     async def test_dispatch_not_implemented_returns_false(self):
         """未实现项 dispatch 返回 False 且不回复。"""
@@ -335,7 +353,9 @@ class TestQuotaTrafficCost(HandlersExtraTestCase):
         context = make_context()
         await he.handle_cost(update, context)
         text = reply_text_of(update)
-        self.assertIn("近 3 个月总花费：13.46 SGD", text)
+        # 多账号格式（v1.19.0）：逐账号列费用，最后附合计
+        self.assertIn("• 新加坡：13.46 SGD", text)
+        self.assertIn("合计：13.46 SGD", text)
         called_args = self.cli.run.call_args[0][0]
         # 费用汇总也用 MONTHLY 粒度再求和（用量 API 没有 TOTAL 粒度，
         # 真实 API 实测报 "Unknown Granularity"）。
@@ -353,7 +373,10 @@ class TestQuotaTrafficCost(HandlersExtraTestCase):
         update = make_update()
         context = make_context()
         await he.handle_cost(update, context)
-        self.assertIn("没有用量记录", reply_text_of(update))
+        # 多账号格式（v1.19.0）：空账号显示 0.00，不再用“没有用量记录”
+        text = reply_text_of(update)
+        self.assertIn("• 新加坡：0.00", text)
+        self.assertIn("合计：0.00", text)
 
     def test_fmt_usage_monthly_pure(self):
         """fmt_usage_monthly 是纯函数，直接测。"""
@@ -628,27 +651,24 @@ class TestHealthTasksProfiles(HandlersExtraTestCase):
                              return_value={"DEFAULT": 2, "ACCOUNT2": 1}):
             context = make_context()
             context.user_data["profile"] = "ACCOUNT2"
-            # 账号列表消息 id 101、区域列表消息 id 102
+            # 账号列表消息 id 101（无回调时新发，仍跟踪）；区域列表现在
+            # 就地编辑，不再产生新消息（用户要求 2026-11-24：不弹新框）。
             msg1 = MagicMock()
             msg1.message_id = 101
             update1 = make_update()
             update1.effective_message.reply_text = AsyncMock(
                 return_value=msg1)
             await he.handle_profiles(update1, context)
-            msg2 = MagicMock()
-            msg2.message_id = 102
             update2 = make_update(callback_data="p:DEFAULT")
-            update2.effective_message.reply_text = AsyncMock(
-                return_value=msg2)
             await he.profile_callback(update2, context)
-            self.assertIn("切换工作区域", reply_text_of(update2))
-            # 点区域完成切换：101、102 都删掉，当前消息（777）编辑成菜单
+            self.assertIn("切换工作区域", edit_text_of(update2))
+            self.assertIsNone(reply_text_of(update2))
+            # 点区域完成切换：101 删掉，当前消息（777）编辑成菜单
             update3 = make_update(callback_data="pr:DEFAULT:ap-seoul-1")
             await he.profile_region_callback(update3, context)
             deleted = [call.kwargs.get("message_id")
                        for call in context.bot.delete_message.await_args_list]
             self.assertIn(101, deleted)
-            self.assertIn(102, deleted)
             self.assertNotIn(777, deleted)
             self.assertIn("已切换到账号", edit_text_of(update3))
             self.assertIn("首尔", edit_text_of(update3))
@@ -744,15 +764,15 @@ class TestProfileRegions(HandlersExtraTestCase):
             context.user_data["profile"] = "ACCOUNT2"
             update = make_update(callback_data="p:DEFAULT")
             await he.profile_callback(update, context)
-            # 多区账号不直接切换，只出二级菜单
+            # 多区账号不直接切换，只出二级菜单（就地编辑，不弹新框）
             self.assertEqual(context.user_data["profile"], "ACCOUNT2")
-            self.assertIn("切换工作区域", reply_text_of(update))
-            callbacks = reply_callback_data_of(update)
+            self.assertIn("切换工作区域", edit_text_of(update))
+            callbacks = edit_callback_data_of(update)
             self.assertIn("pr:DEFAULT:ap-singapore-1", callbacks)
             self.assertIn("pr:DEFAULT:ap-seoul-1", callbacks)
             self.assertIn("pr:DEFAULT:us-sanjose-1", callbacks)
             self.assertIn("o:profiles", callbacks)
-            buttons = reply_button_texts_of(update)
+            buttons = edit_button_texts_of(update)
             self.assertIn("新加坡（Home）", buttons)
             self.assertIn("首尔", buttons)
 

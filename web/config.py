@@ -53,6 +53,11 @@ LOCKOUT_MAX_MINUTES = 30
 # POST /api/auth/login 需带 captchaId + captchaAnswer。
 CAPTCHA_ENABLED = os.environ.get("MBOT_CAPTCHA_ENABLED", "") == "1"
 
+# Microsoft Clarity 项目 ID：登录页统计用。空字符串 = 不加载 Clarity。
+# 在 clarity.microsoft.com 建项目后把 ID 填进环境变量 MBOT_CLARITY_ID；
+# 公开仓库里不硬编码任何项目 ID。
+CLARITY_ID = os.environ.get("MBOT_CLARITY_ID", "")
+
 # 登录会话有效期（小时）。
 SESSION_EXPIRE_HOURS = 12
 # 会话 cookie 名。

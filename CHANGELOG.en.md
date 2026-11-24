@@ -9,6 +9,25 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [1.19.0] - 2026-11-24
+
+### Added
+- Menu 25 (last 3 months spend) now queries all accounts by default (user request, 2026-11-24): per-account totals plus a grand total; a failed account shows "query failed" without affecting the others
+- Cloud accounts (menu 8) gains "Add admin account" (user request, 2026-11-24): two-step input (username, then email), confirm, then creates the IAM user and adds it to the Administrators group; oci/iam.py gains create_user / get_group_id_by_name / add_user_to_group
+- Microsoft Clarity on the login page (user request, 2026-11-24): the project ID comes from the MBOT_CLARITY_ID environment variable, nothing loads when unset, and no ID is hard-coded in the public repo; login page only for now
+
+### Fixed
+- Zero-amount usage items sometimes carry a single space as currency (" " is truthy), which overwrote the real SGD and hid the currency on spend lines: a new _usage_currency helper strips before picking, shared by all three spend formatters (found on real data, 2026-11-24, San Jose account)
+
+## [1.18.0] - 2026-11-24
+
+### Added
+- Boot volume backup from the instance detail (user request, 2026-11-24): backup and restore sit in one row, backup first (Telegram bot and web panel in sync); tapping backup creates a FULL backup of the instance's current boot volume
+- Delete-before-create when backups are full (user request, 2026-11-24): on a free account with 5 backups, tapping backup on an instance no longer auto-deletes the oldest backup — it prompts "backups are full (5/5), delete an old one first" and offers the delete-history entry; the web panel returns 409 and opens the delete modal (the auto-delete-oldest behaviour on the backups page / volumes page is unchanged)
+- Delete historical backups from the instance detail (user request, 2026-11-24): lists the backups of this instance's current boot volume with multi-select delete (checkbox keyboard + confirm on the bot, checkboxes + batch delete on the web)
+- Account/region switching edits in place (user request, 2026-11-24): the account list and the region sub-menu now edit the same message instead of popping a new one; returning to the main menu after a switch works the same way; falls back to a new message if the edit fails
+- Oracle menu shows 22 items per page (user request, 2026-11-24: two more rows per page): the first page runs to #23, 42 items in 2 pages
+
 ## [1.17.2] - 2026-11-24
 
 ### Fixed

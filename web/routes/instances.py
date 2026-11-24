@@ -32,7 +32,10 @@
   - POST /api/instances/{id}/repair：尝试修复（检查实例状态/主 VNIC/
     公网 IP，缺失时重新附加临时公网 IP；返回修复报告）。
   - GET /api/instances/{id}/boot-backups：该实例当前启动盘的
-    AVAILABLE 备份列表（引导卷恢复的备份选择用）。
+    AVAILABLE 备份列表（引导卷恢复的备份选择用；include_all=true
+    时返回全部未删除备份，删除历史备份用）。
+  - POST /api/instances/{id}/boot-backups：给该实例当前启动盘做
+    FULL 备份（免费账号满 5 个时返回 409 提示先删再创建，不自动删）。
   - POST /api/instances/{id}/restore-boot-volume：用备份替换实例的
     启动盘（body {backup_id, confirm}，confirm 必须为 true；停机换盘，
     原地恢复；后台任务跑，返回 task_id，进度在任务页看）。
@@ -48,7 +51,12 @@ import time
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
-from oci.boot_backup import get_boot_volume_backup, list_boot_volume_backups
+from oci.boot_backup import (
+    check_backup_quota,
+    create_boot_volume_backup,
+    get_boot_volume_backup,
+    list_boot_volume_backups,
+)
 from oci.boot_swap import (
     check_boot_volume_space,
     get_boot_volume_attachment,
@@ -84,6 +92,7 @@ from oci.quota import SHAPE_A1_FLEX, SHAPE_E2_MICRO, check_a1_single_instance_ca
 from oci.volume import get_boot_volume, list_boot_volume_attachments
 from tgbot import config as bot_config
 from tgbot.bark import load_bark_config
+from tgbot.paid_profiles import is_paid_profile
 from web import config
 from web.deps import (
     error_response,
@@ -698,8 +707,12 @@ def repair(instance_id: str,
 def boot_backups(instance_id: str,
                  profile: str = Query(default=None),
                  region: str = Query(default=None),
+                 include_all: bool = Query(default=False),
                  username: str = Depends(get_current_user)):
-    """该实例当前启动盘的 AVAILABLE 备份列表（引导卷恢复的备份选择用）。
+    """该实例当前启动盘的备份列表。
+
+    默认只返回 AVAILABLE 备份（引导卷恢复的备份选择用）；
+    include_all=true 时返回全部未删除备份（删除历史备份用）。
 
     返回 {ok, boot_volume_id, backups}；backups 每项是精简字典
     （id / display-name / size-in-gbs / lifecycle-state / time-created）。
@@ -718,10 +731,55 @@ def boot_backups(instance_id: str,
         return error_response(str(exc), status_code=400)
     except OCIError as exc:
         return oci_error_response(exc)
-    available = [b for b in backups
-                 if (b.get("lifecycle-state") or "").upper() == "AVAILABLE"]
+    if not include_all:
+        backups = [b for b in backups
+                   if (b.get("lifecycle-state") or "").upper()
+                   == "AVAILABLE"]
     return {"ok": True, "boot_volume_id": boot_volume_id,
-            "backups": available}
+            "backups": backups}
+
+
+@router.post("/api/instances/{instance_id}/boot-backups")
+def create_boot_backup(instance_id: str,
+                       profile: str = Query(default=None),
+                       region: str = Query(default=None),
+                       username: str = Depends(get_current_user)):
+    """给该实例当前启动盘做 FULL 全量备份。
+
+    付费账号直接创建；免费账号满 5 个时返回 409（不自动删最早备份，
+    提示先删除再创建，前端弹出删除历史备份弹窗），响应里带
+    full/count/limit；未满直接创建。
+    """
+    try:
+        cli, compartment_id = resolve_profile(profile, region)
+        prof = profile or config.DEFAULT_PROFILE
+        attachment = get_boot_volume_attachment(cli, compartment_id,
+                                                instance_id)
+        if attachment is None:
+            return error_response("找不到该实例当前挂载的启动盘",
+                                  status_code=400)
+        paid = is_paid_profile(prof)
+        count = limit = 0
+        if not paid:
+            count, limit, full, _oldest = check_backup_quota(
+                cli, compartment_id)
+            if full:
+                return error_response(
+                    f"备份已满 {count}/{limit} 个（免费额度），"
+                    "请先删除旧备份再创建。",
+                    status_code=409,
+                    extra={"full": True, "count": count, "limit": limit})
+        backup = create_boot_volume_backup(
+            cli, attachment.get("boot-volume-id"))
+    except ValueError as exc:
+        return error_response(str(exc), status_code=400)
+    except OCIError as exc:
+        return oci_error_response(exc)
+    result = {"ok": True, "backup": backup}
+    if not paid:
+        result["count"] = count + 1
+        result["limit"] = limit
+    return result
 
 
 @router.post("/api/instances/{instance_id}/restore-boot-volume")

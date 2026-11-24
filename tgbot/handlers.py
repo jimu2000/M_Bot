@@ -402,7 +402,7 @@ async def instance_action_callback(update: Update,
     name = inst.get("display-name") or inst.get("id", "?")[-4:]
 
     if action in ("ip", "resize", "rename", "reinstall", "console",
-                  "bootswap"):
+                  "bootswap", "bootbackup", "bootbackup-del"):
         # 扩展模块处理时用 pending_idx 取回实例下标。
         # 注意：实例操作里的 "ip" 转发为 "changeip"（换 IP 确认流程），
         # 不要转发 "ip"——"ip" 是菜单 2 的 IP 总览，不含换 IP 确认按钮。
