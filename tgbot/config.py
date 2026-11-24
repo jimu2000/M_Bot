@@ -70,7 +70,7 @@ def _build_profiles():
 PROFILES = _build_profiles()
 
 # 区域中文名（与 web/config.py 的 REGION_LABELS 保持同步；未知区域显示原代码）。
-# 账号切换菜单（菜单 13）按主区中文名显示账号，不再显示 DEFAULT/ACCOUNT2
+# 账号切换（/oracle 菜单顶行“切换账号”按钮）按主区中文名显示账号，不再显示 DEFAULT/ACCOUNT2
 # 这类 profile 名（用户反馈 2026-11-24：看着乱，分不清是哪个账号）。
 REGION_LABELS = {
     "ap-singapore-1": "新加坡",

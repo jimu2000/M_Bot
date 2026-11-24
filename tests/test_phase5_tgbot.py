@@ -133,6 +133,25 @@ class TestOracleMenuItems(Phase5TgbotTestCase):
         self.assertIn("35. 批量操作", labels)
         self.assertIn("36. A1 配置体检", labels)
 
+    def test_menu_13_removed_top_switch_kept(self):
+        # 用户要求 2026-11-24：13. profile管理 是重复入口（顶行已有
+        # 切换账号按钮），从菜单里删掉；其余编号保持不动，不重新编号。
+        keys = dict(ORACLE_MENU_ITEMS)
+        self.assertNotIn("profiles", keys)
+        self.assertNotIn("13. profile管理", keys.values())
+        self.assertEqual(len(ORACLE_MENU_ITEMS), 42)
+        # 其余编号不动（与 R-Bot 的编号对应关系 + 用户叫惯的叫法）。
+        self.assertEqual(keys["clients"], "14. 客户端管理")
+        self.assertEqual(keys["traffic"], "19. 本月流量")
+        self.assertEqual(keys["bark"], "43. Bark 通知设置")
+        # 顶行切换按钮还在，回调仍是 o:profiles。
+        keyboard = oracle_menu_keyboard(0, current_account="新加坡（3 个区）")
+        top = keyboard.inline_keyboard[0][0]
+        self.assertIn("切换账号：新加坡（3 个区）", top.text)
+        self.assertEqual(top.callback_data, "o:profiles")
+        labels = [b.text for row in keyboard.inline_keyboard for b in row]
+        self.assertNotIn("13. profile管理", labels)
+
     def test_instance_actions_keyboard_has_new_buttons(self):
         keyboard = instance_actions_keyboard(0, "RUNNING")
         callbacks = [b.callback_data for row in keyboard.inline_keyboard

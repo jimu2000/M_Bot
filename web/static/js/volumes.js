@@ -13,6 +13,8 @@
   var vpusTarget = null;
   var restoreTarget = null; // 恢复目标备份（归一化后）
   var deleteBackupTarget = null;
+  var selectedBackups = {}; // 多选删除：已选备份 id -> true
+  var backupPaid = false; // 当前账号是否付费（备份不限 5 个）
 
   // 字段归一化：后端返回 R-Bot 形状（camelCase）
   // {volumeId, attachmentId, displayName, sizeInGBs, vpusPerGB,
@@ -119,8 +121,11 @@
     var esc = RBot.escapeHtml;
     var b = normBackup(raw);
     var canRestore = (b.state || "").toUpperCase() === "AVAILABLE";
+    var checked = selectedBackups[b.id] ? " checked" : "";
     return (
       "<tr data-backup-id=\"" + esc(b.id) + "\">" +
+        "<td><input type=\"checkbox\" class=\"backup-check\" data-backup-id=\"" +
+          esc(b.id) + "\"" + checked + " aria-label=\"选择备份 " + esc(b.name) + "\"></td>" +
         "<td><b>" + esc(b.name) + "</b>" +
           (b.type ? '<br><span style="color: var(--text-faint); font-size: 12px;">' + esc(b.type) + "</span>" : "") + "</td>" +
         "<td><span class=\"mono\" title=\"" + esc(b.boot_volume_id || "") + "\">" + esc(sourceVolumeName(b.boot_volume_id)) + "</span></td>" +
@@ -136,13 +141,31 @@
     );
   }
 
+  function selectedBackupCount() {
+    var n = 0;
+    for (var id in selectedBackups) if (selectedBackups[id]) n++;
+    return n;
+  }
+
+  function updateBackupSelectionUI() {
+    var count = selectedBackupCount();
+    var btn = document.getElementById("btn-delete-selected-backups");
+    btn.disabled = count === 0;
+    btn.textContent = "删除所选" + (count ? "（" + count + "）" : "");
+    var all = document.getElementById("backup-select-all");
+    var boxes = document.querySelectorAll(".backup-check");
+    all.checked = boxes.length > 0 &&
+      Array.prototype.every.call(boxes, function (box) { return box.checked; });
+  }
+
   function renderBackups() {
     var tbody = document.getElementById("backup-tbody");
     if (backups.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: var(--text-muted);">暂无备份</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: var(--text-muted);">暂无备份</td></tr>';
     } else {
       tbody.innerHTML = backups.map(backupRow).join("");
     }
+    updateBackupSelectionUI();
   }
 
   function render() {
@@ -192,7 +215,7 @@
     document.getElementById("orphan-tbody").innerHTML =
       '<tr><td colspan="4" style="text-align: center; color: var(--text-muted);">加载中…</td></tr>';
     document.getElementById("backup-tbody").innerHTML =
-      '<tr><td colspan="6" style="text-align: center; color: var(--text-muted);">加载中…</td></tr>';
+      '<tr><td colspan="7" style="text-align: center; color: var(--text-muted);">加载中…</td></tr>';
     var q = document.getElementById("backup-quota");
     q.textContent = "免费额度：加载中…";
     q.style.color = "";
@@ -210,7 +233,7 @@
     } catch (err) {
       if (gen !== loadGen) return;
       document.getElementById("backup-tbody").innerHTML =
-        '<tr><td colspan="6" style="text-align: center; color: var(--danger);">加载失败：' +
+        '<tr><td colspan="7" style="text-align: center; color: var(--danger);">加载失败：' +
         RBot.escapeHtml(err.message) + "</td></tr>";
       backups = [];
     }
@@ -218,10 +241,18 @@
       var quota = await RBot.cachedApi("bb:quota:" + prof,
         RBot.withProfile("/api/boot-backups/quota", currentProfile), !!force);
       if (gen !== loadGen) return;
+      backupPaid = !!quota.paid;
       var el = document.getElementById("backup-quota");
-      el.textContent = "免费额度：" + quota.count + " / " + quota.limit +
-        (quota.full ? "（已满）" : "");
-      el.style.color = quota.full ? "var(--danger)" : "";
+      if (quota.paid) {
+        el.textContent = "付费账号（备份不限 5 个，共 " + quota.count + " 个）";
+        el.style.color = "";
+      } else {
+        el.textContent = "免费额度：" + quota.count + " / " + quota.limit +
+          (quota.full ? "（已满，创建时自动删最早备份）" : "");
+        el.style.color = quota.full ? "var(--danger)" : "";
+      }
+      document.getElementById("btn-toggle-paid").textContent =
+        backupPaid ? "设为免费账号" : "设为付费账号";
     } catch (err) {
       if (gen !== loadGen) return;
       document.getElementById("backup-quota").textContent = "";
@@ -291,6 +322,7 @@
       volumes = [];
       orphans = [];
       backups = [];
+      selectedBackups = {};
       showLoading();
       loadAll(true);
     });
@@ -354,6 +386,71 @@
         deleteBackupTarget = normBackup(raw);
         document.getElementById("delete-backup-name").textContent = deleteBackupTarget.name;
         RBot.openModal("delete-backup-modal");
+      }
+    });
+
+    // 备份多选：行复选框勾选 / 全选
+    document.getElementById("backup-tbody").addEventListener("change", function (e) {
+      var box = e.target.closest(".backup-check");
+      if (!box) return;
+      selectedBackups[box.getAttribute("data-backup-id")] = box.checked;
+      updateBackupSelectionUI();
+    });
+    document.getElementById("backup-select-all").addEventListener("change", function (e) {
+      var checked = e.target.checked;
+      document.querySelectorAll(".backup-check").forEach(function (box) {
+        box.checked = checked;
+        selectedBackups[box.getAttribute("data-backup-id")] = checked;
+      });
+      updateBackupSelectionUI();
+    });
+
+    // 批量删除所选备份：二次确认后调 delete-batch
+    document.getElementById("btn-delete-selected-backups").addEventListener("click", async function () {
+      var ids = Object.keys(selectedBackups).filter(function (id) { return selectedBackups[id]; });
+      if (ids.length === 0) return;
+      var names = ids.map(function (id) {
+        var raw = findBackup(id);
+        return raw ? normBackup(raw).name : id;
+      });
+      var ok = await RBot.confirmDialog(
+        "删除所选备份",
+        "<p>即将删除 " + ids.length + " 个备份：</p><p>" +
+          names.map(function (n) { return "• " + RBot.escapeHtml(n); }).join("<br>") +
+          "</p><p>删除后无法再用它们恢复实例，不可恢复。</p>",
+        "确认删除 " + ids.length + " 个备份", true);
+      if (!ok) return;
+      try {
+        var res = await RBot.api(RBot.withProfile("/api/boot-backups/delete-batch", currentProfile), {
+          method: "POST",
+          body: { backup_ids: ids },
+        });
+        var deleted = (res.deleted || []).length;
+        var failed = res.failed || [];
+        RBot.toast(failed.length
+          ? "已删除 " + deleted + " 个备份，" + failed.length + " 个失败"
+          : "已删除 " + deleted + " 个备份", failed.length ? "error" : "success");
+        selectedBackups = {};
+        RBot.cacheClear("bb:");
+        await loadBackups(true);
+      } catch (err) {
+        RBot.toast("批量删除失败：" + err.message, "error");
+      }
+    });
+
+    // 付费账号开关：与机器人端共用同一份配置
+    document.getElementById("btn-toggle-paid").addEventListener("click", async function () {
+      try {
+        var res = await RBot.api(RBot.withProfile("/api/boot-backups/paid", currentProfile), {
+          method: "POST",
+          body: { paid: !backupPaid },
+        });
+        backupPaid = !!res.paid;
+        RBot.toast(backupPaid ? "已设为付费账号，备份不限 5 个" : "已设为免费账号，备份上限 5 个", "success");
+        RBot.cacheClear("bb:");
+        await loadBackups(true);
+      } catch (err) {
+        RBot.toast("切换失败：" + err.message, "error");
       }
     });
 

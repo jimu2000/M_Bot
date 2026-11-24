@@ -67,6 +67,7 @@ from tgbot.bark import (
     send_bark_test,
 )
 from tgbot.billing import (
+    FREE_SHAPES,
     check_account_billing,
     collect_billing_alerts,
     fmt_billing_alerts,
@@ -113,8 +114,9 @@ from tgbot.keyboards import (
     traffic_guard_keyboard,
 )
 from tgbot.handlers_client import run_remote_command
-from tgbot.notify import (DEFAULT_BOOT_DISK_GB, notify_boot_success,
-                          notify_dual)
+from tgbot.notify import (DEFAULT_BOOT_DISK_GB, fmt_paid_instance_alert,
+                          notify_boot_success, notify_dual)
+from tgbot.paid_profiles import is_paid_profile, set_paid_profile
 from tgbot.monitoring import (
     KEEPALIVE_MAX_FAILURES,
     TRAFFIC_GUARD_RATE_LIMIT,
@@ -884,10 +886,17 @@ def _fmt_backup_time(value):
     return text or "未知时间"
 
 
-def fmt_boot_backup_list(backups, count, limit, full):
-    """启动卷备份列表全文（R-Bot 没有备份功能，这是 M_Bot 独有的）。"""
-    lines = [f"💾 启动卷备份（免费额度 {count}/{limit}"
-             f"{'，已满' if full else ''}）：", ""]
+def fmt_boot_backup_list(backups, count, limit, full, paid=False):
+    """启动卷备份列表全文（R-Bot 没有备份功能，这是 M_Bot 独有的）。
+
+    paid=True 时是付费账号：备份不限 5 个，标题不再提免费额度。
+    """
+    if paid:
+        lines = [f"💾 启动卷备份（付费账号，备份不限 5 个，共 {count} 个）：",
+                 ""]
+    else:
+        lines = [f"💾 启动卷备份（免费额度 {count}/{limit}"
+                 f"{'，已满' if full else ''}）：", ""]
     if not backups:
         lines.append("• 暂无备份")
     for backup in backups:
@@ -899,17 +908,6 @@ def fmt_boot_backup_list(backups, count, limit, full):
     lines.append("")
     lines.append("点下面按钮恢复（开一台新实例，原机不动）或删除。")
     return "\n".join(lines)
-
-
-def fmt_backup_quota_full(count, limit, oldest):
-    """备份额度满了时的提示文案（与面板弹窗措辞一致）。"""
-    base = f"免费备份已满（{count}/{limit}）"
-    if not oldest:
-        return base + "，请删除旧备份后再试。"
-    name = oldest.get("display-name") or oldest.get("id") or "?"
-    created = _fmt_backup_time(oldest.get("time-created"))
-    return (f"{base}，最早的备份是「{name}」（{created}），"
-            "是否删除它以腾出位置？")
 
 
 def read_local_load():
@@ -1035,10 +1033,11 @@ def volume_actions_keyboard(idx, state=None):
     ])
 
 
-def boot_backup_list_keyboard(backups):
+def boot_backup_list_keyboard(backups, paid=False):
     """启动卷备份列表键盘：每个备份一行恢复/删除按钮。
 
     只有 AVAILABLE 状态的备份才能恢复，非 AVAILABLE 的备份只给删除按钮。
+    底部：多选删除入口（有备份时才显示）+ 付费账号开关 + 返回磁盘列表。
     """
     rows = []
     for idx, backup in enumerate(backups):
@@ -1050,7 +1049,34 @@ def boot_backup_list_keyboard(backups):
         row.append(InlineKeyboardButton(
             f"🗑️ 删除「{name}」", callback_data=f"bb:delete:{idx}"))
         rows.append(row)
+    if backups:
+        rows.append([InlineKeyboardButton("🗑️ 多选删除",
+                                         callback_data="bb:ms")])
+    rows.append([InlineKeyboardButton(
+        "🆓 设为免费账号" if paid else "💳 设为付费账号",
+        callback_data="bb:paid")])
     rows.append([InlineKeyboardButton("◀ 磁盘列表", callback_data="o:volumes")])
+    return InlineKeyboardMarkup(rows)
+
+
+def boot_backup_multiselect_keyboard(backups, selected):
+    """备份多选删除键盘：每行一个勾选按钮 + 删除所选 + 退出多选。
+
+    selected 是已选备份下标的集合。删除所选按钮带已选数量，
+    未选任何备份时不显示（防误删空选）。
+    """
+    rows = []
+    for idx, backup in enumerate(backups):
+        name = backup.get("display-name") or (backup.get("id") or "")[-4:]
+        mark = "☑️" if idx in selected else "☐"
+        rows.append([InlineKeyboardButton(
+            f"{mark} {name}", callback_data=f"bb:mst:{idx}")])
+    if selected:
+        rows.append([InlineKeyboardButton(
+            f"🗑️ 删除所选（{len(selected)} 个）",
+            callback_data="bb:msdel")])
+    rows.append([InlineKeyboardButton("✖️ 退出多选",
+                                     callback_data="bb:mscancel")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -1543,6 +1569,20 @@ def _notify_boot_success(cli, preset, successes, notify):
         if result.get("errors"):
             logger.warning("开机成功通知部分失败：%s",
                            "; ".join(result["errors"]))
+        # 付费规格实例：额外发一条置顶提醒 + Bark（用户要求 2026-11-24，
+        # 一定做）。免费形状（A1.Flex / E2.1.Micro）不发。
+        if shape not in FREE_SHAPES:
+            paid = notify_dual(
+                notify.get("token"), notify.get("chat_id"),
+                "⚠️ 付费实例提醒",
+                fmt_paid_instance_alert(
+                    notify.get("profile_label") or "?",
+                    notify.get("region_label") or "?",
+                    shape, instances),
+                group="paid-instance", pin=True)
+            if paid.get("errors"):
+                logger.warning("付费实例提醒部分失败：%s",
+                               "; ".join(paid["errors"]))
     except Exception:  # noqa: BLE001 - 通知绝不能拖垮抢机线程
         logger.exception("开机成功通知异常")
 
@@ -1879,11 +1919,11 @@ async def task_cancel_callback(update, context):
         await _reply(update, f"⚠️ 任务 {task_id} 不存在或已结束，无法取消。")
 
 
-# ---- 13. profile 管理 ----
+# ---- profile 管理（账号切换，/oracle 菜单顶行按钮） ----
 
 @require_allowed
 async def handle_profiles(update, context):
-    """菜单 13：profile 切换键盘（按主区中文名显示，多区账号后缀区数）。"""
+    """账号切换键盘（按主区中文名显示，多区账号后缀区数）。"""
     current = get_current_profile(context)
     counts = await run_sync(get_profile_region_counts)
     labels = {name: bot_config.profile_display_name(name, counts.get(name))
@@ -2410,9 +2450,10 @@ async def volume_delete_callback(update, context):
 
 @require_allowed
 async def boot_backups_callback(update, context):
-    """回调 "bb:list"：启动卷备份列表 + 免费额度。"""
+    """回调 "bb:list"：启动卷备份列表 + 额度（付费账号不限 5 个）。"""
     cli = get_cli(context)
     compartment = get_compartment(context)
+    paid = is_paid_profile(get_current_profile(context))
     try:
         backups = await run_sync(list_boot_volume_backups, cli, compartment)
         count, limit, full, _oldest = await run_sync(
@@ -2421,16 +2462,47 @@ async def boot_backups_callback(update, context):
         await _reply(update, fmt_error(exc))
         return
     store_boot_backups(context, backups)
-    await _reply(update, fmt_boot_backup_list(backups, count, limit, full),
-                 reply_markup=boot_backup_list_keyboard(backups))
+    await _reply(update, fmt_boot_backup_list(backups, count, limit, full,
+                                              paid),
+                 reply_markup=boot_backup_list_keyboard(backups, paid))
+
+
+async def _edit_boot_backups(query, context):
+    """就地刷新备份列表消息（付费切换 / 退出多选后用）。"""
+    cli = get_cli(context)
+    compartment = get_compartment(context)
+    paid = is_paid_profile(get_current_profile(context))
+    try:
+        backups = await run_sync(list_boot_volume_backups, cli, compartment)
+        count, limit, full, _oldest = await run_sync(
+            check_backup_quota, cli, compartment)
+    except Exception as exc:  # noqa: BLE001
+        await query.edit_message_text(fmt_error(exc))
+        return
+    store_boot_backups(context, backups)
+    context.user_data.pop("bb_ms_selected", None)
+    await query.edit_message_text(
+        fmt_boot_backup_list(backups, count, limit, full, paid),
+        reply_markup=boot_backup_list_keyboard(backups, paid))
+
+
+@require_allowed
+async def boot_backup_paid_callback(update, context):
+    """回调 "bb:paid"：切换当前账号的付费/免费标记，就地刷新列表。"""
+    query = update.callback_query
+    profile = get_current_profile(context)
+    paid = set_paid_profile(profile, not is_paid_profile(profile))
+    await query.answer(f"已设为{'付费' if paid else '免费'}账号")
+    await _edit_boot_backups(query, context)
 
 
 @require_allowed
 async def volume_backup_callback(update, context):
     """回调 "v:backup:<idx>"：给该启动卷做 FULL 全量备份。
 
-    先查免费额度：未满直接创建；满了则提示最早备份信息 + 确认键盘，
-    真正"删最早再创建"在 handle_confirm("deloldestbb")。
+    付费账号：不限 5 个，直接创建。
+    免费账号：未满直接创建；满了自动删除最早备份再创建（用户要求
+    2026-11-24：不用等确认），结果消息里说明删了哪个。
     """
     idx = _callback_data(update).split(":")[-1]
     vol = resolve_volume(context, idx)
@@ -2442,29 +2514,49 @@ async def volume_backup_callback(update, context):
         return
     cli = get_cli(context)
     compartment = get_compartment(context)
-    try:
-        count, limit, full, oldest = await run_sync(
-            check_backup_quota, cli, compartment)
-    except Exception as exc:  # noqa: BLE001
-        await _reply(update, fmt_error(exc))
-        return
+    paid = is_paid_profile(get_current_profile(context))
     name = vol.get("display-name") or "?"
-    if full:
-        await _reply(
-            update,
-            fmt_backup_quota_full(count, limit, oldest),
-            reply_markup=confirm_keyboard(
-                "deloldestbb", idx, "🗑 删除最早备份并继续"))
-        return
+    deleted_oldest = None
     try:
-        backup = await run_sync(create_boot_volume_backup, cli, vol["id"])
+        if paid:
+            backup = await run_sync(create_boot_volume_backup,
+                                    cli, vol["id"])
+        else:
+            count, limit, full, oldest = await run_sync(
+                check_backup_quota, cli, compartment)
+            if full:
+                if oldest is None:
+                    await _reply(update,
+                                 "免费备份已满，但未找到可删除的最早备份，"
+                                 "请手动清理。")
+                    return
+                await run_sync(delete_boot_volume_backup, cli, oldest["id"])
+                deleted_oldest = oldest.get("display-name") or "?"
+                # 删完立即创建可能撞上 OCI 配额同步延迟（LimitExceeded），
+                # 用带重试的创建（实测 2026-11-24 芝加哥）。
+                backup = await run_sync(
+                    create_boot_volume_backup_with_limit_retry,
+                    cli, vol["id"])
+            else:
+                backup = await run_sync(create_boot_volume_backup,
+                                        cli, vol["id"])
     except Exception as exc:  # noqa: BLE001
         await _reply(update, fmt_error(exc))
         return
     backup_name = backup.get("display-name") or "?"
-    await _reply(update,
-                 f"✅ {name} 的备份「{backup_name}」创建中，"
-                 f"几分钟后可用（免费额度 {count + 1}/{limit}）。")
+    if paid:
+        await _reply(update,
+                     f"✅ {name} 的备份「{backup_name}」创建中，"
+                     "几分钟后可用（付费账号，备份不限 5 个）。")
+    elif deleted_oldest is not None:
+        await _reply(update,
+                     f"✅ 免费备份已满，已自动删除最早备份"
+                     f"「{deleted_oldest}」，新备份「{backup_name}」"
+                     "创建中，几分钟后可用。")
+    else:
+        await _reply(update,
+                     f"✅ {name} 的备份「{backup_name}」创建中，"
+                     f"几分钟后可用（免费额度 {count + 1}/{limit}）。")
 
 
 @require_allowed
@@ -2515,6 +2607,86 @@ async def boot_backup_delete_callback(update, context):
         f"⚠️ 即将删除备份 {name}（{backup.get('size-in-gbs')}GB）！\n"
         "删除后无法再用它恢复实例，不可恢复。",
         reply_markup=confirm_keyboard("delbb", idx, "🗑️ 确认删除备份"))
+
+
+def _fmt_boot_backup_multiselect(backups, selected):
+    """多选删除模式的列表文字：标题 + 已选数量 + 操作提示。"""
+    return (f"💾 启动卷备份（多选删除，共 {len(backups)} 个）：\n"
+            f"已选 {len(selected)} 个，点备份勾选 / 取消勾选，"
+            "再点「删除所选」。")
+
+
+@require_allowed
+async def boot_backup_multiselect_callback(update, context):
+    """回调 "bb:ms"：进入多选删除模式（就地把键盘换成勾选键盘）。"""
+    query = update.callback_query
+    backups = context.user_data.get("boot_backups") or []
+    if not backups:
+        await query.answer("没有可删除的备份")
+        return
+    context.user_data["bb_ms_selected"] = set()
+    await query.edit_message_text(
+        _fmt_boot_backup_multiselect(backups, set()),
+        reply_markup=boot_backup_multiselect_keyboard(backups, set()))
+
+
+@require_allowed
+async def boot_backup_mstoggle_callback(update, context):
+    """回调 "bb:mst:<idx>"：勾选 / 取消勾选一个备份，只刷新键盘与文字。"""
+    query = update.callback_query
+    backups = context.user_data.get("boot_backups") or []
+    try:
+        idx = int(_callback_data(update).split(":")[-1])
+    except ValueError:
+        await query.answer("参数错误")
+        return
+    if not 0 <= idx < len(backups):
+        await query.answer("备份已过期，请重新打开列表")
+        return
+    selected = context.user_data.get("bb_ms_selected")
+    if not isinstance(selected, set):
+        selected = set()
+        context.user_data["bb_ms_selected"] = selected
+    if idx in selected:
+        selected.discard(idx)
+    else:
+        selected.add(idx)
+    await query.edit_message_text(
+        _fmt_boot_backup_multiselect(backups, selected),
+        reply_markup=boot_backup_multiselect_keyboard(backups, selected))
+
+
+@require_allowed
+async def boot_backup_msdelete_callback(update, context):
+    """回调 "bb:msdel"：多选删除二次确认（真正执行在 handle_confirm
+    的 "delbbsel"，idx 是逗号分隔的下标，如 "0,2,3"）。"""
+    selected = context.user_data.get("bb_ms_selected") or set()
+    backups = context.user_data.get("boot_backups") or []
+    if not selected:
+        await update.callback_query.answer("还没选任何备份")
+        return
+    names = []
+    for idx in sorted(selected):
+        if 0 <= idx < len(backups):
+            names.append(backups[idx].get("display-name") or "?")
+    if not names:
+        await _reply(update, "所选备份已过期，请重新打开列表。")
+        return
+    idx_arg = ",".join(str(i) for i in sorted(selected))
+    await _reply(
+        update,
+        f"⚠️ 即将删除 {len(names)} 个备份：\n"
+        + "\n".join(f"• {n}" for n in names)
+        + "\n删除后无法再用它们恢复实例，不可恢复。",
+        reply_markup=confirm_keyboard(
+            "delbbsel", idx_arg, f"🗑️ 确认删除 {len(names)} 个备份"))
+
+
+@require_allowed
+async def boot_backup_mscancel_callback(update, context):
+    """回调 "bb:mscancel"：退出多选删除模式，就地恢复正常列表。"""
+    query = update.callback_query
+    await _edit_boot_backups(query, context)
 
 
 # ---- 8. 云账户管理 / 30. 批量查询邮箱 ----
@@ -4066,6 +4238,39 @@ async def _handle_confirm_inner(action, idx, update, context):
         await _reply(update, f"✅ 备份 {name} 已删除。")
         return True
 
+    if action == "delbbsel":
+        # idx 是逗号分隔的下标，如 "0,2,3"。逐个删除，单个失败不影响
+        # 其他；结束后清多选状态并汇报成功/失败数。
+        try:
+            indices = [int(p) for p in str(idx).split(",") if p.strip()]
+        except ValueError:
+            await _reply(update, "参数错误，请重新选择要删除的备份。")
+            return True
+        backups = context.user_data.get("boot_backups") or []
+        context.user_data.pop("bb_ms_selected", None)
+        deleted, failed = [], []
+        for i in indices:
+            if not 0 <= i < len(backups):
+                failed.append(f"下标 {i}（已过期）")
+                continue
+            backup = backups[i]
+            try:
+                await run_sync(delete_boot_volume_backup, get_cli(context),
+                               backup["id"])
+                deleted.append(backup.get("display-name") or "?")
+            except Exception as exc:  # noqa: BLE001 - 单个失败继续删其余
+                failed.append(f"{backup.get('display-name') or '?'}"
+                              f"（{exc}）")
+        lines = []
+        if deleted:
+            lines.append(f"✅ 已删除 {len(deleted)} 个备份："
+                         + "、".join(deleted))
+        if failed:
+            lines.append(f"⚠️ {len(failed)} 个删除失败："
+                         + "、".join(failed))
+        await _reply(update, "\n".join(lines) or "没有删除任何备份。")
+        return True
+
     if action == "deloldestbb":
         vol = resolve_volume(context, idx)
         if vol is None:
@@ -4954,9 +5159,12 @@ async def billing_check_job(context):
     if not chat_id:
         logger.warning("账单预警有告警但未找到通知 chat_id，跳过通知")
         return
+    # 告警里有付费实例（停了 / 停失败 / 在保护名单里跑着）时置顶提醒。
+    has_paid = any(res.get("stopped") or res.get("stop_errors")
+                   or res.get("paid_running") for res in results)
     await run_sync(notify_dual, bot_config.TELEGRAM_BOT_TOKEN, chat_id,
                    "⚠️ Oracle 账单预警", fmt_billing_alerts(alerts),
-                   group="oracle-billing")
+                   group="oracle-billing", pin=has_paid)
 
 
 # ================= 工作包 D 新增（阶段 5） =================

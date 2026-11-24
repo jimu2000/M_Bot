@@ -184,8 +184,10 @@ class TestOracleMenuDynamicStates(MonitoringBotTestCase):
     def test_guard_keepalive_states_on_last_page(self):
         states = {"monitor": False, "autostart": False,
                   "traffic_guard": True, "keepalive": True}
+        # 42 项（13 号已删）：第 2 页末尾是 37 号，第 3 页从 38 号开始。
+        texts1 = button_texts(oracle_menu_keyboard(1, states=states))
+        self.assertIn("37. 流量守护 (开启)", texts1)
         texts = button_texts(oracle_menu_keyboard(2, states=states))
-        self.assertIn("37. 流量守护 (开启)", texts)
         self.assertIn("38. 停机保活 (开启)", texts)
         # SSL 监控没有总开关，不带后缀。
         self.assertIn("39. SSL 监控", texts)
@@ -195,8 +197,10 @@ class TestOracleMenuDynamicStates(MonitoringBotTestCase):
         self.assertIn("9. 实例状态监控通知", texts)
 
     def test_new_menu_items_exist(self):
+        # 42 项（13 号已删）：37 号在第 2 页，38/39 号在第 3 页。
+        data1 = button_data(oracle_menu_keyboard(1))
+        self.assertIn("o:traffic_guard", data1)
         data = button_data(oracle_menu_keyboard(2))
-        self.assertIn("o:traffic_guard", data)
         self.assertIn("o:keepalive", data)
         self.assertIn("o:sslwatch", data)
 

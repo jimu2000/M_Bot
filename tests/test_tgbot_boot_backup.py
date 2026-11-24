@@ -68,6 +68,8 @@ def make_update(callback_data=None, text=None):
         query = MagicMock()
         query.data = callback_data
         query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        query.edit_message_reply_markup = AsyncMock()
         update.callback_query = query
     else:
         update.callback_query = None
@@ -97,6 +99,24 @@ def reply_text_of(update):
 def reply_markup_of(update):
     """取 update 上 reply_text 最后一次调用的 reply_markup。"""
     mock = update.effective_message.reply_text
+    if not mock.await_args_list:
+        return None
+    _args, kwargs = mock.await_args_list[-1]
+    return kwargs.get("reply_markup")
+
+
+def edit_text_of(update):
+    """取 query.edit_message_text 最后一次调用的文本。"""
+    mock = update.callback_query.edit_message_text
+    if not mock.await_args_list:
+        return None
+    args, _kwargs = mock.await_args_list[-1]
+    return args[0] if args else None
+
+
+def edit_markup_of(update):
+    """取 query.edit_message_text 最后一次调用的 reply_markup。"""
+    mock = update.callback_query.edit_message_text
     if not mock.await_args_list:
         return None
     _args, kwargs = mock.await_args_list[-1]
@@ -147,16 +167,11 @@ class TestBackupFormatting(unittest.TestCase):
         self.assertIn("0/5", text)
         self.assertIn("暂无备份", text)
 
-    def test_fmt_quota_full_with_oldest(self):
-        text = he.fmt_backup_quota_full(5, 5, FAKE_BACKUPS[0])
-        self.assertIn("免费备份已满（5/5）", text)
-        self.assertIn("old-backup", text)
-        self.assertIn("2026-11-20 10:00", text)
-        self.assertIn("是否删除它以腾出位置", text)
-
-    def test_fmt_quota_full_without_oldest(self):
-        text = he.fmt_backup_quota_full(5, 5, None)
-        self.assertIn("免费备份已满（5/5）", text)
+    def test_fmt_list_paid(self):
+        text = he.fmt_boot_backup_list(FAKE_BACKUPS, 2, 5, False, paid=True)
+        self.assertIn("付费账号", text)
+        self.assertIn("备份不限 5 个", text)
+        self.assertNotIn("免费额度", text)
 
 
 class TestBackupKeyboards(unittest.TestCase):
@@ -177,7 +192,41 @@ class TestBackupKeyboards(unittest.TestCase):
         self.assertIn("bb:delete:0", datas)
         self.assertIn("bb:restore:1", datas)
         self.assertIn("bb:delete:1", datas)
+        self.assertIn("bb:ms", datas)
+        self.assertIn("bb:paid", datas)
         self.assertIn("o:volumes", datas)
+
+    def test_boot_backup_list_keyboard_paid_label(self):
+        markup = he.boot_backup_list_keyboard(FAKE_BACKUPS, paid=True)
+        texts = [b.text for row in markup.inline_keyboard for b in row]
+        self.assertIn("🆓 设为免费账号", texts)
+        markup2 = he.boot_backup_list_keyboard(FAKE_BACKUPS, paid=False)
+        texts2 = [b.text for row in markup2.inline_keyboard for b in row]
+        self.assertIn("💳 设为付费账号", texts2)
+
+    def test_boot_backup_list_keyboard_empty_no_multiselect(self):
+        markup = he.boot_backup_list_keyboard([])
+        datas = callback_datas(markup)
+        self.assertNotIn("bb:ms", datas)
+        self.assertIn("bb:paid", datas)
+
+    def test_boot_backup_multiselect_keyboard(self):
+        markup = he.boot_backup_multiselect_keyboard(FAKE_BACKUPS, {1})
+        datas = callback_datas(markup)
+        self.assertIn("bb:mst:0", datas)
+        self.assertIn("bb:mst:1", datas)
+        self.assertIn("bb:msdel", datas)
+        self.assertIn("bb:mscancel", datas)
+        texts = [b.text for row in markup.inline_keyboard for b in row]
+        self.assertIn("☐ old-backup", texts)
+        self.assertIn("☑️ new-backup", texts)
+        self.assertIn("🗑️ 删除所选（1 个）", texts)
+
+    def test_boot_backup_multiselect_keyboard_none_selected_no_delete(self):
+        markup = he.boot_backup_multiselect_keyboard(FAKE_BACKUPS, set())
+        datas = callback_datas(markup)
+        self.assertNotIn("bb:msdel", datas)
+        self.assertIn("bb:mscancel", datas)
 
     def test_boot_backup_list_keyboard_non_available_no_restore(self):
         creating = [{**FAKE_BACKUPS[0], "lifecycle-state": "CREATING"}]
@@ -208,13 +257,16 @@ class TestBootBackupsCallback(BootBackupBotTestCase):
 
 
 class TestVolumeBackupCallback(BootBackupBotTestCase):
-    """回调 "v:backup:<idx>"：未满直接创建，满了提示最早备份。"""
+    """回调 "v:backup:<idx>"：未满直接创建，满了自动删最旧的再建，
+    付费账号不限 5 个。"""
 
+    @patch.object(he, "is_paid_profile", return_value=False)
     @patch.object(he, "create_boot_volume_backup",
                   return_value=FAKE_BACKUPS[1])
     @patch.object(he, "check_backup_quota",
                   return_value=(2, 5, False, FAKE_BACKUPS[0]))
-    async def test_backup_when_not_full(self, mock_quota, mock_create):
+    async def test_backup_when_not_full(self, mock_quota, mock_create,
+                                        _mock_paid):
         update = make_update("v:backup:0")
         context = make_context()
         context.user_data["volumes"] = FAKE_VOLUMES
@@ -225,21 +277,42 @@ class TestVolumeBackupCallback(BootBackupBotTestCase):
         self.assertIn("new-backup", text)
         self.assertIn("创建中", text)
 
-    @patch.object(he, "create_boot_volume_backup")
+    @patch.object(he, "is_paid_profile", return_value=False)
+    @patch.object(he, "create_boot_volume_backup_with_limit_retry",
+                  return_value=FAKE_BACKUPS[1])
+    @patch.object(he, "delete_boot_volume_backup")
     @patch.object(he, "check_backup_quota",
                   return_value=(5, 5, True, FAKE_BACKUPS[0]))
-    async def test_backup_when_full_prompts_oldest(self, mock_quota,
-                                                   mock_create):
+    async def test_backup_when_full_auto_deletes_oldest(
+            self, mock_quota, mock_delete, mock_create_retry, _mock_paid):
         update = make_update("v:backup:0")
         context = make_context()
         context.user_data["volumes"] = FAKE_VOLUMES
         await he.volume_backup_callback(update, context)
-        mock_create.assert_not_called()
+        # 先删最早备份，再带重试创建；不弹确认。
+        mock_delete.assert_called_once()
+        self.assertEqual(mock_delete.call_args[0][1], FAKE_OLD_BACKUP)
+        mock_create_retry.assert_called_once()
         text = reply_text_of(update)
-        self.assertIn("免费备份已满（5/5）", text)
+        self.assertIn("已自动删除最早备份", text)
         self.assertIn("old-backup", text)
-        datas = callback_datas(reply_markup_of(update))
-        self.assertIn("c:deloldestbb:0", datas)
+        self.assertIn("new-backup", text)
+
+    @patch.object(he, "is_paid_profile", return_value=True)
+    @patch.object(he, "create_boot_volume_backup",
+                  return_value=FAKE_BACKUPS[1])
+    @patch.object(he, "check_backup_quota")
+    async def test_backup_when_paid_skips_quota(self, mock_quota,
+                                               mock_create, _mock_paid):
+        update = make_update("v:backup:0")
+        context = make_context()
+        context.user_data["volumes"] = FAKE_VOLUMES
+        await he.volume_backup_callback(update, context)
+        mock_quota.assert_not_called()
+        mock_create.assert_called_once()
+        text = reply_text_of(update)
+        self.assertIn("付费账号", text)
+        self.assertIn("备份不限 5 个", text)
 
     async def test_backup_volume_expired(self):
         update = make_update("v:backup:0")
@@ -446,6 +519,149 @@ class TestRestoreNameInput(BootBackupBotTestCase):
                                               "idx": "0"}
         await he.text_input_callback(update, context)
         self.assertIn("不存在或已过期", reply_text_of(update))
+
+
+class TestBootBackupPaidCallback(BootBackupBotTestCase):
+    """回调 "bb:paid"：切换付费/免费标记，就地刷新列表。"""
+
+    @patch.object(he, "check_backup_quota",
+                  return_value=(2, 5, False, FAKE_BACKUPS[0]))
+    @patch.object(he, "list_boot_volume_backups",
+                  return_value=FAKE_BACKUPS)
+    @patch.object(he, "set_paid_profile", return_value=True)
+    @patch.object(he, "is_paid_profile", side_effect=[False, True])
+    async def test_toggle_to_paid(self, mock_is_paid, mock_set,
+                                  _mock_list, _mock_quota):
+        update = make_update("bb:paid")
+        context = make_context()
+        await he.boot_backup_paid_callback(update, context)
+        mock_set.assert_called_once()
+        self.assertTrue(mock_set.call_args[0][1])
+        self.assertIn("付费账号", edit_text_of(update))
+
+    @patch.object(he, "check_backup_quota",
+                  return_value=(2, 5, False, FAKE_BACKUPS[0]))
+    @patch.object(he, "list_boot_volume_backups",
+                  return_value=FAKE_BACKUPS)
+    @patch.object(he, "set_paid_profile", return_value=False)
+    @patch.object(he, "is_paid_profile", side_effect=[True, False])
+    async def test_toggle_to_free(self, mock_is_paid, mock_set,
+                                  _mock_list, _mock_quota):
+        update = make_update("bb:paid")
+        context = make_context()
+        await he.boot_backup_paid_callback(update, context)
+        self.assertFalse(mock_set.call_args[0][1])
+        self.assertIn("免费额度", edit_text_of(update))
+
+
+class TestBootBackupMultiselect(BootBackupBotTestCase):
+    """多选删除：进入模式 / 勾选 / 确认 / 退出 / 批量执行。"""
+
+    async def test_enter_multiselect(self):
+        update = make_update("bb:ms")
+        context = make_context()
+        context.user_data["boot_backups"] = FAKE_BACKUPS
+        await he.boot_backup_multiselect_callback(update, context)
+        self.assertEqual(context.user_data["bb_ms_selected"], set())
+        self.assertIn("多选删除", edit_text_of(update))
+        datas = callback_datas(edit_markup_of(update))
+        self.assertIn("bb:mst:0", datas)
+        self.assertIn("bb:mscancel", datas)
+        self.assertNotIn("bb:msdel", datas)
+
+    async def test_enter_multiselect_no_backups(self):
+        update = make_update("bb:ms")
+        context = make_context()
+        context.user_data["boot_backups"] = []
+        await he.boot_backup_multiselect_callback(update, context)
+        update.callback_query.answer.assert_awaited_once()
+
+    async def test_toggle_select_and_deselect(self):
+        update = make_update("bb:mst:1")
+        context = make_context()
+        context.user_data["boot_backups"] = FAKE_BACKUPS
+        context.user_data["bb_ms_selected"] = set()
+        await he.boot_backup_mstoggle_callback(update, context)
+        self.assertEqual(context.user_data["bb_ms_selected"], {1})
+        self.assertIn("已选 1 个", edit_text_of(update))
+        self.assertIn("bb:msdel",
+                      callback_datas(edit_markup_of(update)))
+        await he.boot_backup_mstoggle_callback(update, context)
+        self.assertEqual(context.user_data["bb_ms_selected"], set())
+        self.assertNotIn("bb:msdel",
+                         callback_datas(edit_markup_of(update)))
+
+    async def test_toggle_out_of_range(self):
+        update = make_update("bb:mst:9")
+        context = make_context()
+        context.user_data["boot_backups"] = FAKE_BACKUPS
+        await he.boot_backup_mstoggle_callback(update, context)
+        update.callback_query.answer.assert_awaited_once()
+
+    async def test_msdelete_confirm(self):
+        update = make_update("bb:msdel")
+        context = make_context()
+        context.user_data["boot_backups"] = FAKE_BACKUPS
+        context.user_data["bb_ms_selected"] = {0, 1}
+        await he.boot_backup_msdelete_callback(update, context)
+        text = reply_text_of(update)
+        self.assertIn("删除 2 个备份", text)
+        self.assertIn("old-backup", text)
+        self.assertIn("new-backup", text)
+        self.assertIn("c:delbbsel:0,1",
+                      callback_datas(reply_markup_of(update)))
+
+    async def test_msdelete_nothing_selected(self):
+        update = make_update("bb:msdel")
+        context = make_context()
+        context.user_data["boot_backups"] = FAKE_BACKUPS
+        context.user_data["bb_ms_selected"] = set()
+        await he.boot_backup_msdelete_callback(update, context)
+        update.callback_query.answer.assert_awaited_once()
+
+    @patch.object(he, "check_backup_quota",
+                  return_value=(2, 5, False, FAKE_BACKUPS[0]))
+    @patch.object(he, "list_boot_volume_backups",
+                  return_value=FAKE_BACKUPS)
+    @patch.object(he, "is_paid_profile", return_value=False)
+    async def test_mscancel_restores_normal_list(
+            self, _mock_paid, _mock_list, _mock_quota):
+        update = make_update("bb:mscancel")
+        context = make_context()
+        context.user_data["boot_backups"] = FAKE_BACKUPS
+        context.user_data["bb_ms_selected"] = {0}
+        await he.boot_backup_mscancel_callback(update, context)
+        self.assertNotIn("bb_ms_selected", context.user_data)
+        self.assertIn("免费额度", edit_text_of(update))
+        self.assertIn("bb:restore:0",
+                      callback_datas(edit_markup_of(update)))
+
+    @patch.object(he, "delete_boot_volume_backup")
+    async def test_delbbsel_deletes_all(self, mock_delete):
+        update = make_update()
+        context = make_context()
+        context.user_data["boot_backups"] = FAKE_BACKUPS
+        context.user_data["bb_ms_selected"] = {0, 1}
+        result = await he.handle_confirm("delbbsel", "0,1", update, context)
+        self.assertTrue(result)
+        self.assertEqual(mock_delete.call_count, 2)
+        self.assertNotIn("bb_ms_selected", context.user_data)
+        text = reply_text_of(update)
+        self.assertIn("已删除 2 个备份", text)
+        self.assertIn("old-backup", text)
+        self.assertIn("new-backup", text)
+
+    @patch.object(he, "delete_boot_volume_backup",
+                  side_effect=[None, RuntimeError("boom")])
+    async def test_delbbsel_partial_failure(self, mock_delete):
+        update = make_update()
+        context = make_context()
+        context.user_data["boot_backups"] = FAKE_BACKUPS
+        result = await he.handle_confirm("delbbsel", "0,1", update, context)
+        self.assertTrue(result)
+        text = reply_text_of(update)
+        self.assertIn("已删除 1 个备份", text)
+        self.assertIn("1 个删除失败", text)
 
 
 if __name__ == "__main__":

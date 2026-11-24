@@ -408,6 +408,45 @@ class TestBillingCheckJob(unittest.IsolatedAsyncioTestCase):
         # 检查失败的账号不写进 state（下次仍按旧费用比对）。
         self.assertEqual(self.saved_state, {})
 
+    async def test_paid_instance_alert_pins(self):
+        res = {"profile": "DEFAULT", "mtd_cost": 13.46, "currency": "SGD",
+               "budget": 1.0, "over_budget": True,
+               "stopped": [{"name": "paid-e5", "shape": "VM.Standard.E5.Flex",
+                            "region": "ap-singapore-1"}],
+               "stop_errors": [], "free_over": [],
+               "paid_running": [{"name": "paid-e5"}]}
+        context = make_context()
+        with patch.object(he, "check_account_billing",
+                          return_value=res), \
+                patch.object(he, "load_billing_state",
+                             return_value={"DEFAULT": {"mtd_cost": 13.46}}), \
+                patch.object(he, "load_bark_config",
+                             return_value={"chat_id": TEST_CHAT_ID}), \
+                patch.object(he, "notify_dual",
+                             return_value={"telegram": True, "bark": True,
+                                           "errors": []}) as mock_notify:
+            await he.billing_check_job(context)
+        mock_notify.assert_called_once()
+        self.assertTrue(mock_notify.call_args[1].get("pin"))
+
+    async def test_fee_only_alert_does_not_pin(self):
+        res = {"profile": "DEFAULT", "mtd_cost": 0.5, "currency": "SGD",
+               "budget": 1.0, "over_budget": False, "stopped": [],
+               "stop_errors": [], "free_over": [], "paid_running": []}
+        context = make_context()
+        with patch.object(he, "check_account_billing",
+                          return_value=res), \
+                patch.object(he, "load_billing_state",
+                             return_value={"DEFAULT": {"mtd_cost": 0.2}}), \
+                patch.object(he, "load_bark_config",
+                             return_value={"chat_id": TEST_CHAT_ID}), \
+                patch.object(he, "notify_dual",
+                             return_value={"telegram": True, "bark": False,
+                                           "errors": []}) as mock_notify:
+            await he.billing_check_job(context)
+        mock_notify.assert_called_once()
+        self.assertFalse(mock_notify.call_args[1].get("pin"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -272,39 +272,22 @@
   //      最早备份再创建；点取消什么都不做。
   // 成功返回备份对象，失败/取消返回 null；调用方成功后自行刷新列表。
   async function backupBootVolume(volumeId, profile) {
+    // 付费账号不限 5 个，直接创建；免费账号满了服务端自动删最早
+    // 备份再建（用户要求 2026-11-24：不用等确认），响应里带
+    // deleted_oldest 说明删了哪个。前端不再预查配额、不再弹窗确认。
     var prof = profile || getProfile();
-    var quota;
-    try {
-      quota = await api(withProfile("/api/boot-backups/quota", prof));
-    } catch (e) {
-      toast("配额检查失败：" + (e && e.message ? e.message : e), "error");
-      return null;
-    }
-    var deleteOldest = false;
-    if (quota.full) {
-      var oldest = quota.oldest || {};
-      var oldestName = oldest.name || oldest.id || "?";
-      var oldestTime = formatTime(oldest.time_created);
-      var ok = await confirmDialog(
-        "免费备份已满",
-        "<p>免费备份已满（" + quota.count + "/" + quota.limit + "），" +
-          "最早的备份是「" + escapeHtml(oldestName) + "」（" +
-          escapeHtml(oldestTime) + "），是否删除它以腾出位置？</p>",
-        "删除最早备份并继续", true);
-      if (!ok) return null;
-      deleteOldest = true;
-    }
     try {
       var res = await api(withProfile("/api/boot-backups", prof), {
         method: "POST",
         body: {
           boot_volume_id: volumeId,
-          delete_oldest: deleteOldest,
+          delete_oldest: true,
         },
       });
       var name = (res.backup && (res.backup.displayName || res.backup["display-name"])) || "";
-      toast(deleteOldest
-        ? "已删除最早备份，备份「" + name + "」创建中（几分钟后可用）。"
+      var deleted = res.deleted_oldest;
+      toast(deleted
+        ? "免费备份已满，已自动删除最早备份「" + deleted.name + "」，备份「" + name + "」创建中（几分钟后可用）。"
         : "备份「" + name + "」创建中（几分钟后可用）。", "success");
       cacheClear("bb:");
       return res.backup || null;

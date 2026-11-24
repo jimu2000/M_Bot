@@ -82,6 +82,10 @@ from tgbot.services import (
 # /oracle 菜单：(callback key, 显示文字)，1-34 项与 R-Bot 的 34 项菜单对应
 # （来源：docs/references.md）；35 项以后是克隆新增（阶段 5）。
 # key 是短标识，显示文字带原编号。
+# 注意：13 号已删（用户要求 2026-11-24：菜单顶行已有“切换账号”按钮，
+# 菜单里的 13. profile管理 是重复入口，没必要留）；其余编号保持不动，
+# 不重新编号（1-34 与 R-Bot 的编号对应关系、用户叫惯的“菜单 19 流量”
+# 这类叫法都不变）。切换账号功能本身还在（o:profiles 回调 + 顶行按钮）。
 ORACLE_MENU_ITEMS = [
     ("boot", "1. 开机(刷机)"),
     ("ip", "2. ip管理"),
@@ -95,7 +99,6 @@ ORACLE_MENU_ITEMS = [
     ("autostart", "10. 实例状态监控自启"),
     ("openport", "11. 开放云面板端口"),
     ("workflows", "12. 工作流错误"),
-    ("profiles", "13. profile管理"),
     ("clients", "14. 客户端管理"),
     ("health", "15. 一键测活"),
     ("autoip", "16. 监控(自动换ip)"),
@@ -156,7 +159,7 @@ def oracle_menu_keyboard(page=0, states=None, current_account=None):
     states：可选的开关状态字典（键见 DYNAMIC_STATE_ITEMS），
     传了之后监控类按钮会带上“(开启)”/“(关闭)”后缀。
     current_account：当前账号显示名（如“新加坡（3 个区）”），传了之
-    后菜单顶行多一条“🔄 切换账号：<当前账号>”按钮（点开菜单 13 切换）。
+    后菜单顶行多一条“🔄 切换账号：<当前账号>”按钮（点开切换账号）。
     """
     items, page, total_pages = _menu_page(page)
     rows = []

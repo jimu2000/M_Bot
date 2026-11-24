@@ -19,13 +19,14 @@ logger = logging.getLogger(__name__)
 DEFAULT_BOOT_DISK_GB = 47
 
 
-def send_telegram_message(token, chat_id, text, parse_mode=None):
-    """直接 HTTP 调 Telegram Bot API 发一条消息，返回 (ok, error)。
+def send_telegram_message_full(token, chat_id, text, parse_mode=None):
+    """直接 HTTP 调 Telegram Bot API 发一条消息。
 
     供 daemon 线程使用（无事件循环）。token 缺失时直接返回失败。
+    返回 (ok, error, message_id)：message_id 供置顶用，发送失败时为 None。
     """
     if not token or chat_id is None:
-        return False, "Telegram token 或 chat_id 未配置"
+        return False, "Telegram token 或 chat_id 未配置", None
     payload = {"chat_id": chat_id, "text": text}
     if parse_mode:
         payload["parse_mode"] = parse_mode
@@ -33,6 +34,40 @@ def send_telegram_message(token, chat_id, text, parse_mode=None):
         req = urllib.request.Request(
             f"https://api.telegram.org/bot{token}/sendMessage",
             data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST")
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        return False, f"Telegram HTTP {exc.code}", None
+    except Exception as exc:  # noqa: BLE001
+        return False, str(exc), None
+    if result.get("ok"):
+        message_id = (result.get("result") or {}).get("message_id")
+        return True, "", message_id
+    return False, str(result.get("description") or "Telegram API 返回失败"), None
+
+
+def send_telegram_message(token, chat_id, text, parse_mode=None):
+    """直接 HTTP 调 Telegram Bot API 发一条消息，返回 (ok, error)。"""
+    ok, err, _mid = send_telegram_message_full(token, chat_id, text,
+                                               parse_mode)
+    return ok, err
+
+
+def pin_telegram_message(token, chat_id, message_id):
+    """置顶一条已发送的消息（1:1 私聊实测可用，2026-11-24）。
+
+    返回 (ok, error)。置顶失败不影响消息本身（调用方只记日志）。
+    """
+    if not token or chat_id is None or message_id is None:
+        return False, "Telegram token、chat_id 或 message_id 未配置"
+    payload = {"chat_id": chat_id, "message_id": message_id,
+               "disable_notification": True}
+    try:
+        req = urllib.request.Request(
+            f"https://api.telegram.org/bot{token}/pinChatMessage",
+            data=json.dumps(payload).encode("utf-8"),
             headers={"Content-Type": "application/json"},
             method="POST")
         with urllib.request.urlopen(req, timeout=20) as resp:
@@ -115,14 +150,23 @@ def notify_boot_success(token, chat_id, profile_label, region_label,
     return result
 
 
-def notify_dual(token, chat_id, title, body, group="m-bot"):
-    """通用双通道推送：Telegram + Bark，返回同 notify_boot_success。"""
+def notify_dual(token, chat_id, title, body, group="m-bot", pin=False):
+    """通用双通道推送：Telegram + Bark，返回同 notify_boot_success。
+
+    pin=True 时把 Telegram 消息置顶（1:1 私聊实测可用）；置顶失败
+    只记进 errors，不影响消息与 Bark 推送本身。
+    """
     result = {"telegram": False, "bark": False, "errors": []}
     try:
-        ok, err = send_telegram_message(token, chat_id, f"{title}\n\n{body}")
+        ok, err, message_id = send_telegram_message_full(
+            token, chat_id, f"{title}\n\n{body}")
         result["telegram"] = ok
         if not ok:
             result["errors"].append(f"Telegram：{err}")
+        elif pin:
+            pinned, pin_err = pin_telegram_message(token, chat_id, message_id)
+            if not pinned:
+                result["errors"].append(f"置顶失败：{pin_err}")
     except Exception as exc:  # noqa: BLE001
         result["errors"].append(f"Telegram：{exc}")
     try:
@@ -133,3 +177,24 @@ def notify_dual(token, chat_id, title, body, group="m-bot"):
     except Exception as exc:  # noqa: BLE001
         result["errors"].append(f"Bark：{exc}")
     return result
+
+
+def fmt_paid_instance_alert(profile_label, region_label, shape, instances):
+    """付费实例提醒正文（标题由 notify_dual 加）：实例名 + 形状 +
+    公网 IP，提醒会产生费用。
+
+    instances 是 [{name, public_ip}]（与 fmt_boot_success 的入参同形，
+    只取名字与 IP 两个字段）。
+    """
+    lines = [
+        f"账号：{profile_label}",
+        f"地区：{region_label}",
+        f"形状：{shape}（不在免费层内，会产生费用）",
+        "",
+    ]
+    for inst in instances:
+        ip = inst.get("public_ip") or "获取中"
+        lines.append(f"• {inst.get('name') or '?'}：{ip}")
+    lines.append("")
+    lines.append("不需要请尽快停止或释放，避免持续扣费。")
+    return "\n".join(lines)

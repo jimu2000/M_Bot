@@ -235,5 +235,182 @@ class TestGrabberThreadNotify(unittest.TestCase):
         self.assertIsNone(instances[0]["public_ip"])
 
 
+class TestSendTelegramMessageFull(unittest.TestCase):
+    """send_telegram_message_full 返回 message_id 供置顶用。"""
+
+    def _ok_response(self, body):
+        resp = MagicMock()
+        resp.read.return_value = body
+        resp.__enter__.return_value = resp
+        resp.__exit__.return_value = False
+        return resp
+
+    def test_success_returns_message_id(self):
+        resp = self._ok_response(
+            b'{"ok": true, "result": {"message_id": 42}}')
+        with patch.object(notify_mod.urllib.request, "urlopen",
+                          return_value=resp):
+            ok, err, mid = notify_mod.send_telegram_message_full(
+                "T", 1, "x")
+        self.assertTrue(ok, err)
+        self.assertEqual(mid, 42)
+
+    def test_failure_message_id_none(self):
+        resp = self._ok_response(
+            b'{"ok": false, "description": "chat not found"}')
+        with patch.object(notify_mod.urllib.request, "urlopen",
+                          return_value=resp):
+            ok, err, mid = notify_mod.send_telegram_message_full(
+                "T", 1, "x")
+        self.assertFalse(ok)
+        self.assertIsNone(mid)
+
+
+class TestPinTelegramMessage(unittest.TestCase):
+
+    def _ok_response(self):
+        resp = MagicMock()
+        resp.read.return_value = b'{"ok": true, "result": true}'
+        resp.__enter__.return_value = resp
+        resp.__exit__.return_value = False
+        return resp
+
+    def test_pin_success(self):
+        captured = {}
+        def fake_urlopen(req, timeout=None):
+            captured["url"] = req.full_url
+            captured["data"] = json.loads(req.data.decode("utf-8"))
+            return self._ok_response()
+        with patch.object(notify_mod.urllib.request, "urlopen",
+                          side_effect=fake_urlopen):
+            ok, err = notify_mod.pin_telegram_message("T", 1, 42)
+        self.assertTrue(ok, err)
+        self.assertEqual(
+            captured["url"],
+            "https://api.telegram.org/botT/pinChatMessage")
+        self.assertEqual(captured["data"]["message_id"], 42)
+        self.assertTrue(captured["data"]["disable_notification"])
+
+    def test_pin_missing_message_id(self):
+        ok, _err = notify_mod.pin_telegram_message("T", 1, None)
+        self.assertFalse(ok)
+
+    def test_pin_api_error(self):
+        resp = MagicMock()
+        resp.read.return_value = (
+            b'{"ok": false, "description": "not enough rights"}')
+        resp.__enter__.return_value = resp
+        resp.__exit__.return_value = False
+        with patch.object(notify_mod.urllib.request, "urlopen",
+                          return_value=resp):
+            ok, err = notify_mod.pin_telegram_message("T", 1, 42)
+        self.assertFalse(ok)
+        self.assertIn("not enough rights", err)
+
+
+class TestNotifyDualPin(unittest.TestCase):
+    """notify_dual(pin=True)：发完消息后置顶，置顶失败只记错误。"""
+
+    def test_pin_called_on_success(self):
+        with patch.object(notify_mod, "send_telegram_message_full",
+                          return_value=(True, "", 42)) as send, \
+                patch.object(notify_mod, "pin_telegram_message",
+                             return_value=(True, "")) as pin, \
+                patch.object(notify_mod, "send_bark",
+                             return_value=(False, "Bark 推送未开启")):
+            result = notify_mod.notify_dual("T", 1, "标题", "正文",
+                                            pin=True)
+        self.assertTrue(result["telegram"])
+        self.assertEqual(result["errors"], [])
+        pin.assert_called_once_with("T", 1, 42)
+        self.assertIn("标题", send.call_args[0][2])
+
+    def test_pin_not_called_without_flag(self):
+        with patch.object(notify_mod, "send_telegram_message_full",
+                          return_value=(True, "", 42)), \
+                patch.object(notify_mod, "pin_telegram_message") as pin, \
+                patch.object(notify_mod, "send_bark",
+                             return_value=(False, "Bark 推送未开启")):
+            notify_mod.notify_dual("T", 1, "标题", "正文")
+        pin.assert_not_called()
+
+    def test_pin_failure_recorded_not_fatal(self):
+        with patch.object(notify_mod, "send_telegram_message_full",
+                          return_value=(True, "", 42)), \
+                patch.object(notify_mod, "pin_telegram_message",
+                             return_value=(False, "not enough rights")), \
+                patch.object(notify_mod, "send_bark",
+                             return_value=(True, "")):
+            result = notify_mod.notify_dual("T", 1, "标题", "正文",
+                                            pin=True)
+        self.assertTrue(result["telegram"])
+        self.assertTrue(result["bark"])
+        self.assertEqual(len(result["errors"]), 1)
+        self.assertIn("置顶失败", result["errors"][0])
+
+
+class TestFmtPaidInstanceAlert(unittest.TestCase):
+
+    def test_paid_alert_text(self):
+        text = notify_mod.fmt_paid_instance_alert(
+            "新加坡", "首尔", "VM.Standard.E5.Flex",
+            [{"name": "paid-1", "public_ip": "203.0.113.10"},
+             {"name": "paid-2", "public_ip": None}])
+        self.assertIn("账号：新加坡", text)
+        self.assertIn("地区：首尔", text)
+        self.assertIn("VM.Standard.E5.Flex", text)
+        self.assertIn("不在免费层内", text)
+        self.assertIn("paid-1：203.0.113.10", text)
+        self.assertIn("paid-2：获取中", text)
+        self.assertIn("尽快停止或释放", text)
+
+
+class TestPaidInstanceHook(unittest.TestCase):
+    """_notify_boot_success：付费形状额外发置顶提醒，免费形状不发。"""
+
+    def setUp(self):
+        self.preset = {"display_name": "test-1", "count": 1,
+                       "shape": "VM.Standard.E5.Flex",
+                       "boot_volume_size_gbs": 50}
+        self.notify = {"token": "T", "chat_id": 654321,
+                       "profile_label": "新加坡", "region_label": "首尔",
+                       "root_password": ""}
+        self.successes = [GrabResult(
+            instance_id="ocid1.instance.oc1..aaa1", releases=0,
+            attempts=1, elapsed_seconds=3.0)]
+
+    def test_paid_shape_pins_alert(self):
+        with patch.object(he, "get_public_ip",
+                          return_value="203.0.113.10"), \
+                patch.object(he, "notify_boot_success",
+                             return_value={"telegram": True, "bark": False,
+                                           "errors": []}), \
+                patch.object(he, "notify_dual",
+                             return_value={"telegram": True, "bark": False,
+                                           "errors": []}) as dual:
+            he._notify_boot_success(MagicMock(), self.preset,
+                                    self.successes, self.notify)
+        dual.assert_called_once()
+        args, kwargs = dual.call_args
+        self.assertEqual(args[0], "T")
+        self.assertEqual(args[1], 654321)
+        self.assertIn("付费实例提醒", args[2])
+        self.assertIn("VM.Standard.E5.Flex", args[3])
+        self.assertTrue(kwargs.get("pin"))
+        self.assertEqual(kwargs.get("group"), "paid-instance")
+
+    def test_free_shape_no_alert(self):
+        self.preset["shape"] = "VM.Standard.A1.Flex"
+        with patch.object(he, "get_public_ip",
+                          return_value="203.0.113.10"), \
+                patch.object(he, "notify_boot_success",
+                             return_value={"telegram": True, "bark": False,
+                                           "errors": []}), \
+                patch.object(he, "notify_dual") as dual:
+            he._notify_boot_success(MagicMock(), self.preset,
+                                    self.successes, self.notify)
+        dual.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

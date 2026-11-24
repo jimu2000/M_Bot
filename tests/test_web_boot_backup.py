@@ -135,6 +135,19 @@ class TestQuotaApi(BootBackupTestCase):
         self.assertEqual(r.status_code, 200)
         self.assertIsNone(r.json()["oldest"])
 
+    @patch("web.routes.boot_backups.is_paid_profile",
+           return_value=True)
+    @patch("web.routes.boot_backups.check_backup_quota",
+           return_value=(7, 5, True, FAKE_BACKUPS[0]))
+    def test_quota_paid_unlimited(self, mock_quota, mock_paid):
+        r = self.client.get("/api/boot-backups/quota")
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertTrue(body["paid"])
+        self.assertIsNone(body["limit"])
+        self.assertFalse(body["full"])
+        self.assertEqual(body["count"], 7)
+
     @patch("web.routes.boot_backups.check_backup_quota",
            return_value=(2, 5, False, None))
     @patch("web.routes.boot_backups.resolve_profile",
@@ -143,6 +156,37 @@ class TestQuotaApi(BootBackupTestCase):
         r = self.client.get("/api/boot-backups/quota?profile=ACCOUNT2")
         self.assertEqual(r.status_code, 200)
         mock_resolve.assert_called_once_with("ACCOUNT2")
+
+
+class TestPaidApi(BootBackupTestCase):
+    """POST /api/boot-backups/paid：设置账号付费/免费。"""
+
+    @patch("web.routes.boot_backups.set_paid_profile")
+    def test_set_paid(self, mock_set):
+        r = self.client.post("/api/boot-backups/paid",
+                             json={"paid": True})
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertTrue(body["ok"])
+        self.assertTrue(body["paid"])
+        mock_set.assert_called_once_with("DEFAULT", True)
+
+    @patch("web.routes.boot_backups.set_paid_profile")
+    @patch("web.routes.boot_backups.resolve_profile",
+           return_value=(MagicMock(), "ocid1.compartment.oc1..testxxxx"))
+    def test_set_free_with_profile(self, mock_resolve, mock_set):
+        r = self.client.post("/api/boot-backups/paid?profile=ACCOUNT3",
+                             json={"paid": False})
+        self.assertEqual(r.status_code, 200)
+        self.assertFalse(r.json()["paid"])
+        mock_set.assert_called_once_with("ACCOUNT3", False)
+
+    @patch("web.routes.boot_backups.resolve_profile",
+           side_effect=ValueError("未知账号"))
+    def test_set_paid_unknown_profile_400(self, mock_resolve):
+        r = self.client.post("/api/boot-backups/paid?profile=NOPE",
+                             json={"paid": True})
+        self.assertEqual(r.status_code, 400)
 
 
 class TestListApi(BootBackupTestCase):
@@ -173,13 +217,16 @@ class TestListApi(BootBackupTestCase):
 
 
 class TestCreateApi(BootBackupTestCase):
-    """POST /api/boot-backups：配额满了返回 400，delete_oldest 先删后建。"""
+    """POST /api/boot-backups：满了自动删最旧的再建，付费账号不限。"""
 
+    @patch("web.routes.boot_backups.is_paid_profile",
+           return_value=False)
     @patch("web.routes.boot_backups.create_boot_volume_backup",
            return_value=FAKE_BACKUPS[1])
     @patch("web.routes.boot_backups.check_backup_quota",
            return_value=(2, 5, False, FAKE_BACKUPS[0]))
-    def test_create_when_not_full(self, mock_quota, mock_create):
+    def test_create_when_not_full(self, mock_quota, mock_create,
+                                  _mock_paid):
         r = self.client.post("/api/boot-backups",
                              json={"boot_volume_id": FAKE_BV})
         self.assertEqual(r.status_code, 200)
@@ -189,25 +236,48 @@ class TestCreateApi(BootBackupTestCase):
         self.assertNotIn("deleted_oldest", body)
         mock_create.assert_called_once_with(ANY, FAKE_BV, None)
 
-    @patch("web.routes.boot_backups.create_boot_volume_backup")
+    @patch("web.routes.boot_backups.is_paid_profile",
+           return_value=False)
+    @patch("web.routes.boot_backups.create_boot_volume_backup_with_limit_retry",
+           return_value=FAKE_BACKUPS[1])
+    @patch("web.routes.boot_backups.delete_boot_volume_backup")
     @patch("web.routes.boot_backups.check_backup_quota",
            return_value=(5, 5, True, FAKE_BACKUPS[0]))
-    def test_create_when_full_without_delete_oldest_400(
-            self, mock_quota, mock_create):
+    def test_create_when_full_auto_deletes_oldest(
+            self, mock_quota, mock_delete, mock_create, _mock_paid):
+        # 不用传 delete_oldest，服务端自动删最早备份再建。
         r = self.client.post("/api/boot-backups",
                              json={"boot_volume_id": FAKE_BV})
-        self.assertEqual(r.status_code, 400)
-        self.assertIn("已满", r.json()["error"])
-        self.assertIn("old-backup", r.json()["error"])
-        mock_create.assert_not_called()
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["deleted_oldest"]["id"], FAKE_OLD_BACKUP)
+        self.assertEqual(body["deleted_oldest"]["name"], "old-backup")
+        mock_delete.assert_called_once_with(ANY, FAKE_OLD_BACKUP)
+        mock_create.assert_called_once_with(ANY, FAKE_BV, None)
 
+    @patch("web.routes.boot_backups.is_paid_profile",
+           return_value=True)
+    @patch("web.routes.boot_backups.create_boot_volume_backup",
+           return_value=FAKE_BACKUPS[1])
+    @patch("web.routes.boot_backups.check_backup_quota")
+    def test_create_when_paid_skips_quota(self, mock_quota, mock_create,
+                                          _mock_paid):
+        r = self.client.post("/api/boot-backups",
+                             json={"boot_volume_id": FAKE_BV})
+        self.assertEqual(r.status_code, 200)
+        mock_quota.assert_not_called()
+        mock_create.assert_called_once_with(ANY, FAKE_BV, None)
+
+    @patch("web.routes.boot_backups.is_paid_profile",
+           return_value=False)
     @patch("web.routes.boot_backups.create_boot_volume_backup_with_limit_retry",
            return_value=FAKE_BACKUPS[1])
     @patch("web.routes.boot_backups.delete_boot_volume_backup")
     @patch("web.routes.boot_backups.check_backup_quota",
            return_value=(5, 5, True, FAKE_BACKUPS[0]))
     def test_create_delete_oldest_deletes_first_then_creates(
-            self, mock_quota, mock_delete, mock_create):
+            self, mock_quota, mock_delete, mock_create, _mock_paid):
         # 用共享 manager 校验调用顺序：先删最早备份，再创建新备份。
         manager = MagicMock()
         manager.attach_mock(mock_delete, "delete")
@@ -225,11 +295,14 @@ class TestCreateApi(BootBackupTestCase):
             [call.delete(ANY, FAKE_OLD_BACKUP),
              call.create(ANY, FAKE_BV, None)])
 
+    @patch("web.routes.boot_backups.is_paid_profile",
+           return_value=False)
     @patch("web.routes.boot_backups.create_boot_volume_backup",
            return_value=FAKE_BACKUPS[1])
     @patch("web.routes.boot_backups.check_backup_quota",
            return_value=(2, 5, False, FAKE_BACKUPS[0]))
-    def test_create_with_display_name(self, mock_quota, mock_create):
+    def test_create_with_display_name(self, mock_quota, mock_create,
+                                      _mock_paid):
         r = self.client.post("/api/boot-backups",
                              json={"boot_volume_id": FAKE_BV,
                                    "display_name": "my-backup"})
@@ -253,6 +326,40 @@ class TestDeleteApi(BootBackupTestCase):
         self.assertEqual(r.status_code, 200)
         self.assertTrue(r.json()["ok"])
         mock_delete.assert_called_once_with(ANY, FAKE_BACKUP)
+
+
+class TestDeleteBatchApi(BootBackupTestCase):
+    """POST /api/boot-backups/delete-batch：批量删除。"""
+
+    @patch("web.routes.boot_backups.delete_boot_volume_backup")
+    def test_delete_batch_all(self, mock_delete):
+        r = self.client.post("/api/boot-backups/delete-batch",
+                             json={"backup_ids": [FAKE_OLD_BACKUP,
+                                                  FAKE_BACKUP]})
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["deleted"],
+                         [FAKE_OLD_BACKUP, FAKE_BACKUP])
+        self.assertEqual(body["failed"], [])
+        self.assertEqual(mock_delete.call_count, 2)
+
+    @patch("web.routes.boot_backups.delete_boot_volume_backup",
+           side_effect=[None, NotFoundError("gone")])
+    def test_delete_batch_partial_failure(self, mock_delete):
+        r = self.client.post("/api/boot-backups/delete-batch",
+                             json={"backup_ids": [FAKE_OLD_BACKUP,
+                                                  FAKE_BACKUP]})
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertEqual(body["deleted"], [FAKE_OLD_BACKUP])
+        self.assertEqual(len(body["failed"]), 1)
+        self.assertEqual(body["failed"][0]["id"], FAKE_BACKUP)
+
+    def test_delete_batch_empty_400(self):
+        r = self.client.post("/api/boot-backups/delete-batch",
+                             json={"backup_ids": []})
+        self.assertEqual(r.status_code, 400)
 
 
 class TestRestoreApi(BootBackupTestCase):

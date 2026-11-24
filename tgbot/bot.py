@@ -195,6 +195,16 @@ def build_application():
     application.add_handler(CallbackQueryHandler(
         handlers_extra.boot_backups_callback, pattern=r"^bb:list$"))
     application.add_handler(CallbackQueryHandler(
+        handlers_extra.boot_backup_paid_callback, pattern=r"^bb:paid$"))
+    application.add_handler(CallbackQueryHandler(
+        handlers_extra.boot_backup_multiselect_callback, pattern=r"^bb:ms$"))
+    application.add_handler(CallbackQueryHandler(
+        handlers_extra.boot_backup_mstoggle_callback, pattern=r"^bb:mst:"))
+    application.add_handler(CallbackQueryHandler(
+        handlers_extra.boot_backup_msdelete_callback, pattern=r"^bb:msdel$"))
+    application.add_handler(CallbackQueryHandler(
+        handlers_extra.boot_backup_mscancel_callback, pattern=r"^bb:mscancel$"))
+    application.add_handler(CallbackQueryHandler(
         handlers_extra.boot_backup_restore_callback, pattern=r"^bb:restore:"))
     application.add_handler(CallbackQueryHandler(
         handlers_extra.boot_backup_delete_callback, pattern=r"^bb:delete:"))
