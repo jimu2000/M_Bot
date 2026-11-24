@@ -32,7 +32,8 @@
   - POST /api/instances/{id}/repair：尝试修复（检查实例状态/主 VNIC/
     公网 IP，缺失时重新附加临时公网 IP；返回修复报告）。
 
-profile 通过查询参数传（如 ?profile=ACCOUNT2），默认 DEFAULT。
+profile 与 region 通过查询参数传（如 ?profile=ACCOUNT2&region=us-sanjose-1），
+默认 DEFAULT 账号的主区。
 """
 
 from concurrent.futures import ThreadPoolExecutor
@@ -256,11 +257,13 @@ def format_instance(inst, public_ip, region):
 
 @router.get("/api/instances")
 def list_all(profile: str = Query(default=None),
+             region: str = Query(default=None),
              state: str = Query(default="running"),
              refresh: bool = Query(default=False),
              username: str = Depends(get_current_user)):
-    """列出该账号下的实例（R-Bot 形状，每项补公网 IP）。
+    """列出该账号指定区域下的实例（R-Bot 形状，每项补公网 IP）。
 
+    region 不传时用该 profile 的主区；传了则列该订阅区域的实例。
     state=running（默认）：只含 RUNNING 状态实例（与 R-Bot
     /cloud/oci/instances 一致）。
     state=all：含全部非 TERMINATED 实例（RUNNING/STOPPED/STOPPING 等），
@@ -269,9 +272,10 @@ def list_all(profile: str = Query(default=None),
     """
     show_all = (state or "").lower() == "all"
     try:
-        cli, compartment_id = resolve_profile(profile)
+        cli, compartment_id = resolve_profile(profile, region)
         profile_name = profile or config.DEFAULT_PROFILE
-        cache_key = (profile_name, "all" if show_all else "running")
+        cache_key = (profile_name, cli.region,
+                     "all" if show_all else "running")
         if not refresh:
             with _LIST_CACHE_LOCK:
                 entry = _LIST_CACHE.get(cache_key)
@@ -303,7 +307,8 @@ def list_all(profile: str = Query(default=None),
         return error_response(str(exc), status_code=400)
     except OCIError as exc:
         return oci_error_response(exc)
-    payload = {"ok": True, "profile": profile_name, "instances": instances}
+    payload = {"ok": True, "profile": profile_name, "region": cli.region,
+               "instances": instances}
     with _LIST_CACHE_LOCK:
         _LIST_CACHE[cache_key] = {
             "expires": time.monotonic() + INSTANCE_LIST_CACHE_TTL,
@@ -315,6 +320,7 @@ def list_all(profile: str = Query(default=None),
 @router.post("/api/instances/batch")
 def batch(body: BatchBody,
           profile: str = Query(default=None),
+          region: str = Query(default=None),
           username: str = Depends(get_current_user)):
     """批量操作：action 为 start/stop/restart/terminate 之一。
 
@@ -332,7 +338,7 @@ def batch(body: BatchBody,
         return error_response("批量删除需要确认：请求体须含 confirm=true",
                               status_code=400)
     try:
-        cli, _compartment_id = resolve_profile(profile)
+        cli, _compartment_id = resolve_profile(profile, region)
         # 直接调模块级导入的函数（不要预建成 dict），测试才能 patch。
         if body.action == "start":
             result = batch_start(cli, body.instance_ids)
@@ -354,10 +360,11 @@ def batch(body: BatchBody,
 @router.get("/api/instances/{instance_id}")
 def detail(instance_id: str,
            profile: str = Query(default=None),
+           region: str = Query(default=None),
            username: str = Depends(get_current_user)):
     """查单个实例详情（含公网 IP、内网 IP、IPv6 列表、启动盘大小）。"""
     try:
-        cli, compartment_id = resolve_profile(profile)
+        cli, compartment_id = resolve_profile(profile, region)
         data = get_instance(cli, instance_id)
         detail_data = _unwrap_instance(data)
         public_ip = _safe_public_ip(cli, instance_id)
@@ -378,10 +385,10 @@ def detail(instance_id: str,
                 extras["boot_volume_attachment_state"]}
 
 
-def _action(instance_id, profile, func, action_name):
+def _action(instance_id, profile, func, action_name, region=None):
     """启动/停止/重启的公共逻辑。"""
     try:
-        cli, _compartment_id = resolve_profile(profile)
+        cli, _compartment_id = resolve_profile(profile, region)
         func(cli, instance_id)
     except ValueError as exc:
         return error_response(str(exc), status_code=400)
@@ -394,34 +401,41 @@ def _action(instance_id, profile, func, action_name):
 @router.post("/api/instances/{instance_id}/start")
 def start(instance_id: str,
           profile: str = Query(default=None),
+          region: str = Query(default=None),
           username: str = Depends(get_current_user)):
     """启动实例。"""
-    return _action(instance_id, profile, start_instance, "start")
+    return _action(instance_id, profile, start_instance, "start",
+                   region=region)
 
 
 @router.post("/api/instances/{instance_id}/stop")
 def stop(instance_id: str,
          profile: str = Query(default=None),
+         region: str = Query(default=None),
          username: str = Depends(get_current_user)):
     """停止实例。"""
-    return _action(instance_id, profile, stop_instance, "stop")
+    return _action(instance_id, profile, stop_instance, "stop",
+                   region=region)
 
 
 @router.post("/api/instances/{instance_id}/restart")
 def restart(instance_id: str,
             profile: str = Query(default=None),
+            region: str = Query(default=None),
             username: str = Depends(get_current_user)):
     """重启实例。"""
-    return _action(instance_id, profile, restart_instance, "restart")
+    return _action(instance_id, profile, restart_instance, "restart",
+                   region=region)
 
 
 @router.get("/api/instances/{instance_id}/console")
 def console(instance_id: str,
             profile: str = Query(default=None),
+            region: str = Query(default=None),
             username: str = Depends(get_current_user)):
     """获取串行控制台连接信息（含 ssh 连接命令与指纹）。"""
     try:
-        cli, _compartment_id = resolve_profile(profile)
+        cli, _compartment_id = resolve_profile(profile, region)
         connection = get_serial_console(cli, instance_id)
     except ValueError as exc:
         return error_response(str(exc), status_code=400)
@@ -434,12 +448,13 @@ def console(instance_id: str,
 def rename(instance_id: str,
            body: RenameBody,
            profile: str = Query(default=None),
+           region: str = Query(default=None),
            username: str = Depends(get_current_user)):
     """更改实例显示名（新名字不能为空，见 rename_instance 的校验）。"""
     if not (body.name or "").strip():
         return error_response("新实例名不能为空", status_code=400)
     try:
-        cli, _compartment_id = resolve_profile(profile)
+        cli, _compartment_id = resolve_profile(profile, region)
         detail = rename_instance(cli, instance_id, body.name)
     except ValueError as exc:
         return error_response(str(exc), status_code=400)
@@ -453,6 +468,7 @@ def rename(instance_id: str,
 def reinstall(instance_id: str,
               body: ReinstallBody,
               profile: str = Query(default=None),
+              region: str = Query(default=None),
               username: str = Depends(get_current_user)):
     """重装系统：必须 confirm=true 且 confirm_name 等于实例当前显示名。
 
@@ -463,7 +479,7 @@ def reinstall(instance_id: str,
         return error_response("重装系统需要确认：请求体须含 confirm=true",
                               status_code=400)
     try:
-        cli, _compartment_id = resolve_profile(profile)
+        cli, _compartment_id = resolve_profile(profile, region)
         current = get_instance(cli, instance_id)
         detail = (current.get("data") if isinstance(current, dict)
                   and "data" in current else current) or {}
@@ -486,6 +502,7 @@ def reinstall(instance_id: str,
 def terminate(instance_id: str,
               body: TerminateBody,
               profile: str = Query(default=None),
+              region: str = Query(default=None),
               username: str = Depends(get_current_user)):
     """终止实例（必须 confirm=true；默认永久删除引导卷，不留着扣钱）。
 
@@ -497,7 +514,7 @@ def terminate(instance_id: str,
         return error_response("终止实例需要确认：请求体须含 confirm=true",
                               status_code=400)
     try:
-        cli, _compartment_id = resolve_profile(profile)
+        cli, _compartment_id = resolve_profile(profile, region)
         # 默认 preserve_boot_volume=False：终止时永久删除引导卷。
         terminate_instance(cli, instance_id,
                            preserve_boot_volume=body.preserve_boot_volume)
@@ -514,6 +531,7 @@ def terminate(instance_id: str,
 def change_ip(instance_id: str,
               body: ChangeIpBody,
               profile: str = Query(default=None),
+              region: str = Query(default=None),
               username: str = Depends(get_current_user)):
     """换公网 IP（必须 confirm=true；旧 IP 立即释放，无法找回）。
 
@@ -525,7 +543,7 @@ def change_ip(instance_id: str,
         return error_response("换 IP 需要确认：请求体须含 confirm=true",
                               status_code=400)
     try:
-        cli, compartment_id = resolve_profile(profile)
+        cli, compartment_id = resolve_profile(profile, region)
         old_ip = _safe_public_ip(cli, instance_id)
         new_ip = change_public_ip(cli, compartment_id, instance_id)
     except ValueError as exc:
@@ -540,10 +558,11 @@ def change_ip(instance_id: str,
 @router.post("/api/instances/{instance_id}/ipv6")
 def add_ipv6(instance_id: str,
              profile: str = Query(default=None),
+             region: str = Query(default=None),
              username: str = Depends(get_current_user)):
     """给实例主 VNIC 附加一个 IPv6，返回新地址。"""
     try:
-        cli, _compartment_id = resolve_profile(profile)
+        cli, _compartment_id = resolve_profile(profile, region)
         vnic = get_primary_vnic(cli, instance_id)
         created = create_ipv6(cli, vnic["id"]) or {}
     except ValueError as exc:
@@ -558,6 +577,7 @@ def add_ipv6(instance_id: str,
 @router.delete("/api/instances/{instance_id}/ipv6")
 def delete_all_ipv6(instance_id: str,
                     profile: str = Query(default=None),
+                    region: str = Query(default=None),
                     username: str = Depends(get_current_user)):
     """删除实例主 VNIC 的全部 IPv6。
 
@@ -565,7 +585,7 @@ def delete_all_ipv6(instance_id: str,
     单个 IPv6 ID 删除，本接口一次删全部（与面板“删除 IPv6”按钮语义一致）。
     """
     try:
-        cli, _compartment_id = resolve_profile(profile)
+        cli, _compartment_id = resolve_profile(profile, region)
         vnic = get_primary_vnic(cli, instance_id)
         ipv6s = list_ipv6_for_vnic(cli, vnic["id"])
         if not ipv6s:
@@ -587,6 +607,7 @@ def delete_all_ipv6(instance_id: str,
 def resize(instance_id: str,
            body: ResizeBody,
            profile: str = Query(default=None),
+           region: str = Query(default=None),
            username: str = Depends(get_current_user)):
     """升/降配 A1.Flex 实例（必须 confirm=true；改规格时实例会重启）。
 
@@ -600,7 +621,7 @@ def resize(instance_id: str,
     if body.ocpus < 1 or body.memory_gb < 1:
         return error_response("OCPU 与内存都必须大于 0", status_code=400)
     try:
-        cli, _compartment_id = resolve_profile(profile)
+        cli, _compartment_id = resolve_profile(profile, region)
         detail_data = _unwrap_instance(get_instance(cli, instance_id))
         shape = detail_data.get("shape") or ""
         if shape == SHAPE_E2_MICRO:
@@ -629,6 +650,7 @@ def resize(instance_id: str,
 @router.post("/api/instances/{instance_id}/repair")
 def repair(instance_id: str,
            profile: str = Query(default=None),
+           region: str = Query(default=None),
            username: str = Depends(get_current_user)):
     """尝试修复实例的公网 IP（保守：只检查 + 补缺失的公网 IP 附加）。
 
@@ -636,7 +658,7 @@ def repair(instance_id: str,
     公网 IP 正常时不做任何改动。
     """
     try:
-        cli, compartment_id = resolve_profile(profile)
+        cli, compartment_id = resolve_profile(profile, region)
         report = repair_instance_ip(cli, compartment_id, instance_id)
     except ValueError as exc:
         return error_response(str(exc), status_code=400)

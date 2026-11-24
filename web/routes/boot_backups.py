@@ -190,13 +190,14 @@ class RestoreBody(BaseModel):
 
 @router.get("/api/boot-backups/quota")
 def quota(profile: str = Query(default=None),
+          region: str = Query(default=None),
           username: str = Depends(get_current_user)):
     """查备份额度：数量 / 上限 / 是否已满 / 最早备份 / 是否付费账号。
 
     付费账号不限 5 个：paid=true、limit=null、full=false。
     """
     try:
-        cli, compartment_id = resolve_profile(profile)
+        cli, compartment_id = resolve_profile(profile, region)
         prof = profile or config.DEFAULT_PROFILE
         paid = is_paid_profile(prof)
         count, limit, full, oldest = check_backup_quota(cli, compartment_id)
@@ -219,11 +220,12 @@ def quota(profile: str = Query(default=None),
 @router.post("/api/boot-backups/paid")
 def set_paid(body: PaidBody,
              profile: str = Query(default=None),
+             region: str = Query(default=None),
              username: str = Depends(get_current_user)):
     """设置当前账号的付费/免费标记（与机器人端共用同一份配置）。"""
     prof = profile or config.DEFAULT_PROFILE
     try:
-        resolve_profile(profile)
+        resolve_profile(profile, region)
     except ValueError as exc:
         return error_response(str(exc), status_code=400)
     set_paid_profile(prof, body.paid)
@@ -233,12 +235,13 @@ def set_paid(body: PaidBody,
 @router.post("/api/boot-backups/delete-batch")
 def delete_batch(body: DeleteBatchBody,
                  profile: str = Query(default=None),
+                 region: str = Query(default=None),
                  username: str = Depends(get_current_user)):
     """批量删除备份：逐个删除，单个失败不影响其他，返回成功/失败清单。"""
     if not body.backup_ids:
         return error_response("未选择要删除的备份", status_code=400)
     try:
-        cli, _compartment_id = resolve_profile(profile)
+        cli, _compartment_id = resolve_profile(profile, region)
     except ValueError as exc:
         return error_response(str(exc), status_code=400)
     deleted, failed = [], []
@@ -255,10 +258,11 @@ def delete_batch(body: DeleteBatchBody,
 
 @router.get("/api/boot-backups")
 def list_all(profile: str = Query(default=None),
+             region: str = Query(default=None),
              username: str = Depends(get_current_user)):
     """列出该账号下的全部启动卷备份（按创建时间升序）。"""
     try:
-        cli, compartment_id = resolve_profile(profile)
+        cli, compartment_id = resolve_profile(profile, region)
         backups = list_boot_volume_backups(cli, compartment_id)
     except ValueError as exc:
         return error_response(str(exc), status_code=400)
@@ -272,6 +276,7 @@ def list_all(profile: str = Query(default=None),
 @router.post("/api/boot-backups")
 def create(body: CreateBackupBody,
            profile: str = Query(default=None),
+           region: str = Query(default=None),
            username: str = Depends(get_current_user)):
     """创建 FULL 全量备份。
 
@@ -279,7 +284,7 @@ def create(body: CreateBackupBody,
     2026-11-24：不用等确认），响应里带 deleted_oldest。
     """
     try:
-        cli, compartment_id = resolve_profile(profile)
+        cli, compartment_id = resolve_profile(profile, region)
         prof = profile or config.DEFAULT_PROFILE
         paid = is_paid_profile(prof)
         deleted_oldest = None
@@ -318,6 +323,7 @@ def create(body: CreateBackupBody,
 @router.delete("/api/boot-backups/{backup_id}")
 def delete(backup_id: str,
            profile: str = Query(default=None),
+           region: str = Query(default=None),
            confirm: bool = Query(default=False),
            username: str = Depends(get_current_user)):
     """删除备份（须 confirm=true；删了不可恢复）。"""
@@ -325,7 +331,7 @@ def delete(backup_id: str,
         return error_response("删除备份需要确认：请传 confirm=true",
                               status_code=400)
     try:
-        cli, _compartment_id = resolve_profile(profile)
+        cli, _compartment_id = resolve_profile(profile, region)
         delete_boot_volume_backup(cli, backup_id)
     except ValueError as exc:
         return error_response(str(exc), status_code=400)
@@ -338,6 +344,7 @@ def delete(backup_id: str,
 def restore(backup_id: str,
             body: RestoreBody,
             profile: str = Query(default=None),
+            region: str = Query(default=None),
             username: str = Depends(get_current_user)):
     """从备份恢复出一台新实例（原机不动）。
 
@@ -349,7 +356,7 @@ def restore(backup_id: str,
         return error_response("从备份恢复需要确认：请求体须含 confirm=true",
                               status_code=400)
     try:
-        cli, compartment_id = resolve_profile(profile)
+        cli, compartment_id = resolve_profile(profile, region)
         backup = get_boot_volume_backup(cli, backup_id)
         shape, ocpus, memory_gb = _resolve_restore_shape(
             cli, compartment_id, backup, body.shape,

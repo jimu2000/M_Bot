@@ -10,6 +10,12 @@
      （显示"名字 · 区域中文名"）；选择存 localStorage，切换时先清空
      卡片列表再加载，避免一帧旧数据闪过 #}
   <select id="profile-select" style="width: auto;" aria-label="切换账号"></select>
+  {# 二级区域下拉：多区订阅的账号才显示（单区账号隐藏），由 instances.js
+     按所选账号的订阅区域填充；切换后按新区域重新加载列表 #}
+  <span id="region-wrap" hidden>
+    <label for="region-select" style="color: var(--text-muted);">区域</label>
+    <select id="region-select" style="width: auto;" aria-label="切换区域"></select>
+  </span>
   <div class="spacer"></div>
   <button type="button" class="btn" id="btn-refresh-instances">↻ 刷新</button>
   <a class="btn btn-primary" href="/create">＋ 创建实例</a>

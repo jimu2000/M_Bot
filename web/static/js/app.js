@@ -82,9 +82,9 @@
   }
 
   /* ---------- 账号（profile）切换 ---------- */
-  // 与 R-Bot 同款模型：一个 profile = 一个账号 + 区域，账号/区域切换
-  // 就是切换 profile，没有独立的区域选择器；区域只是下拉里的显示字段。
-  // 当前选择优先级：内存 -> localStorage -> 默认 profile -> 第一个。
+  // 一个 profile = 一个账号；多区订阅的账号还有二级区域菜单（见下
+  // 面“工作区域”一节），区域只是下拉里的显示字段。当前选择优先级：
+  // 内存 -> localStorage -> 默认 profile -> 第一个。
   var PROFILE_KEY = "cloud_active_profile";
   var _profiles = null; // 内存中的 profile 列表（GET /api/profiles）
   var _profilesDefault = null; // 后端默认 profile
@@ -140,11 +140,82 @@
     return selected;
   }
 
-  // 给 URL 拼 ?profile= 参数（已有查询串时用 & 拼接）。
-  function withProfile(url, profile) {
-    if (!profile) return url;
-    var sep = url.indexOf("?") === -1 ? "?" : "&";
-    return url + sep + "profile=" + encodeURIComponent(profile);
+  // 给 URL 拼 ?profile= 与 ?region= 参数（已有查询串时用 & 拼接）。
+  // region 不传时只拼 profile（后端用该账号的主区）。
+  function withProfile(url, profile, region) {
+    if (profile) {
+      var sep = url.indexOf("?") === -1 ? "?" : "&";
+      url = url + sep + "profile=" + encodeURIComponent(profile);
+    }
+    if (region) {
+      var sep2 = url.indexOf("?") === -1 ? "?" : "&";
+      url = url + sep2 + "region=" + encodeURIComponent(region);
+    }
+    return url;
+  }
+
+  /* ---------- 工作区域（region）切换 ---------- */
+  // 多区订阅的账号有二级区域菜单：区域下拉只在所选账号订阅了多个
+  // 区域时显示（单区账号不显示，与机器人端一致）。区域与账号绑定：
+  // 切账号时页面先 setRegion(null) 再调 fillRegionSelect，区域重置
+  // 为新账号的主区；保存的选择不在该账号订阅列表里时也回落到主区。
+  // 当前选择优先级：内存 -> localStorage -> 主区。
+  var REGION_KEY = "cloud_active_region";
+  var _currentRegion = null; // 内存中的当前选择（区域代码，如 ap-seoul-1）
+
+  function getRegion() {
+    if (_currentRegion) return _currentRegion;
+    try {
+      _currentRegion = window.localStorage.getItem(REGION_KEY) || null;
+    } catch (e) { /* 隐私模式下 localStorage 不可用 */ }
+    return _currentRegion;
+  }
+
+  function setRegion(code) {
+    _currentRegion = code;
+    try {
+      if (code) window.localStorage.setItem(REGION_KEY, code);
+      else window.localStorage.removeItem(REGION_KEY);
+    } catch (e) { /* 隐私模式下 localStorage 不可用 */ }
+  }
+
+  // 某账号的订阅区域列表（[{code, label, isHome}]），来自 loadProfiles
+  // 的缓存；未加载或该账号无 regions 时返回 null。
+  function profileRegions(profile) {
+    if (!_profiles) return null;
+    for (var i = 0; i < _profiles.length; i++) {
+      if (_profiles[i].name === profile) return _profiles[i].regions || null;
+    }
+    return null;
+  }
+
+  // 填充区域下拉：多区账号显示下拉并恢复保存的选择（不在订阅列表
+  // 里时回落主区），单区账号隐藏下拉（select 与 #region-wrap 包裹
+  // 层一起隐藏）。返回选中的区域代码（订阅列表未知时返回 null，
+  // 调用方按主区处理）。
+  function fillRegionSelect(selectEl, profile) {
+    var regions = profileRegions(profile);
+    var wrap = selectEl.closest ? selectEl.closest("#region-wrap") : null;
+    var show = !!(regions && regions.length > 1);
+    if (wrap) wrap.hidden = !show;
+    selectEl.hidden = !show;
+    selectEl.innerHTML = "";
+    if (!regions || regions.length === 0) return null;
+    regions.forEach(function (r) {
+      var opt = document.createElement("option");
+      opt.value = r.code;
+      opt.textContent = r.label + (r.isHome ? "（主区）" : "");
+      selectEl.appendChild(opt);
+    });
+    var home = null;
+    regions.forEach(function (r) { if (r.isHome) home = r.code; });
+    if (!home) home = regions[0].code;
+    var saved = getRegion();
+    var codes = regions.map(function (r) { return r.code; });
+    var selected = (saved && codes.indexOf(saved) !== -1) ? saved : home;
+    selectEl.value = selected;
+    setRegion(selected);
+    return selected;
   }
 
   /* ---------- Toast 提示 ---------- */
@@ -483,5 +554,11 @@
     loadProfiles: loadProfiles,
     fillProfileSelect: fillProfileSelect,
     withProfile: withProfile,
+    // 工作区域（region）切换（多区订阅账号的二级菜单）
+    REGION_KEY: REGION_KEY,
+    getRegion: getRegion,
+    setRegion: setRegion,
+    profileRegions: profileRegions,
+    fillRegionSelect: fillRegionSelect,
   };
 })();

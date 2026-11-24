@@ -9,6 +9,7 @@
   var volumesByInstance = {}; // 启动盘：实例 id -> /api/volumes 条目（卡片显示用）
   var selected = {}; // 选中实例的 id 集合（对象当集合用）
   var currentProfile = null; // 当前账号（profile），由 fillProfileSelect 恢复
+  var currentRegion = null; // 当前工作区域，由 fillRegionSelect 恢复（多区账号才有二级下拉）
   var loading = true; // 加载中时卡片区显示占位，不闪旧数据
   var terminateTarget = null; // 待终止的实例
   var terminatePreserve = false; // 终止时是否保留引导卷
@@ -173,23 +174,24 @@
   // 绕过服务端缓存）。后端并行取公网 IP + 30 秒服务端缓存，首次约 3-5 秒。
   // 同时并行拉启动盘列表（复用 volumes 页的 "vol:list:" 缓存键），按
   // instanceId 拼到卡片上；启动盘拉取失败时降级（卡片显示"—"），
-  // 不影响实例列表。切账号期间旧请求的结果直接丢弃，不覆盖新账号数据。
+  // 不影响实例列表。切账号/区域期间旧请求的结果直接丢弃，不覆盖新数据。
   async function loadInstances(force) {
     var profileAtStart = currentProfile;
+    var regionAtStart = currentRegion;
     if (force) {
       loading = true;
       render();
     }
     try {
-      var url = RBot.withProfile("/api/instances", currentProfile);
+      var url = RBot.withProfile("/api/instances", currentProfile, currentRegion);
       if (force) url += (url.indexOf("?") === -1 ? "?" : "&") + "refresh=1";
-      var data = await RBot.cachedApi("inst:" + (currentProfile || "DEFAULT"), url, !!force);
-      if (profileAtStart !== currentProfile) return;
+      var data = await RBot.cachedApi("inst:" + (currentProfile || "DEFAULT") + ":" + (currentRegion || ""), url, !!force);
+      if (profileAtStart !== currentProfile || regionAtStart !== currentRegion) return;
       instances = data.instances || [];
       try {
-        var volUrl = RBot.withProfile("/api/volumes", currentProfile);
-        var volData = await RBot.cachedApi("vol:list:" + (currentProfile || "DEFAULT"), volUrl, !!force);
-        if (profileAtStart !== currentProfile) return;
+        var volUrl = RBot.withProfile("/api/volumes", currentProfile, currentRegion);
+        var volData = await RBot.cachedApi("vol:list:" + (currentProfile || "DEFAULT") + ":" + (currentRegion || ""), volUrl, !!force);
+        if (profileAtStart !== currentProfile || regionAtStart !== currentRegion) return;
         volumesByInstance = {};
         (volData.volumes || []).forEach(function (v) {
           var iid = v.instanceId || v["instance-id"];
@@ -209,7 +211,7 @@
       loading = false;
       render();
     } catch (err) {
-      if (profileAtStart !== currentProfile) return;
+      if (profileAtStart !== currentProfile || regionAtStart !== currentRegion) return;
       loading = false;
       document.getElementById("instance-grid").innerHTML =
         '<p class="instance-error">加载失败：' +
@@ -221,7 +223,7 @@
   // 实例操作：start / stop / restart，成功后清前端缓存并刷新列表
   async function instanceAction(id, action, label) {
     try {
-      await RBot.api(RBot.withProfile("/api/instances/" + encodeURIComponent(id) + "/" + action, currentProfile), { method: "POST" });
+      await RBot.api(RBot.withProfile("/api/instances/" + encodeURIComponent(id) + "/" + action, currentProfile, currentRegion), { method: "POST" });
       RBot.toast(label + "指令已发送", "success");
       RBot.cacheClear("inst:");
       await loadInstances();
@@ -233,7 +235,7 @@
   // 实例详情弹窗：点实例名打开，显示形状/规格/内外网 IP/IPv6/可用域/启动盘/创建时间
   async function showDetail(instId) {
     try {
-      var res = await RBot.api(RBot.withProfile("/api/instances/" + encodeURIComponent(instId), currentProfile));
+      var res = await RBot.api(RBot.withProfile("/api/instances/" + encodeURIComponent(instId), currentProfile, currentRegion));
       var inst = res.instance || {};
       var cfg = inst["shape-config"] || {};
       document.getElementById("detail-name").textContent = inst["display-name"] || "—";
@@ -273,7 +275,7 @@
     document.getElementById("ip-ipv6").textContent = "加载中…";
     RBot.openModal("ip-modal");
     try {
-      var res = await RBot.api(RBot.withProfile("/api/instances/" + encodeURIComponent(inst.id), currentProfile));
+      var res = await RBot.api(RBot.withProfile("/api/instances/" + encodeURIComponent(inst.id), currentProfile, currentRegion));
       if (ipTarget !== inst) return; // 弹窗期间切了实例，丢弃旧结果
       document.getElementById("ip-public").textContent = res.public_ip || "—";
       document.getElementById("ip-private").textContent = res.private_ip || "—";
@@ -294,7 +296,7 @@
     var n = norm(inst);
     var vol = null;
     try {
-      var res = await RBot.api(RBot.withProfile("/api/instances/" + encodeURIComponent(inst.id), currentProfile));
+      var res = await RBot.api(RBot.withProfile("/api/instances/" + encodeURIComponent(inst.id), currentProfile, currentRegion));
       if (res.boot_volume_id) {
         vol = {
           volumeId: res.boot_volume_id,
@@ -352,7 +354,7 @@
       "确认附加", false);
     if (!ok) return;
     try {
-      var res = await RBot.api(RBot.withProfile("/api/instances/" + encodeURIComponent(inst.id) + "/ipv6", currentProfile), { method: "POST" });
+      var res = await RBot.api(RBot.withProfile("/api/instances/" + encodeURIComponent(inst.id) + "/ipv6", currentProfile, currentRegion), { method: "POST" });
       RBot.toast("已分配 IPv6：" + (res.ipv6 || "—"), "success");
       RBot.cacheClear("inst:");
       await loadInstances();
@@ -370,7 +372,7 @@
       "确认删除", true);
     if (!ok) return;
     try {
-      var res = await RBot.api(RBot.withProfile("/api/instances/" + encodeURIComponent(inst.id) + "/ipv6", currentProfile), { method: "DELETE" });
+      var res = await RBot.api(RBot.withProfile("/api/instances/" + encodeURIComponent(inst.id) + "/ipv6", currentProfile, currentRegion), { method: "DELETE" });
       var deleted = res.deleted || [];
       if (deleted.length === 0) {
         RBot.toast(res.message || "该实例没有 IPv6", "info");
@@ -393,7 +395,7 @@
       "确认修复", false);
     if (!ok) return;
     try {
-      var res = await RBot.api(RBot.withProfile("/api/instances/" + encodeURIComponent(inst.id) + "/repair", currentProfile), { method: "POST" });
+      var res = await RBot.api(RBot.withProfile("/api/instances/" + encodeURIComponent(inst.id) + "/repair", currentProfile, currentRegion), { method: "POST" });
       var report = res.report || {};
       document.getElementById("repair-name").textContent = name;
       document.getElementById("repair-report").innerHTML =
@@ -438,7 +440,7 @@
     var ids = selectedIds();
     if (ids.length === 0) return;
     try {
-      var res = await RBot.api(RBot.withProfile("/api/instances/batch", currentProfile), {
+      var res = await RBot.api(RBot.withProfile("/api/instances/batch", currentProfile, currentRegion), {
         method: "POST",
         body: { action: action, instance_ids: ids, confirm: !!confirm },
       });
@@ -461,11 +463,14 @@
   }
 
   document.addEventListener("DOMContentLoaded", function () {
-    // 先填 profile 下拉（恢复上次选择），再按当前账号加载列表；
-    // profiles 接口失败时仍按默认账号加载，不让页面空白。
+    // 先填 profile 下拉（恢复上次选择），再填区域下拉（多区账号才显示），
+    // 最后按当前账号 + 区域加载列表；profiles 接口失败时仍按默认账号加载，
+    // 不让页面空白。
     var profileSelect = document.getElementById("profile-select");
+    var regionSelect = document.getElementById("region-select");
     RBot.fillProfileSelect(profileSelect).then(function (profile) {
       currentProfile = profile;
+      currentRegion = RBot.fillRegionSelect(regionSelect, currentProfile);
       loadInstances();
     }).catch(function () {
       loadInstances();
@@ -473,9 +478,22 @@
     profileSelect.addEventListener("change", function (e) {
       currentProfile = e.target.value;
       RBot.setProfile(currentProfile);
+      // 切账号时区域重置为新账号的主区（与机器人端一致）。
+      RBot.setRegion(null);
+      currentRegion = RBot.fillRegionSelect(regionSelect, currentProfile);
       selected = {};
       // 切账号时先清空列表并显示加载占位，再加载新账号数据，
       // 避免旧账号卡片闪一帧（v1.3.0 留下的小瑕疵）。
+      instances = [];
+      volumesByInstance = {};
+      loading = true;
+      render();
+      loadInstances();
+    });
+    regionSelect.addEventListener("change", function (e) {
+      currentRegion = e.target.value;
+      RBot.setRegion(currentRegion);
+      selected = {};
       instances = [];
       volumesByInstance = {};
       loading = true;
@@ -575,7 +593,7 @@
       } else if (act === "console") {
         (async function () {
           try {
-            var res = await RBot.api(RBot.withProfile("/api/instances/" + encodeURIComponent(instId) + "/console", currentProfile));
+            var res = await RBot.api(RBot.withProfile("/api/instances/" + encodeURIComponent(instId) + "/console", currentProfile, currentRegion));
             var conn = res.console || {};
             consoleCommand = conn["connection-string"] || "";
             document.getElementById("console-name").textContent = norm(inst).name;
@@ -599,7 +617,7 @@
       var inst = terminateTarget;
       var preserve = terminatePreserve;
       try {
-        await RBot.api(RBot.withProfile("/api/instances/" + encodeURIComponent(inst.id) + "/terminate", currentProfile), {
+        await RBot.api(RBot.withProfile("/api/instances/" + encodeURIComponent(inst.id) + "/terminate", currentProfile, currentRegion), {
           method: "POST",
           body: { confirm: true, preserve_boot_volume: preserve },
         });
@@ -663,7 +681,7 @@
         "确认扩容", false);
       if (!ok) return;
       try {
-        await RBot.api(RBot.withProfile("/api/volumes/" + encodeURIComponent(bootVolumeTarget.volumeId) + "/resize", currentProfile), {
+        await RBot.api(RBot.withProfile("/api/volumes/" + encodeURIComponent(bootVolumeTarget.volumeId) + "/resize", currentProfile, currentRegion), {
           method: "POST",
           body: { size_in_gbs: size },
         });
@@ -682,7 +700,7 @@
       if (!changeIpTarget) return;
       var inst = changeIpTarget;
       try {
-        var res = await RBot.api(RBot.withProfile("/api/instances/" + encodeURIComponent(inst.id) + "/change-ip", currentProfile), {
+        var res = await RBot.api(RBot.withProfile("/api/instances/" + encodeURIComponent(inst.id) + "/change-ip", currentProfile, currentRegion), {
           method: "POST",
           body: { confirm: true },
         });
@@ -710,7 +728,7 @@
         return;
       }
       try {
-        await RBot.api(RBot.withProfile("/api/instances/" + encodeURIComponent(resizeTarget.id) + "/resize", currentProfile), {
+        await RBot.api(RBot.withProfile("/api/instances/" + encodeURIComponent(resizeTarget.id) + "/resize", currentProfile, currentRegion), {
           method: "POST",
           body: { ocpus: ocpus, memory_gb: memory, confirm: true },
         });
@@ -739,7 +757,7 @@
         return;
       }
       try {
-        await RBot.api(RBot.withProfile("/api/instances/" + encodeURIComponent(renameTarget.id) + "/rename", currentProfile), {
+        await RBot.api(RBot.withProfile("/api/instances/" + encodeURIComponent(renameTarget.id) + "/rename", currentProfile, currentRegion), {
           method: "POST",
           body: { name: newName },
         });
@@ -762,7 +780,7 @@
         return;
       }
       try {
-        await RBot.api(RBot.withProfile("/api/instances/" + encodeURIComponent(reinstallTarget.id) + "/reinstall", currentProfile), {
+        await RBot.api(RBot.withProfile("/api/instances/" + encodeURIComponent(reinstallTarget.id) + "/reinstall", currentProfile, currentRegion), {
           method: "POST",
           body: { confirm: true, confirm_name: confirmName },
         });

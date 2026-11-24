@@ -2,11 +2,11 @@
 """创建实例路由 + 任务路由。
 
   - GET /api/create/defaults：创建表单的网络默认值（可用域 / 子网 /
-    SSH 公钥文件），按 profile 的区域从部署配置里取（与机器人开机
+    SSH 公钥文件），按 profile + region 从部署配置里取（与机器人开机
     表单同一套 get_deploy_defaults：环境变量 RBOT_PLAN_* 是主区默认
     值，region_plans.json 里有该 (profile, region) 配置时用该区域
-    的）。SSH 公钥文件只在服务器上真实存在时才返回路径，没有就不
-    填；可用域/子网未配置时返回空串。
+    的；region 不传时用该 profile 的主区）。SSH 公钥文件只在服务器
+    上真实存在时才返回路径，没有就不填；可用域/子网未配置时返回空串。
   - POST /api/create：先 can_launch 预检，不通过返回 400；通过则建
     任务、后台线程跑 Grabber 抢机，返回 {task_id}。
   - GET /api/tasks：任务列表。
@@ -45,6 +45,7 @@ from tgbot.boot_form import (
 )
 from web import config
 from web.deps import (
+    effective_region,
     error_response,
     get_current_user,
     oci_error_response,
@@ -97,9 +98,12 @@ class CreateBody(BaseModel):
         脚本本身是 #cloud-config 时与密码冲突，返回 400。
     ssh_keys_file: SSH 公钥文件路径（可选项，默认空）：为空时 Grabber
         不传 --ssh-authorized-keys-file，实例只靠 root 密码登录。
+    region: 工作区域（可选项）：不传时用该 profile 的主区；传了则在
+        该订阅区域创建（须是该账号的订阅区域，否则 400）。
     """
 
     profile: str = None
+    region: str = None
     shape: str
     ocpus: int = 0
     memory_gb: int = 0
@@ -141,26 +145,27 @@ def _ad_region(availability_domain):
 
 
 @router.get("/api/create/defaults")
-def create_defaults(profile: str = None,
+def create_defaults(profile: str = None, region: str = None,
                     username: str = Depends(get_current_user)):
     """创建表单的网络默认值：可用域 / 子网 / SSH 公钥文件。
 
     与机器人开机表单用同一套部署值（get_deploy_defaults）：环境变量
     RBOT_PLAN_* 是主区默认值，region_plans.json 里有该 (profile,
-    region) 配置时用该区域的。SSH 公钥文件只在服务器上真实存在时
-    才返回路径（用户要求：有上传的密钥就填，没有就不填）；可用域 /
-    子网未配置时返回空串，前端留空让用户手填。
-    环境变量的默认部署值属于主区：所选账号的区域与之不符且
+    region) 配置时用该区域的。region 不传时用该 profile 的主区。
+    SSH 公钥文件只在服务器上真实存在时才返回路径（用户要求：有上传
+    的密钥就填，没有就不填）；可用域 / 子网未配置时返回空串，前端
+    留空让用户手填。
+    环境变量的默认部署值属于主区：所选区域与之不符且
     region_plans.json 里又没有该 (profile, region) 配置时，返回的
     AD 与所选区域对不上——此时可用域/子网留空，避免把主区的子网
-    填到别的账号/区域导致创建失败。
+    填到别的区域导致创建失败。
     """
     try:
         profile_name = profile or config.DEFAULT_PROFILE
-        region = config.get_region(profile_name)
+        eff_region = effective_region(profile_name, region)
     except ValueError as exc:
         return error_response(str(exc), status_code=400)
-    deploy = get_deploy_defaults(region=region, profile=profile_name)
+    deploy = get_deploy_defaults(region=eff_region, profile=profile_name)
     ad = deploy.get("availability_domain") or ""
     subnet = deploy.get("subnet_id") or ""
     if ad == AD_PLACEHOLDER:
@@ -168,7 +173,7 @@ def create_defaults(profile: str = None,
     if subnet == SUBNET_PLACEHOLDER:
         subnet = ""
     ad_region = _ad_region(ad) if ad else None
-    if ad_region is not None and ad_region != region:
+    if ad_region is not None and ad_region != eff_region:
         ad = ""
         subnet = ""
     ssh_file = deploy.get("ssh_keys_file") or ""
@@ -177,7 +182,7 @@ def create_defaults(profile: str = None,
     return {
         "ok": True,
         "profile": profile_name,
-        "region": region,
+        "region": eff_region,
         "availability_domain": ad,
         "subnet_id": subnet,
         "ssh_keys_file": ssh_file,
@@ -199,7 +204,7 @@ def create_instance(body: CreateBody,
         if cap_error:
             return error_response(cap_error, status_code=400)
     try:
-        cli, compartment_id = resolve_profile(body.profile)
+        cli, compartment_id = resolve_profile(body.profile, body.region)
         ok, reason = can_launch(cli, compartment_id, body.shape,
                                 ocpus=body.ocpus, memory_gb=body.memory_gb)
         if not ok:
@@ -242,7 +247,7 @@ def create_instance(body: CreateBody,
         }
         # 双通道通知信息（只在内存里传给线程：密码不落盘，通知完即丢）。
         profile_name = body.profile or config.DEFAULT_PROFILE
-        region = config.get_region(profile_name)
+        region = effective_region(profile_name, body.region)
         notify = {
             "token": bot_config.TELEGRAM_BOT_TOKEN,
             "chat_id": _notify_chat_id(),

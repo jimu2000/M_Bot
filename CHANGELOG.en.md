@@ -9,6 +9,12 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [1.14.0] - 2026-11-24
+
+### Features
+- Multi-region second-level menu on the web panel (user feedback, 2026-11-24: the web panel had no region submenu for multi-region subscriptions, while the bot got one in v1.7.3): the five pages with an account dropdown (instances / boot volumes / quota / create / GFW) gain a region dropdown next to it — shown only for accounts with multiple subscribed regions (hidden for single-region accounts, same as the bot); switching regions reloads the page's data for the new region, switching accounts resets the region to the new account's home region; the choice is stored in localStorage and shared across pages
+- Region plumbing on the backend: GET /api/profiles now returns a regions list per account (all subscribed regions, home first, with Chinese labels and isHome flags; home region only when the subscription list is unavailable); resolve_profile / get_oci_client take an optional region (home region when omitted, validated against the account's subscribed regions when given — 400 otherwise; fail-open when the subscription list is unavailable, same as the bot); every endpoint taking ?profile= now also takes ?region= (15 instance, 6 volume, 7 backup, 4 quota, 4 email, 6 object-storage endpoints, plus the GFW instances list); the create body gains a region field, and the create-defaults endpoint accepts ?region= (per-(profile, region) deployment config, so switching to Seoul auto-fills Seoul's subnet); the instance-list server cache key and the frontend cache keys gain a region dimension
+
 ## [1.13.0] - 2026-11-24
 
 ### Features

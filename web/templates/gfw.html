@@ -10,6 +10,11 @@
   <h1>GFW 自动换 IP</h1>
   <label for="profile-select" style="color: var(--text-muted);">Profile</label>
   <select id="profile-select" style="width: auto;" aria-label="切换账号"></select>
+  {# 二级区域下拉：多区订阅的账号才显示（单区账号隐藏） #}
+  <span id="region-wrap" hidden>
+    <label for="region-select" style="color: var(--text-muted);">区域</label>
+    <select id="region-select" style="width: auto;" aria-label="切换区域"></select>
+  </span>
   <div class="spacer"></div>
   <button type="button" class="btn" id="btn-refresh-gfw">↻ 刷新</button>
 </div>

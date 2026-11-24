@@ -4,8 +4,9 @@
  * - 后端 POST /api/create 要求 subnet_id / availability_domain 必填，
  *   ssh_keys_file 是可选项（为空时不传公钥，只靠 root 密码登录）；
  * - 可用域 / 子网 / SSH 公钥文件由 GET /api/create/defaults 按当前
- *   账号自动填充（与机器人开机表单同一套部署配置）；SSH 公钥文件
- *   只在服务器上真实存在时才填，没有就留空；
+ *   账号与工作区域自动填充（与机器人开机表单同一套部署配置）；SSH
+ *   公钥文件只在服务器上真实存在时才填，没有就留空；多区订阅的
+ *   账号有二级区域下拉，切换区域后重新填充；
  * - ssh_keys_file 必须是面板服务器上的公钥文件路径（后端直传 OCI CLI
  *   --ssh-authorized-keys-file），不支持粘贴公钥内容；
  * - A1 的 ocpus/memory_gb 以 --shape-config 传给 launch（E2 是固定规格，
@@ -95,6 +96,7 @@
     }
     return {
       profile: $("profile").value || null,
+      region: $("region-select").value || null,
       shape: shape,
       ocpus: isE2 ? 1 : parseInt($("ocpus").value, 10),
       memory_gb: isE2 ? 1 : parseInt($("memory-gb").value, 10),
@@ -150,8 +152,8 @@
     btn.disabled = true;
     btn.textContent = "配额预检中…";
     try {
-      // 先调配额预检（带当前账号，预检该账号的免费额度）
-      var check = await RBot.api(RBot.withProfile("/api/quota/can-launch", payload.profile), {
+      // 先调配额预检（带当前账号与区域，预检该区域的免费额度）
+      var check = await RBot.api(RBot.withProfile("/api/quota/can-launch", payload.profile, payload.region), {
         method: "POST",
         body: { shape: payload.shape, ocpus: payload.ocpus, memory_gb: payload.memory_gb },
       });
@@ -189,12 +191,13 @@
   }
 
   // 加载创建默认值（可用域 / 子网 / SSH 公钥文件）：后端按当前账号
-  // 的区域从部署配置里取；SSH 公钥文件只在服务器上真实存在时才
-  // 返回路径，没有就不填。切换账号时重新加载。
+  // 与工作区域从部署配置里取；SSH 公钥文件只在服务器上真实存在时才
+  // 返回路径，没有就不填。切换账号或区域时重新加载。
   async function loadDefaults() {
     try {
       var profile = $("profile").value || null;
-      var data = await RBot.api(RBot.withProfile("/api/create/defaults", profile));
+      var region = $("region-select").value || null;
+      var data = await RBot.api(RBot.withProfile("/api/create/defaults", profile, region));
       if (data.availability_domain) $("availability-domain").value = data.availability_domain;
       if (data.subnet_id) $("subnet-id").value = data.subnet_id;
       if (data.ssh_keys_file) $("ssh-keys-file").value = data.ssh_keys_file;
@@ -204,12 +207,24 @@
   }
 
   document.addEventListener("DOMContentLoaded", function () {
-    // 填 profile 下拉（恢复上次选择）；填好后加载该账号的网络默认值。
-    // 失败时保持默认账号，仍按默认账号加载默认值，不阻塞表单。
+    // 填 profile 下拉（恢复上次选择），再填区域下拉（多区账号才显示），
+    // 最后加载该账号 + 区域的网络默认值。失败时保持默认账号，仍按默认
+    // 账号加载默认值，不阻塞表单。
     var profileSelect = $("profile");
-    RBot.fillProfileSelect(profileSelect).then(loadDefaults, loadDefaults);
+    var regionSelect = $("region-select");
+    RBot.fillProfileSelect(profileSelect).then(function (profile) {
+      RBot.fillRegionSelect(regionSelect, profile);
+      loadDefaults();
+    }, loadDefaults);
     profileSelect.addEventListener("change", function (e) {
       RBot.setProfile(e.target.value);
+      // 切账号时区域重置为新账号的主区（与机器人端一致）。
+      RBot.setRegion(null);
+      RBot.fillRegionSelect(regionSelect, e.target.value);
+      loadDefaults();
+    });
+    regionSelect.addEventListener("change", function (e) {
+      RBot.setRegion(e.target.value);
       loadDefaults();
     });
     $("shape").addEventListener("change", onShapeChange);

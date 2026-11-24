@@ -20,7 +20,12 @@
           <label for="profile">账号 / 区域</label>
           {# Profile 下拉：由 create.js 从 GET /api/profiles 动态填充 #}
           <select id="profile"></select>
-          <p class="hint">镜像、子网、可用域须与所选账号的区域一致；切换账号后可用域与子网自动重新填充。</p>
+          <p class="hint">镜像、子网、可用域须与所选账号的区域一致；切换账号或区域后可用域与子网自动重新填充。</p>
+        </div>
+        {# 二级区域下拉：多区订阅的账号才显示（单区账号隐藏） #}
+        <div class="form-group" id="region-wrap" hidden>
+          <label for="region-select">工作区域</label>
+          <select id="region-select"></select>
         </div>
         <div class="form-group">
           <label for="display-name">实例名称</label>

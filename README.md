@@ -1,6 +1,6 @@
 # M_Bot Oracle开源管理面板
 
-> **当前版本：v1.13.0** · 更新记录见 [CHANGELOG.md](CHANGELOG.md)（[英文版 / English](CHANGELOG.en.md)）
+> **当前版本：v1.14.0** · 更新记录见 [CHANGELOG.md](CHANGELOG.md)（[英文版 / English](CHANGELOG.en.md)）
 
 [中文](#中文) | [English](#english)
 
@@ -56,6 +56,9 @@ M_Bot 是一个开源的 Oracle Cloud 管理面板：Telegram 机器人 + Web �
   终端 / DNS 管理 / 对象存储 / 邮件服务 / 证书管理 / 巡检计划 / 云报告
 - 创建实例：可用域与子网按所选账号自动填充（来自部署配置），SSH 公钥文件
   有上传就填、没有就留空（可选项，只靠 root 密码登录也能开机）
+- 多区订阅二级菜单：实例 / 启动盘 / 配额 / 创建 / GFW 页的账号下拉旁有
+  区域下拉（多区账号才显示），切换区域后数据按新区域加载，切换账号时
+  区域重置为主区
 - Web SSH：多标签、断线重连 + 快照回放、会话挂起、空闲清理
 - SFTP 文件面板：列表 / 下载 / 上传（分块上传带进度）/ 新建目录 / 删除 /
   重命名 / 在线编辑，三层路径穿越防护
@@ -266,6 +269,10 @@ fully visible and auditable.
   deployment config for the selected account, and the SSH key file is
   prefilled when one exists on the server (optional — root password login
   alone is enough to boot)
+- Multi-region submenu: the instances / volumes / quota / create / GFW
+  pages show a region dropdown next to the account dropdown (multi-region
+  accounts only); switching regions reloads the page for the new region,
+  switching accounts resets the region to the home region
 - Web SSH: multi-tab, reconnect with snapshot replay, session suspend, idle cleanup
 - SFTP file panel: list / download / chunked upload with progress / mkdir /
   delete / rename / online edit, three-layer path traversal protection

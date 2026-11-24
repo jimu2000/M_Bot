@@ -25,8 +25,10 @@ from fastapi.testclient import TestClient
 from oci.client import NotFoundError, RateLimitError
 from oci.grabber import GrabResult
 from web import config
+from web import deps as deps_mod
 from web.app import create_app
 from web.auth import LOGIN_GUARD, SESSIONS, hash_password
+from web.deps import effective_region, get_profile_regions, resolve_profile
 from web.routes.cloudreport import clear_cloud_report_cache
 from web.routes.instances import clear_instance_list_cache
 from web import tasks as tasks_mod
@@ -244,6 +246,29 @@ class TestInstancesApi(WebApiTestCase):
         # 列表调用时带 include_shape_config=True（取 OCPU/内存用）。
         _args, kwargs = mock_list.call_args
         self.assertTrue(kwargs.get("include_shape_config"))
+
+    @patch("web.routes.instances.get_public_ip", return_value=FAKE_IP)
+    @patch("web.routes.instances.list_instances", return_value=FAKE_INSTANCES)
+    @patch("web.routes.instances.resolve_profile")
+    def test_list_instances_region_param(self, mock_resolve, mock_list,
+                                         mock_ip):
+        """?region= 透传给 resolve_profile，响应带回生效的区域。"""
+        mock_cli = MagicMock()
+        mock_cli.region = "ap-seoul-1"
+        mock_resolve.return_value = (
+            mock_cli, "ocid1.tenancy.oc1..testxxxx")
+        r = self.client.get("/api/instances?region=ap-seoul-1")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["region"], "ap-seoul-1")
+        mock_resolve.assert_called_once_with(None, "ap-seoul-1")
+
+    @patch("web.deps.get_profile_regions",
+           return_value={"DEFAULT": ["ap-singapore-1"]})
+    def test_list_instances_unsubscribed_region_400(self, mock_regions):
+        """账号未订阅的区域返回 400（不透传给 OCI）。"""
+        r = self.client.get("/api/instances?region=eu-frankfurt-1")
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("未订阅", r.json()["error"])
 
     @patch("web.routes.instances.get_public_ip",
            side_effect=NotFoundError("no vnic"))
@@ -751,6 +776,40 @@ class TestCreateAndTasksApi(WebApiTestCase):
         # image/subnet/display_name/ssh_keys_file）。
         self.assertEqual(mock_grabber_cls.call_args.args[7], "")
 
+    @patch("web.tasks.notify_boot_success",
+            return_value={"telegram": True, "bark": False, "errors": []})
+    @patch("web.tasks.get_public_ip", return_value="203.0.113.10")
+    @patch("web.tasks.Grabber")
+    @patch("web.routes.create.can_launch", return_value=(True, "可以创建"))
+    @patch("web.deps.get_profile_regions",
+           return_value={"DEFAULT": ["ap-singapore-1", "ap-seoul-1"]})
+    def test_create_with_region_uses_region_client(
+            self, mock_regions, mock_can, mock_grabber_cls, mock_ip,
+            mock_notify):
+        """body 带 region 时 Grabber 用该区域的 OCIClient 创建。"""
+        mock_grabber_cls.return_value.run.return_value = GrabResult(
+            instance_id=FAKE_INSTANCE, attempts=1, releases=0,
+            elapsed_seconds=5.0)
+        body = dict(CREATE_BODY)
+        body["region"] = "ap-seoul-1"
+        r = self.client.post("/api/create", json=body)
+        self.assertEqual(r.status_code, 200)
+        task_id = r.json()["task_id"]
+        self._wait_task_status(task_id, ("done", "failed"))
+        mock_grabber_cls.assert_called_once()
+        cli = mock_grabber_cls.call_args.args[0]
+        self.assertEqual(cli.region, "ap-seoul-1")
+
+    @patch("web.deps.get_profile_regions",
+           return_value={"DEFAULT": ["ap-singapore-1"]})
+    def test_create_unsubscribed_region_400(self, mock_regions):
+        """创建时传未订阅的区域返回 400，不启动 Grabber。"""
+        body = dict(CREATE_BODY)
+        body["region"] = "eu-frankfurt-1"
+        r = self.client.post("/api/create", json=body)
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("未订阅", r.json()["error"])
+
     @patch("web.tasks.Grabber", BlockingGrabber)
     @patch("web.routes.create.can_launch", return_value=(True, "可以创建"))
     def test_cancel_running_task(self, mock_can):
@@ -876,6 +935,23 @@ class TestCreateDefaultsApi(WebApiTestCase):
         self.assertEqual(r.status_code, 400)
         self.assertIn("未知 profile", r.json()["error"])
 
+    def test_defaults_region_param_uses_region_plan(self):
+        """?region=ap-seoul-1 时用 (DEFAULT, ap-seoul-1) 的区域配置。"""
+        plans_path = os.path.join(self._tmp.name, "region_plans.json")
+        with open(plans_path, "w", encoding="utf-8") as handle:
+            json.dump({"DEFAULT": {"ap-seoul-1": {
+                "availability_domain": "seoul:AP-SEOUL-1-AD-1",
+                "subnet_id": "ocid1.subnet.oc1..seoulxxxx"}}}, handle)
+        with patch("tgbot.config.REGION_PLANS_FILE", plans_path), \
+                patch.dict(os.environ, self._env()):
+            r = self.client.get("/api/create/defaults?region=ap-seoul-1")
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertEqual(body["region"], "ap-seoul-1")
+        self.assertEqual(body["availability_domain"],
+                         "seoul:AP-SEOUL-1-AD-1")
+        self.assertEqual(body["subnet_id"], "ocid1.subnet.oc1..seoulxxxx")
+
     @patch("tgbot.config.REGION_PLANS_FILE", "/nonexistent/plans.json")
     def test_defaults_other_region_env_fallback_blank(self):
         """所选账号的区域不是部署默认值所属的区域时，可用域/子网留空
@@ -900,6 +976,105 @@ class TestCreateDefaultsApi(WebApiTestCase):
     def test_defaults_requires_login(self):
         r = self.anon.get("/api/create/defaults")
         self.assertEqual(r.status_code, 401)
+
+
+class TestRegionDeps(unittest.TestCase):
+    """web/deps.py 的区域解析：有效区域、未订阅、订阅列表查不到时放行。"""
+
+    def setUp(self):
+        # 清订阅缓存，避免测试互相串数据。
+        deps_mod._profile_regions = {}
+        deps_mod._profile_regions_at = 0
+
+    def tearDown(self):
+        deps_mod._profile_regions = {}
+        deps_mod._profile_regions_at = 0
+
+    @patch("web.deps.get_profile_regions",
+           return_value={"DEFAULT": ["ap-singapore-1", "ap-seoul-1"]})
+    def test_resolve_profile_region_override(self, mock_regions):
+        cli, _compartment = resolve_profile("DEFAULT", "ap-seoul-1")
+        self.assertEqual(cli.profile, "DEFAULT")
+        self.assertEqual(cli.region, "ap-seoul-1")
+
+    @patch("web.deps.get_profile_regions",
+           return_value={"DEFAULT": ["ap-singapore-1", "ap-seoul-1"]})
+    def test_resolve_profile_unsubscribed_region(self, mock_regions):
+        with self.assertRaises(ValueError) as ctx:
+            resolve_profile("DEFAULT", "eu-frankfurt-1")
+        self.assertIn("未订阅", str(ctx.exception))
+
+    @patch("web.deps.get_profile_regions", return_value={})
+    def test_resolve_profile_fail_open_when_list_unavailable(
+            self, mock_regions):
+        # 订阅列表查不到（空 dict）时放行，与机器人端一致。
+        cli, _compartment = resolve_profile("DEFAULT", "ap-seoul-1")
+        self.assertEqual(cli.region, "ap-seoul-1")
+
+    def test_resolve_profile_no_region_uses_home(self):
+        cli, _compartment = resolve_profile("DEFAULT")
+        self.assertEqual(cli.region, "ap-singapore-1")
+
+    def test_effective_region(self):
+        self.assertEqual(effective_region("DEFAULT", None),
+                         "ap-singapore-1")
+        self.assertEqual(effective_region("DEFAULT", "ap-seoul-1"),
+                         "ap-seoul-1")
+
+    @patch("web.deps.OCIClient")
+    def test_get_profile_regions_caches(self, mock_cli_cls):
+        # 两次调用只查一次 OCI（缓存 1 小时）。
+        mock_cli_cls.return_value.run.return_value = {
+            "data": [{"region-name": "ap-singapore-1"},
+                     {"region-name": "ap-seoul-1"}]}
+        first = get_profile_regions()
+        second = get_profile_regions()
+        self.assertEqual(first,
+                         {"DEFAULT": ["ap-singapore-1", "ap-seoul-1"]})
+        self.assertEqual(second, first)
+        self.assertEqual(mock_cli_cls.return_value.run.call_count, 1)
+
+
+class TestProfilesApi(WebApiTestCase):
+    """GET /api/profiles：账号列表带订阅区域（二级菜单的数据源）。"""
+
+    def setUp(self):
+        super().setUp()
+        self._login()
+
+    @patch("web.routes.profiles.get_region_counts",
+           return_value={"DEFAULT": 3})
+    @patch("web.routes.profiles.get_profile_regions",
+           return_value={"DEFAULT": ["ap-seoul-1", "ap-singapore-1",
+                                     "us-sanjose-1"]})
+    def test_profiles_include_regions(self, mock_regions, mock_counts):
+        r = self.client.get("/api/profiles")
+        self.assertEqual(r.status_code, 200)
+        profs = {p["name"]: p for p in r.json()["profiles"]}
+        prof = profs["DEFAULT"]
+        self.assertEqual(prof["regionCount"], 3)
+        codes = [entry["code"] for entry in prof["regions"]]
+        # 主区排第一，其余按代码排序。
+        self.assertEqual(codes, ["ap-singapore-1", "ap-seoul-1",
+                                 "us-sanjose-1"])
+        self.assertTrue(prof["regions"][0]["isHome"])
+        self.assertFalse(prof["regions"][1]["isHome"])
+        self.assertEqual(prof["regions"][0]["label"], "新加坡")
+        self.assertEqual(prof["regions"][1]["label"], "首尔")
+
+    @patch("web.routes.profiles.get_region_counts", return_value={})
+    @patch("web.routes.profiles.get_profile_regions", return_value={})
+    def test_profiles_regions_fallback_to_home(self, mock_regions,
+                                               mock_counts):
+        # 订阅列表查不到时 regions 只含主区（前端按单区处理，不显示
+        # 二级菜单）。
+        r = self.client.get("/api/profiles")
+        self.assertEqual(r.status_code, 200)
+        profs = {p["name"]: p for p in r.json()["profiles"]}
+        prof = profs["DEFAULT"]
+        self.assertEqual(prof["regions"],
+                         [{"code": "ap-singapore-1", "label": "新加坡",
+                           "isHome": True}])
 
 
 class TestNotifyGrabSuccess(unittest.TestCase):
@@ -1156,6 +1331,15 @@ class TestPages(WebApiTestCase):
         self.assertNotIn(
             'id="ssh-keys-file" placeholder="留空表示不用 SSH 公钥" required',
             html)
+
+    def test_region_dropdown_on_profile_pages(self):
+        """有账号下拉的 5 个页面都有二级区域下拉（region-select）。"""
+        self._login()
+        for path in ("/instances", "/volumes", "/quota", "/create", "/gfw"):
+            r = self.client.get(path)
+            self.assertEqual(r.status_code, 200, path)
+            self.assertIn('id="region-select"', r.text, path)
+            self.assertIn('id="region-wrap"', r.text, path)
 
 
 if __name__ == "__main__":

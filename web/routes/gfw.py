@@ -5,8 +5,8 @@
     各实例上次检查结果、检查间隔。
   - POST /api/gfw/key：设置 RIPE Atlas API Key，body {key}；
     Key 只存 tgbot/data/gfw.json（0600），响应里只返回脱敏值。
-  - GET /api/gfw/instances?profile=：该账号主区的 RUNNING 实例
-    （带公网 IP），供页面渲染开关列表。
+  - GET /api/gfw/instances?profile=&region=：该账号指定区域的 RUNNING
+    实例（带公网 IP），供页面渲染开关列表；region 不传时用主区。
   - POST /api/gfw/toggle：开关某实例的监控，body
     {instance_id, enabled, profile?, region?, name?, ip?}。
   - POST /api/gfw/check-now：后台线程立即跑一轮检查（每台约 1-2
@@ -127,10 +127,11 @@ def gfw_set_key(body: GfwKeyBody, user: str = Depends(get_current_user)):
 
 @router.get("/api/gfw/instances")
 def gfw_instances(profile: str = Query("DEFAULT"),
+                  region: str = Query(default=None),
                   user: str = Depends(get_current_user)):
-    """该账号主区的 RUNNING 实例（带公网 IP），供开关列表用。"""
+    """该账号指定区域的 RUNNING 实例（带公网 IP），供开关列表用。"""
     try:
-        cli, compartment_id = resolve_profile(profile)
+        cli, compartment_id = resolve_profile(profile, region)
         instances = attach_public_ips(
             cli, list_instances(cli, compartment_id) or [])
     except ValueError as exc:
@@ -145,7 +146,8 @@ def gfw_instances(profile: str = Query("DEFAULT"),
     } for inst in instances
         if inst.get("lifecycle-state") == "RUNNING"
         and inst.get("public-ip")]
-    return {"ok": True, "profile": profile, "instances": running}
+    return {"ok": True, "profile": profile, "region": cli.region,
+            "instances": running}
 
 
 @router.post("/api/gfw/toggle")

@@ -50,10 +50,11 @@ class CreateSmtpCredentialBody(BaseModel):
 
 @router.get("/api/email/senders")
 def list_all_senders(profile: str = Query(default=None),
+                     region: str = Query(default=None),
                      username: str = Depends(get_current_user)):
     """已批准发件人列表。"""
     try:
-        cli, compartment_id = resolve_profile(profile)
+        cli, compartment_id = resolve_profile(profile, region)
         senders = list_senders(cli, compartment_id)
     except ValueError as exc:
         return error_response(str(exc), status_code=400)
@@ -67,10 +68,11 @@ def list_all_senders(profile: str = Query(default=None),
 @router.post("/api/email/senders", status_code=201)
 def create_new_sender(body: CreateSenderBody,
                       profile: str = Query(default=None),
+                      region: str = Query(default=None),
                       username: str = Depends(get_current_user)):
     """创建发件人（之后需点击验证邮件里的链接才能使用）。"""
     try:
-        cli, compartment_id = resolve_profile(profile)
+        cli, compartment_id = resolve_profile(profile, region)
         sender = create_sender(cli, compartment_id, body.email_address)
     except ValueError as exc:
         return error_response(str(exc), status_code=400)
@@ -81,10 +83,11 @@ def create_new_sender(body: CreateSenderBody,
 
 @router.get("/api/email/users")
 def list_all_users(profile: str = Query(default=None),
+                   region: str = Query(default=None),
                    username: str = Depends(get_current_user)):
     """IAM 用户列表（给 SMTP 凭据选所属用户）。"""
     try:
-        cli, compartment_id = resolve_profile(profile)
+        cli, compartment_id = resolve_profile(profile, region)
         users = list_iam_users(cli, compartment_id)
     except ValueError as exc:
         return error_response(str(exc), status_code=400)
@@ -98,6 +101,7 @@ def list_all_users(profile: str = Query(default=None),
 @router.post("/api/email/smtp-credentials", status_code=201)
 def create_new_smtp_credential(body: CreateSmtpCredentialBody,
                                profile: str = Query(default=None),
+                               region: str = Query(default=None),
                                username: str = Depends(get_current_user)):
     """给指定 IAM 用户生成 SMTP 凭据。
 
@@ -105,7 +109,7 @@ def create_new_smtp_credential(body: CreateSmtpCredentialBody,
     后端不保存、不记日志，前端必须明确提示用户立即保存。
     """
     try:
-        cli, _compartment_id = resolve_profile(profile)
+        cli, _compartment_id = resolve_profile(profile, region)
         credential = create_smtp_credential(cli, body.user_id,
                                             description=body.description)
     except ValueError as exc:

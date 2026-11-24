@@ -3,6 +3,7 @@
   "use strict";
 
   var currentProfile = null; // 当前账号（profile），由 fillProfileSelect 恢复
+  var currentRegion = null; // 当前工作区域，由 fillRegionSelect 恢复（多区账号才有二级下拉）
   function setBar(fillId, textId, used, limit, unit) {
     var fill = document.getElementById(fillId);
     var text = document.getElementById(textId);
@@ -16,12 +17,12 @@
 
   // 加载配额汇总（走前端缓存；force=true 时跳过缓存重新拉取）
   function loadQuota(force) {
-    var prof = currentProfile || "DEFAULT";
+    var prof = (currentProfile || "DEFAULT") + ":" + (currentRegion || "");
     document.getElementById("quota-loading").hidden = false;
     document.getElementById("quota-error").hidden = true;
     document.getElementById("quota-cards").hidden = true;
     RBot.cachedApi("quota:summary:" + prof,
-      RBot.withProfile("/api/quota", currentProfile), !!force).then(function (res) {
+      RBot.withProfile("/api/quota", currentProfile, currentRegion), !!force).then(function (res) {
       var s = res.summary;
       document.getElementById("quota-profile").textContent = res.profile || "—";
       document.getElementById("quota-overall").textContent = s.overall_ok
@@ -53,8 +54,8 @@
   function loadA1Quota(force) {
     var el = document.getElementById("a1-over-warning");
     if (!el) return;
-    RBot.cachedApi("quota:a1:" + (currentProfile || "DEFAULT"),
-      RBot.withProfile("/api/quota/a1", currentProfile), !!force).then(function (res) {
+    RBot.cachedApi("quota:a1:" + (currentProfile || "DEFAULT") + ":" + (currentRegion || ""),
+      RBot.withProfile("/api/quota/a1", currentProfile, currentRegion), !!force).then(function (res) {
       var a1 = res.a1 || {};
       if (a1.over) {
         var parts = [];
@@ -82,8 +83,8 @@
     var listEl = document.getElementById("a1-health-list");
     statusEl.textContent = "加载中…";
     listEl.innerHTML = "";
-    RBot.cachedApi("quota:health:" + (currentProfile || "DEFAULT"),
-      RBot.withProfile("/api/quota/a1-health", currentProfile), !!force).then(function (res) {
+    RBot.cachedApi("quota:health:" + (currentProfile || "DEFAULT") + ":" + (currentRegion || ""),
+      RBot.withProfile("/api/quota/a1-health", currentProfile, currentRegion), !!force).then(function (res) {
       var health = res.health || {};
       var suggestions = health.suggestions || [];
       statusEl.textContent = health.overall_ok
@@ -101,11 +102,14 @@
   }
 
   document.addEventListener("DOMContentLoaded", function () {
-    // 先填 profile 下拉（恢复上次选择），再按当前账号加载配额；
-    // profiles 接口失败时仍按默认账号加载，不让页面空白。
+    // 先填 profile 下拉（恢复上次选择），再填区域下拉（多区账号才显示），
+    // 最后按当前账号 + 区域加载配额；profiles 接口失败时仍按默认账号加载，
+    // 不让页面空白。
     var profileSelect = document.getElementById("profile-select");
+    var regionSelect = document.getElementById("region-select");
     RBot.fillProfileSelect(profileSelect).then(function (profile) {
       currentProfile = profile;
+      currentRegion = RBot.fillRegionSelect(regionSelect, currentProfile);
       loadQuota();
     }).catch(function () {
       loadQuota();
@@ -113,6 +117,14 @@
     profileSelect.addEventListener("change", function (e) {
       currentProfile = e.target.value;
       RBot.setProfile(currentProfile);
+      // 切账号时区域重置为新账号的主区（与机器人端一致）。
+      RBot.setRegion(null);
+      currentRegion = RBot.fillRegionSelect(regionSelect, currentProfile);
+      loadQuota();
+    });
+    regionSelect.addEventListener("change", function (e) {
+      currentRegion = e.target.value;
+      RBot.setRegion(currentRegion);
       loadQuota();
     });
     document.getElementById("btn-refresh-quota").addEventListener("click", function () { loadQuota(true); });

@@ -6,6 +6,7 @@
   var orphans = [];
   var backups = [];
   var currentProfile = null; // 当前账号（profile），由 fillProfileSelect 恢复
+  var currentRegion = null; // 当前工作区域，由 fillRegionSelect 恢复（多区账号才有二级下拉）
   var loadGen = 0; // 加载代次：每次 loadAll 递增，旧代次的异步结果不再
                    // 写回共享列表，避免快速切账号时新旧数据串台。
   var resizeTarget = null;
@@ -214,10 +215,10 @@
   // 加载备份列表 + 配额（走前端缓存；force=true 时跳过缓存重新拉取）
   async function loadBackups(force) {
     var gen = loadGen; // 捕获当前代次，切账号后旧代次不再写回
-    var prof = currentProfile || "DEFAULT";
+    var prof = (currentProfile || "DEFAULT") + ":" + (currentRegion || "");
     try {
       var data = await RBot.cachedApi("bb:list:" + prof,
-        RBot.withProfile("/api/boot-backups", currentProfile), !!force);
+        RBot.withProfile("/api/boot-backups", currentProfile, currentRegion), !!force);
       if (gen !== loadGen) return;
       backups = data.backups || [];
     } catch (err) {
@@ -229,7 +230,7 @@
     }
     try {
       var quota = await RBot.cachedApi("bb:quota:" + prof,
-        RBot.withProfile("/api/boot-backups/quota", currentProfile), !!force);
+        RBot.withProfile("/api/boot-backups/quota", currentProfile, currentRegion), !!force);
       if (gen !== loadGen) return;
       backupPaid = !!quota.paid;
       var el = document.getElementById("backup-quota");
@@ -253,10 +254,10 @@
   // 加载卷列表 + 孤儿盘（走前端缓存；force=true 时跳过缓存重新拉取）
   async function loadAll(force) {
     var gen = ++loadGen; // 新一代次加载开始，旧代次的结果作废
-    var prof = currentProfile || "DEFAULT";
+    var prof = (currentProfile || "DEFAULT") + ":" + (currentRegion || "");
     try {
       var data = await RBot.cachedApi("vol:list:" + prof,
-        RBot.withProfile("/api/volumes", currentProfile), !!force);
+        RBot.withProfile("/api/volumes", currentProfile, currentRegion), !!force);
       if (gen !== loadGen) return;
       volumes = data.volumes || [];
     } catch (err) {
@@ -267,7 +268,7 @@
     }
     try {
       var o = await RBot.cachedApi("vol:orphans:" + prof,
-        RBot.withProfile("/api/volumes/orphans", currentProfile), !!force);
+        RBot.withProfile("/api/volumes/orphans", currentProfile, currentRegion), !!force);
       if (gen !== loadGen) return;
       // 兼容两种返回键名：orphans 或 volumes
       orphans = o.orphans || o.volumes || [];
@@ -291,12 +292,15 @@
   }
 
   document.addEventListener("DOMContentLoaded", function () {
-    // 先填 profile 下拉（恢复上次选择），再按当前账号加载列表；
-    // profiles 接口失败时仍按默认账号加载，不让页面空白。
+    // 先填 profile 下拉（恢复上次选择），再填区域下拉（多区账号才显示），
+    // 最后按当前账号 + 区域加载列表；profiles 接口失败时仍按默认账号加载，
+    // 不让页面空白。
     var profileSelect = document.getElementById("profile-select");
+    var regionSelect = document.getElementById("region-select");
     showLoading();
     RBot.fillProfileSelect(profileSelect).then(function (profile) {
       currentProfile = profile;
+      currentRegion = RBot.fillRegionSelect(regionSelect, currentProfile);
       loadAll();
     }).catch(function () {
       loadAll();
@@ -304,10 +308,23 @@
     profileSelect.addEventListener("change", function (e) {
       currentProfile = e.target.value;
       RBot.setProfile(currentProfile);
+      // 切账号时区域重置为新账号的主区（与机器人端一致）。
+      RBot.setRegion(null);
+      currentRegion = RBot.fillRegionSelect(regionSelect, currentProfile);
       // 切账号时先清空列表、显示加载中（含配额标题），再加载新
       // 账号数据，避免旧账号数据一直显示到新数据回来（同
       // instances.js v1.6.0 的做法；浏览器实测 2026-11-24：不清空
       // 时切换后仍显示旧账号数据，配额标题还会闪旧数字）。
+      volumes = [];
+      orphans = [];
+      backups = [];
+      selectedBackups = {};
+      showLoading();
+      loadAll(true);
+    });
+    regionSelect.addEventListener("change", function (e) {
+      currentRegion = e.target.value;
+      RBot.setRegion(currentRegion);
       volumes = [];
       orphans = [];
       backups = [];
@@ -410,7 +427,7 @@
         "确认删除 " + ids.length + " 个备份", true);
       if (!ok) return;
       try {
-        var res = await RBot.api(RBot.withProfile("/api/boot-backups/delete-batch", currentProfile), {
+        var res = await RBot.api(RBot.withProfile("/api/boot-backups/delete-batch", currentProfile, currentRegion), {
           method: "POST",
           body: { backup_ids: ids },
         });
@@ -430,7 +447,7 @@
     // 付费账号开关：与机器人端共用同一份配置
     document.getElementById("btn-toggle-paid").addEventListener("click", async function () {
       try {
-        var res = await RBot.api(RBot.withProfile("/api/boot-backups/paid", currentProfile), {
+        var res = await RBot.api(RBot.withProfile("/api/boot-backups/paid", currentProfile, currentRegion), {
           method: "POST",
           body: { paid: !backupPaid },
         });
@@ -468,7 +485,7 @@
       submitBtn.disabled = true;
       RBot.toast("正在从备份重建启动盘并开机，请耐心等待…", "info");
       try {
-        var res = await RBot.api(RBot.withProfile("/api/boot-backups/" + encodeURIComponent(restoreTarget.id) + "/restore", currentProfile), {
+        var res = await RBot.api(RBot.withProfile("/api/boot-backups/" + encodeURIComponent(restoreTarget.id) + "/restore", currentProfile, currentRegion), {
           method: "POST",
           body: body,
         });
@@ -486,7 +503,7 @@
     document.getElementById("btn-confirm-delete-backup").addEventListener("click", async function () {
       if (!deleteBackupTarget) return;
       try {
-        await RBot.api(RBot.withProfile("/api/boot-backups/" + encodeURIComponent(deleteBackupTarget.id) + "?confirm=true", currentProfile), { method: "DELETE" });
+        await RBot.api(RBot.withProfile("/api/boot-backups/" + encodeURIComponent(deleteBackupTarget.id) + "?confirm=true", currentProfile, currentRegion), { method: "DELETE" });
         RBot.toast("备份已删除", "success");
         RBot.closeModal("delete-backup-modal");
         RBot.cacheClear("bb:");
@@ -506,7 +523,7 @@
         return;
       }
       try {
-        await RBot.api(RBot.withProfile("/api/volumes/" + encodeURIComponent(resizeTarget.id) + "/resize", currentProfile), {
+        await RBot.api(RBot.withProfile("/api/volumes/" + encodeURIComponent(resizeTarget.id) + "/resize", currentProfile, currentRegion), {
           method: "POST",
           body: { size_in_gbs: newSize },
         });
@@ -529,7 +546,7 @@
         return;
       }
       try {
-        await RBot.api(RBot.withProfile("/api/volumes/" + encodeURIComponent(vpusTarget.id) + "/vpus", currentProfile), {
+        await RBot.api(RBot.withProfile("/api/volumes/" + encodeURIComponent(vpusTarget.id) + "/vpus", currentProfile, currentRegion), {
           method: "POST",
           body: { vpus_per_gb: newVpus },
         });
@@ -546,7 +563,7 @@
     document.getElementById("btn-confirm-delete-volume").addEventListener("click", async function () {
       if (!deleteTarget) return;
       try {
-        await RBot.api(RBot.withProfile("/api/volumes/" + encodeURIComponent(deleteTarget.id), currentProfile), { method: "DELETE" });
+        await RBot.api(RBot.withProfile("/api/volumes/" + encodeURIComponent(deleteTarget.id), currentProfile, currentRegion), { method: "DELETE" });
         RBot.toast("启动盘已删除", "success");
         RBot.closeModal("delete-volume-modal");
         RBot.cacheClear("vol:");

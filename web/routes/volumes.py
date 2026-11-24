@@ -141,10 +141,11 @@ class VpusBody(BaseModel):
 
 @router.get("/api/volumes/orphans")
 def orphans(profile: str = Query(default=None),
+            region: str = Query(default=None),
             username: str = Depends(get_current_user)):
     """列出孤儿启动盘（可清理的、释放实例后留下的盘）。"""
     try:
-        cli, compartment_id = resolve_profile(profile)
+        cli, compartment_id = resolve_profile(profile, region)
         volumes = list_orphan_boot_volumes(cli, compartment_id)
         volumes = _format_volumes(cli, compartment_id, volumes)
     except ValueError as exc:
@@ -153,15 +154,17 @@ def orphans(profile: str = Query(default=None),
         return oci_error_response(exc)
     return {"ok": True,
             "profile": profile or config.DEFAULT_PROFILE,
+            "region": cli.region,
             "volumes": volumes}
 
 
 @router.get("/api/volumes")
 def list_all(profile: str = Query(default=None),
+             region: str = Query(default=None),
              username: str = Depends(get_current_user)):
-    """列出该账号下的全部启动盘（R-Bot 形状，含挂载关系）。"""
+    """列出该账号指定区域下的全部启动盘（R-Bot 形状，含挂载关系）。"""
     try:
-        cli, compartment_id = resolve_profile(profile)
+        cli, compartment_id = resolve_profile(profile, region)
         volumes = list_boot_volumes(cli, compartment_id)
         volumes = _format_volumes(cli, compartment_id, volumes)
     except ValueError as exc:
@@ -170,16 +173,18 @@ def list_all(profile: str = Query(default=None),
         return oci_error_response(exc)
     return {"ok": True,
             "profile": profile or config.DEFAULT_PROFILE,
+            "region": cli.region,
             "volumes": volumes}
 
 
 @router.get("/api/volumes/{volume_id}")
 def detail(volume_id: str,
            profile: str = Query(default=None),
+           region: str = Query(default=None),
            username: str = Depends(get_current_user)):
     """查单个启动盘详情。"""
     try:
-        cli, _compartment_id = resolve_profile(profile)
+        cli, _compartment_id = resolve_profile(profile, region)
         volume = get_boot_volume(cli, volume_id)
     except ValueError as exc:
         return error_response(str(exc), status_code=400)
@@ -192,10 +197,11 @@ def detail(volume_id: str,
 def resize(volume_id: str,
            body: ResizeBody,
            profile: str = Query(default=None),
+           region: str = Query(default=None),
            username: str = Depends(get_current_user)):
     """启动盘扩容：新容量必须大于当前容量（只能扩不能缩）。"""
     try:
-        cli, _compartment_id = resolve_profile(profile)
+        cli, _compartment_id = resolve_profile(profile, region)
         current = get_boot_volume(cli, volume_id)
         current_gb = (current or {}).get("size-in-gbs")
         if current_gb is not None and body.size_in_gbs <= current_gb:
@@ -214,13 +220,14 @@ def resize(volume_id: str,
 def update_vpus(volume_id: str,
                 body: VpusBody,
                 profile: str = Query(default=None),
+                region: str = Query(default=None),
                 username: str = Depends(get_current_user)):
     """修改启动盘 VPU（10=默认，20=高性能，30=超高性能）。
 
     无效值返回 400（见 update_boot_volume_vpus 的校验）。
     """
     try:
-        cli, _compartment_id = resolve_profile(profile)
+        cli, _compartment_id = resolve_profile(profile, region)
         volume = update_boot_volume_vpus(cli, volume_id, body.vpus_per_gb)
     except ValueError as exc:
         return error_response(str(exc), status_code=400)
@@ -232,10 +239,11 @@ def update_vpus(volume_id: str,
 @router.delete("/api/volumes/{volume_id}")
 def delete(volume_id: str,
            profile: str = Query(default=None),
+           region: str = Query(default=None),
            username: str = Depends(get_current_user)):
     """删除启动盘（只能删未附加的盘；删了不可恢复）。"""
     try:
-        cli, _compartment_id = resolve_profile(profile)
+        cli, _compartment_id = resolve_profile(profile, region)
         delete_boot_volume(cli, volume_id)
     except ValueError as exc:
         return error_response(str(exc), status_code=400)

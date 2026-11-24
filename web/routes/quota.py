@@ -39,10 +39,11 @@ class CanLaunchBody(BaseModel):
 
 @router.get("/api/quota")
 def quota_summary(profile: str = Query(default=None),
+                  region: str = Query(default=None),
                   username: str = Depends(get_current_user)):
     """免费额度汇总（A1 / E2 / 启动盘）。"""
     try:
-        cli, compartment_id = resolve_profile(profile)
+        cli, compartment_id = resolve_profile(profile, region)
         summary = get_free_tier_summary(cli, compartment_id)
     except ValueError as exc:
         return error_response(str(exc), status_code=400)
@@ -89,10 +90,11 @@ def format_a1_quota(usage):
 
 @router.get("/api/quota/a1")
 def a1_quota(profile: str = Query(default=None),
+             region: str = Query(default=None),
              username: str = Depends(get_current_user)):
     """A1 配额（R-Bot 形状：cap 为免费上限 4 核/24GB）。"""
     try:
-        cli, compartment_id = resolve_profile(profile)
+        cli, compartment_id = resolve_profile(profile, region)
         usage = get_a1_usage(cli, compartment_id)
     except ValueError as exc:
         return error_response(str(exc), status_code=400)
@@ -105,10 +107,11 @@ def a1_quota(profile: str = Query(default=None),
 
 @router.get("/api/quota/a1-health")
 def a1_health(profile: str = Query(default=None),
+              region: str = Query(default=None),
               username: str = Depends(get_current_user)):
     """A1 配置体检：超限检查 + 降配建议 + 启动盘检查。"""
     try:
-        cli, compartment_id = resolve_profile(profile)
+        cli, compartment_id = resolve_profile(profile, region)
         result = a1_health_check(cli, compartment_id)
     except ValueError as exc:
         return error_response(str(exc), status_code=400)
@@ -122,10 +125,11 @@ def a1_health(profile: str = Query(default=None),
 @router.post("/api/quota/can-launch")
 def can_launch_endpoint(body: CanLaunchBody,
                         profile: str = Query(default=None),
+                        region: str = Query(default=None),
                         username: str = Depends(get_current_user)):
     """判断能不能再开一台指定规格的实例（不通过时返回原因）。"""
     try:
-        cli, compartment_id = resolve_profile(profile)
+        cli, compartment_id = resolve_profile(profile, region)
         ok, reason = can_launch(cli, compartment_id, body.shape,
                                 ocpus=body.ocpus, memory_gb=body.memory_gb)
     except ValueError as exc:

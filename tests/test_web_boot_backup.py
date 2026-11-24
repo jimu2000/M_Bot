@@ -155,7 +155,7 @@ class TestQuotaApi(BootBackupTestCase):
     def test_quota_passes_profile(self, mock_resolve, mock_quota):
         r = self.client.get("/api/boot-backups/quota?profile=ACCOUNT2")
         self.assertEqual(r.status_code, 200)
-        mock_resolve.assert_called_once_with("ACCOUNT2")
+        mock_resolve.assert_called_once_with("ACCOUNT2", None)
 
 
 class TestPaidApi(BootBackupTestCase):

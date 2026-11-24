@@ -1,6 +1,6 @@
 /* GFW 自动换 IP 页（菜单 16 的网页版）。
  * 数据：GET /api/gfw/status（Key 状态 + 已开启 + 上次检查）、
- * GET /api/gfw/instances?profile=（当前账号主区 RUNNING 实例）。
+ * GET /api/gfw/instances?profile=&region=（当前账号当前区域的 RUNNING 实例）。
  * 操作：POST /api/gfw/key（保存 Key）、POST /api/gfw/toggle（开关）、
  * POST /api/gfw/check-now（后台立即检查，完成后发通知）。
  */
@@ -8,6 +8,7 @@
   "use strict";
 
   var currentProfile = "DEFAULT";
+  var currentRegion = null; // 当前工作区域，由 fillRegionSelect 恢复（多区账号才有二级下拉）
   var statusData = null;
   var instances = [];
 
@@ -86,8 +87,8 @@
     document.getElementById("gfw-body").hidden = true;
     Promise.all([
       RBot.api("/api/gfw/status"),
-      RBot.cachedApi("gfw:instances:" + currentProfile,
-        RBot.withProfile("/api/gfw/instances", currentProfile), !!force)
+      RBot.cachedApi("gfw:instances:" + currentProfile + ":" + (currentRegion || ""),
+        RBot.withProfile("/api/gfw/instances", currentProfile, currentRegion), !!force)
     ]).then(function (results) {
       statusData = results[0];
       instances = (results[1] && results[1].instances) || [];
@@ -110,6 +111,7 @@
         instance_id: instanceId,
         enabled: enable,
         profile: currentProfile,
+        region: currentRegion,
         name: inst ? inst["display-name"] : "",
         ip: inst ? inst["public-ip"] : ""
       })
@@ -123,13 +125,23 @@
 
   document.addEventListener("DOMContentLoaded", function () {
     var profileSelect = document.getElementById("profile-select");
+    var regionSelect = document.getElementById("region-select");
     RBot.fillProfileSelect(profileSelect).then(function (profile) {
       currentProfile = profile || "DEFAULT";
+      currentRegion = RBot.fillRegionSelect(regionSelect, currentProfile);
       loadAll(false);
     });
     profileSelect.addEventListener("change", function (e) {
       currentProfile = e.target.value;
       RBot.setProfile(currentProfile);
+      // 切账号时区域重置为新账号的主区（与机器人端一致）。
+      RBot.setRegion(null);
+      currentRegion = RBot.fillRegionSelect(regionSelect, currentProfile);
+      loadAll(true);
+    });
+    regionSelect.addEventListener("change", function (e) {
+      currentRegion = e.target.value;
+      RBot.setRegion(currentRegion);
       loadAll(true);
     });
     document.getElementById("btn-refresh-gfw").addEventListener("click", function () {

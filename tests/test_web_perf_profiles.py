@@ -220,13 +220,18 @@ class TestInstancesParallelAndCache(_Base):
                    return_value="203.0.113.10"):
             self.client.get("/api/instances")
             # 把缓存条目标记为已过期
-            entry = instances_routes._LIST_CACHE[("DEFAULT", "running")]
+            entry = instances_routes._LIST_CACHE[
+                ("DEFAULT", "ap-singapore-1", "running")]
             entry["expires"] = time.monotonic() - 1
             self.client.get("/api/instances")
         self.assertEqual(mock_list.call_count, 2)
 
     def test_list_cache_keyed_by_profile_and_state(self):
         with patch("web.config.PROFILES", FAKE_PROFILES), \
+             patch("web.deps.get_profile_regions",
+                   return_value={"DEFAULT": ["ap-singapore-1",
+                                             "ap-seoul-1"],
+                                 "ACCOUNT2": ["us-sanjose-1"]}), \
              patch("web.routes.instances.list_instances",
                    return_value=FAKE_INSTANCES_3) as mock_list, \
              patch("web.routes.instances.get_public_ip",
@@ -234,8 +239,9 @@ class TestInstancesParallelAndCache(_Base):
             self.client.get("/api/instances")
             self.client.get("/api/instances?profile=ACCOUNT2")
             self.client.get("/api/instances?state=all")
-        # 不同 profile / 不同 state 是不同缓存键，各调一次
-        self.assertEqual(mock_list.call_count, 3)
+            self.client.get("/api/instances?region=ap-seoul-1")
+        # 不同 profile / 不同 state / 不同 region 是不同缓存键，各调一次
+        self.assertEqual(mock_list.call_count, 4)
 
     def test_mutation_invalidates_cache(self):
         with patch("web.routes.instances.list_instances",

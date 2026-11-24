@@ -160,7 +160,7 @@ class TestChangeIpApi(InstanceOpsTestCase):
             f"/api/instances/{FAKE_INSTANCE}/change-ip?profile=ACCOUNT2",
             json={"confirm": True})
         self.assertEqual(r.status_code, 200)
-        mock_resolve.assert_called_once_with("ACCOUNT2")
+        mock_resolve.assert_called_once_with("ACCOUNT2", None)
 
     @patch("web.routes.instances.change_public_ip",
            return_value=FAKE_NEW_IP)

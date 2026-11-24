@@ -55,10 +55,11 @@ def _resolve_namespace(cli):
 
 @router.get("/api/objectstorage/buckets")
 def list_all_buckets(profile: str = Query(default=None),
+                     region: str = Query(default=None),
                      username: str = Depends(get_current_user)):
     """Bucket 列表。"""
     try:
-        cli, compartment_id = resolve_profile(profile)
+        cli, compartment_id = resolve_profile(profile, region)
         namespace = _resolve_namespace(cli)
         buckets = list_buckets(cli, compartment_id, namespace=namespace)
     except ValueError as exc:
@@ -73,10 +74,11 @@ def list_all_buckets(profile: str = Query(default=None),
 @router.post("/api/objectstorage/buckets", status_code=201)
 def create_new_bucket(body: CreateBucketBody,
                       profile: str = Query(default=None),
+                      region: str = Query(default=None),
                       username: str = Depends(get_current_user)):
     """新建 Bucket（默认私有访问、标准存储层）。"""
     try:
-        cli, compartment_id = resolve_profile(profile)
+        cli, compartment_id = resolve_profile(profile, region)
         namespace = _resolve_namespace(cli)
         bucket = create_bucket(cli, compartment_id, body.name,
                                namespace=namespace)
@@ -91,10 +93,11 @@ def create_new_bucket(body: CreateBucketBody,
 def delete_bucket_route(bucket_name: str,
                         empty: bool = Query(default=False),
                         profile: str = Query(default=None),
+                        region: str = Query(default=None),
                         username: str = Depends(get_current_user)):
     """删除 Bucket（只能删空 Bucket；empty=true 时连对象一起删，不可恢复）。"""
     try:
-        cli, _compartment_id = resolve_profile(profile)
+        cli, _compartment_id = resolve_profile(profile, region)
         namespace = _resolve_namespace(cli)
         delete_bucket(cli, bucket_name, namespace=namespace, empty=empty)
     except ValueError as exc:
@@ -107,10 +110,11 @@ def delete_bucket_route(bucket_name: str,
 @router.get("/api/objectstorage/buckets/{bucket_name}/objects")
 def list_bucket_objects(bucket_name: str,
                         profile: str = Query(default=None),
+                        region: str = Query(default=None),
                         username: str = Depends(get_current_user)):
     """某 Bucket 下的对象列表。"""
     try:
-        cli, _compartment_id = resolve_profile(profile)
+        cli, _compartment_id = resolve_profile(profile, region)
         namespace = _resolve_namespace(cli)
         objects = list_objects(cli, bucket_name, namespace=namespace)
     except ValueError as exc:
@@ -126,6 +130,7 @@ async def upload_bucket_object(bucket_name: str,
                                file: UploadFile = File(...),
                                name: str = Form(default=None),
                                profile: str = Query(default=None),
+                               region: str = Query(default=None),
                                username: str = Depends(get_current_user)):
     """上传一个文件为对象（同名对象会被覆盖）。
 
@@ -138,7 +143,7 @@ async def upload_bucket_object(bucket_name: str,
                               "或显式传 name 参数）", status_code=400)
     tmp_path = None
     try:
-        cli, _compartment_id = resolve_profile(profile)
+        cli, _compartment_id = resolve_profile(profile, region)
         namespace = _resolve_namespace(cli)
         with tempfile.NamedTemporaryFile(delete=False) as tmp:
             tmp_path = tmp.name
@@ -161,13 +166,14 @@ async def upload_bucket_object(bucket_name: str,
 @router.delete("/api/objectstorage/buckets/{bucket_name}/objects/{object_name:path}")
 def delete_bucket_object(bucket_name: str, object_name: str,
                          profile: str = Query(default=None),
+                         region: str = Query(default=None),
                          username: str = Depends(get_current_user)):
     """删除 Bucket 里的一个对象（不可恢复）。
 
     object_name 用 :path 转换器：对象名里可能含斜杠（如 "dir/file.txt"）。
     """
     try:
-        cli, _compartment_id = resolve_profile(profile)
+        cli, _compartment_id = resolve_profile(profile, region)
         namespace = _resolve_namespace(cli)
         delete_object(cli, bucket_name, object_name, namespace=namespace)
     except ValueError as exc:
