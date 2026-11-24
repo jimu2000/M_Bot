@@ -126,6 +126,7 @@ class TaskRegistry:
                     "kind": record.get("kind", "?"),
                     "status": record.get("status", "cancelled"),
                     "detail": record.get("detail", ""),
+                    "label": record.get("label"),
                     "logs": list(record.get("logs") or []),
                     "result": record.get("result"),
                     "created_at": record.get("created_at", time.time()),
@@ -154,6 +155,7 @@ class TaskRegistry:
             "kind": task["kind"],
             "status": task["status"],
             "detail": task["detail"],
+            "label": task.get("label"),
             "logs": list(task["logs"]),
             "result": task["result"],
             "created_at": task["created_at"],
@@ -165,8 +167,13 @@ class TaskRegistry:
 
     # ---------------- 注册 / 查询 ----------------
 
-    def create(self, kind, detail=""):
-        """注册一个任务，返回短 ID（如抢机任务 "g1"）。初始状态 pending。"""
+    def create(self, kind, detail="", label=None):
+        """注册一个任务，返回短 ID（如抢机任务 "g1"）。初始状态 pending。
+
+        label 是显示用的任务说明（如 "E2.1.Micro（新加坡）·
+        AMD_2026-11-24"），任务页用它当第一列，不再直接暴露
+        grab 这类内部类型；旧任务没有 label 时前端退回 kind。
+        """
         with self._lock:
             self._counter += 1
             task_id = f"{kind[0]}{self._counter}"
@@ -175,6 +182,7 @@ class TaskRegistry:
                 "kind": kind,
                 "status": "pending",
                 "detail": detail,
+                "label": label,
                 "logs": [],
                 "result": None,
                 "created_at": time.time(),
@@ -407,7 +415,14 @@ def start_grab_task(registry, cli, compartment_id, params,
               f"（{params.get('shape', '?')}）")
     if detail_prefix:
         detail = f"{detail_prefix}：{detail}"
-    task_id = registry.create("grab", detail=detail)
+    shape_short = str(params.get("shape", "?")).replace("VM.Standard.", "")
+    region_label = (notify or {}).get("region_label")
+    if region_label:
+        label = (f"{shape_short}（{region_label}）· "
+                 f"{params.get('display_name', '?')}")
+    else:
+        label = f"{shape_short} · {params.get('display_name', '?')}"
+    task_id = registry.create("grab", detail=detail, label=label)
     thread = threading.Thread(
         target=_run_grabber,
         args=(registry, task_id, cli, compartment_id, params, notify),

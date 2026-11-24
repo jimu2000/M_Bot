@@ -500,87 +500,119 @@ tr.task-row.expanded { background: var(--surface-hover); }
 [hidden] { display: none !important; }
 
 /* ================= 登录页 ================= */
+/* 设计基于 Uiverse 开源组件 "Form by iZOXVL"（silly-moth-15，MIT 许可）：
+   蓝紫渐变卡片 + 下划线浮动标签；纯 CSS 复刻，不引入 Tailwind。 */
 .login-page {
   min-height: 100vh;
   display: flex;
-  background: var(--login-bg);
-  color: #e2e8f0;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 16px;
+  background: #212121;
+  color: #fff;
 }
-.login-side {
-  flex: 1.2;
-  padding: 48px;
-  display: flex; flex-direction: column; justify-content: center;
+.login-card {
+  width: 100%; max-width: 28rem;
+  background: linear-gradient(to right, #1e40af, #9333ea);
+  border-radius: 0.75rem;
+  padding: 2rem;
+  box-shadow: 0 25px 50px -12px rgb(0 0 0 / 0.25);
   overflow: hidden;
 }
-.login-side pre {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 13px; line-height: 1.7;
-  color: rgba(226, 232, 240, 0.55);
+.login-title {
   margin: 0;
-  white-space: pre-wrap;
+  text-align: center;
+  /* 标题是面板全名（较长），字号收小一档保证单行放得下 */
+  font-size: 1.75rem; line-height: 2.25rem; font-weight: 800;
+  color: #fff;
 }
-.login-side pre .cmd { color: #4ade80; }
-.login-main { flex: 1; display: flex; align-items: center; justify-content: center; padding: 24px; }
-.login-card {
-  width: 100%; max-width: 400px;
-  background: rgba(15, 23, 42, 0.55);
-  border: 1px solid rgba(148, 163, 184, 0.25);
-  border-radius: 18px;
-  padding: 34px 30px 26px;
-  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.35);
-  backdrop-filter: blur(8px);
-  color: #e2e8f0;
+.login-subtitle {
+  margin: 0.5rem 0 0;
+  text-align: center;
+  font-size: 0.875rem; line-height: 1.25rem;
+  color: #e5e7eb;
 }
-.login-logo { text-align: center; margin-bottom: 22px; }
-.login-logo .logo-mark { width: 52px; height: 52px; font-size: 28px; border-radius: 14px; margin: 0 auto 12px; }
-.login-logo h1 { margin: 0; font-size: 24px; letter-spacing: 0.5px; }
-.login-logo h1 .accent { color: #60a5fa; }
-.login-logo p { margin: 6px 0 0; color: #94a3b8; font-size: 13px; }
-.login-tabs { display: flex; gap: 8px; margin-bottom: 18px; }
+.login-tabs { display: flex; gap: 8px; margin: 2rem 0 1.5rem; }
 .login-tab {
   flex: 1; padding: 8px 0; text-align: center;
   border-radius: 9px; border: 1px solid transparent;
-  background: transparent; color: #94a3b8; font-size: 14px;
+  background: transparent; color: rgba(255, 255, 255, 0.75); font-size: 14px;
+  cursor: pointer;
 }
-.login-tab.active { background: rgba(37, 99, 235, 0.35); color: #bfdbfe; border-color: rgba(96, 165, 250, 0.4); }
-.login-field { position: relative; margin-bottom: 14px; }
-.login-field input {
-  width: 100%;
-  padding: 11px 12px 11px 40px;
-  border-radius: 10px;
-  border: 1px solid rgba(148, 163, 184, 0.3);
-  background: rgba(2, 6, 23, 0.45);
-  color: #f1f5f9;
+.login-tab.active { background: rgba(255, 255, 255, 0.2); color: #fff; border-color: rgba(255, 255, 255, 0.25); }
+/* 浮动标签输入框：label 在 input 之后，靠 :placeholder-shown 定位 */
+.uv-field { position: relative; margin-bottom: 1.5rem; }
+.uv-field input {
+  width: 100%; height: 2.5rem;
+  padding: 0.5rem 0;
+  border: none; border-bottom: 2px solid #d1d5db;
+  background: transparent;
+  color: #fff; font-size: 1rem;
   outline: none;
+  transition: border-color 150ms;
+  border-radius: 0;
 }
-.login-field input:focus { border-color: #60a5fa; box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.25); }
-.login-field .field-icon {
-  position: absolute; left: 12px; top: 50%; transform: translateY(-50%);
-  color: #94a3b8; display: flex;
+.uv-field input:focus { border-color: #a855f7; box-shadow: none; }
+/* 上面这行必须带 box-shadow: none：base.css 有全局 input:focus
+   聚焦光环（0 0 0 3px），不盖掉的话登录框聚焦时会出现矩形边框，
+   破坏“仅下划线”的设计（2026-11-24 截图检查发现）。 */
+.uv-field input::placeholder { color: transparent; }
+.uv-field label {
+  position: absolute; left: 0; top: -0.875rem;
+  font-size: 0.875rem; line-height: 1.25rem;
+  color: #d8b4fe;
+  pointer-events: none;
+  transition: all 150ms;
 }
-.login-field .field-icon svg { width: 17px; height: 17px; }
+.uv-field input:placeholder-shown + label {
+  top: 0.5rem; font-size: 1rem; line-height: 1.5rem; color: #9ca3af;
+}
+.uv-field input:focus + label { top: -0.75rem; color: #a855f7; }
+.uv-field input:-webkit-autofill + label { top: -0.875rem; font-size: 0.875rem; color: #d8b4fe; }
+.uv-field input:-webkit-autofill {
+  -webkit-text-fill-color: #fff;
+  -webkit-box-shadow: 0 0 0 1000px transparent inset;
+  transition: background-color 9999s ease-in-out 0s;
+}
+/* 图形验证码：输入框 + 图片同一行 */
+.uv-field-captcha { display: flex; align-items: flex-end; gap: 10px; }
+.uv-field-captcha input { flex: 1; min-width: 0; }
+.uv-field-captcha img { height: 40px; border-radius: 4px; cursor: pointer; flex: none; }
+.login-row {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 1.5rem;
+}
+.remember-me {
+  display: flex; align-items: center; gap: 0.5rem;
+  font-size: 0.875rem; color: #e5e7eb; cursor: pointer;
+}
+.remember-me input { width: 1rem; height: 1rem; border-radius: 0.25rem; accent-color: #a855f7; cursor: pointer; }
+.forgot-link { font-size: 0.875rem; color: #e9d5ff; text-decoration: none; }
+.forgot-link:hover { text-decoration: underline; }
 .login-btn {
   width: 100%;
-  padding: 12px;
-  border: none; border-radius: 10px;
-  background: linear-gradient(90deg, #2563eb, #6366f1);
-  color: #fff; font-size: 15px; font-weight: 600;
-  box-shadow: 0 6px 18px rgba(37, 99, 235, 0.45);
-  margin-top: 6px;
+  padding: 0.5rem 1rem;
+  border: none; border-radius: 0.375rem;
+  background: #a855f7;
+  color: #fff; font-size: 0.875rem; font-weight: 600;
+  box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+  transition: background-color 200ms;
+  cursor: pointer;
 }
-.login-btn:hover { filter: brightness(1.1); }
+.login-btn:hover { background: #7e22ce; }
 .login-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+#telegram-form #tg-send-btn { margin-bottom: 1.5rem; }
 .login-error {
-  background: rgba(220, 38, 38, 0.18);
-  border: 1px solid rgba(248, 113, 113, 0.5);
+  background: rgba(127, 29, 29, 0.55);
+  border: 1px solid rgba(252, 165, 165, 0.5);
   color: #fecaca;
-  border-radius: 8px;
+  border-radius: 0.375rem;
   padding: 9px 12px;
   font-size: 13px;
-  margin-bottom: 14px;
+  margin-bottom: 1.5rem;
 }
-.login-note { text-align: center; color: #64748b; font-size: 12px; margin-top: 18px; }
-.login-foot { text-align: center; color: rgba(148, 163, 184, 0.6); font-size: 12px; margin-top: 26px; }
+.login-note { text-align: center; color: #e5e7eb; font-size: 13px; margin: 0 0 1.5rem; }
+.login-foot { text-align: center; color: #d1d5db; font-size: 0.875rem; margin: 2rem 0 0; }
 
 /* ================= 响应式 ================= */
 @media (max-width: 900px) {
@@ -588,6 +620,7 @@ tr.task-row.expanded { background: var(--surface-hover); }
   .create-grid { grid-template-columns: 1fr; }
   .res-stats { gap: 12px; }
   .res-label { display: none; }
-  .login-side { display: none; }
+  .login-card { padding: 1.5rem; }
+  .login-title { font-size: 1.5rem; line-height: 2rem; }
   .content { padding: 16px; }
 }

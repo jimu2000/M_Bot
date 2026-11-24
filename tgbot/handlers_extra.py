@@ -130,7 +130,15 @@ from tgbot.gfw import (
     set_api_key,
     set_instance_enabled,
 )
-from tgbot.handlers_client import run_remote_command
+from tgbot.handlers_client import put_remote_file, run_remote_command
+from tgbot.watchdog import (
+    WatchdogError,
+    disable_watchdog,
+    guard_status_label,
+    install_watchdog,
+    parse_probe_output,
+    probe_command,
+)
 from tgbot.notify import (DEFAULT_BOOT_DISK_GB, fmt_paid_instance_alert,
                           notify_boot_success, notify_dual)
 from tgbot.paid_profiles import is_paid_profile, set_paid_profile
@@ -1255,9 +1263,12 @@ def fmt_boot_preset(preset, ok, reason):
         f"规格：{shape}（{preset['ocpus']} 核 / {preset['memory_gb']}GB）",
         f"实例名：{preset['display_name']}",
     ]
-    if preset.get("target_cpu"):
-        lines.append(f"目标 CPU：只留含 {preset['target_cpu']} 的，"
-                     "不符就释放继续抢")
+    if preset.get("shape") == SHAPE_E2_MICRO:
+        if preset.get("target_cpu"):
+            lines.append(f"目标 CPU：只留含 {preset['target_cpu']} 的，"
+                         "不符就释放继续抢")
+        else:
+            lines.append("目标 CPU：什么 CPU 都可以，抢到就留")
     lines.append("")
     lines.append(f"配额预检：{'✅ ' if ok else '❌ '}{reason}")
     if not ok:
@@ -1351,6 +1362,7 @@ async def _boot_form_confirm(update, context, form):
     if preset.get("root_login"):
         preset["root_password"] = generate_root_password()
     context.user_data["pending_boot"] = preset
+    context.user_data["pending_boot_summary"] = "form"
     try:
         ok, reason = await run_sync(
             can_launch_batch, get_cli(context), get_compartment(context),
@@ -1359,7 +1371,7 @@ async def _boot_form_confirm(update, context, form):
     except Exception as exc:  # noqa: BLE001 - 预检失败也要让用户看到
         ok, reason = False, fmt_error(exc)
     await _reply(update, fmt_boot_form_summary(preset, ok, reason),
-                 reply_markup=boot_confirm_keyboard())
+                 reply_markup=boot_confirm_keyboard(preset))
 
 
 async def _boot_form_save(update, context, form):
@@ -1510,6 +1522,7 @@ async def boot_preset_load_callback(update, context):
     if preset.get("root_login"):
         preset["root_password"] = generate_root_password()
     context.user_data["pending_boot"] = preset
+    context.user_data["pending_boot_summary"] = "form"
     try:
         ok, reason = await run_sync(
             can_launch_batch, get_cli(context), get_compartment(context),
@@ -1519,7 +1532,7 @@ async def boot_preset_load_callback(update, context):
     except Exception as exc:  # noqa: BLE001 - 预检失败也要让用户看到
         ok, reason = False, fmt_error(exc)
     await _reply(update, fmt_boot_form_summary(preset, ok, reason),
-                 reply_markup=boot_confirm_keyboard())
+                 reply_markup=boot_confirm_keyboard(preset))
 
 
 async def _handle_boot_form_input(update, context, kind, text):
@@ -1612,6 +1625,7 @@ async def boot_preset_callback(update, context):
         await _reply(update, f"未知的开机预设：{preset_key}")
         return
     context.user_data["pending_boot"] = dict(preset)
+    context.user_data["pending_boot_summary"] = "preset"
     try:
         ok, reason = await run_sync(
             can_launch, get_cli(context), get_compartment(context),
@@ -1619,7 +1633,7 @@ async def boot_preset_callback(update, context):
     except Exception as exc:  # noqa: BLE001 - 预检失败也要让用户看到
         ok, reason = False, fmt_error(exc)
     text = fmt_boot_preset(preset, ok, reason)
-    await _reply(update, text, reply_markup=boot_confirm_keyboard())
+    await _reply(update, text, reply_markup=boot_confirm_keyboard(preset))
 
 
 def _run_grabber_thread(task_id, cli, compartment_id, preset, notify=None):
@@ -1770,6 +1784,55 @@ def _notify_boot_success(cli, preset, successes, notify):
 
 
 @require_allowed
+async def boot_cpu_callback(update, context):
+    """回调 "b:cpu:<7j13|any>"：确认页切换目标 CPU，刷新摘要。
+
+    只改 pending_boot 里的 target_cpu（7J13 或 None），配额预检
+    重跑一次（快，且保证摘要里的预检结果是新鲜的），摘要按
+    pending_boot_summary 记的 kind（form/preset）重绘，就地编辑
+    当前消息；编辑失败时（内容没变）静默。
+    """
+    data = _callback_data(update)
+    choice = data.split(":")[-1] if ":" in data else ""
+    preset = context.user_data.get("pending_boot")
+    query = update.callback_query
+    if preset is None:
+        await _reply(update, "配置已过期，请重新打开菜单 1（开机）。",
+                     reply_markup=back_to_oracle_keyboard())
+        return
+    if choice == "7j13":
+        preset["target_cpu"] = TARGET_CPU
+    elif choice == "any":
+        preset["target_cpu"] = None
+    else:
+        return
+    try:
+        ok, reason = await run_sync(
+            can_launch_batch, get_cli(context), get_compartment(context),
+            preset["shape"], preset.get("ocpus", 0),
+            preset.get("memory_gb", 0), preset.get("count", 1),
+            preset.get("boot_volume_size_gbs"))
+    except Exception as exc:  # noqa: BLE001 - 预检失败也要让用户看到
+        ok, reason = False, fmt_error(exc)
+    if context.user_data.get("pending_boot_summary") == "preset":
+        text = fmt_boot_preset(preset, ok, reason)
+    else:
+        text = fmt_boot_form_summary(preset, ok, reason)
+    if query is not None:
+        try:
+            await query.answer()
+        except Exception:
+            pass
+        try:
+            await query.edit_message_text(
+                text, reply_markup=boot_confirm_keyboard(preset))
+        except Exception:
+            pass
+        return
+    await _reply(update, text, reply_markup=boot_confirm_keyboard(preset))
+
+
+@require_allowed
 async def boot_go_callback(update, context):
     """回调 "b:go"：注册抢机任务，开 daemon 线程跑 Grabber.run。
 
@@ -1817,16 +1880,22 @@ async def boot_go_callback(update, context):
             preset["display_name"], preset.get("count", 1) or 1, names)
     except Exception:  # noqa: BLE001 - 去重失败不阻塞开机
         pass
+    # 任务说明：抢什么机器（规格 + 区域 + 实例名），菜单 21 与
+    # 取消按钮都用它，不再暴露 g1 / grab 这类内部编号与类型。
+    shape_short = preset["shape"].replace("VM.Standard.", "")
+    region_label = bot_config.get_region_label(get_current_region(context))
+    grab_label = (f"{shape_short}（{region_label}）· "
+                  f"{preset['display_name']}")
     task_id = TASKS.register(
-        "grab", detail=f"抢机准备中：{preset['display_name']}…")
+        "grab", detail=f"抢机准备中：{preset['display_name']}…",
+        label=grab_label)
     # 成功通知信息（只在内存里传给线程：密码不落盘，通知完即丢）。
     notify = {
         "token": bot_config.TELEGRAM_BOT_TOKEN,
         "chat_id": update.effective_chat.id if update.effective_chat else None,
         "profile_label": bot_config.profile_display_name(
             get_current_profile(context)),
-        "region_label": bot_config.get_region_label(
-            get_current_region(context)),
+        "region_label": region_label,
         "region_code": get_current_region(context),
         "root_password": root_password,
     }
@@ -1838,7 +1907,7 @@ async def boot_go_callback(update, context):
     thread.start()
     # 启动后立即清除 pending_boot（里面含带密码的 user-data，不留内存）。
     context.user_data.pop("pending_boot", None)
-    text = (f"🚀 抢机已启动，任务 ID {task_id}，"
+    text = (f"🚀 抢机已启动：{grab_label}。"
             "用菜单 21（查看运行中的任务）查看进度。")
     parse_mode = None
     if root_password:
@@ -1963,6 +2032,8 @@ def fmt_instance_traffic(entries):
             counted += 1
         else:
             lines.append(f"流量：查不到（{entry.get('error') or '未知原因'}）")
+        if entry.get("guard") is not None:
+            lines.append(guard_status_label(entry["guard"]))
         if entry.get("installed"):
             # 刚自动装的 vnstat：数据从服务启动那一刻开始统计。
             lines.append("（vnstat 刚自动安装，数据从现在开始统计）")
@@ -2054,6 +2125,13 @@ async def _fetch_instance_traffic(context, instances=None):
             entry["error"] = "vnstat 查询失败"
             entries.append(entry)
             continue
+        # SSH 通：顺带查这台的看门狗状态（脚本+cron+熔断/限速）。
+        try:
+            _code, probe_out, _err = await run_sync(
+                run_remote_command, host, probe_command())
+            entry["guard"] = parse_probe_output(probe_out)
+        except Exception:  # noqa: BLE001 - 看门狗状态查不到不影响流量展示
+            entry["guard"] = None
         parsed = parse_vnstat_monthly_gb(out)
         if parsed is None:
             entry["error"] = "vnstat 无本月数据"
@@ -2069,14 +2147,118 @@ async def handle_traffic(update, context):
 
     原先查 OCI 用量接口的出站流量恒为 0.00 GB（接口不给真实出站数），
     改用用户自己的 vnstat 口径：每台 IP + 中文城市 + 当月入站/出站。
+    每台下面带看门狗状态行与开关按钮（v1.21.0：点开启安装用户自己的
+    流量看门狗脚本，点关闭摘 cron 并解除熔断/限速）。
     """
     try:
         entries = await _fetch_instance_traffic(context)
     except Exception as exc:  # noqa: BLE001
         await _reply(update, fmt_error(exc))
         return
+    context.user_data["traffic_entries"] = entries
     await _reply(update, fmt_instance_traffic(entries),
-                 reply_markup=back_to_oracle_keyboard())
+                 reply_markup=traffic_keyboard(entries))
+
+
+def traffic_keyboard(entries):
+    """菜单 19 键盘：每台一个看门狗开关按钮 + 返回按钮。
+
+    有公网 IP 且配了 SSH 密钥的才给按钮（没法 SSH 的装不了）；
+    按钮文字按当前状态反着显示动作（已开启显示“关闭”，否则“开启”）。
+    """
+    rows = []
+    for idx, entry in enumerate(entries or []):
+        if not entry.get("public_ip") or not bot_config.GUARD_SSH_KEY:
+            continue
+        guard = entry.get("guard") or {}
+        name = entry.get("name") or entry.get("public_ip") or f"实例 {idx + 1}"
+        action = "关闭" if guard.get("enabled") else "开启"
+        rows.append([InlineKeyboardButton(
+            f"🛡️ {name}：{action}看门狗",
+            callback_data=f"wd:toggle:{idx}")])
+    rows.append([InlineKeyboardButton("◀ Oracle 菜单", callback_data="o:menu")])
+    return InlineKeyboardMarkup(rows)
+
+
+@require_allowed
+async def watchdog_callback(update, context):
+    """菜单 19 看门狗开关（wd:toggle:<idx>）。
+
+    已开启 → 关闭（摘 cron + 解除熔断/限速，脚本保留）；
+    未开启 → 安装并开启（传脚本 + 写 Bark 配置 + 挂 cron + 测试推送）。
+    完成后刷新整条流量消息（重新查流量与状态）。
+    """
+    query = update.callback_query
+    try:
+        await query.answer()
+    except Exception:
+        pass
+    parts = (query.data or "").split(":")
+    if len(parts) != 3 or parts[1] != "toggle":
+        return
+    try:
+        idx = int(parts[2])
+    except ValueError:
+        return
+    entries = context.user_data.get("traffic_entries") or []
+    if idx < 0 or idx >= len(entries):
+        await query.edit_message_text(
+            "列表已过期，请重新打开菜单 19（本月流量）。",
+            reply_markup=back_to_oracle_keyboard())
+        return
+    entry = entries[idx]
+    host = _guard_host_for_instance(entry.get("public_ip"))
+    if host is None:
+        await query.answer("这台没有公网 IP 或未配置 SSH 密钥。",
+                           show_alert=True)
+        return
+    name = entry.get("name") or entry.get("public_ip")
+    guard = entry.get("guard") or {}
+    try:
+        if guard.get("enabled"):
+            await query.edit_message_text(f"正在关闭 {name} 的看门狗…")
+            result = await run_sync(
+                disable_watchdog, host, run_remote_command)
+            done_text = ("已经是关闭状态。" if result.get("action") == "already_off"
+                         else "已关闭（cron 已摘，熔断/限速已解除）。")
+        else:
+            await query.edit_message_text(f"正在给 {name} 安装看门狗…")
+            result = await run_sync(
+                install_watchdog, host, load_bark_config(),
+                run_remote_command, put_remote_file,
+                guard_ensure_vnstat_command())
+            if result.get("action") == "already":
+                done_text = "已经是开启状态。"
+            elif result.get("action") == "upgraded":
+                done_text = "已升级到自动识别端口版并开启。"
+            elif result.get("action") == "enabled":
+                done_text = "已重新开启。"
+            else:
+                done_text = "已安装并开启。"
+            if not result.get("test_ok"):
+                done_text += "（测试推送没发出去，请检查 Bark 配置。）"
+    except WatchdogError as exc:
+        await query.edit_message_text(
+            f"❌ {name} 看门狗操作失败：{exc}",
+            reply_markup=traffic_keyboard(entries))
+        return
+    except Exception as exc:  # noqa: BLE001 - SSH 失败等统一展示
+        await query.edit_message_text(
+            f"❌ {name} 看门狗操作失败：{fmt_error(exc)}",
+            reply_markup=traffic_keyboard(entries))
+        return
+    # 刷新：重新查流量与看门狗状态。
+    try:
+        fresh = await _fetch_instance_traffic(context)
+    except Exception as exc:  # noqa: BLE001 - 刷新失败时只报操作结果
+        await query.edit_message_text(
+            f"{name} 看门狗{done_text}\n（列表刷新失败：{fmt_error(exc)}）",
+            reply_markup=traffic_keyboard(entries))
+        return
+    context.user_data["traffic_entries"] = fresh
+    await query.edit_message_text(
+        f"{name} 看门狗{done_text}\n\n{fmt_instance_traffic(fresh)}",
+        reply_markup=traffic_keyboard(fresh))
 
 
 @require_allowed
@@ -2166,10 +2348,12 @@ async def task_cancel_callback(update, context):
     """回调 "t:cancel:<id>"：取消任务。"""
     data = _callback_data(update)
     task_id = data.split(":")[-1] if ":" in data else ""
+    task = TASKS.get(task_id)
+    label = (task or {}).get("label") or task_id
     if TASKS.cancel(task_id):
-        await _reply(update, f"✅ 任务 {task_id} 已取消。")
+        await _reply(update, f"✅ 已取消：{label}。")
     else:
-        await _reply(update, f"⚠️ 任务 {task_id} 不存在或已结束，无法取消。")
+        await _reply(update, f"⚠️ {label} 不存在或已结束，无法取消。")
 
 
 # ---- profile 管理（账号切换，/oracle 菜单顶行按钮） ----

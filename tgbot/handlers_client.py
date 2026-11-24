@@ -249,17 +249,12 @@ def _new_ssh_client():
     return fresh
 
 
-def run_remote_command(host, command, timeout=COMMAND_TIMEOUT_SECONDS):
-    """在远程主机上执行一条命令，返回 (exit_code, stdout, stderr)。
+def _connect_host(host):
+    """按 host 记录连 SSH（密钥认证，22 与 14422 之间端口回退）。
 
-    host：主机记录 dict，含 host / port / username / key_path（可选）。
-    连接模式与 web/ssh.py 一致：known_hosts 存在则加载，
-    AutoAddPolicy 记住新 host key；key_path 存在时用密钥认证，
-    否则走 agent / 默认密钥查找（密码不存文件，故不支持密码认证）。
-    端口回退：主端口连接失败（超时 / 拒绝 / 无可用连接）时，
-    在 22 与 14422 之间重试一次（新实例默认 22，生产实例用
-    14422；其他端口不回退）。认证失败不重试，直接报错。
-    连接/认证失败抛 RemoteCommandError；命令执行超时抛 CommandTimeoutError。
+    返回已连接的 paramiko.SSHClient（调用方负责 close）。
+    连接/认证失败抛 RemoteCommandError。run_remote_command 与
+    put_remote_file 共用这套逻辑。
     """
     hostname = host.get("host")
     port = host.get("port") or 22
@@ -283,7 +278,6 @@ def run_remote_command(host, command, timeout=COMMAND_TIMEOUT_SECONDS):
         ports.append(14422)
     elif port == 14422:
         ports.append(22)
-    client = None
     for attempt, try_port in enumerate(ports):
         attempt_client = _new_ssh_client()
         try:
@@ -302,16 +296,62 @@ def run_remote_command(host, command, timeout=COMMAND_TIMEOUT_SECONDS):
         except paramiko.SSHException as exc:
             attempt_client.close()
             raise RemoteCommandError(f"SSH 连接失败：{exc}")
-        client = attempt_client
-        break
-    try:
         try:
             parent = os.path.dirname(KNOWN_HOSTS_FILE)
             if parent:
                 os.makedirs(parent, exist_ok=True)
-            client.save_host_keys(KNOWN_HOSTS_FILE)
+            attempt_client.save_host_keys(KNOWN_HOSTS_FILE)
         except Exception as exc:
             logger.warning("known_hosts 保存失败（不影响连接）：%s", exc)
+        return attempt_client
+    raise RemoteCommandError("SSH 连接失败：无可用端口。")
+
+
+def put_remote_file(host, content, remote_path, mode=0o644):
+    """经 SFTP 把文本内容写到远程主机（看门狗安装传脚本/配置文件用）。
+
+    content 是 str（按 UTF-8 写）；mode 是目标文件权限（默认 644，
+    脚本传 0o755、配置文件传 0o600）。连接失败抛 RemoteCommandError，
+    传输失败抛 RemoteCommandError（附原因）。
+    """
+    client = _connect_host(host)
+    try:
+        sftp = client.open_sftp()
+        try:
+            with sftp.open(remote_path, "w") as remote_file:
+                remote_file.write(content)
+            sftp.chmod(remote_path, mode)
+        finally:
+            try:
+                sftp.close()
+            except Exception:
+                pass
+    except RemoteCommandError:
+        raise
+    except (paramiko.SSHException, OSError) as exc:
+        raise RemoteCommandError(f"SFTP 传输失败：{exc}")
+    finally:
+        try:
+            client.close()
+        except Exception:
+            pass
+
+
+def run_remote_command(host, command, timeout=COMMAND_TIMEOUT_SECONDS):
+    """在远程主机上执行一条命令，返回 (exit_code, stdout, stderr)。
+
+    host：主机记录 dict，含 host / port / username / key_path（可选）。
+    连接模式与 web/ssh.py 一致：known_hosts 存在则加载，
+    AutoAddPolicy 记住新 host key；key_path 存在时用密钥认证，
+    否则走 agent / 默认密钥查找（密码不存文件，故不支持密码认证）。
+    端口回退：主端口连接失败（超时 / 拒绝 / 无可用连接）时，
+    在 22 与 14422 之间重试一次（新实例默认 22，生产实例用
+    14422；其他端口不回退）。认证失败不重试，直接报错。
+    连接/认证失败抛 RemoteCommandError；命令执行超时抛 CommandTimeoutError。
+    连接逻辑在 _connect_host 里（put_remote_file 共用）。
+    """
+    client = _connect_host(host)
+    try:
         stdin, stdout, stderr = client.exec_command(command, timeout=timeout)
         try:
             channel = stdout.channel

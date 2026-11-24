@@ -3,11 +3,14 @@
 串行控制台 / 换 IP / IPv6 / 升降配 / 尝试修复。
 
   - GET /api/instances：列表（面板形状，见 format_instance；只含
-    RUNNING 状态实例，每项补上公网 IP，取不到时为 None）。
+    RUNNING 状态实例，每项补上公网 IP，取不到时为 None；每项另含
+    缓存的 cpuModel，未检测时为 None，列表返回后后台线程自动补测）。
     各实例的公网 IP 并行取（线程池）；列表结果服务端缓存 30 秒，
     手动刷新时传 refresh=1 绕过缓存；写操作成功后清对应账号的缓存。
   - GET /api/instances/{id}：详情（含公网 IP、内网 IP、IPv6 列表、
-    启动盘大小 / OCID / VPU / 状态；附加字段尽力而为，查不到时为 None）。
+    启动盘大小 / OCID / VPU / 状态；附加字段尽力而为，查不到时为 None；
+    另含 cpu_model，无缓存且运行中时同步 SSH 检测一次）。
+  - POST /api/instances/{id}/cpu-model：强制重新检测 CPU 型号。
   - GET /api/instances/{id}/console：串行控制台连接信息。
   - POST /api/instances/batch：批量开机/关机/重启/删除
     （body {action, instance_ids, confirm}，删除必须 confirm=true）。
@@ -92,7 +95,28 @@ from oci.quota import SHAPE_A1_FLEX, SHAPE_E2_MICRO, check_a1_single_instance_ca
 from oci.volume import get_boot_volume, list_boot_volume_attachments
 from tgbot import config as bot_config
 from tgbot.bark import load_bark_config
+from tgbot.cpu_model import (
+    cached_cpu_model,
+    delete_cpu_model,
+    get_cpu_model,
+    host_for_ip,
+    load_cpu_models,
+)
+from tgbot.handlers_client import (
+    RemoteCommandError,
+    put_remote_file,
+    run_remote_command,
+)
+from tgbot.monitoring import guard_ensure_vnstat_command
 from tgbot.paid_profiles import is_paid_profile
+from tgbot.watchdog import (
+    WatchdogError,
+    disable_watchdog,
+    guard_status_label,
+    install_watchdog,
+    parse_probe_output,
+    probe_command,
+)
 from web import config
 from web.deps import (
     error_response,
@@ -118,6 +142,41 @@ MAX_IP_WORKERS = 8
 # 只放内存不写盘；面板是单管理员，无需按用户隔离。
 _LIST_CACHE = {}
 _LIST_CACHE_LOCK = threading.Lock()
+
+# CPU 型号后台检测的在途集合：同一台实例同时只跑一个检测线程。
+_CPU_FETCH_IN_FLIGHT = set()
+_CPU_FETCH_LOCK = threading.Lock()
+
+
+def _refresh_cpu_models_background(instances, ips, cpu_models):
+    """列表返回后，后台检测未缓存 CPU 型号的运行中实例（不阻塞列表）。
+
+    instances 与 ips 一一对应；只有 RUNNING、有公网 IP、无缓存、
+    且不在检测中的实例才起线程。检测结果写进缓存文件，下次列表
+    （缓存过期或手动刷新后）即可显示。
+    """
+    for inst, ip in zip(instances, ips):
+        instance_id = inst.get("id")
+        if not instance_id or not ip:
+            continue
+        if (inst.get("lifecycle-state") or "") != "RUNNING":
+            continue
+        if (cpu_models or {}).get(instance_id, {}).get("model"):
+            continue
+        with _CPU_FETCH_LOCK:
+            if instance_id in _CPU_FETCH_IN_FLIGHT:
+                continue
+            _CPU_FETCH_IN_FLIGHT.add(instance_id)
+
+        def _worker(ocid=instance_id, public_ip=ip):
+            try:
+                get_cpu_model(ocid, host_for_ip(public_ip),
+                              run_remote_command)
+            finally:
+                with _CPU_FETCH_LOCK:
+                    _CPU_FETCH_IN_FLIGHT.discard(ocid)
+
+        threading.Thread(target=_worker, daemon=True).start()
 
 
 def clear_instance_list_cache(profile=None):
@@ -261,19 +320,22 @@ def _detail_extras(cli, compartment_id, instance_id, availability_domain):
     return extras
 
 
-def format_instance(inst, public_ip, region):
+def format_instance(inst, public_ip, region, cpu_models=None):
     """把 list_instances 的条目转成 面板形状（阶段 5 工作包 E）。
 
     新形状（camelCase 字段）：
     {id, name, publicIp, shape, state, ocpus, memoryInGBs, region,
-     timeCreated}。ocpus / memoryInGBs 取自 shape-config（list_instances
-    需带 include_shape_config=True，否则为 None）。
+     timeCreated, cpuModel}。ocpus / memoryInGBs 取自 shape-config
+    （list_instances 需带 include_shape_config=True，否则为 None）。
+    cpuModel 是缓存的 CPU 型号（如 "AMD EPYC 7J13"），未检测时为
+    None（列表只读缓存不 SSH，后台检测线程会补上）。
 
     过渡期双写旧字段（display-name / lifecycle-state / time-created /
     public-ip），前端已改消费新字段，新字段是契约，旧字段后续可删。
     """
     cfg = inst.get("shape-config") or {}
     state = inst.get("lifecycle-state") or ""
+    cpu_entry = (cpu_models or {}).get(inst.get("id")) or {}
     return {
         "id": inst.get("id"),
         "name": inst.get("display-name"),
@@ -284,6 +346,7 @@ def format_instance(inst, public_ip, region):
         "memoryInGBs": cfg.get("memory-in-gbs"),
         "region": region,
         "timeCreated": inst.get("time-created"),
+        "cpuModel": cpu_entry.get("model"),
         # 旧字段（过渡期双写）。
         "display-name": inst.get("display-name"),
         "lifecycle-state": state,
@@ -337,8 +400,10 @@ def list_all(profile: str = Query(default=None),
                     filtered))
         else:
             ips = []
-        instances = [format_instance(inst, ip, cli.region)
+        cpu_models = load_cpu_models()
+        instances = [format_instance(inst, ip, cli.region, cpu_models)
                      for inst, ip in zip(filtered, ips)]
+        _refresh_cpu_models_background(filtered, ips, cpu_models)
     except ValueError as exc:
         return error_response(str(exc), status_code=400)
     except OCIError as exc:
@@ -389,6 +454,9 @@ def batch(body: BatchBody,
     except OCIError as exc:
         return oci_error_response(exc)
     clear_instance_list_cache(profile or config.DEFAULT_PROFILE)
+    if body.action == "terminate":
+        for instance_id in result["succeeded"]:
+            delete_cpu_model(instance_id)
     return {"ok": True, "action": body.action,
             "succeeded": result["succeeded"], "failed": result["failed"]}
 
@@ -398,7 +466,11 @@ def detail(instance_id: str,
            profile: str = Query(default=None),
            region: str = Query(default=None),
            username: str = Depends(get_current_user)):
-    """查单个实例详情（含公网 IP、内网 IP、IPv6 列表、启动盘大小）。"""
+    """查单个实例详情（含公网 IP、内网 IP、IPv6 列表、启动盘大小）。
+
+    另含 cpu_model：缓存的 CPU 型号；无缓存且实例运行中时同步
+    SSH 检测一次（约 2-4 秒），检测失败为 None。
+    """
     try:
         cli, compartment_id = resolve_profile(profile, region)
         data = get_instance(cli, instance_id)
@@ -410,7 +482,14 @@ def detail(instance_id: str,
         return error_response(str(exc), status_code=400)
     except OCIError as exc:
         return oci_error_response(exc)
+    cpu_model = cached_cpu_model(instance_id)
+    if cpu_model is None \
+            and detail_data.get("lifecycle-state") == "RUNNING" \
+            and public_ip:
+        cpu_model = get_cpu_model(instance_id, host_for_ip(public_ip),
+                                  run_remote_command)
     return {"ok": True, "instance": detail_data, "public_ip": public_ip,
+            "cpu_model": cpu_model,
             "private_ip": extras["private_ip"],
             "ipv6_addresses": extras["ipv6_addresses"],
             "boot_volume_size_gbs": extras["boot_volume_size_gbs"],
@@ -431,6 +510,8 @@ def _action(instance_id, profile, func, action_name, region=None):
     except OCIError as exc:
         return oci_error_response(exc)
     clear_instance_list_cache(profile or config.DEFAULT_PROFILE)
+    if action_name == "terminate":
+        delete_cpu_model(instance_id)
     return {"ok": True, "instance_id": instance_id, "action": action_name}
 
 
@@ -848,3 +929,128 @@ def restore_boot_volume(instance_id: str,
     clear_instance_list_cache(profile or config.DEFAULT_PROFILE)
     return {"ok": True, "instance_id": instance_id, "task_id": task_id,
             "message": "引导卷恢复已开始，进度请在任务页查看"}
+
+
+class WatchdogBody(BaseModel):
+    """看门狗开关请求体：enabled=true 开启，false 关闭。"""
+
+    enabled: bool = True
+
+
+def _watchdog_host(cli, instance_id):
+    """看门狗 SSH 主机记录（实例公网 IP + 专用密钥）。
+
+    未配 MBOT_GUARD_SSH_KEY 或实例无公网 IP 时返回 None。
+    """
+    return host_for_ip(_safe_public_ip(cli, instance_id))
+
+
+@router.get("/api/instances/{instance_id}/watchdog")
+def watchdog_status(instance_id: str,
+                    profile: str = Query(default=None),
+                    region: str = Query(default=None),
+                    username: str = Depends(get_current_user)):
+    """查一台实例的流量看门狗状态（与机器人菜单 19 同款）。
+
+    返回 {ok, watchdog: {installed, auto, enabled, mode, tripped,
+    limited}, label}；SSH 连不上或未配密钥时返回 ok + watchdog=None
+    与原因，不报错（前端只展示）。
+    """
+    try:
+        cli, _compartment_id = resolve_profile(profile, region)
+    except ValueError as exc:
+        return error_response(str(exc), status_code=400)
+    except OCIError as exc:
+        return oci_error_response(exc)
+    host = _watchdog_host(cli, instance_id)
+    if host is None:
+        return {"ok": True, "watchdog": None,
+                "label": "看门狗：未配置 SSH 密钥或无公网 IP"}
+    try:
+        _code, out, _err = run_remote_command(host, probe_command())
+    except RemoteCommandError as exc:
+        return {"ok": True, "watchdog": None,
+                "label": f"看门狗：未知（{exc}）"}
+    status = parse_probe_output(out)
+    return {"ok": True, "watchdog": status,
+            "label": guard_status_label(status)}
+
+
+@router.post("/api/instances/{instance_id}/cpu-model")
+def refresh_cpu_model(instance_id: str,
+                      profile: str = Query(default=None),
+                      region: str = Query(default=None),
+                      username: str = Depends(get_current_user)):
+    """强制重新检测一台实例的 CPU 型号（详情弹窗“重新检测”按钮用）。
+
+    返回 {ok, cpu_model, message}；SSH 失败时 cpu_model 为 None
+    并附原因（不报错，前端只展示）。检测成功后清列表缓存，
+    下次打开列表即显示新型号。
+    """
+    try:
+        cli, _compartment_id = resolve_profile(profile, region)
+    except ValueError as exc:
+        return error_response(str(exc), status_code=400)
+    except OCIError as exc:
+        return oci_error_response(exc)
+    host = _watchdog_host(cli, instance_id)
+    if host is None:
+        return {"ok": True, "cpu_model": None,
+                "message": "该实例无公网 IP 或未配置 SSH 密钥，无法检测"}
+    model = get_cpu_model(instance_id, host, run_remote_command,
+                          force=True)
+    if model is None:
+        return {"ok": True, "cpu_model": None,
+                "message": "检测失败：SSH 连不上该实例（守护密钥可能未装）"}
+    clear_instance_list_cache(profile or config.DEFAULT_PROFILE)
+    return {"ok": True, "cpu_model": model,
+            "message": f"CPU 型号：{model}"}
+
+
+@router.post("/api/instances/{instance_id}/watchdog")
+def watchdog_toggle(instance_id: str,
+                    body: WatchdogBody,
+                    profile: str = Query(default=None),
+                    region: str = Query(default=None),
+                    username: str = Depends(get_current_user)):
+    """开关一台实例的流量看门狗（与机器人菜单 19 同款逻辑）。
+
+    enabled=true：安装并开启（传脚本 + 写 Bark 配置 + 挂 cron +
+    测试推送）；false：摘 cron + 解除熔断/限速。安装可能耗时几分钟
+    （新机要装 vnstat），前端请显示等待提示。
+    """
+    try:
+        cli, _compartment_id = resolve_profile(profile, region)
+    except ValueError as exc:
+        return error_response(str(exc), status_code=400)
+    except OCIError as exc:
+        return oci_error_response(exc)
+    host = _watchdog_host(cli, instance_id)
+    if host is None:
+        return error_response("该实例无公网 IP 或未配置 SSH 密钥",
+                              status_code=400)
+    try:
+        if body.enabled:
+            result = install_watchdog(host, load_bark_config(),
+                                      run_remote_command, put_remote_file,
+                                      guard_ensure_vnstat_command())
+        else:
+            result = disable_watchdog(host, run_remote_command)
+    except WatchdogError as exc:
+        return error_response(str(exc), status_code=400)
+    except RemoteCommandError as exc:
+        return error_response(str(exc), status_code=502)
+    messages = {
+        "installed": "看门狗已安装并开启",
+        "upgraded": "看门狗已升级到自动识别端口版并开启",
+        "enabled": "看门狗已重新开启",
+        "already": "看门狗已经是开启状态",
+        "disabled": "看门狗已关闭（cron 已摘，熔断/限速已解除）",
+        "already_off": "看门狗已经是关闭状态",
+    }
+    message = messages.get(result.get("action"), "操作完成")
+    if result.get("action") in ("installed", "upgraded", "enabled") \
+            and not result.get("test_ok"):
+        message += "（测试推送没发出去，请检查 Bark 配置）"
+    return {"ok": True, "instance_id": instance_id,
+            "action": result.get("action"), "message": message}

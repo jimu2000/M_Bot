@@ -60,6 +60,8 @@ CLARITY_ID = os.environ.get("MBOT_CLARITY_ID", "")
 
 # 登录会话有效期（小时）。
 SESSION_EXPIRE_HOURS = 12
+# 勾选“记住我”时会话有效期（天）：服务端会话与 cookie 同时延长。
+REMEMBER_ME_DAYS = 30
 # 会话 cookie 名。
 SESSION_COOKIE = "mbot_session"
 

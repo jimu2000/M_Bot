@@ -181,7 +181,9 @@ def short_shape(shape):
 
 # 实例列表分组：组顺序与组头（fmt_instance_list 与
 # instance_list_keyboard 共用，保证文字与按钮顺序一致）。
-INSTANCE_GROUP_ORDER = ("RUNNING", "STOPPED", "TERMINATED")
+# 已终止（TERMINATED）不在组里：sort_instances_by_group 直接
+# 把它过滤掉，不显示（用户要求：列表里一堆已终止的看着乱）。
+INSTANCE_GROUP_ORDER = ("RUNNING", "STOPPED")
 INSTANCE_GROUP_TITLES = {
     "RUNNING": "🟢 运行中",
     "STOPPED": "🟡 已停止",
@@ -199,13 +201,16 @@ def instance_group_title(state):
 def sort_instances_by_group(instances):
     """按状态分组排序：返回 [(原下标, 实例)]。
 
-    组顺序：RUNNING → STOPPED → TERMINATED → 其他状态；组内保持
-    原列表顺序。下标是实例在原列表里的下标（回调按它取回，见
-    store_instances，绝对不能用分组后的下标）。
+    已终止（TERMINATED）的实例直接过滤掉，不显示。组顺序：
+    RUNNING → STOPPED → 其他状态；组内保持原列表顺序。下标是
+    实例在原列表里的下标（回调按它取回，见 store_instances，
+    绝对不能用分组后的下标）。
     """
     order = {state: i for i, state in enumerate(INSTANCE_GROUP_ORDER)}
     fallback = len(INSTANCE_GROUP_ORDER)
-    indexed = list(enumerate(instances))
+    indexed = [(i, inst) for i, inst in enumerate(instances)
+               if (inst.get("lifecycle-state") or "").upper()
+               != "TERMINATED"]
     indexed.sort(key=lambda pair: (
         order.get((pair[1].get("lifecycle-state") or "").upper(),
                   fallback),
@@ -256,16 +261,19 @@ def fmt_instance_list(instances, profile):
     每台实例的信息（名称 / A1·E2 / 公网 IP）都在按钮上
     （见 keyboards.instance_list_keyboard），文字不再逐台
     重复，否则文字列表和按钮列表会同时出现两份。
-    空组不显示。
+    空组不显示。已终止的实例已过滤，不计入总数。
     """
     if not instances:
         return f"[{profile}] 该账号下没有实例。"
     ordered = sort_instances_by_group(instances)
+    if not ordered:
+        return (f"[{profile}] 没有可显示的实例"
+                "（已终止的实例已隐藏）。")
     counts = {}
     for _idx, inst in ordered:
         title = instance_group_title(inst.get("lifecycle-state"))
         counts[title] = counts.get(title, 0) + 1
-    # 按组顺序排数量，如“🟢 运行中 3 台 · ⚫ 已终止 9 台”。
+    # 按组顺序排数量，如“🟢 运行中 3 台 · 🟡 已停止 1 台”。
     parts = []
     for state in INSTANCE_GROUP_ORDER:
         title = INSTANCE_GROUP_TITLES[state]
@@ -275,7 +283,7 @@ def fmt_instance_list(instances, profile):
     if other:
         parts.append(f"{INSTANCE_GROUP_OTHER_TITLE} {other} 台")
     lines = [
-        f"[{profile}] 实例列表（{len(instances)} 台）：",
+        f"[{profile}] 实例列表（{len(ordered)} 台）：",
         " · ".join(parts),
         "",
         "点下面按钮查看详情或操作。",
@@ -283,8 +291,12 @@ def fmt_instance_list(instances, profile):
     return "\n".join(lines)
 
 
-def fmt_instance_detail(inst, public_ip=None):
-    """实例详情全文。inst 是 get_instance 返回的完整 JSON（已解包 data）。"""
+def fmt_instance_detail(inst, public_ip=None, cpu_model=None):
+    """实例详情全文。inst 是 get_instance 返回的完整 JSON（已解包 data）。
+
+    cpu_model 是缓存/检测到的 CPU 型号（如 "AMD EPYC 7J13"），
+    未检测到时该行显示“未知”。
+    """
     data = inst.get("data") if isinstance(inst, dict) else None
     if data is None:
         data = inst or {}
@@ -301,6 +313,7 @@ def fmt_instance_detail(inst, public_ip=None):
         f"ID：{_tail(data.get('id'))}",
         f"状态：{state}",
         f"规格：{shape}（{ocpus} 核 / {memory}GB）",
+        f"CPU 型号：{cpu_model or '未知'}",
         f"可用域：{ad}",
         f"创建时间：{created}",
     ]
@@ -360,7 +373,9 @@ def fmt_duration(seconds):
 class TaskRegistry:
     """后台长任务（抢机等）的注册表：线程安全，支持注册/更新/查询/取消。
 
-    任务字典字段：id / kind / status / detail / started_at / stop_event。
+    任务字典字段：id / kind / status / detail / label / started_at /
+    stop_event。label 是给人看的任务说明（如抢什么机器），
+    注册时传入；没有 label 的旧任务在显示时退回“任务 <id>”。
     status：running / done / failed / cancelled。
     取消是协作式的：任务循环里要定期检查 stop_event（grabber.run 已支持）。
     """
@@ -370,8 +385,13 @@ class TaskRegistry:
         self._tasks = {}
         self._counter = 0
 
-    def register(self, kind, detail=""):
-        """注册一个任务，返回短 ID（如 "g1"）。"""
+    def register(self, kind, detail="", label=None):
+        """注册一个任务，返回短 ID（如 "g1"）。
+
+        label 是显示用的任务说明（如 "E2.1.Micro（新加坡）·
+        AMD_2026-11-24"），菜单 21 与取消按钮用它，不再直接
+        暴露 g1 / grab 这类内部编号与类型。
+        """
         with self._lock:
             self._counter += 1
             task_id = f"{kind[0]}{self._counter}"
@@ -380,6 +400,7 @@ class TaskRegistry:
                 "kind": kind,
                 "status": "running",
                 "detail": detail,
+                "label": label,
                 "started_at": time.time(),
                 "stop_event": threading.Event(),
             }
@@ -437,13 +458,17 @@ TASKS = TaskRegistry()
 
 
 def fmt_task_list(tasks):
-    """任务列表全文。"""
+    """任务列表全文：每条显示在抢什么机器 + 最新进度。
+
+    不再显示 g1（grab, running, …）这种内部编号与英文类型。
+    label 由注册方传入；没有 label 的旧任务退回“任务 <id>”。
+    """
     if not tasks:
         return "当前没有运行中的任务。"
     lines = ["📋 运行中的任务：", ""]
     for task in tasks:
-        started = datetime.fromtimestamp(task["started_at"]).strftime("%m-%d %H:%M")
-        lines.append(f"• {task['id']}（{task['kind']}，{task['status']}，{started}）")
+        label = task.get("label") or f"任务 {task['id']}"
+        lines.append(f"• {label}")
         if task.get("detail"):
             lines.append(f"  {task['detail']}")
     return "\n".join(lines)

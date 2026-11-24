@@ -225,7 +225,7 @@ def instance_list_keyboard(instances):
 
     instances 是 instance.list_instances 返回的精简列表。
     分组顺序与 fmt_instance_list 一致（RUNNING → STOPPED →
-    TERMINATED → 其他），共用 sort_instances_by_group。
+    其他），已终止的不显示，共用 sort_instances_by_group。
     标题按钮的 callback_data 是 "i:noop"（点它只应答，不做任何事）；
     实例按钮的 callback_data 带原列表下标（不是分组后的下标），
     因为 store_instances 存的是原始顺序列表，回调按原下标取回。
@@ -354,24 +354,42 @@ def boot_preset_keyboard():
     ])
 
 
-def boot_confirm_keyboard():
-    """开机确认键盘（点开始抢机后进后台任务）。"""
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🚀 开始抢机", callback_data="b:go")],
-        [InlineKeyboardButton("❌ 取消", callback_data="x")],
-    ])
+def boot_confirm_keyboard(preset=None):
+    """开机确认键盘（点开始抢机后进后台任务）。
+
+    E2 才有 CPU 选项行（只抢 7J13 / 什么 CPU 都可以），放在
+    “开始抢机”上面；当前选中的带 ✅。A1 不筛 CPU，不显示该行。
+    preset 为 None 时按旧行为（无选项行，兼容旧调用）。
+    """
+    rows = []
+    if preset is not None and preset.get("shape") == "VM.Standard.E2.1.Micro":
+        only_7j13 = bool(preset.get("target_cpu"))
+        rows.append([
+            InlineKeyboardButton(
+                ("✅ " if only_7j13 else "") + "只抢 7J13",
+                callback_data="b:cpu:7j13"),
+            InlineKeyboardButton(
+                ("✅ " if not only_7j13 else "") + "什么 CPU 都可以",
+                callback_data="b:cpu:any"),
+        ])
+    rows.append([InlineKeyboardButton("🚀 开始抢机", callback_data="b:go")])
+    rows.append([InlineKeyboardButton("❌ 取消", callback_data="x")])
+    return InlineKeyboardMarkup(rows)
 
 
 def task_list_keyboard(tasks):
     """任务列表键盘：每条运行中任务一个取消按钮。
 
     tasks 是 TaskRegistry.list_all() 返回的列表，每项含 id/kind/status。
+    按钮文字用任务的 label（在抢什么机器），没有 label 的旧任务
+    退回短 ID；callback_data 始终是短 ID。
     """
     rows = []
     for task in tasks:
         if task.get("status") in ("running", "pending"):
+            label = task.get("label") or task.get("id")
             rows.append([InlineKeyboardButton(
-                f"❌ 取消 {task.get('id')}（{task.get('kind')}）",
+                f"❌ 取消 {label}",
                 callback_data=f"t:cancel:{task.get('id')}")])
     rows.append([InlineKeyboardButton("🔄 刷新", callback_data="o:tasks"),
                  InlineKeyboardButton("◀ Oracle 菜单", callback_data="o:menu")])

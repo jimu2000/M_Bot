@@ -481,7 +481,8 @@ class TestInstanceTraffic(HandlersExtraTestCase):
                 return (0, self.VNSTAT_SAMPLE, "")
             mock_cmd.side_effect = _cmd
             entries = await he._fetch_instance_traffic(context, instances)
-        self.assertEqual(len(calls), 3)
+        # vnstat 失败 → apt 安装 → vnstat 重试 → 看门狗 probe，共 4 次。
+        self.assertEqual(len(calls), 4)
         self.assertTrue(any("apt-get install -y vnstat python3 curl" in c
                             for c in calls))
         self.assertTrue(entries[0]["installed"])
@@ -524,6 +525,141 @@ class TestInstanceTraffic(HandlersExtraTestCase):
             entries = await he._fetch_instance_traffic(context, instances)
         mock_cmd.assert_called_once()
         self.assertEqual(entries[0]["error"], "vnstat 查询失败")
+
+    def test_fmt_instance_traffic_guard_line(self):
+        """v1.21.0：每台流量下面带看门狗状态行。"""
+        text = he.fmt_instance_traffic([
+            {"name": "a", "public_ip": "1.2.3.4", "city": "新加坡",
+             "rx_gb": 1.0, "tx_gb": 2.0, "error": None,
+             "guard": {"installed": True, "auto": True, "enabled": True,
+                       "mode": 0, "tripped": False, "limited": False}},
+            {"name": "b", "public_ip": "5.6.7.8", "city": "圣何塞",
+             "rx_gb": 0.5, "tx_gb": 1.0, "error": None,
+             "guard": {"installed": False, "auto": False, "enabled": False,
+                       "mode": None, "tripped": False, "limited": False}},
+        ])
+        self.assertIn("看门狗：已开启（阻断模式）", text)
+        self.assertIn("看门狗：未安装", text)
+
+    def test_traffic_keyboard_toggle_labels(self):
+        """v1.21.0：开关按钮按当前状态反着显示动作。"""
+        entries = [
+            {"name": "web", "public_ip": "1.2.3.4",
+             "guard": {"installed": True, "enabled": True}},
+            {"name": "e2", "public_ip": "5.6.7.8",
+             "guard": {"installed": False, "enabled": False}},
+            {"name": "noip", "public_ip": None, "guard": None},
+        ]
+        with patch.object(bot_config, "GUARD_SSH_KEY",
+                          "/root/.ssh/rbot_guard"):
+            keyboard = he.traffic_keyboard(entries)
+        rows = keyboard.inline_keyboard
+        self.assertEqual(len(rows), 3)  # 两台可操作 + 返回按钮
+        self.assertEqual(rows[0][0].text, "🛡️ web：关闭看门狗")
+        self.assertEqual(rows[0][0].callback_data, "wd:toggle:0")
+        self.assertEqual(rows[1][0].text, "🛡️ e2：开启看门狗")
+        self.assertEqual(rows[1][0].callback_data, "wd:toggle:1")
+        self.assertEqual(rows[2][0].callback_data, "o:menu")
+
+    def test_traffic_keyboard_no_key(self):
+        """未配 SSH 密钥时不给开关按钮（装不了），只剩返回按钮。"""
+        entries = [{"name": "web", "public_ip": "1.2.3.4",
+                    "guard": {"installed": False, "enabled": False}}]
+        with patch.object(bot_config, "GUARD_SSH_KEY", ""):
+            keyboard = he.traffic_keyboard(entries)
+        self.assertEqual(len(keyboard.inline_keyboard), 1)
+        self.assertEqual(keyboard.inline_keyboard[0][0].callback_data,
+                         "o:menu")
+
+
+class TestWatchdogCallback(HandlersExtraTestCase):
+    """v1.21.0：菜单 19 看门狗开关回调。"""
+
+    def _entries(self, enabled=False):
+        return [{"name": "web", "public_ip": "203.0.113.11",
+                 "city": "新加坡", "rx_gb": 1.0, "tx_gb": 2.0,
+                 "error": None,
+                 "guard": {"installed": True, "auto": True,
+                           "enabled": enabled, "mode": 0,
+                           "tripped": False, "limited": False}}]
+
+    async def test_enable_installs_and_refreshes(self):
+        update = make_update(callback_data="wd:toggle:0")
+        context = make_context()
+        context.user_data["traffic_entries"] = self._entries(enabled=False)
+        fresh = self._entries(enabled=True)
+        with patch.object(bot_config, "GUARD_SSH_KEY",
+                          "/root/.ssh/rbot_guard"), \
+                patch.object(he, "install_watchdog",
+                             return_value={"action": "installed",
+                                           "test_ok": True,
+                                           "mode": 0}) as mock_install, \
+                patch.object(he, "_fetch_instance_traffic",
+                             return_value=fresh):
+            await he.watchdog_callback(update, context)
+        mock_install.assert_called_once()
+        text = edit_text_of(update)
+        self.assertIn("已安装并开启", text)
+        self.assertIn("看门狗：已开启（阻断模式）", text)
+        self.assertEqual(context.user_data["traffic_entries"], fresh)
+
+    async def test_reenable_says_reenabled(self):
+        # 新版已装、只是 cron 被摘了：文案是“已重新开启”，不是“已升级”。
+        update = make_update(callback_data="wd:toggle:0")
+        context = make_context()
+        context.user_data["traffic_entries"] = self._entries(enabled=False)
+        fresh = self._entries(enabled=True)
+        with patch.object(bot_config, "GUARD_SSH_KEY",
+                          "/root/.ssh/rbot_guard"), \
+                patch.object(he, "install_watchdog",
+                             return_value={"action": "enabled",
+                                           "test_ok": True,
+                                           "mode": 0}) as mock_install, \
+                patch.object(he, "_fetch_instance_traffic",
+                             return_value=fresh):
+            await he.watchdog_callback(update, context)
+        mock_install.assert_called_once()
+        text = edit_text_of(update)
+        self.assertIn("已重新开启", text)
+        self.assertNotIn("已升级", text)
+
+    async def test_disable_closes_and_refreshes(self):
+        update = make_update(callback_data="wd:toggle:0")
+        context = make_context()
+        context.user_data["traffic_entries"] = self._entries(enabled=True)
+        fresh = self._entries(enabled=False)
+        with patch.object(bot_config, "GUARD_SSH_KEY",
+                          "/root/.ssh/rbot_guard"), \
+                patch.object(he, "disable_watchdog",
+                             return_value={"action": "disabled"}) as mock_off, \
+                patch.object(he, "_fetch_instance_traffic",
+                             return_value=fresh):
+            await he.watchdog_callback(update, context)
+        mock_off.assert_called_once()
+        text = edit_text_of(update)
+        self.assertIn("已关闭", text)
+
+    async def test_bark_not_configured_shows_error(self):
+        update = make_update(callback_data="wd:toggle:0")
+        context = make_context()
+        context.user_data["traffic_entries"] = self._entries(enabled=False)
+        from tgbot.watchdog import WatchdogError
+        with patch.object(bot_config, "GUARD_SSH_KEY",
+                          "/root/.ssh/rbot_guard"), \
+                patch.object(he, "install_watchdog",
+                             side_effect=WatchdogError(
+                                 "机器人还没配 Bark（菜单 43 配好地址和 Key 再来）")):
+            await he.watchdog_callback(update, context)
+        text = edit_text_of(update)
+        self.assertIn("操作失败", text)
+        self.assertIn("菜单 43", text)
+
+    async def test_expired_list(self):
+        update = make_update(callback_data="wd:toggle:3")
+        context = make_context()
+        context.user_data["traffic_entries"] = self._entries()
+        await he.watchdog_callback(update, context)
+        self.assertIn("已过期", edit_text_of(update))
 
 
 class TestHealthTasksProfiles(HandlersExtraTestCase):
@@ -927,7 +1063,12 @@ class TestBoot(HandlersExtraTestCase):
                 registered = self.tasks.list_all()
                 self.assertEqual(len(registered), 1)
                 task_id = registered[0]["id"]
-                self.assertIn(task_id, text)
+                # 启动消息显示任务 label（抢什么机器），不再暴露
+                # g1 这类内部任务 ID。
+                self.assertIn("E2.1.Micro", text)
+                self.assertNotIn(task_id, text)
+                self.assertEqual(registered[0]["label"],
+                                 "E2.1.Micro（新加坡）· e2-micro")
                 # 等 daemon 线程跑完（mock Grabber 立即返回）。
                 # 注意：整个等待过程必须留在 PRESETS_FILE 的 patch 里，
                 # 否则线程里的 save_preset 会写到真实默认路径。

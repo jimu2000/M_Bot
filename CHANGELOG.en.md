@@ -9,6 +9,54 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [1.24.0] - 2026-11-24
+
+### Added
+- Instance CPU model display: the list card and detail modal add a "CPU model" row under Shape (e.g. AMD EPYC 7J13, AMD EPYC 7742, Ampere Altra), and the bot's instance detail shows the same line; the OCI API does not report the host CPU model, so it is read over SSH from the instance's /proc/cpuinfo (lscpu fallback on A1)
+- New module tgbot/cpu_model.py: model parsing (short model name), persistent cache (tgbot/data/cpu_models.json — a model never changes for an instance, so it is fetched once and never re-read over SSH), cache entry removed automatically when the instance is terminated
+- Background detection on list load: after the list loads, running instances without a cached model are detected in the background and show up on the next refresh; the detail modal adds a "🔄 Re-detect CPU" button (forced re-detection), endpoint POST /api/instances/{id}/cpu-model
+
+### Verification
+- Full test suite: 2223 tests, all passing (including the new CPU model parsing/cache/fetch, Web API and detail-text tests)
+
+## [1.23.0] - 2026-11-24
+
+### Added
+- New login page based on the open-source Uiverse design (Form by iZOXVL, MIT license): blue-to-purple gradient card with underline floating labels, recreated in plain CSS without Tailwind; password login, Telegram code login, captcha, lockout countdown and Clarity analytics all kept
+- Remember me: checking it on the login page extends both the server-side session and the cookie to 30 days (default stays 12 hours); configurable via REMEMBER_ME_DAYS (web/config.py)
+- Forgot password entry: clicking it explains how to reset the panel password with the Telegram bot's /raninfo command (no self-service reset exists)
+
+### Changed
+- Login page drops the old two-column layout and terminal decoration in favor of a single centered card; functional copy adapted to the panel (username login, default-credentials hint kept); tighter card padding on mobile
+
+### Verification
+- Full test suite: 2185 tests, all passing (including the new remember-me cookie/session-expiry and login-page design tests)
+
+## [1.22.0] - 2026-11-24
+
+### Added
+- CPU choice on the boot confirmation page (E2 shape, above "Start grabbing"): "Only 7J13" / "Any CPU is fine", the current choice marked with ✅, tapping one refreshes the summary in place; the summary's target-CPU line now always shows for E2 (previously only when 7J13 was selected); A1 does not filter by CPU, so no row there
+
+### Changed
+- The task list (menu 21) now says what machine is being grabbed (shape + region + instance name), and the cancel buttons do the same; internal IDs and English type labels like g1 (grab, running, …) are no longer shown; the grab-started message shows the machine description instead of just a task ID; the web task page's first column shows the same description
+- Terminated instances are now hidden from the instance list entirely (bot side; the web panel already hid them); the header total counts only visible instances; when everything is terminated it says there is nothing to show (terminated instances are hidden)
+
+### Fixed
+- Guard re-enable wording: when the new script is already installed and only the cron job was removed, re-enabling now reports action "enabled" instead of "upgraded", so the bot and the web panel say "re-enabled" instead of wrongly claiming an upgrade to the auto-detect version (found during the .121 live verification)
+
+### Verification
+- Full test suite: 2181 tests, all passing (including the new CPU-choice / task-label / hide-terminated / guard re-enable wording tests)
+
+## [1.21.0] - 2026-11-24
+
+### Added
+- Traffic-guard toggle in menu 19 (monthly traffic), bot + web: per-host on/off; enabling installs the guard script + a cron job (check every 10 minutes) + runs a test push; disabling removes the cron job and resets any trip; each host in menu 19 now shows its guard status (on/off + block/rate-limit mode)
+- Guard template script scripts/oracle_traffic_guard.py: SSH port auto-detection (live sshd port > sshd_config > 22), no more hard-coded port; Bark keys are no longer hard-coded into the script, they are read from /root/.traffic_guard_bark (600) or the BARK_KEY / BARK_ENC_KEY / BARK_SERVER environment variables; on a host with the old script installed, enabling extracts the old keys and keeps using them (falls back to the bot's Bark settings only when no complete key can be extracted)
+- Web instance detail adds a "Traffic guard" row with a toggle (GET / POST /api/instances/{id}/watchdog)
+
+### Verification
+- Full test suite: 2153 tests, all passing (including the new template-script, install-orchestration, bot-callback and web-API tests); probe detection verified on a Seoul test instance (correctly reported "not installed"); live verification on .121: post-upgrade state (new script + Bark config + cron) in place, disable (cron removed), web re-enable, manual check, and the scheduled 15:00 check updating state all passed (trip was not tested on a production host)
+
 ## [1.20.0] - 2026-11-24
 
 ### Added

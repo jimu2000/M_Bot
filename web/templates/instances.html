@@ -293,6 +293,7 @@
         <tbody>
           <tr><th style="width: 120px;">名称</th><td id="detail-name">—</td></tr>
           <tr><th>形状</th><td id="detail-shape">—</td></tr>
+          <tr><th>CPU 型号</th><td id="detail-cpu-model" class="mono">—</td></tr>
           <tr><th>规格</th><td id="detail-spec">—</td></tr>
           <tr><th>状态</th><td id="detail-state">—</td></tr>
           <tr><th>公网 IP</th><td id="detail-public-ip" class="mono">—</td></tr>
@@ -301,6 +302,7 @@
           <tr><th>可用域</th><td id="detail-ad">—</td></tr>
           <tr><th>启动盘</th><td id="detail-boot-volume">—</td></tr>
           <tr><th>创建时间</th><td id="detail-created">—</td></tr>
+          <tr><th>流量看门狗</th><td id="detail-watchdog">—</td></tr>
         </tbody>
       </table>
     </div>
@@ -308,6 +310,8 @@
       <button type="button" class="btn" id="detail-bootbackup-btn" hidden>💾 引导卷备份</button>
       <button type="button" class="btn" id="detail-bootswap-btn" hidden>💾 引导卷恢复</button>
       <button type="button" class="btn" id="detail-bootbackup-del-btn" hidden>🗑️ 删除历史备份</button>
+      <button type="button" class="btn" id="detail-watchdog-btn" hidden>🛡️ 开启看门狗</button>
+      <button type="button" class="btn" id="detail-cpu-btn" hidden>🔄 重新检测 CPU</button>
       <button type="button" class="btn btn-primary" data-close-modal="detail-modal">关闭</button>
     </div>
   </div>

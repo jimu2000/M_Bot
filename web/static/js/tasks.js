@@ -49,12 +49,13 @@
       var cancelBtn = isRunning(t)
         ? '<button type="button" class="btn btn-sm btn-danger" data-act="cancel">取消</button>'
         : "";
-      // 后端任务字段：kind（类型）/ detail（说明，如"抢机：xxx（shape）"）
+      // 后端任务字段：label（显示说明，如"抢机：xxx"或规格·实例名）
+      // / kind（类型，旧任务无 label 时退回它）/ detail（说明）
       // / status（pending/running/done/failed/cancelled）/ created_at（秒级时间戳）
       var sub = t.detail || t.display_name || "";
       var row =
         '<tr class="task-row' + (expanded ? " expanded" : "") + '" data-task-id="' + esc(id) + '">' +
-          "<td><b>" + esc(t.type || t.kind || "—") + "</b>" +
+          "<td><b>" + esc(t.label || t.type || t.kind || "—") + "</b>" +
             (sub ? "<br><span style=\"color: var(--text-muted); font-size: 12px;\">" + esc(sub) + "</span>" : "") + "</td>" +
           "<td>" + statusBadge(t) + "</td>" +
           "<td>" + esc(MBot.formatTime(t.started_at || t.created_at)) + "</td>" +

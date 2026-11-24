@@ -881,9 +881,12 @@ def fmt_boot_form_summary(preset, ok, reason):
     script = preset.get("startup_script")
     lines.append("开机脚本：" + (f"已上传（{len(script)} 字符）"
                                  if script else "无"))
-    if preset.get("target_cpu"):
-        lines.append(f"目标 CPU：只留含 {preset['target_cpu']} 的，"
-                     "不符就释放继续抢")
+    if preset.get("shape") == SHAPE_E2_MICRO:
+        if preset.get("target_cpu"):
+            lines.append(f"目标 CPU：只留含 {preset['target_cpu']} 的，"
+                         "不符就释放继续抢")
+        else:
+            lines.append("目标 CPU：什么 CPU 都可以，抢到就留")
     if preset.get("note"):
         lines.append(f"⚠️ {preset['note']}")
     lines.append("")

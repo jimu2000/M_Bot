@@ -124,6 +124,15 @@
     var captchaImg = document.getElementById("captcha-image");
     if (captchaImg) captchaImg.addEventListener("click", loadCaptcha);
 
+    // 忘记密码：面板没有自助找回，提示用 Telegram 机器人 /raninfo 重置
+    var forgotLink = document.getElementById("forgot-password-link");
+    if (forgotLink) {
+      forgotLink.addEventListener("click", function (e) {
+        e.preventDefault();
+        MBot.toast("面板密码请在 Telegram 机器人里用 /raninfo 命令重置", "info");
+      });
+    }
+
     if (tabTelegram) tabTelegram.addEventListener("click", function () { switchTab("telegram"); });
     if (tabPassword) tabPassword.addEventListener("click", function () { switchTab("password"); });
 
@@ -183,7 +192,7 @@
           showError(err.message || "验证码错误或已过期");
         } finally {
           tgBtn.disabled = false;
-          tgBtn.textContent = "验证码登录 →";
+          tgBtn.textContent = "验证码登录";
         }
       });
     }
@@ -199,6 +208,8 @@
         return;
       }
       var body = { username: username, password: password };
+      var rememberBox = document.getElementById("remember-me");
+      if (rememberBox && rememberBox.checked) body.remember = true;
       if (captchaEnabled) {
         var answer = document.getElementById("captcha-answer").value.trim();
         if (!answer || !captchaId) {
@@ -232,7 +243,7 @@
         }
       } finally {
         btn.disabled = false;
-        btn.textContent = "登录 →";
+        btn.textContent = "登录";
       }
     });
   });

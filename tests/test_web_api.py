@@ -407,6 +407,213 @@ class TestInstancesApi(WebApiTestCase):
         self.assertEqual(r.status_code, 404)
 
 
+class TestWatchdogApi(WebApiTestCase):
+    """v1.21.0：实例详情里的流量看门狗状态与开关。"""
+
+    def setUp(self):
+        super().setUp()
+        self._login()
+
+    PROBE_ENABLED = ("SCRIPT=1\nAUTO=1\nCRON=1\nMODE=0\n"
+                     "TRIPPED=0\nLIMITED=0\n")
+    PROBE_NOT_INSTALLED = "SCRIPT=0\nAUTO=0\nCRON=0\nTRIPPED=0\nLIMITED=0\n"
+
+    def _patch_host(self):
+        """mock 公网 IP + SSH 密钥（_watchdog_host 能建成）。"""
+        return (patch("web.routes.instances._safe_public_ip",
+                      return_value=FAKE_IP),
+                patch("tgbot.config.GUARD_SSH_KEY",
+                      "/root/.ssh/rbot_guard"))
+
+    def test_get_status_enabled(self):
+        ip_patch, key_patch = self._patch_host()
+        with ip_patch, key_patch, patch(
+                "web.routes.instances.run_remote_command",
+                return_value=(0, self.PROBE_ENABLED, "")):
+            r = self.client.get(f"/api/instances/{FAKE_INSTANCE}/watchdog")
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertTrue(body["watchdog"]["enabled"])
+        self.assertEqual(body["watchdog"]["mode"], 0)
+        self.assertIn("阻断模式", body["label"])
+
+    def test_get_status_not_installed(self):
+        ip_patch, key_patch = self._patch_host()
+        with ip_patch, key_patch, patch(
+                "web.routes.instances.run_remote_command",
+                return_value=(0, self.PROBE_NOT_INSTALLED, "")):
+            r = self.client.get(f"/api/instances/{FAKE_INSTANCE}/watchdog")
+        self.assertEqual(r.status_code, 200)
+        self.assertFalse(r.json()["watchdog"]["installed"])
+        self.assertIn("未安装", r.json()["label"])
+
+    def test_get_status_no_key(self):
+        with patch("web.routes.instances._safe_public_ip",
+                   return_value=FAKE_IP), \
+                patch("tgbot.config.GUARD_SSH_KEY", ""):
+            r = self.client.get(f"/api/instances/{FAKE_INSTANCE}/watchdog")
+        self.assertEqual(r.status_code, 200)
+        self.assertIsNone(r.json()["watchdog"])
+
+    def test_post_enable(self):
+        ip_patch, key_patch = self._patch_host()
+        with ip_patch, key_patch, patch(
+                "web.routes.instances.install_watchdog",
+                return_value={"action": "installed", "test_ok": True,
+                              "mode": 0}) as mock_install:
+            r = self.client.post(
+                f"/api/instances/{FAKE_INSTANCE}/watchdog",
+                json={"enabled": True})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["action"], "installed")
+        mock_install.assert_called_once()
+
+    def test_post_reenable(self):
+        # 新版已装、只是 cron 被摘了：文案是“已重新开启”，不是“已升级”。
+        ip_patch, key_patch = self._patch_host()
+        with ip_patch, key_patch, patch(
+                "web.routes.instances.install_watchdog",
+                return_value={"action": "enabled", "test_ok": True,
+                              "mode": 0}) as mock_install:
+            r = self.client.post(
+                f"/api/instances/{FAKE_INSTANCE}/watchdog",
+                json={"enabled": True})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["action"], "enabled")
+        self.assertIn("重新开启", r.json()["message"])
+        self.assertNotIn("升级", r.json()["message"])
+        mock_install.assert_called_once()
+
+    def test_post_disable(self):
+        ip_patch, key_patch = self._patch_host()
+        with ip_patch, key_patch, patch(
+                "web.routes.instances.disable_watchdog",
+                return_value={"action": "disabled"}) as mock_off:
+            r = self.client.post(
+                f"/api/instances/{FAKE_INSTANCE}/watchdog",
+                json={"enabled": False})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["action"], "disabled")
+        mock_off.assert_called_once()
+
+    def test_post_no_bark_400(self):
+        from tgbot.watchdog import WatchdogError
+        ip_patch, key_patch = self._patch_host()
+        with ip_patch, key_patch, patch(
+                "web.routes.instances.install_watchdog",
+                side_effect=WatchdogError("机器人还没配 Bark")):
+            r = self.client.post(
+                f"/api/instances/{FAKE_INSTANCE}/watchdog",
+                json={"enabled": True})
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("Bark", r.json()["error"])
+
+
+class TestCpuModelApi(WebApiTestCase):
+    """v1.24.0：实例 CPU 型号（列表 cpuModel / 详情 cpu_model / 强制重测）。"""
+
+    def setUp(self):
+        super().setUp()
+        self._login()
+
+    def _patch_host(self):
+        """mock 公网 IP + SSH 密钥（_watchdog_host 能建成）。"""
+        return (patch("web.routes.instances._safe_public_ip",
+                      return_value=FAKE_IP),
+                patch("tgbot.config.GUARD_SSH_KEY",
+                      "/root/.ssh/rbot_guard"))
+
+    @patch("web.routes.instances._refresh_cpu_models_background")
+    @patch("web.routes.instances.load_cpu_models",
+           return_value={FAKE_INSTANCE: {"model": "AMD EPYC 7J13",
+                                         "checked_at": "2026-11-24T00:00:00+00:00"}})
+    @patch("web.routes.instances.get_public_ip", return_value=FAKE_IP)
+    @patch("web.routes.instances.list_instances", return_value=FAKE_INSTANCES)
+    def test_list_includes_cpu_model(self, mock_list, mock_ip,
+                                     mock_cache, mock_bg):
+        r = self.client.get("/api/instances")
+        self.assertEqual(r.status_code, 200)
+        inst = r.json()["instances"][0]
+        self.assertEqual(inst["cpuModel"], "AMD EPYC 7J13")
+        mock_bg.assert_called_once()
+
+    @patch("web.routes.instances._refresh_cpu_models_background")
+    @patch("web.routes.instances.load_cpu_models", return_value={})
+    @patch("web.routes.instances.get_public_ip", return_value=FAKE_IP)
+    @patch("web.routes.instances.list_instances", return_value=FAKE_INSTANCES)
+    def test_list_cpu_model_none_when_uncached(self, mock_list, mock_ip,
+                                               mock_cache, mock_bg):
+        r = self.client.get("/api/instances")
+        self.assertEqual(r.status_code, 200)
+        self.assertIsNone(r.json()["instances"][0]["cpuModel"])
+
+    @patch("web.routes.instances.get_cpu_model")
+    @patch("web.routes.instances.cached_cpu_model",
+           return_value="AMD EPYC 7742")
+    @patch("web.routes.instances.get_public_ip", return_value=FAKE_IP)
+    @patch("web.routes.instances.get_instance")
+    def test_detail_cpu_model_cached(self, mock_get, mock_ip,
+                                     mock_cached, mock_fetch):
+        mock_get.return_value = {"data": {"id": FAKE_INSTANCE,
+                                          "display-name": "instance-e2",
+                                          "lifecycle-state": "RUNNING",
+                                          "availability-domain": "AD-1"}}
+        r = self.client.get(f"/api/instances/{FAKE_INSTANCE}")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["cpu_model"], "AMD EPYC 7742")
+        # 缓存命中时不 SSH。
+        mock_fetch.assert_not_called()
+
+    @patch("web.routes.instances.get_cpu_model",
+           return_value="Ampere Altra")
+    @patch("web.routes.instances.cached_cpu_model", return_value=None)
+    @patch("web.routes.instances.get_public_ip", return_value=FAKE_IP)
+    @patch("web.routes.instances.get_instance")
+    def test_detail_cpu_model_fetched_when_missing(self, mock_get, mock_ip,
+                                                   mock_cached, mock_fetch):
+        mock_get.return_value = {"data": {"id": FAKE_INSTANCE,
+                                          "display-name": "instance-a1",
+                                          "lifecycle-state": "RUNNING",
+                                          "availability-domain": "AD-1"}}
+        r = self.client.get(f"/api/instances/{FAKE_INSTANCE}")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["cpu_model"], "Ampere Altra")
+        mock_fetch.assert_called_once()
+
+    def test_post_refresh_success(self):
+        ip_patch, key_patch = self._patch_host()
+        with ip_patch, key_patch, patch(
+                "web.routes.instances.get_cpu_model",
+                return_value="AMD EPYC 7J13") as mock_fetch:
+            r = self.client.post(
+                f"/api/instances/{FAKE_INSTANCE}/cpu-model")
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertEqual(body["cpu_model"], "AMD EPYC 7J13")
+        self.assertIn("AMD EPYC 7J13", body["message"])
+        _args, kwargs = mock_fetch.call_args
+        self.assertTrue(kwargs.get("force"))
+
+    def test_post_refresh_ssh_failure(self):
+        ip_patch, key_patch = self._patch_host()
+        with ip_patch, key_patch, patch(
+                "web.routes.instances.get_cpu_model", return_value=None):
+            r = self.client.post(
+                f"/api/instances/{FAKE_INSTANCE}/cpu-model")
+        self.assertEqual(r.status_code, 200)
+        self.assertIsNone(r.json()["cpu_model"])
+        self.assertIn("失败", r.json()["message"])
+
+    def test_post_refresh_no_key(self):
+        with patch("web.routes.instances._safe_public_ip",
+                   return_value=FAKE_IP), \
+                patch("tgbot.config.GUARD_SSH_KEY", ""):
+            r = self.client.post(
+                f"/api/instances/{FAKE_INSTANCE}/cpu-model")
+        self.assertEqual(r.status_code, 200)
+        self.assertIsNone(r.json()["cpu_model"])
+
+
 class TestVolumesApi(WebApiTestCase):
     """磁盘列表 / 详情 / 扩容 / 删除 / 孤儿盘。"""
 
@@ -1320,6 +1527,21 @@ class TestPages(WebApiTestCase):
         r = self.anon.get("/login")
         self.assertEqual(r.status_code, 200)
         self.assertIn("text/html", r.headers["content-type"])
+
+    def test_login_page_new_design(self):
+        """v1.23.0：登录页是 Uiverse 渐变卡片设计，保留全部功能元素。"""
+        r = self.anon.get("/login")
+        self.assertEqual(r.status_code, 200)
+        html = r.text
+        for marker in ("M_Bot Oracle开源管理面板", "login-card", "remember-me",
+                       "forgot-password-link", "login-form",
+                       "telegram-form", "captcha-block", "login-error",
+                       "lockout-info", "login-btn", "tg-send-btn",
+                       "tg-login-btn", "tab-password", "tab-telegram"):
+            self.assertIn(marker, html, marker)
+        # 旧版左右分栏与终端装饰已移除。
+        self.assertNotIn("login-side", html)
+        self.assertNotIn("login-logo", html)
 
     def test_root_redirects_to_overview(self):
         r = self.anon.get("/", follow_redirects=False)

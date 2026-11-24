@@ -168,6 +168,8 @@ def build_application():
     application.add_handler(CallbackQueryHandler(
         handlers_extra.boot_go_callback, pattern=r"^b:go$"))
     application.add_handler(CallbackQueryHandler(
+        handlers_extra.boot_cpu_callback, pattern=r"^b:cpu:"))
+    application.add_handler(CallbackQueryHandler(
         handlers_extra.boot_preset_load_callback, pattern=r"^b:load:"))
     application.add_handler(CallbackQueryHandler(
         handlers_extra.boot_form_callback, pattern=r"^bf:"))
@@ -212,6 +214,8 @@ def build_application():
         handlers_extra.boot_backup_delete_callback, pattern=r"^bb:delete:"))
     application.add_handler(CallbackQueryHandler(
         handlers_extra.bootswap_callback, pattern=r"^bs:"))
+    application.add_handler(CallbackQueryHandler(
+        handlers_extra.watchdog_callback, pattern=r"^wd:"))
     application.add_handler(CallbackQueryHandler(
         handlers_extra.instance_boot_backup_mstoggle_callback,
         pattern=r"^ib:mst:"))

@@ -626,6 +626,51 @@ class TestRunRemoteCommand(unittest.TestCase):
         self.assertEqual(client.connect.call_count, 1)
 
 
+class TestPutRemoteFile(unittest.TestCase):
+    """put_remote_file：SFTP 上传内容 + chmod（看门狗安装用）。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self._known_hosts = patch.object(
+            hc, "KNOWN_HOSTS_FILE",
+            os.path.join(self._tmp.name, "known_hosts"))
+        self._known_hosts.start()
+        self.addCleanup(self._known_hosts.stop)
+        self.host = {"host": FAKE_IP, "port": 14422, "username": "root"}
+
+    def test_uploads_content_and_sets_mode(self):
+        client = _mock_ssh_client()
+        sftp = MagicMock()
+        remote_file = MagicMock()
+        sftp.open.return_value.__enter__.return_value = remote_file
+        client.open_sftp.return_value = sftp
+        with patch("paramiko.SSHClient", return_value=client):
+            hc.put_remote_file(self.host, "hello\n", "/tmp/x.sh", mode=0o755)
+        client.open_sftp.assert_called_once()
+        sftp.open.assert_called_once_with("/tmp/x.sh", "w")
+        remote_file.write.assert_called_once_with("hello\n")
+        sftp.chmod.assert_called_once_with("/tmp/x.sh", 0o755)
+        sftp.close.assert_called_once()
+        client.close.assert_called_once()
+
+    def test_default_mode_644(self):
+        client = _mock_ssh_client()
+        sftp = MagicMock()
+        client.open_sftp.return_value = sftp
+        with patch("paramiko.SSHClient", return_value=client):
+            hc.put_remote_file(self.host, "cfg", "/tmp/cfg")
+        sftp.chmod.assert_called_once_with("/tmp/cfg", 0o644)
+
+    def test_sftp_failure_raises_remote_error(self):
+        client = _mock_ssh_client()
+        client.open_sftp.side_effect = OSError("sftp down")
+        with patch("paramiko.SSHClient", return_value=client):
+            with self.assertRaises(hc.RemoteCommandError) as ctx:
+                hc.put_remote_file(self.host, "x", "/tmp/x")
+        self.assertIn("SFTP", str(ctx.exception))
+
+
 class TestMemhogEnvOverrides(unittest.TestCase):
     """MEMHOG_SSH_KEY / MEMHOG_SSH_PORT 环境变量覆盖。
 

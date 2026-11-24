@@ -137,12 +137,17 @@ class SessionStore:
         self.expire_seconds = hours * 3600
         self._sessions = {}
 
-    def create(self, username):
-        """为用户创建一个会话，返回 token。"""
+    def create(self, username, expire_seconds=None):
+        """为用户创建一个会话，返回 token。
+
+        expire_seconds 不传时用默认有效期；“记住我”登录时调用方
+        传更长的值（cookie 的 max-age 由调用方同步延长）。"""
         token = secrets.token_urlsafe(32)
+        ttl = (self.expire_seconds if expire_seconds is None
+               else expire_seconds)
         self._sessions[token] = {
             "username": username,
-            "expires": time.time() + self.expire_seconds,
+            "expires": time.time() + ttl,
         }
         return token
 

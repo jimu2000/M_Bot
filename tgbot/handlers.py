@@ -28,6 +28,8 @@ from telegram.ext import ContextTypes
 from oci.instance import (get_instance, list_instances, restart_instance,
                           start_instance, stop_instance, terminate_instance)
 from oci.network import attach_public_ips, get_public_ip
+from tgbot.cpu_model import delete_cpu_model, get_cpu_model, host_for_ip
+from tgbot.handlers_client import run_remote_command
 from tgbot.keyboards import (ORACLE_MENU_ITEMS, back_to_oracle_keyboard,
                              confirm_keyboard,
                              instance_actions_keyboard,
@@ -373,8 +375,18 @@ async def instance_detail_callback(update: Update,
         public_ip = None
 
     state = _unwrap(detail).get("lifecycle-state", "?")
+    # CPU 型号：运行中的实例才 SSH 检测（缓存命中时不连 SSH）；
+    # 检测失败不影响详情展示，该行显示“未知”。
+    cpu_model = None
+    if state == "RUNNING" and public_ip:
+        try:
+            cpu_model = await run_sync(
+                get_cpu_model, instance_id, host_for_ip(public_ip),
+                run_remote_command)
+        except Exception as exc:  # noqa: BLE001 - 检测失败只记日志
+            logger.warning("查 CPU 型号失败：%s", exc)
     await query.edit_message_text(
-        fmt_instance_detail(detail, public_ip),
+        fmt_instance_detail(detail, public_ip, cpu_model),
         reply_markup=instance_actions_keyboard(int(idx), state))
 
 
@@ -485,6 +497,7 @@ async def confirm_callback(update: Update,
         return
 
     if action == "terminate":
+        delete_cpu_model(instance_id)
         text = f"✅ 已终止实例「{name}」，引导卷已永久删除。"
     else:
         text = f"✅ 已{verb}实例「{name}」。"

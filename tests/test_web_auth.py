@@ -191,6 +191,14 @@ class TestSessionStore(unittest.TestCase):
         tokens = {self.store.create("admin") for _ in range(10)}
         self.assertEqual(len(tokens), 10)
 
+    def test_create_with_custom_expiry(self):
+        """create() 可传自定义有效期（记住我登录用 30 天）。"""
+        token = self.store.create("admin", expire_seconds=30 * 24 * 3600)
+        remaining = self.store._sessions[token]["expires"] - time.time()
+        self.assertGreater(remaining, 29 * 24 * 3600)
+        self.assertLessEqual(remaining, 30 * 24 * 3600)
+        self.assertEqual(self.store.get(token), "admin")
+
 
 if __name__ == "__main__":
     unittest.main()

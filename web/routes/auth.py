@@ -50,6 +50,7 @@ class LoginBody(BaseModel):
     password: str
     captcha_id: str = None
     captcha_answer: str = None
+    remember: bool = False
 
 
 class TelegramVerifyBody(BaseModel):
@@ -120,13 +121,18 @@ def update_password_hash_in_env_file(new_hash, env_file=None):
     os.chmod(path, 0o600)
 
 
-def _set_session_cookie(response, username):
-    """给响应设 HttpOnly 会话 cookie（密码登录与 Telegram 登录共用）。"""
-    token = SESSIONS.create(username)
+def _set_session_cookie(response, username, remember=False):
+    """给响应设 HttpOnly 会话 cookie（密码登录与 Telegram 登录共用）。
+
+    remember=True（登录页勾选“记住我”）时服务端会话与 cookie
+    同时延长到 REMEMBER_ME_DAYS 天，否则默认 SESSION_EXPIRE_HOURS。"""
+    max_age = (int(config.REMEMBER_ME_DAYS * 24 * 3600) if remember
+               else int(config.SESSION_EXPIRE_HOURS * 3600))
+    token = SESSIONS.create(username, expire_seconds=max_age)
     response.set_cookie(
         config.SESSION_COOKIE, token,
         httponly=True, samesite="lax", path="/",
-        max_age=int(config.SESSION_EXPIRE_HOURS * 3600))
+        max_age=max_age)
     return response
 
 
@@ -170,7 +176,7 @@ def login(body: LoginBody):
     LOGIN_GUARD.record_success(body.username)
     return _set_session_cookie(
         JSONResponse({"ok": True, "username": body.username}),
-        body.username)
+        body.username, remember=body.remember)
 
 
 def _client_key(request):

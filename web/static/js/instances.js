@@ -162,6 +162,7 @@
           '<div class="instance-meta">' +
             '<div class="instance-meta-row"><span class="instance-meta-label">公网 IP</span><span class="instance-meta-value">' + ipCell + "</span></div>" +
             '<div class="instance-meta-row"><span class="instance-meta-label">Shape</span><span class="instance-meta-value mono">' + esc(inst.shape) + "</span></div>" +
+            '<div class="instance-meta-row"><span class="instance-meta-label">CPU 型号</span><span class="instance-meta-value mono">' + esc(inst.cpuModel || "未检测") + "</span></div>" +
             '<div class="instance-meta-row"><span class="instance-meta-label">规格</span><span class="instance-meta-value">' + esc(spec) + "</span></div>" +
             '<div class="instance-meta-row"><span class="instance-meta-label">启动盘</span><span class="instance-meta-value">' + bootVolumeCell(inst) + "</span></div>" +
             '<div class="instance-meta-row"><span class="instance-meta-label">创建时间</span><span class="instance-meta-value">' + created + "</span></div>" +
@@ -244,6 +245,7 @@
       var cfg = inst["shape-config"] || {};
       document.getElementById("detail-name").textContent = inst["display-name"] || "—";
       document.getElementById("detail-shape").textContent = inst.shape || "—";
+      document.getElementById("detail-cpu-model").textContent = res.cpu_model || "未检测";
       document.getElementById("detail-spec").textContent =
         (cfg.ocpus != null ? cfg.ocpus + " OCPU / " + cfg["memory-in-gbs"] + " GB" : "—");
       document.getElementById("detail-state").innerHTML = stateBadge(inst["lifecycle-state"]);
@@ -273,9 +275,86 @@
       document.getElementById("detail-bootbackup-btn").hidden = !bootButtonsOn;
       document.getElementById("detail-bootswap-btn").hidden = !bootButtonsOn;
       document.getElementById("detail-bootbackup-del-btn").hidden = !bootButtonsOn;
+      // 看门狗只对运行中的实例可用（要 SSH 上去装脚本）
+      var watchdogOn = detailTarget.state === "RUNNING";
+      document.getElementById("detail-watchdog").textContent = watchdogOn ? "查询中…" : "—";
+      document.getElementById("detail-watchdog-btn").hidden = true;
+      // CPU 重新检测也只对运行中的实例可用
+      document.getElementById("detail-cpu-btn").hidden = !watchdogOn;
       MBot.openModal("detail-modal");
+      if (watchdogOn) refreshWatchdog();
     } catch (err) {
       MBot.toast("加载实例详情失败：" + err.message, "error");
+    }
+  }
+
+  // 看门狗状态：详情弹窗打开后单独查（SSH 探针慢，不阻塞详情本身）
+  var watchdogState = null;
+  async function refreshWatchdog() {
+    var labelEl = document.getElementById("detail-watchdog");
+    var btn = document.getElementById("detail-watchdog-btn");
+    try {
+      var res = await MBot.api(MBot.withProfile(
+        "/api/instances/" + encodeURIComponent(detailTarget.id) + "/watchdog",
+        currentProfile, currentRegion));
+      watchdogState = res.watchdog || null;
+      labelEl.textContent = res.label || "—";
+      if (watchdogState) {
+        btn.textContent = watchdogState.enabled ? "🛡️ 关闭看门狗" : "🛡️ 开启看门狗";
+        btn.hidden = false;
+      } else {
+        btn.hidden = true;
+      }
+    } catch (err) {
+      labelEl.textContent = "查询失败：" + err.message;
+      btn.hidden = true;
+    }
+  }
+
+  async function toggleWatchdog() {
+    if (!detailTarget || !watchdogState) return;
+    var enable = !watchdogState.enabled;
+    var btn = document.getElementById("detail-watchdog-btn");
+    var labelEl = document.getElementById("detail-watchdog");
+    btn.disabled = true;
+    labelEl.textContent = enable ? "正在安装看门狗…" : "正在关闭看门狗…";
+    try {
+      var res = await MBot.api(MBot.withProfile(
+        "/api/instances/" + encodeURIComponent(detailTarget.id) + "/watchdog",
+        currentProfile, currentRegion), {
+        method: "POST",
+        body: JSON.stringify({ enabled: enable }),
+      });
+      MBot.toast(res.message || "操作完成", "success");
+      await refreshWatchdog();
+    } catch (err) {
+      MBot.toast("看门狗操作失败：" + err.message, "error");
+      await refreshWatchdog();
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  // CPU 型号重新检测：详情弹窗按钮用，强制 SSH 重测并更新显示
+  async function refreshCpuModel() {
+    if (!detailTarget) return;
+    var btn = document.getElementById("detail-cpu-btn");
+    var cell = document.getElementById("detail-cpu-model");
+    btn.disabled = true;
+    cell.textContent = "检测中…";
+    try {
+      var res = await MBot.api(MBot.withProfile(
+        "/api/instances/" + encodeURIComponent(detailTarget.id) + "/cpu-model",
+        currentProfile, currentRegion), { method: "POST" });
+      cell.textContent = res.cpu_model || "未检测";
+      MBot.toast(res.message || "操作完成",
+        res.cpu_model ? "success" : "error");
+      if (res.cpu_model) loadInstances(false);
+    } catch (err) {
+      cell.textContent = "未检测";
+      MBot.toast("CPU 检测失败：" + err.message, "error");
+    } finally {
+      btn.disabled = false;
     }
   }
 
@@ -776,6 +855,12 @@
     // 详情弹窗里的“删除历史备份”按钮：打开多选删除弹窗
     document.getElementById("detail-bootbackup-del-btn").addEventListener("click", function () {
       showBootBackupDelete();
+    });
+    document.getElementById("detail-watchdog-btn").addEventListener("click", function () {
+      toggleWatchdog();
+    });
+    document.getElementById("detail-cpu-btn").addEventListener("click", function () {
+      refreshCpuModel();
     });
 
     // 删除历史备份确认：批量删除所选备份

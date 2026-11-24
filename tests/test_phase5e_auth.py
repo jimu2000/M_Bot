@@ -245,6 +245,35 @@ class TestCaptchaApi(Phase5eAuthTestCase):
         self.assertEqual(r.status_code, 200)
 
 
+class TestRememberMe(Phase5eAuthTestCase):
+    """v1.23.0：记住我——勾选时会话与 cookie 同时延长到 30 天。"""
+
+    def test_remember_extends_cookie_and_session(self):
+        r = self.client.post("/api/auth/login", json={
+            "username": "admin", "password": TEST_PASSWORD,
+            "remember": True})
+        self.assertEqual(r.status_code, 200)
+        cookie = r.headers.get("set-cookie", "")
+        self.assertIn(f"Max-Age={30 * 24 * 3600}", cookie)
+        # 服务端会话过期时间也在约 30 天后（不是默认 12 小时）。
+        self.assertEqual(len(SESSIONS._sessions), 1)
+        session = next(iter(SESSIONS._sessions.values()))
+        remaining = session["expires"] - time.time()
+        self.assertGreater(remaining, 29 * 24 * 3600)
+        self.assertLessEqual(remaining, 30 * 24 * 3600)
+
+    def test_default_login_keeps_12_hours(self):
+        r = self.client.post("/api/auth/login", json={
+            "username": "admin", "password": TEST_PASSWORD})
+        self.assertEqual(r.status_code, 200)
+        cookie = r.headers.get("set-cookie", "")
+        self.assertIn(f"Max-Age={12 * 3600}", cookie)
+        session = next(iter(SESSIONS._sessions.values()))
+        remaining = session["expires"] - time.time()
+        self.assertGreater(remaining, 11 * 3600)
+        self.assertLessEqual(remaining, 12 * 3600)
+
+
 class TestTelegramLoginApi(Phase5eAuthTestCase):
     """Telegram 验证码登录接口。"""
 
