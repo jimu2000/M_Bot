@@ -28,7 +28,6 @@ from oci.volume import (
     get_boot_volume,
     list_boot_volume_attachments,
     list_boot_volumes,
-    list_orphan_boot_volumes,
     resize_boot_volume,
     update_boot_volume_vpus,
 )
@@ -178,30 +177,20 @@ class VpusBody(BaseModel):
     vpus_per_gb: int
 
 
-@router.get("/api/volumes/orphans")
-def orphans(profile: str = Query(default=None),
-            region: str = Query(default=None),
-            refresh: bool = Query(default=False),
-            username: str = Depends(get_current_user)):
-    """列出孤儿启动盘（可清理的、释放实例后留下的盘）。
+def _get_volumes_payload(cli, compartment_id, profile_name, refresh):
+    """取启动盘列表 payload（带 30 秒服务端缓存）。
 
-    refresh=true：绕过服务端缓存，强制重新查询（前端刷新按钮用）。
+    列表与孤儿盘两个接口共用：孤儿盘就是列表里 AVAILABLE 且未挂载
+    的盘，直接过滤，不再单独跑一遍 list + 挂载查询（省 3 次 CLI）。
     """
-    try:
-        cli, compartment_id = resolve_profile(profile, region)
-        profile_name = profile or config.DEFAULT_PROFILE
-        cache_key = (profile_name, cli.region, "orphans")
-        if not refresh:
-            with _VOLUMES_CACHE_LOCK:
-                entry = _VOLUMES_CACHE.get(cache_key)
-            if entry and time.monotonic() < entry["expires"]:
-                return entry["payload"]
-        volumes = list_orphan_boot_volumes(cli, compartment_id)
-        volumes = _format_volumes(cli, compartment_id, volumes)
-    except ValueError as exc:
-        return error_response(str(exc), status_code=400)
-    except OCIError as exc:
-        return oci_error_response(exc)
+    cache_key = (profile_name, cli.region, "list")
+    if not refresh:
+        with _VOLUMES_CACHE_LOCK:
+            entry = _VOLUMES_CACHE.get(cache_key)
+        if entry and time.monotonic() < entry["expires"]:
+            return entry["payload"]
+    volumes = list_boot_volumes(cli, compartment_id)
+    volumes = _format_volumes(cli, compartment_id, volumes)
     payload = {"ok": True,
                "profile": profile_name,
                "region": cli.region,
@@ -212,6 +201,35 @@ def orphans(profile: str = Query(default=None),
             "payload": payload,
         }
     return payload
+
+
+@router.get("/api/volumes/orphans")
+def orphans(profile: str = Query(default=None),
+            region: str = Query(default=None),
+            refresh: bool = Query(default=False),
+            username: str = Depends(get_current_user)):
+    """列出孤儿启动盘（可清理的、释放实例后留下的盘）。
+
+    复用启动盘列表缓存再过滤（孤儿 = AVAILABLE 且未挂载，与
+    oci.volume.list_orphan_boot_volumes 的判断一致）；refresh=true
+    时绕过缓存，强制重新查询。
+    """
+    try:
+        cli, compartment_id = resolve_profile(profile, region)
+        profile_name = profile or config.DEFAULT_PROFILE
+        payload = _get_volumes_payload(cli, compartment_id, profile_name,
+                                       refresh)
+        orphans = [v for v in payload["volumes"]
+                   if v["lifecycleState"] == "AVAILABLE"
+                   and not v["attached"]]
+    except ValueError as exc:
+        return error_response(str(exc), status_code=400)
+    except OCIError as exc:
+        return oci_error_response(exc)
+    return {"ok": True,
+            "profile": profile_name,
+            "region": cli.region,
+            "volumes": orphans}
 
 
 @router.get("/api/volumes")
@@ -226,28 +244,12 @@ def list_all(profile: str = Query(default=None),
     try:
         cli, compartment_id = resolve_profile(profile, region)
         profile_name = profile or config.DEFAULT_PROFILE
-        cache_key = (profile_name, cli.region, "list")
-        if not refresh:
-            with _VOLUMES_CACHE_LOCK:
-                entry = _VOLUMES_CACHE.get(cache_key)
-            if entry and time.monotonic() < entry["expires"]:
-                return entry["payload"]
-        volumes = list_boot_volumes(cli, compartment_id)
-        volumes = _format_volumes(cli, compartment_id, volumes)
+        return _get_volumes_payload(cli, compartment_id, profile_name,
+                                    refresh)
     except ValueError as exc:
         return error_response(str(exc), status_code=400)
     except OCIError as exc:
         return oci_error_response(exc)
-    payload = {"ok": True,
-               "profile": profile_name,
-               "region": cli.region,
-               "volumes": volumes}
-    with _VOLUMES_CACHE_LOCK:
-        _VOLUMES_CACHE[cache_key] = {
-            "expires": time.monotonic() + VOLUMES_CACHE_TTL,
-            "payload": payload,
-        }
-    return payload
 
 
 @router.get("/api/volumes/{volume_id}")

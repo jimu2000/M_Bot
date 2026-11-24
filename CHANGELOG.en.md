@@ -9,6 +9,11 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [1.41.1] - 2026-11-24
+- The orphans endpoint no longer runs its own queries: it reuses the boot volume list cache and filters it (orphan = AVAILABLE and not attached, matching oci.volume.list_orphan_boot_volumes), cold load ~5.0s → ~3.4s; volumes page cold total ~13.5s → ~5.1s (as stated in v1.41.0)
+
+**Verified**: full suite 2651 tests pass (the orphans cache test in tests/test_phase5e_shapes.py became 2 tests: shared list cache, refresh bypass; test_orphans in tests/test_web_api.py updated to the new logic). Live verification: /api/volumes/orphans cold load re-measured after deploy.
+
 ## [1.41.0] - 2026-11-24
 - CPU filter rules are now configurable and actually wired in (the "only grab 7J13" option used to be a no-op — the hook was never injected): new tgbot/cpu_policy.py, rules live in tgbot/data/cpu_policy.json (0600), default keeps only 7J13/7745; at boot the guard public key is merged into the launch SSH keys (new combined_boot_keys), the Grabber gets a cpu_check_hook, and a grabbed instance is SSH-checked first — a non-matching CPU is released (boot volume permanently deleted) and grabbing continues; when the CPU cannot be verified the instance is kept and marked "unverified" instead of being released; without a guard key configured, grabbed instances are kept and the detail says so; bot and web grabbing changed together, button text follows the configured rules
 - Grabber target_cpu now accepts a list (any listed model matches); a hook returning None or raising is treated as unverified and the instance is kept

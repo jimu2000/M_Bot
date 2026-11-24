@@ -9,6 +9,11 @@
 
 ## [Unreleased]
 
+## [1.41.1] - 2026-11-24
+- 孤儿盘接口不再单独跑一遍查询：复用启动盘列表缓存再过滤（孤儿 = AVAILABLE 且未挂载，与 oci.volume.list_orphan_boot_volumes 的判断一致），冷加载约 5.0 秒 → 约 3.4 秒；启动盘页冷加载总计约 13.5 秒 → 约 5.1 秒（与 v1.41.0 更新说明一致）
+
+**验证**：全量测试 2651 个全过（tests/test_phase5e_shapes.py 的孤儿盘缓存测试改成 2 个：复用列表缓存、refresh 绕过；tests/test_web_api.py 的 test_orphans 随新逻辑改 mock）。真机验证：部署后复测 /api/volumes/orphans 冷加载耗时。
+
 ## [1.41.0] - 2026-11-24
 - CPU 筛选规则写进配置并真正接线（以前\"只抢 7J13\"是摆设，hook 从未注入）：新增 tgbot/cpu_policy.py，规则放 tgbot/data/cpu_policy.json（0600），默认只留 7J13/7745；抢机时把 guard 公钥拼进启动 SSH keys（新增 combined_boot_keys），Grabber 注入 cpu_check_hook，抢到先 SSH 验 CPU，不符就释放（永删引导卷）继续抢；CPU 查不到时暂留实例并标\"未验明\"，不释放未验明的机器；guard 密钥未配置时抢到即留并在详情里写明；机器人与网页抢机同步改，按钮文案随规则动态显示
 - Grabber 的 target_cpu 支持列表（多型号任一匹配即留），hook 返回 None 或抛异常时按未验明暂留

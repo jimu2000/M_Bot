@@ -654,9 +654,11 @@ class TestVolumesApi(WebApiTestCase):
 
     @patch("web.routes.volumes.list_instances", return_value=[])
     @patch("web.routes.volumes.list_boot_volume_attachments", return_value=[])
-    @patch("web.routes.volumes.list_orphan_boot_volumes",
+    @patch("web.routes.volumes.list_boot_volumes",
            return_value=FAKE_VOLUMES)
-    def test_orphans(self, mock_orphans, mock_atts, mock_insts):
+    def test_orphans(self, mock_list, mock_atts, mock_insts):
+        """孤儿盘从启动盘列表过滤而来（无挂载记录的 AVAILABLE 盘），
+        同样返回 面板形状。"""
         r = self.client.get("/api/volumes/orphans")
         self.assertEqual(r.status_code, 200)
         self.assertEqual(len(r.json()["volumes"]), 1)

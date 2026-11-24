@@ -278,16 +278,39 @@ class TestVolumesCache(Phase5eShapesTestCase):
         self.client.get("/api/volumes")
         self.assertEqual(mock_list.call_count, 2)
 
+    @patch("web.routes.volumes.list_instances",
+           return_value=[{"id": FAKE_INSTANCE,
+                          "display-name": "instance-a1"}])
+    @patch("web.routes.volumes.list_boot_volume_attachments",
+           return_value=[{"id": FAKE_ATTACHMENT,
+                          "boot-volume-id": FAKE_VOLUME,
+                          "instance-id": FAKE_INSTANCE,
+                          "lifecycle-state": "ATTACHED"}])
+    @patch("web.routes.volumes.list_boot_volumes",
+           return_value=FAKE_VOLUMES_RAW)
+    def test_orphans_derives_from_volumes_list(self, mock_list, mock_atts,
+                                               mock_insts):
+        """孤儿盘复用启动盘列表再过滤（只返回未挂载的 AVAILABLE 盘），
+        且与列表接口共用缓存（两次请求只查一次 OCI）。"""
+        r = self.client.get("/api/volumes/orphans")
+        self.assertEqual(r.status_code, 200)
+        orphans = r.json()["volumes"]
+        self.assertEqual(len(orphans), 1)
+        self.assertEqual(orphans[0]["volumeId"], FAKE_VOLUME_2)
+        self.client.get("/api/volumes")
+        mock_list.assert_called_once()
+
     @patch("web.routes.volumes.list_instances", return_value=[])
     @patch("web.routes.volumes.list_boot_volume_attachments",
            return_value=[])
-    @patch("web.routes.volumes.list_orphan_boot_volumes",
-           return_value=FAKE_VOLUMES_RAW[1:])
-    def test_orphans_cached(self, mock_orphans, mock_atts, mock_insts):
-        """孤儿盘列表同样走缓存。"""
+    @patch("web.routes.volumes.list_boot_volumes",
+           return_value=FAKE_VOLUMES_RAW)
+    def test_orphans_refresh_bypasses_cache(self, mock_list, mock_atts,
+                                            mock_insts):
+        """孤儿盘 refresh=1 绕过缓存，重新查 OCI。"""
         self.client.get("/api/volumes/orphans")
-        self.client.get("/api/volumes/orphans")
-        mock_orphans.assert_called_once()
+        self.client.get("/api/volumes/orphans?refresh=1")
+        self.assertEqual(mock_list.call_count, 2)
 
     def test_clear_volumes_cache_profile_scoped(self):
         """按 profile 清缓存时其他账号的条目不受影响。"""
