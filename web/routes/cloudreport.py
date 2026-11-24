@@ -75,6 +75,8 @@ def summarize_profile(profile):
 
     return {
         "profile": profile,
+        # 显示名（主区中文名；v1.15.0 新增，总览页用它代替配置键名）。
+        "profileLabel": config.profile_display_name(profile),
         "region": cfg["region"],
         "instances": {"total": len(instances), "byState": by_state},
         "volumes": {"count": len(live), "totalGB": total_gb},
@@ -95,7 +97,9 @@ def _summarize_one(profile):
     try:
         return summarize_profile(profile)
     except (OCIError, ValueError) as exc:
-        return {"profile": profile, "error": str(exc)}
+        return {"profile": profile,
+                "profileLabel": config.profile_display_name(profile),
+                "error": str(exc)}
 
 
 def build_cloud_report():

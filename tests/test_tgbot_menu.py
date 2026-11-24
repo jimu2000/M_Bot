@@ -665,8 +665,12 @@ class TestMeCommand(AllowedUserTestCase):
         self.assertIn("@testuser", text)
         self.assertIn("v9.9.9", text)
         self.assertIn("2 个", text)
-        self.assertIn("DEFAULT：RUNNING 2 台", text)
-        self.assertIn("ACCOUNT2：RUNNING 0 台", text)
+        # v1.15.0：账号用主区中文名显示，不再显示配置键名。
+        self.assertIn("（新加坡、圣何塞）", text)
+        self.assertIn("新加坡：RUNNING 2 台", text)
+        self.assertIn("圣何塞：RUNNING 0 台", text)
+        self.assertNotIn("DEFAULT", text)
+        self.assertNotIn("ACCOUNT2", text)
 
     async def test_me_handles_profile_error(self):
         """某账号查询失败时，/me 不崩，显示该账号的错误。"""
@@ -678,7 +682,8 @@ class TestMeCommand(AllowedUserTestCase):
                    side_effect=RuntimeError("oci down")):
             await hm.me_command(update, make_context())
         text = reply_texts(update)[0]
-        self.assertIn("DEFAULT", text)
+        self.assertIn("新加坡", text)
+        self.assertNotIn("DEFAULT", text)
         self.assertIn("oci down", text)
 
 

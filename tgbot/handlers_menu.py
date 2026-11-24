@@ -631,6 +631,9 @@ async def me_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     version = read_panel_version()
     version_text = "未知" if version == "未知" else f"v{version}"
+    # 账号名用主区中文名（v1.15.0 修：原来直接显示 DEFAULT 等配置键名）。
+    account_labels = "、".join(
+        bot_config.profile_display_name(p) for p in bot_config.PROFILES)
     lines = ["👤 我的信息", "",
              f"Telegram ID：{user.id if user else '?'}",
              f"用户名：@{user.username}" if user and user.username
@@ -638,14 +641,15 @@ async def me_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
              f"面板版本：{version_text}",
              "",
              f"已配置 OCI 账号：{len(bot_config.PROFILES)} 个"
-             f"（{', '.join(bot_config.PROFILES)}）"]
+             f"（{account_labels}）"]
     for profile in bot_config.PROFILES:
+        label = bot_config.profile_display_name(profile)
         try:
             count = await run_sync(_count_running_instances, profile)
-            lines.append(f"• {profile}：RUNNING {count} 台")
+            lines.append(f"• {label}：RUNNING {count} 台")
         except Exception as exc:  # noqa: BLE001 - OCI 异常统一转中文提示
             logger.warning("%s 查实例数失败：%s", profile, exc)
-            lines.append(f"• {profile}：{fmt_error(exc)}")
+            lines.append(f"• {label}：{fmt_error(exc)}")
     await _reply(update, "\n".join(lines))
 
 

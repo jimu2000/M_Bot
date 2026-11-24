@@ -351,12 +351,17 @@ class TestInstanceListCallback(HandlersTestCase):
     async def test_list(self):
         update = make_callback_update("i:list")
         context = make_context()
+        # v1.15.0：列表标题用账号显示名（假模块补上缓存显示名函数）。
+        self.extra.get_cached_profile_display_name = (
+            lambda profile: "新加坡（3 个区）")
         with patch("tgbot.handlers.list_instances",
                    return_value=list(FAKE_INSTANCES)), \
                 patch("tgbot.handlers.attach_public_ips",
                       side_effect=lambda cli, insts: insts):
             await handlers.instance_list_callback(update, context)
         text = update.callback_query.edit_message_text.call_args.args[0]
+        self.assertIn("[新加坡（3 个区）] 实例列表（2 台）：", text)
+        self.assertNotIn("[DEFAULT]", text)
         self.assertIn("2 台", text)
         self.assertNotIn("instance-a1", text)
         keyboard = update.callback_query.edit_message_text.call_args.kwargs[

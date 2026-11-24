@@ -99,6 +99,8 @@ class TestCloudReport(CloudReportTestCase):
         self.assertEqual(len(body["groups"]), 2)
         group = body["groups"][0]
         self.assertEqual(group["profile"], "DEFAULT")
+        # v1.15.0：总览页用 profileLabel（主区中文名）代替配置键名。
+        self.assertEqual(group["profileLabel"], "新加坡")
         self.assertEqual(group["region"], "ap-singapore-1")
         self.assertEqual(group["instances"]["total"], 2)
         self.assertEqual(group["instances"]["byState"],
@@ -110,6 +112,7 @@ class TestCloudReport(CloudReportTestCase):
                           "usedMem": 12, "capMem": 24})
         self.assertEqual(group["quota"]["e2"], {"count": 1, "limit": 2})
         self.assertEqual(body["groups"][1]["profile"], "ACCOUNT2")
+        self.assertEqual(body["groups"][1]["profileLabel"], "圣何塞")
 
     @patch("web.routes.cloudreport.list_instances")
     def test_one_profile_fails(self, mock_insts):
@@ -132,8 +135,10 @@ class TestCloudReport(CloudReportTestCase):
         groups = r.json()["groups"]
         self.assertEqual(len(groups), 2)
         self.assertEqual(groups[0]["profile"], "DEFAULT")
+        self.assertEqual(groups[0]["profileLabel"], "新加坡")
         self.assertNotIn("error", groups[0])
         self.assertEqual(groups[1]["profile"], "ACCOUNT2")
+        self.assertEqual(groups[1]["profileLabel"], "圣何塞")
         self.assertIn("error", groups[1])
 
     def test_anon_401(self):

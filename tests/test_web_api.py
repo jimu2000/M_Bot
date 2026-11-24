@@ -503,6 +503,9 @@ class TestQuotaApi(WebApiTestCase):
         self.assertEqual(r.status_code, 200)
         body = r.json()
         self.assertTrue(body["ok"])
+        # v1.15.0：配额页用 profileLabel（主区中文名）代替配置键名。
+        self.assertEqual(body["profile"], "DEFAULT")
+        self.assertEqual(body["profileLabel"], "新加坡")
         self.assertEqual(body["summary"]["a1"]["ocpu_limit"], 4)
         self.assertTrue(body["summary"]["overall_ok"])
 

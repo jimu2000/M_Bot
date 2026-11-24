@@ -1996,9 +1996,15 @@ async def handle_subscription(update, context):
 
 @require_allowed
 async def handle_health(update, context):
-    """菜单 15：遍历全部 profile，各查实例数与运行状态，异常单列。"""
+    """菜单 15：遍历全部 profile，各查实例数与运行状态，异常单列。
+
+    账号用主区中文名显示（多区账号后缀区数，与订阅信息页一致；
+    v1.15.0 修：原来直接显示 DEFAULT / ACCOUNT2 等配置键名）。
+    """
+    counts = await run_sync(get_profile_region_counts)
     lines = ["❤️ 一键测活：", ""]
     for name in bot_config.PROFILES:
+        label = bot_config.profile_display_name(name, counts.get(name))
         try:
             cfg = bot_config.get_profile_config(name)
             cli = bot_config.get_oci_client(profile=name)
@@ -2006,10 +2012,10 @@ async def handle_health(update, context):
                                        cfg["compartment_id"])
             running = sum(1 for i in instances
                           if i.get("lifecycle-state") == "RUNNING")
-            lines.append(f"• {name}：{len(instances)} 台实例，"
+            lines.append(f"• {label}：{len(instances)} 台实例，"
                          f"{running} 台运行中 ✅")
         except Exception as exc:  # noqa: BLE001 - 单账号报错不影响其他账号
-            lines.append(f"• {name}：{fmt_error(exc)}")
+            lines.append(f"• {label}：{fmt_error(exc)}")
     await _reply(update, "\n".join(lines),
                  reply_markup=back_to_oracle_keyboard())
 
@@ -2399,7 +2405,8 @@ async def handle_resume(update, context):
     # 补公网 IP（并行查，单台失败记 None），再存、再格式化。
     stopped = await run_sync(attach_public_ips, get_cli(context), stopped)
     store_instances(context, stopped)
-    await _reply(update, fmt_instance_list(stopped, get_current_profile(context)),
+    await _reply(update, fmt_instance_list(stopped,
+                                           _switch_menu_account_label(context)),
                  reply_markup=instance_list_keyboard(stopped))
 
 
@@ -3040,8 +3047,9 @@ async def _user_delete_prompt(update, context, user, idx):
     name = user.get("name") or "?"
     if _is_current_api_user(context, user.get("id")):
         await _reply(update,
-                     f"❌ 不能删除用户「{name}」：它是机器人当前 profile "
-                     f"（{get_current_profile(context)}）正在使用的 API 用户，"
+                     f"❌ 不能删除用户「{name}」：它是机器人当前账号 "
+                     f"（{get_cached_profile_display_name(get_current_profile(context))}）"
+                     "正在使用的 API 用户，"
                      "删了机器人会立刻失联。请先换 profile 或换 API 密钥。",
                      reply_markup=back_to_oracle_keyboard())
         return
@@ -4508,7 +4516,8 @@ async def handle_a1_health(update, context):
     except Exception as exc:  # noqa: BLE001
         await _reply(update, fmt_error(exc))
         return
-    await _reply(update, fmt_a1_health(result, get_current_profile(context)),
+    await _reply(update, fmt_a1_health(
+        result, get_cached_profile_display_name(get_current_profile(context))),
                  reply_markup=back_to_oracle_keyboard())
 
 
@@ -5141,8 +5150,8 @@ async def _handle_confirm_inner(action, idx, update, context):
         if _is_current_api_user(context, user.get("id")):
             await _reply(update,
                          f"❌ 不能删除用户「{user.get('name', '?')}」：它是机器人"
-                         f"当前 profile（{get_current_profile(context)}）正在"
-                         "使用的 API 用户，删了机器人会立刻失联。")
+                         f"当前账号（{get_cached_profile_display_name(get_current_profile(context))}）"
+                         "正在使用的 API 用户，删了机器人会立刻失联。")
             return True
         try:
             await run_sync(delete_user, get_cli(context), user["id"])
@@ -5502,7 +5511,8 @@ async def daily_report_job(context):
             chat_id=chat_id, text=f"每日报告生成失败：{fmt_error(exc)}")
         return
     text = ("📰 每日报告\n\n"
-            + fmt_quota_summary(summary, profile)
+            + fmt_quota_summary(
+                summary, get_cached_profile_display_name(profile))
             + "\n\n" + fmt_usage_total(items))
     await context.bot.send_message(chat_id=chat_id, text=text)
 

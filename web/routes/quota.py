@@ -49,8 +49,11 @@ def quota_summary(profile: str = Query(default=None),
         return error_response(str(exc), status_code=400)
     except OCIError as exc:
         return oci_error_response(exc)
+    profile_name = profile or config.DEFAULT_PROFILE
     return {"ok": True,
-            "profile": profile or config.DEFAULT_PROFILE,
+            "profile": profile_name,
+            # 显示名（主区中文名；v1.15.0 新增，配额页用它代替配置键名）。
+            "profileLabel": config.profile_display_name(profile_name),
             "summary": summary}
 
 

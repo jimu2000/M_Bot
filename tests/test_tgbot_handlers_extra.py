@@ -461,14 +461,19 @@ class TestHealthTasksProfiles(HandlersExtraTestCase):
              patch.object(bot_config, "get_oci_client",
                           side_effect=fake_get_client), \
              patch.object(he, "list_instances",
-                          return_value=FAKE_INSTANCES):
+                          return_value=FAKE_INSTANCES), \
+             patch.object(he, "get_profile_region_counts",
+                          return_value={"DEFAULT": 3, "ACCOUNT2": 1}):
             update = make_update()
             context = make_context()
             await he.handle_health(update, context)
         text = reply_text_of(update)
-        self.assertIn("DEFAULT：2 台实例，1 台运行中", text)
-        self.assertIn("ACCOUNT2", text)
+        # v1.15.0：账号用主区中文名 + 区数显示，不再显示配置键名。
+        self.assertIn("新加坡（3 个区）：2 台实例，1 台运行中", text)
+        self.assertIn("圣何塞", text)
         self.assertIn("auth failed", text)
+        self.assertNotIn("DEFAULT", text)
+        self.assertNotIn("ACCOUNT2", text)
 
     async def test_tasks_list_and_cancel(self):
         task_id = self.tasks.register("grab", detail="抢机测试中")

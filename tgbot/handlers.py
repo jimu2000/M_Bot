@@ -215,8 +215,9 @@ async def _load_instance_list(context):
         logger.warning("列实例失败：%s", exc)
         return fmt_error(exc), back_to_oracle_keyboard()
     store_instances(context, instances)
-    profile = get_current_profile(context)
-    return (fmt_instance_list(instances, profile),
+    # 列表标题用账号显示名（主区中文名，多区账号带区数，非主区
+    # 工作区域后缀区域名；v1.15.0 修：原来直接显示 DEFAULT 等配置键名）。
+    return (fmt_instance_list(instances, _current_account_label(context)),
             instance_list_keyboard(instances))
 
 

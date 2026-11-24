@@ -9,6 +9,11 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [1.15.0] - 2026-11-24
+
+### Fixed
+- Account-name sweep (user feedback, 2026-11-24: the health-check message showed raw config keys DEFAULT / ACCOUNT2 / ACCOUNT3, with a request to check every other place too): audited all user-visible account names and replaced raw OCI config keys with the home-region Chinese name everywhere — bot: menu 15 health check (multi-region accounts keep the region-count suffix), /me (account list and per-account RUNNING counts), the menu 2 instance-list title (same display name as the top row, with the working region appended when it is not the home region), the menu 3 paused-boot list title, the daily report's quota title, the A1 health-check title, and the "current account" wording when refusing to delete the API user in use; web: the quota page's account name and the overview cloud-report account names (backend adds a profileLabel field, frontend prefers it and falls back to the config key for stale caches). The profile-upload flows (/uploadapi and /oci) still show the raw key, correctly — that is the key the user is adding
+
 ## [1.14.0] - 2026-11-24
 
 ### Features

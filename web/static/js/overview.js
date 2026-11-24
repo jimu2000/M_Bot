@@ -174,8 +174,10 @@
       }
       var esc = RBot.escapeHtml;
       bodyEl.innerHTML = groups.map(function (g) {
+        // 显示名优先（后端 v1.15.0 起带 profileLabel），旧缓存没有时回落配置键名。
+        var label = g.profileLabel || g.profile;
         if (g.error) {
-          return '<div style="margin: 8px 0;"><b>' + esc(g.profile) + '</b>：' +
+          return '<div style="margin: 8px 0;"><b>' + esc(label) + '</b>：' +
             '<span style="color: var(--danger);">查询失败：' + esc(g.error) + "</span></div>";
         }
         var byState = g.instances.byState || {};
@@ -184,7 +186,7 @@
         }).join("、") || "无实例";
         var a1 = (g.quota && g.quota.a1) || {};
         var e2 = (g.quota && g.quota.e2) || {};
-        return '<div style="margin: 8px 0;"><b>' + esc(g.profile) + "</b>" +
+        return '<div style="margin: 8px 0;"><b>' + esc(label) + "</b>" +
           (g.region ? "（" + esc(g.region) + "）" : "") + "：" +
           "实例 " + g.instances.total + " 台（" + esc(states) + "）；" +
           "启动盘 " + g.volumes.count + " 块 / " + g.volumes.totalGB + " GB；" +

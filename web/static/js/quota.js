@@ -24,7 +24,7 @@
     RBot.cachedApi("quota:summary:" + prof,
       RBot.withProfile("/api/quota", currentProfile, currentRegion), !!force).then(function (res) {
       var s = res.summary;
-      document.getElementById("quota-profile").textContent = res.profile || "—";
+      document.getElementById("quota-profile").textContent = res.profileLabel || res.profile || "—";
       document.getElementById("quota-overall").textContent = s.overall_ok
         ? "三项额度均未超限。"
         : "注意：有额度已超限，请检查！";
