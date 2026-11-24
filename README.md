@@ -1,6 +1,6 @@
 # M_Bot Oracle开源管理面板
 
-> **当前版本：v1.10.0** · 更新记录见 [CHANGELOG.md](CHANGELOG.md)
+> **当前版本：v1.11.0** · 更新记录见 [CHANGELOG.md](CHANGELOG.md)（[英文版 / English](CHANGELOG.en.md)）
 
 [中文](#中文) | [English](#english)
 
@@ -13,7 +13,8 @@ M_Bot 是一个开源的 Oracle Cloud 管理面板：Telegram 机器人 + Web �
 说明，代码全部独立编写、全部可见、可审计。
 
 > ⚠️ 免责：本项目与 R-Bot / semicons 无任何关联。R-Bot 是其作者的产品，
-> 本项目是按公开功能说明独立实现的开源项目。
+> 而且相对成熟；本项目是按公开功能说明独立实现的开源项目，代码全部
+> 独立编写，与 R-Bot 不共享代码。
 
 ### 功能
 
@@ -36,6 +37,11 @@ M_Bot 是一个开源的 Oracle Cloud 管理面板：Telegram 机器人 + Web �
 - GFW 自动换 IP（菜单 16）：每 30 分钟从中国大陆探针（RIPE Atlas）
   ping 已开启的实例公网 IP，被墙自动换 IP 再检测，直到换到可用的为止；
   每次换 IP 发双通道通知（TG + Bark，没设 Bark 就只发 TG）
+- 开机默认生成 UUID root 密码（32 位十六进制），确认页就显示给用户，
+  抢机成功后 Telegram + Bark 双通道通知里带密码（网页版开机同样双通道
+  通知，提交后弹窗显示一次密码）
+- Bark 通知设置（菜单 43 / `/bark` 命令 / 面板“Bark 通知”页，三端共用
+  同一份配置）：AES-256-CBC 加密推送，地址 + 32 位 Key + 测试推送 + 开关
 - `/domain`：Cloudflare Zone 与 DNS 记录查询
 - 客户端工具：`/command` 远程 Shell（危险命令黑名单）、`/pubkey` 公钥管理、
   `/oproxy` 代理设置、`/uploadapi` 上传 OCI 配置
@@ -45,7 +51,7 @@ M_Bot 是一个开源的 Oracle Cloud 管理面板：Telegram 机器人 + Web �
 **Web 面板（`web/`，FastAPI + WebSocket + Paramiko + xterm.js）**
 - 登录（pbkdf2 哈希、失败锁定翻倍最长 30 分钟、图形验证码可选、
   Telegram 验证码登录可选）
-- 页面：总览 / 实例 / 创建实例 / 配额 / 启动盘 / 任务 / GFW 换 IP /
+- 页面：总览 / 实例 / 创建实例 / 配额 / 启动盘 / 任务 / GFW 换 IP / Bark 通知 /
   终端 / DNS 管理 / 对象存储 / 邮件服务 / 证书管理 / 巡检计划 / 云报告
 - Web SSH：多标签、断线重连 + 快照回放、会话挂起、空闲清理
 - SFTP 文件面板：列表 / 下载 / 上传（分块上传带进度）/ 新建目录 / 删除 /
@@ -203,9 +209,10 @@ server. Its feature design references [R-Bot](https://github.com/semicons/java_o
 (R 探长) public feature documentation; all code here is independently written,
 fully visible and auditable.
 
-> Disclaimer: this project is not affiliated with R-Bot / semicons. R-Bot is
-> its author's product; this is an independent open-source implementation based
-> on its public feature documentation.
+> ⚠️ Disclaimer: This project is not affiliated with R-Bot / semicons
+> in any way. R-Bot is its author's product, and a relatively mature one;
+> this project is an independent open-source implementation based on its
+> public feature documentation, written from scratch with no shared code.
 
 ### Features
 
@@ -232,6 +239,13 @@ fully visible and auditable.
   public IPs from mainland China probes (RIPE Atlas); if blocked, changes
   the IP and re-checks until one works; notifies on every change via
   Telegram + Bark (Bark optional — Telegram only if not configured)
+- Boot generates a UUID root password by default (32 hex chars), shown on
+  the confirmation page and included in the Telegram + Bark dual-channel
+  success notification (web-panel launches notify the same way, and the
+  password is shown once in a dialog after submit)
+- Bark notification settings (menu 43 / `/bark` command / panel "Bark"
+  page, all sharing one config): AES-256-CBC encrypted push, with
+  address + 32-char key + test push + on/off switch
 - `/domain`: Cloudflare zone and DNS record lookup
 - Client tools: `/command` remote shell (dangerous-command blocklist),
   `/pubkey` key management, `/oproxy` proxy settings, `/uploadapi` OCI config upload
@@ -242,8 +256,8 @@ fully visible and auditable.
 - Login (pbkdf2 hashing, doubling lockout up to 30 minutes, optional image
   captcha, optional Telegram code login)
 - Pages: overview / instances / create / quota / boot volumes / tasks /
-  GFW IP change / terminal / DNS / object storage / email / certificates /
-  inspection plans / cloud report
+  GFW IP change / Bark notifications / terminal / DNS / object storage /
+  email / certificates / inspection plans / cloud report
 - Web SSH: multi-tab, reconnect with snapshot replay, session suspend, idle cleanup
 - SFTP file panel: list / download / chunked upload with progress / mkdir /
   delete / rename / online edit, three-layer path traversal protection

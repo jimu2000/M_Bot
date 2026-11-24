@@ -112,6 +112,20 @@
           <input type="text" id="ssh-keys-file" placeholder="例如：/root/.ssh/id_ed25519.pub" required>
           <p class="hint">后端直接把该文件传给 OCI CLI（--ssh-authorized-keys-file），请填服务器上已存在的公钥文件路径，不要粘贴公钥内容。</p>
         </div>
+        <div class="form-row" style="margin-bottom: 14px;">
+          <label class="switch">
+            <input type="checkbox" id="root-login" checked>
+            <span class="switch-track"></span> root 登录（cloud-init 设 root 密码）
+          </label>
+        </div>
+        <div class="form-group" id="root-password-group">
+          <label for="root-password">root 密码（默认随机 UUID，创建成功后也会随通知推送）</label>
+          <div style="display: flex; gap: 8px;">
+            <input type="text" id="root-password" placeholder="留空由后端生成" style="flex: 1;" autocomplete="off" spellcheck="false">
+            <button type="button" class="btn" id="btn-regen-password">重新生成</button>
+          </div>
+          <p class="hint">只含小写十六进制字符（32 位），可直接用于 cloud-init。提交后只显示一次，请记下；抢机成功后也会在 Telegram / Bark 通知里带上。</p>
+        </div>
       </div>
     </section>
 

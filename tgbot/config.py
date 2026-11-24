@@ -98,6 +98,21 @@ def profile_display_name(name, region_count=None):
         label += f"（{region_count} 个区）"
     return label
 
+
+def profile_display_name_list(name, region_count=None):
+    """账号切换列表里的显示名：主区中文名；订阅了多个区域时后缀
+    “、N 个区”（如“新加坡、3 个区”）；只有一个主区时不加后缀。
+
+    与 profile_display_name 的区别只是分隔符（列表里用顿号，菜单
+    顶行用括号）；区数同样是实查的订阅区域数（iam
+    region-subscription list），不是写死的。
+    """
+    region = get_profile_config(name)["region"]
+    label = get_region_label(region)
+    if region_count and region_count > 1:
+        label += f"、{region_count} 个区"
+    return label
+
 # 机器人日志文件（查询最新日志命令读这个文件）。
 LOG_FILE = os.path.expanduser("~/workspace/rbot-clone/telegram-bot.log")
 # 快捷开机配置保存文件（JSON）。

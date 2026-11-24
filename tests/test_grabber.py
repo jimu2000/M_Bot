@@ -143,6 +143,60 @@ class TestTryLaunchOnce(unittest.TestCase):
         grabber = _make_grabber(cli=cli)
         self.assertEqual(grabber.try_launch_once(), FAKE_INSTANCE_A)
 
+    def test_terminated_same_name_is_not_reused(self):
+        # 已终止的同名实例即使在 15 分钟内创建也不复用（2026-11-24
+        # 首尔实测教训：复用死机会把抢机结果变成无法使用的实例）
+        created = datetime.now(timezone.utc).isoformat()
+        cli = MagicMock(spec=OCIClient)
+        cli.run_text.side_effect = _run_text_dispatch(
+            list_result=json.dumps([{"id": FAKE_INSTANCE_A,
+                                     "created": created,
+                                     "state": "TERMINATED"}]),
+            launch_results=[FAKE_INSTANCE_B])
+        grabber = _make_grabber(cli=cli)
+        self.assertEqual(grabber.try_launch_once(), FAKE_INSTANCE_B)
+
+    def test_stopped_same_name_is_not_reused(self):
+        # 已停止的同名实例也不复用（用户要的是一台新开的运行中机器）
+        created = datetime.now(timezone.utc).isoformat()
+        cli = MagicMock(spec=OCIClient)
+        cli.run_text.side_effect = _run_text_dispatch(
+            list_result=json.dumps([{"id": FAKE_INSTANCE_A,
+                                     "created": created,
+                                     "state": "STOPPED"}]),
+            launch_results=[FAKE_INSTANCE_B])
+        grabber = _make_grabber(cli=cli)
+        self.assertEqual(grabber.try_launch_once(), FAKE_INSTANCE_B)
+
+    def test_running_same_name_list_shape_is_reused(self):
+        # 新查询返回列表：RUNNING 的同名实例在 15 分钟内照常复用
+        created = datetime.now(timezone.utc).isoformat()
+        cli = MagicMock(spec=OCIClient)
+        cli.run_text.side_effect = _run_text_dispatch(
+            list_result=json.dumps([{"id": FAKE_INSTANCE_A,
+                                     "created": created,
+                                     "state": "RUNNING"}]))
+        grabber = _make_grabber(cli=cli)
+        self.assertEqual(grabber.try_launch_once(), FAKE_INSTANCE_A)
+        launch_calls = [c for c in cli.run_text.call_args_list
+                        if "launch" in c.args[0]]
+        self.assertEqual(launch_calls, [])
+
+    def test_newest_terminated_but_older_running_is_reused(self):
+        # 最新同名已终止、较早同名还在运行：复用运行中的那台
+        now = datetime.now(timezone.utc)
+        cli = MagicMock(spec=OCIClient)
+        cli.run_text.side_effect = _run_text_dispatch(
+            list_result=json.dumps([
+                {"id": FAKE_INSTANCE_B,
+                 "created": now.isoformat(), "state": "TERMINATED"},
+                {"id": FAKE_INSTANCE_A,
+                 "created": (now - timedelta(minutes=5)).isoformat(),
+                 "state": "RUNNING"},
+            ]))
+        grabber = _make_grabber(cli=cli)
+        self.assertEqual(grabber.try_launch_once(), FAKE_INSTANCE_A)
+
     def test_find_existing_null_returns_none(self):
         # 无同名实例时 list 返回 null，find_existing 返回 None
         cli = MagicMock(spec=OCIClient)

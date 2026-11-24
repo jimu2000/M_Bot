@@ -73,6 +73,7 @@ BOT_COMMANDS = [
     ("help", "获取帮助"),
     ("oracle", "Oracle 云管理"),
     ("instances", "查看实例列表"),
+    ("bark", "Bark 通知设置"),
     ("domain", "域名管理"),
     ("azure", "Azure 云管理"),
     ("aws", "AWS 云管理"),

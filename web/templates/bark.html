@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{# Bark 通知设置页：菜单 43 的网页版。数据来自 GET /api/bark/status；
+   地址/Key 走 POST /api/bark/config，开关走 POST /api/bark/toggle，
+   测试推送走 POST /api/bark/test。
+   与机器人端共用 tgbot/data/bark.json，两边改的配置互相可见。
+   Key 与地址原文绝不在页面上显示（地址只显示脱敏版）。 #}
+{% block title %}Bark 通知设置 · M_Bot Oracle开源管理面板{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1>Bark 通知设置</h1>
+  <div class="spacer"></div>
+  <button type="button" class="btn" id="btn-refresh-bark">↻ 刷新</button>
+</div>
+
+<p style="color: var(--text-muted); margin-top: -8px;">
+  开启后，开机成功、账单超支、付费实例提醒等通知会同时推到 Bark 和
+  Telegram（没设 Bark 就只推 Telegram）。推送用 AES-256-CBC 加密，
+  Key 只存服务器本机（0600）。
+</p>
+
+<div id="bark-loading" class="card" style="text-align: center; color: var(--text-muted);">
+  加载中…
+</div>
+
+<div id="bark-error" class="card" hidden>
+  <p id="bark-error-text" style="color: var(--danger);"></p>
+</div>
+
+<div id="bark-body" hidden>
+  <div class="card">
+    <h2>当前状态</h2>
+    <p>推送开关：<span id="bark-enabled-status">—</span></p>
+    <p>Bark 地址：<span id="bark-url-masked">—</span></p>
+    <p>加密 Key：<span id="bark-key-status">—</span></p>
+    <p id="bark-hint" style="color: var(--text-muted);"></p>
+    <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px;">
+      <button type="button" class="btn btn-primary" id="btn-bark-test">📤 测试推送</button>
+      <button type="button" class="btn" id="btn-bark-toggle">开启推送</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>设置 Bark 地址与加密 Key</h2>
+    <p style="color: var(--text-muted);">
+      地址是 Bark App 里给的推送地址（https://api.day.app/你的设备Key/）。
+      加密 Key 是 32 位字符串，与 Bark App 加密设置里填的保持一致；
+      只填一项时只改那一项。
+    </p>
+    <div class="form-group">
+      <label for="bark-url-input">Bark 推送地址</label>
+      <input type="text" id="bark-url-input" placeholder="https://api.day.app/你的设备Key/"
+             autocomplete="off" spellcheck="false" style="width: 100%;">
+    </div>
+    <div class="form-group">
+      <label for="bark-key-input">加密 Key（32 位）</label>
+      <input type="password" id="bark-key-input" placeholder="留空表示不改"
+             autocomplete="off" style="width: 100%;">
+    </div>
+    <button type="button" class="btn btn-primary" id="btn-save-bark-config">保存</button>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="/static/js/bark.js"></script>
+{% endblock %}

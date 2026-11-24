@@ -454,6 +454,90 @@ async def _delete_tracked_prompts(context, chat_id):
         await _delete_message_safe(context, chat_id, message_id)
 
 
+# 切换账号/区域流程的中间消息（账号列表 / 区域列表）：切换完成后
+# 统一删除，只留主菜单一条消息（用户要求 2026-11-24：选完直接回
+# 主菜单，中间的回复不要留着）。ID 存在 user_data 里。
+_SWITCH_IDS_KEY = "switch_msg_ids"
+# 切换回调的防重复点击窗口（秒）：用户双击按钮时 Telegram 会发
+# 两个回调，不拦会连发两条“已切换到账号”（2026-11-24 用户截图）。
+_SWITCH_DEDUP_SECONDS = 5
+
+
+def _track_switch_message(context, message):
+    """记下切换流程里新发的消息 ID（账号列表 / 区域列表）。"""
+    if message is not None and getattr(message, "message_id", None):
+        context.user_data.setdefault(_SWITCH_IDS_KEY, []).append(
+            message.message_id)
+
+
+async def _delete_tracked_switch_messages(context, chat_id, except_id=None):
+    """删除切换流程攒下的中间消息（except_id 的那条不删——调用方要
+    把它就地编辑成主菜单），并清空记录。"""
+    ids = context.user_data.pop(_SWITCH_IDS_KEY, None) or []
+    for message_id in ids:
+        if except_id is not None and message_id == except_id:
+            continue
+        await _delete_message_safe(context, chat_id, message_id)
+
+
+def _is_duplicate_switch(context, data):
+    """同一切换回调在窗口期内重复到达时返回 True（双击去重）。
+
+    首次到达时记录 (data, 时间)，返回 False；重复到达时返回 True。
+    """
+    now = time.monotonic()
+    last = context.user_data.get("_last_switch")
+    if last and last[0] == data and now - last[1] < _SWITCH_DEDUP_SECONDS:
+        return True
+    context.user_data["_last_switch"] = (data, now)
+    return False
+
+
+def _switch_menu_account_label(context):
+    """主菜单顶行用的当前账号显示名（与 handlers._current_account_label
+    同逻辑：账号名 + 非主区时后缀工作区域）。"""
+    profile = get_current_profile(context)
+    label = get_cached_profile_display_name(profile)
+    current_region = get_current_region(context)
+    home_region = bot_config.get_region(profile)
+    if current_region != home_region:
+        label += f" · {bot_config.get_region_label(current_region)}"
+    return label
+
+
+async def _show_oracle_menu_after_switch(update, context, confirm_line):
+    """切换成功后：删掉切换流程的中间消息，把当前消息就地编辑成
+    /oracle 主菜单（第 1 页），确认行放在菜单文字最上面。
+
+    编辑失败时（消息已被删等）退回新发一条主菜单，不让用户卡在
+    旧页面。
+    """
+    query = update.callback_query
+    chat_id = update.effective_chat.id if update.effective_chat else None
+    current_id = None
+    if query is not None and query.message is not None:
+        current_id = query.message.message_id
+    if chat_id is not None:
+        await _delete_tracked_switch_messages(context, chat_id,
+                                              except_id=current_id)
+    from tgbot.handlers import ORACLE_MENU_TEXT  # 延迟导入，防循环引用
+    text = f"{confirm_line}\n\n{ORACLE_MENU_TEXT}"
+    keyboard = oracle_menu_keyboard(
+        0, states=get_menu_states(context),
+        current_account=_switch_menu_account_label(context))
+    if query is not None:
+        try:
+            await query.answer()
+        except Exception:
+            pass
+        try:
+            await query.edit_message_text(text, reply_markup=keyboard)
+            return
+        except Exception as exc:  # noqa: BLE001 - 编辑失败就新发一条
+            logger.debug("切换后编辑主菜单失败，改发新消息：%s", exc)
+    await _reply(update, text, reply_markup=keyboard)
+
+
 async def _reply_prompt(update, context, text, reply_markup=None):
     """发一条文字输入提示：先删掉之前未清理的旧提示（防重复点按钮
     攒出多条），再发新的并记录 ID（用户回复后由 text_input_callback
@@ -1204,6 +1288,11 @@ async def _boot_form_confirm(update, context, form):
     except ValueError as exc:
         await _reply(update, f"❌ {exc}", reply_markup=boot_form_keyboard(form))
         return
+    # root 密码在确认页就生成（UUID，见 boot_form.generate_root_password）：
+    # 确认页显示给用户看，点"开始抢机"后 boot_go_callback 复用同一份
+    # （只存在 pending_boot 里，内存；不进 presets.json）。
+    if preset.get("root_login"):
+        preset["root_password"] = generate_root_password()
     context.user_data["pending_boot"] = preset
     try:
         ok, reason = await run_sync(
@@ -1341,6 +1430,10 @@ async def boot_preset_load_callback(update, context):
     preset.setdefault("assign_public_ip", True)
     preset.setdefault("assign_ipv6", False)
     preset.setdefault("root_login", False)
+    # root 密码在确认页就生成（与 _boot_form_confirm 同逻辑）：
+    # 确认页显示，点"开始抢机"后复用同一份（仅内存）。
+    if preset.get("root_login"):
+        preset["root_password"] = generate_root_password()
     context.user_data["pending_boot"] = preset
     try:
         ok, reason = await run_sync(
@@ -1577,7 +1670,9 @@ def _notify_boot_success(cli, preset, successes, notify):
             shape, ocpus, memory_gb,
             preset.get("boot_volume_size_gbs") or DEFAULT_BOOT_DISK_GB,
             instances,
-            root_password=notify.get("root_password"))
+            root_password=notify.get("root_password"),
+            region_code=notify.get("region_code"),
+            ssh_key_set=bool(preset.get("ssh_keys_file")))
         if result.get("errors"):
             logger.warning("开机成功通知部分失败：%s",
                            "; ".join(result["errors"]))
@@ -1603,11 +1698,13 @@ def _notify_boot_success(cli, preset, successes, notify):
 async def boot_go_callback(update, context):
     """回调 "b:go"：注册抢机任务，开 daemon 线程跑 Grabber.run。
 
-    root 密码在启动时才生成（每台/每批一次），经 user-data 设进实例；
-    密码只在启动回复里显示一次，随后 pending_boot 即被清除，
-    不进任务详情、不进日志、不进 presets.json（见 _run_grabber_thread
-    的保存脱敏）。密码同时传给抢机线程（仅内存），抢机成功后在
-    成功通知（TG + Bark 双通道）里带上，通知完即丢。
+    root 密码在确认页就已生成（UUID，存在 pending_boot 里，仅内存），
+    这里优先复用确认页那份；旧路径（b:boot: 遗留预设）没有预生成
+    密码时现场生成。密码经 user-data 设进实例；只在启动回复里
+    显示一次，随后 pending_boot 即被清除，不进任务详情、不进日志、
+    不进 presets.json（见 _run_grabber_thread 的保存脱敏）。密码同时
+    传给抢机线程（仅内存），抢机成功后在成功通知（TG + Bark 双通道）
+    里带上，通知完即丢。
     """
     preset = context.user_data.get("pending_boot")
     if not preset:
@@ -1615,7 +1712,9 @@ async def boot_go_callback(update, context):
         return
     root_password = None
     if preset.get("root_login"):
-        root_password = generate_root_password()
+        # 优先复用确认页生成的密码（用户已在确认页看到同一份），
+        # 旧路径没有预生成时现场生成。
+        root_password = preset.get("root_password") or generate_root_password()
     script = preset.get("startup_script")
     if root_password or script:
         try:
@@ -1644,6 +1743,7 @@ async def boot_go_callback(update, context):
             get_current_profile(context)),
         "region_label": bot_config.get_region_label(
             get_current_region(context)),
+        "region_code": get_current_region(context),
         "root_password": root_password,
     }
     thread = threading.Thread(
@@ -1935,21 +2035,27 @@ async def task_cancel_callback(update, context):
 
 @require_allowed
 async def handle_profiles(update, context):
-    """账号切换键盘（按主区中文名显示，多区账号后缀区数）。"""
+    """账号切换键盘（列表按钮用“、N 个区”格式，单区账号不加后缀）。"""
     current = get_current_profile(context)
     counts = await run_sync(get_profile_region_counts)
-    labels = {name: bot_config.profile_display_name(name, counts.get(name))
-              for name in bot_config.PROFILES}
+    labels = {name: bot_config.profile_display_name_list(
+        name, counts.get(name)) for name in bot_config.PROFILES}
     current_region = get_current_region(context)
     home_region = bot_config.get_region(current)
-    current_label = labels.get(current, current)
+    current_label = bot_config.profile_display_name(
+        current, counts.get(current))
     if current_region != home_region:
         current_label += f" · {bot_config.get_region_label(current_region)}"
-    await _reply(update,
-                 f"当前账号：{current_label}\n点下面切换账号"
-                 "（多区账号点开可切换工作区域）：",
-                 reply_markup=profile_keyboard(list(bot_config.PROFILES),
-                                               current, labels))
+    # 先清掉上次切换流程残留的中间消息（来回点切换攒下的），再发新的。
+    chat_id = update.effective_chat.id if update.effective_chat else None
+    if chat_id is not None:
+        await _delete_tracked_switch_messages(context, chat_id)
+    msg = await _reply(update,
+                       f"当前账号：{current_label}\n点下面切换账号"
+                       "（多区账号点开可切换工作区域）：",
+                       reply_markup=profile_keyboard(
+                           list(bot_config.PROFILES), current, labels))
+    _track_switch_message(context, msg)
 
 
 @require_allowed
@@ -1957,9 +2063,18 @@ async def profile_callback(update, context):
     """回调 "p:<name>"：切换当前 profile。
 
     多区账号（订阅区域 > 1 个）先出二级区域菜单，点区域才切换工作
-    区域；单区账号直接切换。
+    区域；单区账号直接切换，切换成功后删掉流程中间消息并回到
+    /oracle 主菜单（不再单独发一条确认消息）。
     """
     data = _callback_data(update)
+    if _is_duplicate_switch(context, data):
+        query = update.callback_query
+        if query is not None:
+            try:
+                await query.answer()
+            except Exception:
+                pass
+        return
     name = data.split(":", 1)[1] if ":" in data else ""
     try:
         bot_config.get_profile_config(name)
@@ -1973,9 +2088,10 @@ async def profile_callback(update, context):
         current = (current_region if get_current_profile(context) == name
                    else None)
         label = bot_config.profile_display_name(name, len(subs))
-        await _reply(update, f"账号：{label}\n点下面切换工作区域：",
-                     reply_markup=profile_regions_keyboard(name, subs,
-                                                           current))
+        msg = await _reply(update, f"账号：{label}\n点下面切换工作区域：",
+                           reply_markup=profile_regions_keyboard(
+                               name, subs, current))
+        _track_switch_message(context, msg)
         return
     try:
         set_current_profile(context, name)
@@ -1983,7 +2099,8 @@ async def profile_callback(update, context):
         await _reply(update, f"❌ 切换失败：{exc}")
         return
     label = get_cached_profile_display_name(name)
-    await _reply(update, f"✅ 已切换到账号：{label}")
+    await _show_oracle_menu_after_switch(
+        update, context, f"✅ 已切换到账号：{label}")
 
 
 @require_allowed
@@ -1991,9 +2108,18 @@ async def profile_region_callback(update, context):
     """回调 "pr:<profile>:<region>"：切换账号 + 工作区域。
 
     区域必须在该账号的订阅列表里（否则拒绝）；先切账号（会重置区域
-    为主区），再切区域。
+    为主区），再切区域。切换成功后删掉流程中间消息并回到 /oracle
+    主菜单（不再单独发一条确认消息）。
     """
     data = _callback_data(update)
+    if _is_duplicate_switch(context, data):
+        query = update.callback_query
+        if query is not None:
+            try:
+                await query.answer()
+            except Exception:
+                pass
+        return
     parts = data.split(":")
     if len(parts) != 3:
         await _reply(update, "❌ 无效的区域切换。")
@@ -2015,10 +2141,10 @@ async def profile_region_callback(update, context):
     region_label = bot_config.get_region_label(region)
     home = bot_config.get_region(name)
     if region == home:
-        await _reply(update, f"✅ 已切换到账号：{label}")
+        confirm = f"✅ 已切换到账号：{label}"
     else:
-        await _reply(update,
-                     f"✅ 已切换到账号：{label} · {region_label}")
+        confirm = f"✅ 已切换到账号：{label} · {region_label}"
+    await _show_oracle_menu_after_switch(update, context, confirm)
 
 
 # ---- 2. ip 管理 ----
@@ -2347,7 +2473,12 @@ async def resize_preset_callback(update, context):
 
 @require_allowed
 async def handle_volumes(update, context):
-    """菜单 7：启动盘列表 + 孤儿盘 + 总容量。"""
+    """菜单 7：启动盘列表 + 孤儿盘 + 总容量。
+
+    已删除 / 删除中的盘一律不显示（用户要求 2026-11-24：已删除的
+    都不显示，屏蔽掉）；过滤放在这里（存列表之前），文字、按钮与
+    回调下标都按过滤后的列表来，不会错位。
+    """
     cli = get_cli(context)
     compartment = get_compartment(context)
     try:
@@ -2357,6 +2488,9 @@ async def handle_volumes(update, context):
     except Exception as exc:  # noqa: BLE001
         await _reply(update, fmt_error(exc))
         return
+    volumes = [v for v in volumes
+               if (v.get("lifecycle-state") or "").upper()
+               not in ("TERMINATED", "TERMINATING")]
     store_volumes(context, volumes)
     await _reply(update, fmt_volume_list(volumes, orphans, total),
                  reply_markup=volume_list_keyboard(volumes, orphans))
@@ -3545,6 +3679,16 @@ async def handle_bark(update, context):
     await _reply(update, fmt_bark_settings(cfg),
                  reply_markup=bark_keyboard(cfg.get("enabled"),
                                             bark_configured(cfg)))
+
+
+@require_allowed
+async def bark_command(update, context):
+    """顶层命令 /bark：直达 Bark 通知设置（与菜单 43 同一页）。
+
+    v1.11.0 新增：用户反馈 Bark 设置藏在菜单第 3 页找不到，
+    加顶层命令直达；网页版也有对应的 Bark 设置页（/bark）。
+    """
+    await handle_bark(update, context)
 
 
 @require_allowed

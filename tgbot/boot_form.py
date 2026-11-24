@@ -40,17 +40,15 @@ A1（ARM）-> ARM_YYYY-MM-DD（北京时间日期）；其他形状沿用旧格�
 安全说明：
   - 本模块不读取、不打印、不外传 API 私钥；镜像/子网/AD/公钥文件
     全部走环境变量，代码里只有占位符。
-  - root 密码用 secrets 生成，字符集避开冒号/引号/井号等
-    YAML 与 chpasswd 的特殊字符；密码只在启动消息里显示一次，
-    绝不写进 presets.json / 日志 / 任务详情（见 handlers_extra
-    的 boot_go_callback 与 _run_grabber_thread）。
+  - root 默认密码是 UUID4 的 32 位十六进制（只含 [0-9a-f]，没有
+    YAML 与 chpasswd 的特殊字符）；密码只在确认页、启动消息与
+    成功通知里显示，绝不写进 presets.json / 日志 / 任务详情（见
+    handlers_extra 的 boot_go_callback 与 _run_grabber_thread）。
 """
 
 import os
-import random
 import re
-import secrets
-import string
+import uuid
 from datetime import datetime, timedelta, timezone
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -90,13 +88,11 @@ DELAY_MIN_SECONDS = 1
 DELAY_MAX_SECONDS = 3600
 # 开机脚本上限（字符数；粘贴文本与上传文件共用）。
 SCRIPT_MAX_CHARS = 65536
-# root 随机密码长度与字符集：字母 + 数字 + 安全符号，避开冒号（chpasswd
-# 按第一个冒号切分用户和密码）、井号/引号/反斜杠（YAML 与 shell 特殊字符）
-# 与空白字符。
-ROOT_PASSWORD_LENGTH = 20
-ROOT_PASSWORD_SYMBOLS = "!@$%*+-_="
-ROOT_PASSWORD_ALPHABET = (
-    string.ascii_letters + string.digits + ROOT_PASSWORD_SYMBOLS)
+# root 默认密码：UUID4 的 32 位十六进制（去掉连字符），与 R 探长
+# 开机通知里的密码格式一致（32 位 hex）。只含 [0-9a-f]，没有冒号
+# （chpasswd 按第一个冒号切分用户和密码）、没有 YAML/shell 特殊
+# 字符，可直接放进 cloud-init 的 chpasswd 块；128 位熵，强度足够。
+# 用户要求（2026-11-24）：抢机默认生成 UUID 当 root 密码。
 # Oracle Linux 镜像 OCID（CentOS 映射目标）：按架构从环境变量读，
 # 未配置时选 CentOS 会在确认页报错并提示环境变量名。
 # 查法：oci compute image list --compartment-id <compartment OCID>
@@ -541,24 +537,13 @@ def build_preset(form, deploy=None):
 
 # ---------------- root 密码与 user-data ----------------
 
-def generate_root_password(length=ROOT_PASSWORD_LENGTH):
-    """生成随机强密码：保证含小写、大写、数字、符号各至少一个。
+def generate_root_password():
+    """生成默认 root 密码：UUID4 的 32 位十六进制（去掉连字符）。
 
-    字符集避开冒号（chpasswd 按第一个冒号切分用户和密码）与
-    井号/引号/反斜杠/空白（YAML 与 shell 特殊字符），可直接放进
-    cloud-init 的 chpasswd 块标量里，不用转义。
+    只含 [0-9a-f]，可直接放进 cloud-init 的 chpasswd 块标量里，
+    不用转义；128 位熵。每次调用生成一个全新的 UUID。
     """
-    rng = random.SystemRandom()
-    chars = [
-        rng.choice(string.ascii_lowercase),
-        rng.choice(string.ascii_uppercase),
-        rng.choice(string.digits),
-        rng.choice(ROOT_PASSWORD_SYMBOLS),
-    ]
-    chars += [rng.choice(ROOT_PASSWORD_ALPHABET)
-              for _ in range(max(0, length - 4))]
-    rng.shuffle(chars)
-    return "".join(chars)
+    return uuid.uuid4().hex
 
 
 def _normalize_script(script):
@@ -832,8 +817,17 @@ def fmt_boot_form_summary(preset, ok, reason):
     lines.append(f"延迟：{delay_text}")
     lines.append("公钥：" + ("使用机器人公钥" if preset.get("ssh_keys_file")
                              else "不用公钥"))
-    lines.append("root登录：" + ("开启（密码随机，启动后只显示一次）"
-                                if preset.get("root_login") else "不开启"))
+    if preset.get("root_login"):
+        lines.append("root登录：开启")
+        # 确认页就显示密码（照 R 探长格式）：密码在进确认页时生成，
+        # 存在 pending_boot 里（仅内存），点“开始抢机”后复用同一份。
+        password = preset.get("root_password")
+        if password:
+            lines.append("root密码：")
+            lines.append(password)
+            lines.append("注意📢：root密码机器人不会记忆，请注意保存")
+    else:
+        lines.append("root登录：不开启")
     lines.append("公网IP：" + ("有" if preset.get("assign_public_ip", True)
                                else "无"))
     lines.append("IPv6：" + ("有" if preset.get("assign_ipv6") else "无"))

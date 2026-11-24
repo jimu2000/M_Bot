@@ -50,7 +50,7 @@ _ACTION_TEXT = {
 
 # 欢迎词与帮助文本。
 WELCOME_TEXT = (
-    "👋 你好！我是 R-Bot 开源克隆机器人。\n"
+    "👋 你好！我是 M-探长，M_Bot Oracle 开源管理面板的机器人。\n"
     "\n"
     "我可以帮你管理 Oracle Cloud 免费层实例：查看实例、启停、"
     "换 IP、查配额、抢机等。\n"
@@ -68,6 +68,7 @@ HELP_TEXT = (
     "/help — 显示本清单\n"
     f"/oracle — Oracle 菜单（开机、实例、配额、流量等 {len(ORACLE_MENU_ITEMS)} 项）\n"
     "/instances — 列出当前账号的实例\n"
+    "/bark — Bark 通知设置（地址 / 加密 Key / 测试推送 / 开关）\n"
     "/domain — 域名管理（Cloudflare DNS）\n"
     "\n"
     "其他云（需先配置对应账号）：\n"
@@ -253,6 +254,30 @@ async def instances_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ---------------- Oracle 菜单回调 ----------------
 
+async def _cleanup_switch_messages(update, context):
+    """回主菜单时删掉切换流程的中间消息（账号/区域列表），只留菜单。
+
+    handlers_extra 里的 _delete_tracked_switch_messages 是实现；
+    这里延迟导入（handlers.py 与 handlers_extra 互相引用，只能
+    一边延迟）。当前消息（即将被编辑成菜单的那条）不删。
+    """
+    try:
+        from tgbot import handlers_extra
+    except ImportError:
+        return
+    delete = getattr(handlers_extra, "_delete_tracked_switch_messages",
+                     None)
+    if not callable(delete):
+        return
+    chat_id = update.effective_chat.id if update.effective_chat else None
+    query = update.callback_query
+    current_id = None
+    if query is not None and query.message is not None:
+        current_id = query.message.message_id
+    if chat_id is not None:
+        await delete(context, chat_id, except_id=current_id)
+
+
 @require_allowed
 async def oracle_menu_callback(update: Update,
                                context: ContextTypes.DEFAULT_TYPE):
@@ -263,6 +288,7 @@ async def oracle_menu_callback(update: Update,
     parts = data.split(":")
 
     if data == "o:menu":
+        await _cleanup_switch_messages(update, context)
         await query.edit_message_text(
             ORACLE_MENU_TEXT,
             reply_markup=oracle_menu_keyboard(

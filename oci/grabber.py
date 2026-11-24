@@ -106,6 +106,12 @@ TERMINATE_POLL_INTERVAL = 15
 # “上次创建成功但响应丢失”（默认 15 分钟）。实例名改成日期格式
 # （AMD_YYYY-MM-DD）后，同名旧实例是之前建的，不能误当新开的。
 DEDUP_WINDOW_SECONDS = 900
+# 防重复建只认“活着”的实例：已终止 / 停止 / 删除中的同名实例
+# 不是“上次创建成功但响应丢失”，复用它会把一台死机当成抢机成功
+# 返回（2026-11-24 首尔实测：第二轮验证复用了 15 分钟内被终止的
+# 测试机，导致备份创建报“启动卷已是 Terminated”）。状态查不到时
+# 按旧行为保守处理（认作活着，不冒险重复建）。
+DEDUP_LIVE_STATES = frozenset({"RUNNING", "PROVISIONING", "STARTING"})
 # =====================================================
 
 
@@ -264,38 +270,68 @@ class Grabber:
 
         只有在 DEDUP_WINDOW_SECONDS（默认 15 分钟）内创建的同名实例
         才算“上次创建成功但响应丢失”，返回它的 OCID；更早的同名实例
-        是之前建的，返回 None（调用方正常新建）。查不到创建时间或
-        时间解析失败时按旧行为处理（有同名就返回 OCID，不冒险重复建）。
+        是之前建的，返回 None（调用方正常新建）。只认活着的实例
+        （RUNNING / PROVISIONING / STARTING）：已终止、已停止或删除
+        中的同名实例一律不认——复用一台死机会把抢机结果变成一台
+        无法使用的实例（2026-11-24 首尔实测教训）。
+        查不到创建时间或时间解析失败时按旧行为处理（有同名活着的
+        实例就返回 OCID，不冒险重复建）。
         now 供测试注入（aware datetime，未传则取当前 UTC 时间）。
         """
         out = self.cli.run_text(
             ["compute", "instance", "list",
              "--compartment-id", self.compartment_id,
              "--display-name", self.display_name,
-             "--query", "data[0].{id: id, created: \"time-created\"}"])
-        if not out or out.strip() in ("null", ""):
+             "--query", "data[].{id: id, created: \"time-created\", "
+                        "state: \"lifecycle-state\"}"])
+        if not out or out.strip() in ("null", "", "[]"):
             return None
         try:
             found = json.loads(out)
         except ValueError:
             return None
-        instance_id = found.get("id") if isinstance(found, dict) else None
-        if not instance_id:
+        # 兼容旧查询（data[0] 返回单个对象）与新查询（data[] 返回列表）。
+        if isinstance(found, dict):
+            found = [found]
+        if not isinstance(found, list):
             return None
-        created = found.get("created")
-        if not created:
-            return instance_id  # 查不到创建时间：按旧行为，不冒险重复建
-        try:
-            created_at = datetime.fromisoformat(
-                str(created).replace("Z", "+00:00"))
-        except ValueError:
-            return instance_id
-        if created_at.tzinfo is None:
-            created_at = created_at.replace(tzinfo=timezone.utc)
+        candidates = []
+        for item in found:
+            if not isinstance(item, dict):
+                continue
+            if not item.get("id"):
+                continue
+            state = (item.get("state") or "").upper()
+            # 状态明确且不在活着的集合里：死机，不认。
+            if state and state not in DEDUP_LIVE_STATES:
+                continue
+            candidates.append(item)
+        if not candidates:
+            return None
+
+        def _created_at(item):
+            try:
+                created = datetime.fromisoformat(
+                    str(item.get("created")).replace("Z", "+00:00"))
+            except (ValueError, TypeError):
+                return None
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
+            return created
+
+        # 取最新的一个；创建时间解析不了的排最前（沿用旧行为：不冒险
+        # 重复建，直接认作上次创建的实例）。
+        dated = [(_created_at(item), item) for item in candidates]
+        dated.sort(key=lambda pair: (
+            pair[0] is None,
+            pair[0] or datetime.min.replace(tzinfo=timezone.utc)))
+        created_at, newest = dated[-1]
+        if created_at is None:
+            return newest.get("id")
         now = now or datetime.now(timezone.utc)
         age = (now - created_at).total_seconds()
         if 0 <= age <= DEDUP_WINDOW_SECONDS:
-            return instance_id
+            return newest.get("id")
         return None
 
     def get_public_ip(self, instance_id):

@@ -109,6 +109,8 @@ def build_application():
     application.add_handler(CommandHandler("oracle", handlers.oracle_command))
     application.add_handler(CommandHandler("instances",
                                            handlers.instances_command))
+    application.add_handler(CommandHandler("bark",
+                                           handlers_extra.bark_command))
     application.add_handler(CommandHandler("domain",
                                            handlers_extra.handle_domain))
     # ---- 客户端工具命令（阶段 5 工作包 B） ----

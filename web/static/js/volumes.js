@@ -169,13 +169,12 @@
   }
 
   function render() {
-    // 主表只放未删除的盘（AVAILABLE 在前），已删除的盘收进下面
-    // 默认折叠的分区，不跟在用的盘混在一起。
+    // 已删除 / 删除中的盘一律不显示（用户要求 2026-11-24：屏蔽掉）；
+    // 主表只放未删除的盘，AVAILABLE 在前。
     var live = [];
-    var dead = [];
     volumes.forEach(function (v) {
-      if ((norm(v).state || "").toUpperCase() === "TERMINATED") dead.push(v);
-      else live.push(v);
+      var s = (norm(v).state || "").toUpperCase();
+      if (s !== "TERMINATED" && s !== "TERMINATING") live.push(v);
     });
     live.sort(function (a, b) {
       var sa = (norm(a).state || "").toUpperCase() === "AVAILABLE" ? 0 : 1;
@@ -186,12 +185,6 @@
     var empty = document.getElementById("volume-empty");
     empty.hidden = live.length !== 0;
     tbody.innerHTML = live.map(function (v) { return volumeRow(v, true); }).join("");
-
-    var termSection = document.getElementById("terminated-volumes");
-    termSection.hidden = dead.length === 0;
-    document.getElementById("terminated-count").textContent = dead.length;
-    document.getElementById("terminated-tbody").innerHTML =
-      dead.map(function (v) { return volumeRow(v, true); }).join("");
 
     var orphanTbody = document.getElementById("orphan-tbody");
     if (orphans.length === 0) {
@@ -209,9 +202,6 @@
     document.getElementById("volume-tbody").innerHTML =
       '<tr><td colspan="6" style="text-align: center; color: var(--text-muted);">加载中…</td></tr>';
     document.getElementById("volume-empty").hidden = true;
-    document.getElementById("terminated-volumes").hidden = true;
-    document.getElementById("terminated-count").textContent = "0";
-    document.getElementById("terminated-tbody").innerHTML = "";
     document.getElementById("orphan-tbody").innerHTML =
       '<tr><td colspan="4" style="text-align: center; color: var(--text-muted);">加载中…</td></tr>';
     document.getElementById("backup-tbody").innerHTML =
@@ -274,7 +264,6 @@
       document.getElementById("volume-tbody").innerHTML =
         '<tr><td colspan="6" style="text-align: center; color: var(--danger);">加载失败：' +
         RBot.escapeHtml(err.message) + "</td></tr>";
-      document.getElementById("terminated-volumes").hidden = true;
     }
     try {
       var o = await RBot.cachedApi("vol:orphans:" + prof,

@@ -130,6 +130,13 @@ def gfw_page(request: Request):
     return redirect or _render(request, "gfw.html", "GFW 自动换 IP")
 
 
+@router.get("/bark")
+def bark_page(request: Request):
+    """Bark 通知设置页（菜单 43 的网页版）。"""
+    redirect = _require_login(request)
+    return redirect or _render(request, "bark.html", "Bark 通知设置")
+
+
 @router.get("/tasks")
 def tasks_page(request: Request):
     """任务管理页。"""

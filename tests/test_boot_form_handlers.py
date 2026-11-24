@@ -565,8 +565,8 @@ class TestBootGoWithRoot(BootFormHandlersTestCase):
         self.assertIn("抢机已启动", text)
         self.assertIn("root 登录密码", text)
         self.assertIn("只显示这一次", text)
-        # 密码在 Markdown 代码段里，且不在任务详情里。
-        self.assertRegex(text, r"`[^`]{20}`")
+        # 密码在 Markdown 代码段里（UUID 32 位 hex），且不在任务详情里。
+        self.assertRegex(text, r"`[0-9a-f]{32}`")
         self.assertNotIn("root 登录密码", task["detail"])
         # Grabber 收到了带 chpasswd 的 user-data（user_data 是关键字参数，
         # ssh_keys_file 是第 8 个位置参数）。

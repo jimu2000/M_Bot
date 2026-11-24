@@ -91,38 +91,57 @@ def cpu_type_label(shape):
 
 
 def fmt_boot_success(profile_label, region_label, shape, ocpus,
-                     memory_gb, disk_gb, instances, root_password=None):
-    """开机成功通知全文（照 R 探长成功消息格式）。
+                     memory_gb, disk_gb, instances, root_password=None,
+                     region_code=None, ssh_key_set=False):
+    """开机成功通知全文（照 R 探长成功消息的字段结构）。
 
     instances：每台 {"name", "public_ip", "attempts", "elapsed_seconds"}。
-    root_password 只有设置时才出现（不设置不显示该行）。
+    root_password 只有设置时才出现（密码行 + 末尾的注意行）。
+    disk_gb 为 None 时硬盘行显示"默认"（镜像默认大小）。
+    region_code 是区域代码（如 ap-seoul-1），有则与中文名一起显示。
     """
-    lines = ["🎉 开机成功", ""]
+    lines = ["🎉 恭喜，开机成功！"]
     lines.append(f"账号：{profile_label}")
-    lines.append(f"地区：{region_label}")
-    lines.append(f"CPU：{cpu_type_label(shape)} {ocpus} 核")
-    lines.append(f"内存：{memory_gb} GB")
-    lines.append(f"硬盘：{disk_gb} GB")
-    if len(instances) == 1:
-        inst = instances[0]
-        lines.append(f"实例：{inst['name']}")
-        lines.append(f"抢机次数：{inst['attempts']} 次")
-        lines.append(f"花费时间：{inst['elapsed_seconds']:.1f} 秒")
-        lines.append(f"公网 IP：{inst.get('public_ip') or '获取中，稍后在实例列表查看'}")
-    else:
-        lines.append(f"抢到 {len(instances)} 台：")
-        for inst in instances:
-            lines.append(
-                f"• {inst['name']}：{inst.get('public_ip') or 'IP 获取中'}，"
-                f"{inst['attempts']} 次，{inst['elapsed_seconds']:.1f} 秒")
+    lines.append(f"cpu类型：{cpu_type_label(shape)}")
+    lines.append(f"cpu数量：{ocpus} 核")
+    lines.append(f"内存大小：{memory_gb} GB")
+    disk_text = "默认" if disk_gb is None else f"{disk_gb} GB"
+    lines.append(f"硬盘选择：{disk_text}")
     if root_password:
-        lines.append(f"root 密码：{root_password}")
+        lines.append(f"root密码：{root_password}")
+    lines.append(f"公钥：{'已设置' if ssh_key_set else '未设置'}")
+    if region_code and region_label and region_code != region_label:
+        region_text = f"{region_code}（{region_label}）"
+    else:
+        region_text = region_code or region_label
+    total = len(instances)
+    if total == 1:
+        inst = instances[0]
+        lines.append(f"开机数量：第 1/1 个")
+        lines.append(f"实例：{inst['name']}")
+        lines.append(f"花费时间：{inst['elapsed_seconds']:.0f} 秒")
+        lines.append(f"抢机次数：{inst['attempts']} 次")
+        lines.append(f"开机地区：{region_text}")
+        lines.append(
+            f"ip：{inst.get('public_ip') or '获取中，稍后在实例列表查看'}")
+    else:
+        lines.append(f"开机地区：{region_text}")
+        for i, inst in enumerate(instances, start=1):
+            lines.append("")
+            lines.append(f"第 {i}/{total} 个：{inst['name']}")
+            lines.append(
+                f"ip：{inst.get('public_ip') or '获取中，稍后在实例列表查看'}")
+            lines.append(f"花费时间：{inst['elapsed_seconds']:.0f} 秒")
+            lines.append(f"抢机次数：{inst['attempts']} 次")
+    if root_password:
+        lines.append("注意📢：root密码机器人不会记忆，请注意保存")
     return "\n".join(lines)
 
 
 def notify_boot_success(token, chat_id, profile_label, region_label,
                         shape, ocpus, memory_gb, disk_gb, instances,
-                        root_password=None):
+                        root_password=None, region_code=None,
+                        ssh_key_set=False):
     """开机成功双通道推送：Telegram + Bark（Bark 未开启时只推 TG）。
 
     返回 {"telegram": bool, "bark": bool, "errors": [str]}。
@@ -130,7 +149,9 @@ def notify_boot_success(token, chat_id, profile_label, region_label,
     """
     text = fmt_boot_success(profile_label, region_label, shape, ocpus,
                             memory_gb, disk_gb, instances,
-                            root_password=root_password)
+                            root_password=root_password,
+                            region_code=region_code,
+                            ssh_key_set=ssh_key_set)
     result = {"telegram": False, "bark": False, "errors": []}
     try:
         ok, err = send_telegram_message(token, chat_id, text)
@@ -140,7 +161,7 @@ def notify_boot_success(token, chat_id, profile_label, region_label,
     except Exception as exc:  # noqa: BLE001
         result["errors"].append(f"Telegram：{exc}")
     try:
-        ok, err = send_bark("🎉 开机成功", text)
+        ok, err = send_bark("🎉 恭喜，开机成功！", text)
         result["bark"] = ok
         # Bark 未开启/未配置是正常状态，不记为错误。
         if not ok and "未开启" not in err and "未配置" not in err:

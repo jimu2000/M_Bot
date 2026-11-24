@@ -456,23 +456,15 @@ class TestBuildPreset(unittest.TestCase):
 
 
 class TestRootPassword(unittest.TestCase):
-    def test_length_and_charset(self):
+    def test_uuid_hex_format(self):
+        # v1.11.0：默认 root 密码是 UUID4 的 32 位十六进制（去掉
+        # 连字符），与 R 探长开机通知里的密码格式一致。
         password = bf.generate_root_password()
-        self.assertEqual(len(password), bf.ROOT_PASSWORD_LENGTH)
-        for ch in password:
-            self.assertIn(ch, bf.ROOT_PASSWORD_ALPHABET)
+        self.assertEqual(len(password), 32)
+        self.assertRegex(password, r"^[0-9a-f]{32}$")
         # 冒号/井号/引号/反斜杠/空白绝不能出现（YAML 与 chpasswd 安全）。
         for bad in ": #\"'\\` \t":
             self.assertNotIn(bad, password)
-
-    def test_contains_all_classes(self):
-        for _ in range(20):
-            password = bf.generate_root_password()
-            self.assertTrue(any(c.islower() for c in password))
-            self.assertTrue(any(c.isupper() for c in password))
-            self.assertTrue(any(c.isdigit() for c in password))
-            self.assertTrue(any(c in bf.ROOT_PASSWORD_SYMBOLS
-                                for c in password))
 
     def test_random_each_time(self):
         self.assertNotEqual(bf.generate_root_password(),
@@ -589,10 +581,26 @@ class TestFmtAndKeyboard(unittest.TestCase):
         self.assertIn("100GB", text)
         self.assertIn("区间 5–20 秒随机", text)
         self.assertIn("使用机器人公钥", text)
-        self.assertIn("开启（密码随机", text)
+        self.assertIn("root登录：开启", text)
         self.assertIn("IPv6：有", text)
         self.assertIn("已上传（7 字符）", text)
         self.assertIn("✅ 可以创建", text)
+
+    def test_fmt_summary_shows_password_when_present(self):
+        # v1.11.0：确认页就显示 root 密码（确认时已生成），并提醒保存。
+        preset = {
+            "shape": "VM.Standard.A1.Flex", "ocpus": 1, "memory_gb": 6,
+            "display_name": "ARM_2026-11-24",
+            "image_id": FAKE_IMAGE_AARCH64, "count": 1,
+            "ssh_keys_file": "/opt/x/keys.pub", "root_login": True,
+            "root_password": "0123456789abcdef0123456789abcdef",
+            "assign_public_ip": True, "os": "ubuntu",
+        }
+        text = bf.fmt_boot_form_summary(preset, True, "可以创建")
+        self.assertIn("root登录：开启", text)
+        self.assertIn("root密码：", text)
+        self.assertIn("0123456789abcdef0123456789abcdef", text)
+        self.assertIn("注意📢：root密码机器人不会记忆，请注意保存", text)
 
     def test_fmt_summary_old_preset_no_new_keys(self):
         # 旧版保存的预设缺新字段，展示不能崩。

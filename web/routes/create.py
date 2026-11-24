@@ -23,6 +23,9 @@ from pydantic import BaseModel, Field
 
 from oci.client import OCIError
 from oci.quota import can_launch, check_a1_single_instance_cap
+from tgbot import config as bot_config
+from tgbot.bark import load_bark_config
+from tgbot.boot_form import build_user_data, generate_root_password
 from web import config
 from web.deps import (
     error_response,
@@ -69,6 +72,12 @@ class CreateBody(BaseModel):
     boot_volume_size_gbs: 引导卷大小（GB），OCI 要求 47-200，超范围 422。
     min_delay / max_delay: 抢机延迟区间（秒），0 表示不指定（用 Grabber
         默认 25 +/- 5 秒）；max < min 时路由返回 400。
+    root_login: 是否用 cloud-init 设 root 密码（默认开启；用户要求建完
+        实例一定能 root 登录）。开启且 root_password 为空时后端生成
+        UUID 密码；密码随响应返回一次（前端弹窗展示），并在抢机成功
+        的双通道通知里带上，不写进任务详情。
+    user_data: 开机脚本原文；与 root 密码共存时拼进同一份 cloud-init，
+        脚本本身是 #cloud-config 时与密码冲突，返回 400。
     """
 
     profile: str = None
@@ -87,6 +96,16 @@ class CreateBody(BaseModel):
     min_delay: int = Field(default=0, ge=0)
     max_delay: int = Field(default=0, ge=0)
     user_data: str = ""
+    root_login: bool = True
+    root_password: str = ""
+
+
+def _notify_chat_id():
+    """通知用的 chat_id：Bark 配置里记的 > 白名单第一个用户 ID。"""
+    chat_id = load_bark_config().get("chat_id")
+    if not chat_id and bot_config.ALLOWED_USER_IDS:
+        chat_id = next(iter(bot_config.ALLOWED_USER_IDS))
+    return chat_id
 
 
 @router.post("/api/create")
@@ -109,6 +128,24 @@ def create_instance(body: CreateBody,
         if not ok:
             return error_response(f"配额预检不通过：{reason}", status_code=400)
         image_id = resolve_image_id(body.image_id)
+        # root 密码：开启时为空则后端生成 UUID；与开机脚本拼进同一份
+        # cloud-init（脚本本身是 #cloud-config 时冲突，报 400）。
+        root_password = None
+        if body.root_login:
+            root_password = body.root_password.strip() or \
+                generate_root_password()
+        # 脚本原文透传（只判断是否为空白，不 strip 内容）。
+        script = body.user_data or None
+        if script is not None and not script.strip():
+            script = None
+        user_data = None
+        if root_password:
+            # 密码与脚本拼进同一份 cloud-init（脚本本身是 #cloud-config
+            # 时冲突，build_user_data 抛 ValueError -> 400）。
+            user_data = build_user_data(root_password, script)
+        else:
+            # 不设 root 密码时脚本原文直通 Grabber（旧行为，不做归一化）。
+            user_data = script
         params = {
             "availability_domain": body.availability_domain,
             "shape": body.shape,
@@ -124,14 +161,28 @@ def create_instance(body: CreateBody,
             "assign_ipv6": body.assign_ipv6,
             "min_delay": body.min_delay,
             "max_delay": body.max_delay,
-            "user_data": body.user_data,
+            "user_data": user_data,
         }
-        task_id = start_grab_task(TASKS, cli, compartment_id, params)
+        # 双通道通知信息（只在内存里传给线程：密码不落盘，通知完即丢）。
+        profile_name = body.profile or config.DEFAULT_PROFILE
+        region = config.get_region(profile_name)
+        notify = {
+            "token": bot_config.TELEGRAM_BOT_TOKEN,
+            "chat_id": _notify_chat_id(),
+            "profile_label": bot_config.profile_display_name(profile_name),
+            "region_label": bot_config.get_region_label(region),
+            "region_code": region,
+            "root_password": root_password,
+        }
+        task_id = start_grab_task(TASKS, cli, compartment_id, params,
+                                  notify=notify)
     except ValueError as exc:
         return error_response(str(exc), status_code=400)
     except OCIError as exc:
         return oci_error_response(exc)
-    return {"ok": True, "task_id": task_id}
+    # root 密码随响应返回一次（前端弹窗展示一次），之后不再可查。
+    return {"ok": True, "task_id": task_id,
+            "root_password": root_password}
 
 
 @router.get("/api/tasks")

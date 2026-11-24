@@ -16,7 +16,7 @@ import sys
 import tempfile
 import time
 import unittest
-from unittest.mock import ANY, patch
+from unittest.mock import ANY, MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -29,6 +29,7 @@ from web.app import create_app
 from web.auth import LOGIN_GUARD, SESSIONS, hash_password
 from web.routes.cloudreport import clear_cloud_report_cache
 from web.routes.instances import clear_instance_list_cache
+from web import tasks as tasks_mod
 from web.tasks import TASKS
 
 # 占位符（测试里不出现真实 OCID / IP）
@@ -505,9 +506,13 @@ class TestCreateAndTasksApi(WebApiTestCase):
         super().setUp()
         self._login()
 
+    @patch("web.tasks.notify_boot_success",
+            return_value={"telegram": True, "bark": False, "errors": []})
+    @patch("web.tasks.get_public_ip", return_value="203.0.113.10")
     @patch("web.tasks.Grabber")
     @patch("web.routes.create.can_launch", return_value=(True, "可以创建"))
-    def test_create_starts_grab_task(self, mock_can, mock_grabber_cls):
+    def test_create_starts_grab_task(self, mock_can, mock_grabber_cls,
+                                     mock_ip, mock_notify):
         """预检通过则建任务、后台跑 Grabber，返回 task_id。"""
         mock_grabber_cls.return_value.run.return_value = GrabResult(
             instance_id=FAKE_INSTANCE, attempts=3, releases=1,
@@ -516,6 +521,8 @@ class TestCreateAndTasksApi(WebApiTestCase):
         self.assertEqual(r.status_code, 200)
         task_id = r.json()["task_id"]
         self.assertTrue(task_id)
+        # 默认 root 登录开启：响应带回生成的 UUID 密码（只返回这一次）。
+        self.assertRegex(r.json()["root_password"], r"^[0-9a-f]{32}$")
         # 等后台线程完成。
         task = self._wait_task_status(task_id, ("done", "failed"))
         self.assertEqual(task["status"], "done")
@@ -544,10 +551,14 @@ class TestCreateAndTasksApi(WebApiTestCase):
         self.assertEqual(r.status_code, 422)
         self.assertFalse(r.json()["ok"])
 
+    @patch("web.tasks.notify_boot_success",
+            return_value={"telegram": True, "bark": False, "errors": []})
+    @patch("web.tasks.get_public_ip", return_value="203.0.113.10")
     @patch("web.tasks.Grabber")
     @patch("web.routes.create.can_launch", return_value=(True, "可以创建"))
     def test_create_full_fields_passed_to_grabber(self, mock_can,
-                                                  mock_grabber_cls):
+                                                  mock_grabber_cls,
+                                                  mock_ip, mock_notify):
         """带全字段创建时，全部新字段透传给 Grabber（阶段 3b 接入）。"""
         mock_grabber_cls.return_value.run.return_value = GrabResult(
             instance_id=FAKE_INSTANCE, attempts=1, releases=0,
@@ -563,6 +574,8 @@ class TestCreateAndTasksApi(WebApiTestCase):
             "min_delay": 20,
             "max_delay": 50,
             "user_data": "#!/bin/bash\necho hi\n",
+            # 关掉 root 登录，脚本原文直通 Grabber（不拼 cloud-init）。
+            "root_login": False,
         })
         r = self.client.post("/api/create", json=body)
         self.assertEqual(r.status_code, 200)
@@ -583,6 +596,92 @@ class TestCreateAndTasksApi(WebApiTestCase):
         # display_name/ssh_keys_file），A1 形状也正确传到位置参数里。
         args = mock_grabber_cls.call_args.args
         self.assertEqual(args[3], "VM.Standard.A1.Flex")
+
+    @patch("web.tasks.notify_boot_success",
+            return_value={"telegram": True, "bark": False, "errors": []})
+    @patch("web.tasks.get_public_ip", return_value="203.0.113.10")
+    @patch("web.tasks.Grabber")
+    @patch("web.routes.create.can_launch", return_value=(True, "可以创建"))
+    def test_create_root_password_generated_and_notified(
+            self, mock_can, mock_grabber_cls, mock_ip, mock_notify):
+        """v1.11.0：默认 root 登录开启时后端生成 UUID 密码，响应带回，
+        Grabber 收到含 chpasswd 的 cloud-init，抢机成功后调双通道通知
+        （通知里带同一份密码）。"""
+        mock_grabber_cls.return_value.run.return_value = GrabResult(
+            instance_id=FAKE_INSTANCE, attempts=1, releases=0,
+            elapsed_seconds=5.0)
+        r = self.client.post("/api/create", json=CREATE_BODY)
+        self.assertEqual(r.status_code, 200)
+        password = r.json()["root_password"]
+        self.assertRegex(password, r"^[0-9a-f]{32}$")
+        kwargs = mock_grabber_cls.call_args.kwargs
+        self.assertIn("chpasswd", kwargs["user_data"])
+        self.assertIn(password, kwargs["user_data"])
+        task_id = r.json()["task_id"]
+        self._wait_task_status(task_id, ("done", "failed"))
+        # 通知在任务 done 之后同一线程里发，等它一下。
+        deadline = time.time() + 2.0
+        while not mock_notify.called and time.time() < deadline:
+            time.sleep(0.05)
+        self.assertTrue(mock_notify.called, "抢机成功后应调双通道通知")
+        args, kwargs = mock_notify.call_args
+        self.assertEqual(args[8][0]["name"], "test-instance")
+        self.assertEqual(args[8][0]["public_ip"], "203.0.113.10")
+        self.assertEqual(kwargs["root_password"], password)
+        self.assertTrue(kwargs["ssh_key_set"])
+
+    @patch("web.tasks.notify_boot_success",
+            return_value={"telegram": True, "bark": False, "errors": []})
+    @patch("web.tasks.get_public_ip", return_value="203.0.113.10")
+    @patch("web.tasks.Grabber")
+    @patch("web.routes.create.can_launch", return_value=(True, "可以创建"))
+    def test_create_frontend_password_used(
+            self, mock_can, mock_grabber_cls, mock_ip, mock_notify):
+        """前端传来的密码原样使用（响应回显同一份）。"""
+        mock_grabber_cls.return_value.run.return_value = GrabResult(
+            instance_id=FAKE_INSTANCE, attempts=1, releases=0,
+            elapsed_seconds=5.0)
+        body = dict(CREATE_BODY)
+        body["root_password"] = "0123456789abcdef0123456789abcdef"
+        r = self.client.post("/api/create", json=body)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["root_password"],
+                         "0123456789abcdef0123456789abcdef")
+        kwargs = mock_grabber_cls.call_args.kwargs
+        self.assertIn("0123456789abcdef0123456789abcdef",
+                      kwargs["user_data"])
+        self._wait_task_status(r.json()["task_id"], ("done", "failed"))
+
+    @patch("web.tasks.notify_boot_success",
+            return_value={"telegram": True, "bark": False, "errors": []})
+    @patch("web.tasks.get_public_ip", return_value="203.0.113.10")
+    @patch("web.tasks.Grabber")
+    @patch("web.routes.create.can_launch", return_value=(True, "可以创建"))
+    def test_create_root_login_false_no_password(
+            self, mock_can, mock_grabber_cls, mock_ip, mock_notify):
+        """root 登录关闭时不生成密码，响应 root_password 为空，脚本原文
+        直通。"""
+        mock_grabber_cls.return_value.run.return_value = GrabResult(
+            instance_id=FAKE_INSTANCE, attempts=1, releases=0,
+            elapsed_seconds=5.0)
+        body = dict(CREATE_BODY)
+        body.update({"root_login": False,
+                     "user_data": "#!/bin/bash\necho hi\n"})
+        r = self.client.post("/api/create", json=body)
+        self.assertEqual(r.status_code, 200)
+        self.assertIsNone(r.json()["root_password"])
+        kwargs = mock_grabber_cls.call_args.kwargs
+        self.assertEqual(kwargs["user_data"], "#!/bin/bash\necho hi\n")
+        self._wait_task_status(r.json()["task_id"], ("done", "failed"))
+
+    @patch("web.routes.create.can_launch", return_value=(True, "可以创建"))
+    def test_create_cloud_config_script_with_root_400(self, mock_can):
+        """脚本本身是 #cloud-config 时与 root 密码冲突，返回 400。"""
+        body = dict(CREATE_BODY)
+        body["user_data"] = "#cloud-config\nruncmd:\n  - echo hi\n"
+        r = self.client.post("/api/create", json=body)
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("cloud-config", r.json()["error"])
 
     def test_create_boot_volume_out_of_range_422(self):
         """引导卷 <47 或 >200 返回 422（pydantic 范围校验）。"""
@@ -647,9 +746,13 @@ class TestCreateAndTasksApi(WebApiTestCase):
         r = self.client.post("/api/tasks/g999/cancel")
         self.assertEqual(r.status_code, 404)
 
+    @patch("web.tasks.notify_boot_success",
+            return_value={"telegram": True, "bark": False, "errors": []})
+    @patch("web.tasks.get_public_ip", return_value="203.0.113.10")
     @patch("web.tasks.Grabber")
     @patch("web.routes.create.can_launch", return_value=(True, "可以创建"))
-    def test_list_tasks(self, mock_can, mock_grabber_cls):
+    def test_list_tasks(self, mock_can, mock_grabber_cls, mock_ip,
+                        mock_notify):
         mock_grabber_cls.return_value.run.return_value = GrabResult(
             instance_id=FAKE_INSTANCE, attempts=1, releases=0,
             elapsed_seconds=5.0)
@@ -659,6 +762,101 @@ class TestCreateAndTasksApi(WebApiTestCase):
         r = self.client.get("/api/tasks")
         self.assertEqual(len(r.json()["tasks"]), 1)
         self.assertEqual(r.json()["tasks"][0]["kind"], "grab")
+
+
+class TestNotifyGrabSuccess(unittest.TestCase):
+    """_notify_grab_success：网页抢机成功后的双通道推送（v1.11.0）。"""
+
+    def setUp(self):
+        self.registry = MagicMock()
+        self.params = {
+            "display_name": "ARM_2026-11-24",
+            "shape": "VM.Standard.A1.Flex",
+            "ocpus": 1, "memory_gb": 6,
+            "boot_volume_size_gbs": 47,
+            "ssh_keys_file": "/tmp/test-keys.pub",
+        }
+        self.result = GrabResult(
+            instance_id=FAKE_INSTANCE, attempts=2, releases=0,
+            elapsed_seconds=45.0)
+        self.notify = {"token": "T", "chat_id": 654321,
+                       "profile_label": "新加坡", "region_label": "首尔",
+                       "region_code": "ap-seoul-1",
+                       "root_password": "0123456789abcdef0123456789abcdef"}
+
+    def test_free_shape_notifies_no_pin_alert(self):
+        with patch.object(tasks_mod, "get_public_ip",
+                          return_value=FAKE_IP), \
+                patch.object(tasks_mod, "notify_boot_success",
+                             return_value={"telegram": True, "bark": False,
+                                           "errors": []}) as notify_fn, \
+                patch.object(tasks_mod, "notify_dual") as dual:
+            tasks_mod._notify_grab_success(
+                self.registry, "g1", MagicMock(), self.params,
+                self.result, self.notify)
+        notify_fn.assert_called_once()
+        args, kwargs = notify_fn.call_args
+        self.assertEqual(args[0], "T")
+        self.assertEqual(args[1], 654321)
+        self.assertEqual(args[2], "新加坡")
+        self.assertEqual(args[3], "首尔")
+        self.assertEqual(args[4], "VM.Standard.A1.Flex")
+        self.assertEqual(args[7], 47)
+        self.assertEqual(args[8][0]["name"], "ARM_2026-11-24")
+        self.assertEqual(args[8][0]["public_ip"], FAKE_IP)
+        self.assertEqual(args[8][0]["attempts"], 2)
+        self.assertEqual(kwargs["root_password"], self.notify["root_password"])
+        self.assertEqual(kwargs["region_code"], "ap-seoul-1")
+        self.assertTrue(kwargs["ssh_key_set"])
+        dual.assert_not_called()
+
+    def test_paid_shape_pins_alert(self):
+        self.params["shape"] = "VM.Standard.E5.Flex"
+        with patch.object(tasks_mod, "get_public_ip",
+                          return_value=FAKE_IP), \
+                patch.object(tasks_mod, "notify_boot_success",
+                             return_value={"telegram": True, "bark": False,
+                                           "errors": []}), \
+                patch.object(tasks_mod, "notify_dual",
+                             return_value={"telegram": True, "bark": False,
+                                           "errors": []}) as dual:
+            tasks_mod._notify_grab_success(
+                self.registry, "g1", MagicMock(), self.params,
+                self.result, self.notify)
+        dual.assert_called_once()
+        args, kwargs = dual.call_args
+        self.assertEqual(args[0], "T")
+        self.assertEqual(args[1], 654321)
+        self.assertIn("付费实例提醒", args[2])
+        self.assertIn("VM.Standard.E5.Flex", args[3])
+        self.assertTrue(kwargs.get("pin"))
+        self.assertEqual(kwargs.get("group"), "paid-instance")
+
+    def test_ip_lookup_failure_does_not_block(self):
+        with patch.object(tasks_mod, "get_public_ip",
+                          return_value=None), \
+                patch.object(tasks_mod, "notify_boot_success",
+                             return_value={"telegram": True, "bark": False,
+                                           "errors": []}) as notify_fn, \
+                patch.object(tasks_mod.time, "sleep") as sleep_mock:
+            tasks_mod._notify_grab_success(
+                self.registry, "g1", MagicMock(), self.params,
+                self.result, self.notify)
+        # 查 3 次 IP（2 次 sleep 间隔），查不到也照常通知。
+        self.assertEqual(sleep_mock.call_count, 2)
+        self.assertIsNone(notify_fn.call_args[0][8][0]["public_ip"])
+
+    def test_notify_exception_logged_not_raised(self):
+        with patch.object(tasks_mod, "get_public_ip",
+                          return_value=FAKE_IP), \
+                patch.object(tasks_mod, "notify_boot_success",
+                             side_effect=RuntimeError("boom")):
+            tasks_mod._notify_grab_success(
+                self.registry, "g1", MagicMock(), self.params,
+                self.result, self.notify)  # 不抛异常
+        self.registry.append_log.assert_called_once()
+        self.assertIn("通知失败",
+                      self.registry.append_log.call_args[0][1])
 
 
 class TestHostsApi(WebApiTestCase):

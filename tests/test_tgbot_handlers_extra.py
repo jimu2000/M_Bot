@@ -72,7 +72,8 @@ FAKE_INSTANCES = [
 
 def make_update(callback_data=None):
     """mock Update：effective_message.reply_text 与 callback_query.answer
-    都是 AsyncMock。"""
+    都是 AsyncMock；回调时 query.edit_message_text 也是 AsyncMock，
+    query.message.message_id 固定为 777（切换流程编辑/删除断言用）。"""
     update = MagicMock()
     update.effective_user.id = TEST_USER_ID
     update.effective_chat.id = TEST_CHAT_ID
@@ -82,6 +83,9 @@ def make_update(callback_data=None):
         query = MagicMock()
         query.data = callback_data
         query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        query.message = MagicMock()
+        query.message.message_id = 777
         update.callback_query = query
     else:
         update.callback_query = None
@@ -90,13 +94,42 @@ def make_update(callback_data=None):
 
 def make_context():
     """mock Context：user_data / bot_data 用真实 dict，bot.send_message
-    用 AsyncMock。"""
+    与 bot.delete_message 用 AsyncMock。"""
     context = MagicMock()
     context.user_data = {}
     context.bot_data = {}
     context.bot = MagicMock()
     context.bot.send_message = AsyncMock()
+    context.bot.delete_message = AsyncMock()
     return context
+
+
+def edit_text_of(update):
+    """取 update 上 query.edit_message_text 最后一次调用的文本。"""
+    query = update.callback_query
+    if query is None:
+        return None
+    mock = query.edit_message_text
+    if not mock.await_args_list:
+        return None
+    args, _kwargs = mock.await_args_list[-1]
+    return args[0] if args else None
+
+
+def edit_button_texts_of(update):
+    """取 update 上 query.edit_message_text 最后一次调用的键盘按钮文字。"""
+    query = update.callback_query
+    if query is None:
+        return []
+    mock = query.edit_message_text
+    if not mock.await_args_list:
+        return []
+    _args, kwargs = mock.await_args_list[-1]
+    keyboard = kwargs.get("reply_markup")
+    if keyboard is None:
+        return []
+    return [btn.text
+            for row in keyboard.inline_keyboard for btn in row]
 
 
 def reply_text_of(update):
@@ -477,23 +510,122 @@ class TestHealthTasksProfiles(HandlersExtraTestCase):
             update = make_update()
             context = make_context()
             await he.handle_profiles(update, context)
-            # 按主区中文名显示，多区账号后缀区数，不再显示 profile 名
+            # 按主区中文名显示，多区账号后缀区数，不再显示 profile 名；
+            # 列表按钮用顿号格式（新加坡、3 个区），单区账号不加后缀。
             self.assertIn("新加坡（3 个区）", reply_text_of(update))
             self.assertNotIn("DEFAULT", reply_text_of(update))
             buttons = reply_button_texts_of(update)
-            self.assertIn("✅ 新加坡（3 个区）", buttons)
+            self.assertIn("✅ 新加坡、3 个区", buttons)
             self.assertIn("圣何塞", buttons)
 
             update2 = make_update(callback_data="p:ACCOUNT2")
             await he.profile_callback(update2, context)
             self.assertEqual(context.user_data["profile"], "ACCOUNT2")
-            self.assertIn("已切换到账号", reply_text_of(update2))
-            self.assertIn("圣何塞", reply_text_of(update2))
+            # 切换成功后直接回主菜单：当前消息被编辑成菜单（带确认行），
+            # 不再单独发一条确认消息。
+            self.assertIn("已切换到账号", edit_text_of(update2))
+            self.assertIn("圣何塞", edit_text_of(update2))
+            self.assertIn("Oracle 菜单", edit_text_of(update2))
+            self.assertIsNone(reply_text_of(update2))
+            self.assertIn("🔄 切换账号：圣何塞",
+                          edit_button_texts_of(update2))
 
             # 未知 profile 切换失败
             update3 = make_update(callback_data="p:NOPE")
             await he.profile_callback(update3, context)
             self.assertIn("切换失败", reply_text_of(update3))
+
+    async def test_profile_switch_deletes_tracked_messages(self):
+        # 切换流程的中间消息（账号列表、区域列表）在切换完成后删除，
+        # 只留主菜单一条消息。
+        profiles = {
+            "DEFAULT": {"region": "ap-singapore-1",
+                        "compartment_id": "ocid1.tenancy.oc1..aaa"},
+            "ACCOUNT2": {"region": "us-sanjose-1",
+                         "compartment_id": "ocid1.tenancy.oc1..bbb"},
+        }
+        regions = {
+            "DEFAULT": [{"region-name": "ap-singapore-1",
+                         "is-home-region": True},
+                        {"region-name": "ap-seoul-1",
+                         "is-home-region": False}],
+            "ACCOUNT2": [{"region-name": "us-sanjose-1",
+                          "is-home-region": True}],
+        }
+        with patch.object(bot_config, "PROFILES", profiles), \
+                patch.object(he, "get_profile_regions",
+                             return_value=regions), \
+                patch.object(he, "get_profile_region_counts",
+                             return_value={"DEFAULT": 2, "ACCOUNT2": 1}):
+            context = make_context()
+            context.user_data["profile"] = "ACCOUNT2"
+            # 账号列表消息 id 101、区域列表消息 id 102
+            msg1 = MagicMock()
+            msg1.message_id = 101
+            update1 = make_update()
+            update1.effective_message.reply_text = AsyncMock(
+                return_value=msg1)
+            await he.handle_profiles(update1, context)
+            msg2 = MagicMock()
+            msg2.message_id = 102
+            update2 = make_update(callback_data="p:DEFAULT")
+            update2.effective_message.reply_text = AsyncMock(
+                return_value=msg2)
+            await he.profile_callback(update2, context)
+            self.assertIn("切换工作区域", reply_text_of(update2))
+            # 点区域完成切换：101、102 都删掉，当前消息（777）编辑成菜单
+            update3 = make_update(callback_data="pr:DEFAULT:ap-seoul-1")
+            await he.profile_region_callback(update3, context)
+            deleted = [call.kwargs.get("message_id")
+                       for call in context.bot.delete_message.await_args_list]
+            self.assertIn(101, deleted)
+            self.assertIn(102, deleted)
+            self.assertNotIn(777, deleted)
+            self.assertIn("已切换到账号", edit_text_of(update3))
+            self.assertIn("首尔", edit_text_of(update3))
+            self.assertEqual(context.user_data.get("switch_msg_ids"), None)
+
+    async def test_profile_switch_duplicate_click_ignored(self):
+        # 双击同一个切换按钮：第二次回调直接应答，不重复切换、不重复发消息
+        profiles = {
+            "DEFAULT": {"region": "ap-singapore-1",
+                        "compartment_id": "ocid1.tenancy.oc1..aaa"},
+            "ACCOUNT2": {"region": "us-sanjose-1",
+                         "compartment_id": "ocid1.tenancy.oc1..bbb"},
+        }
+        regions = {"DEFAULT": [{"region-name": "ap-singapore-1",
+                                "is-home-region": True}],
+                   "ACCOUNT2": [{"region-name": "us-sanjose-1",
+                                 "is-home-region": True}]}
+        with patch.object(bot_config, "PROFILES", profiles), \
+                patch.object(he, "get_profile_regions",
+                             return_value=regions):
+            context = make_context()
+            update1 = make_update(callback_data="p:ACCOUNT2")
+            await he.profile_callback(update1, context)
+            self.assertIn("已切换到账号", edit_text_of(update1))
+            update2 = make_update(callback_data="p:ACCOUNT2")
+            await he.profile_callback(update2, context)
+            self.assertIsNone(edit_text_of(update2))
+            self.assertIsNone(reply_text_of(update2))
+            update2.callback_query.answer.assert_awaited_once()
+
+    async def test_handle_profiles_clears_stale_switch_messages(self):
+        # 重新打开切换菜单时，先删掉上次流程残留的中间消息
+        profiles = {
+            "DEFAULT": {"region": "ap-singapore-1",
+                        "compartment_id": "ocid1.tenancy.oc1..aaa"},
+        }
+        with patch.object(bot_config, "PROFILES", profiles), \
+                patch.object(he, "get_profile_region_counts",
+                             return_value={"DEFAULT": 1}):
+            context = make_context()
+            context.user_data["switch_msg_ids"] = [55]
+            update = make_update()
+            await he.handle_profiles(update, context)
+            deleted = [call.kwargs.get("message_id")
+                       for call in context.bot.delete_message.await_args_list]
+            self.assertIn(55, deleted)
 
     async def test_profile_switch_resets_region_to_home(self):
         profiles = {
@@ -565,8 +697,11 @@ class TestProfileRegions(HandlersExtraTestCase):
             await he.profile_region_callback(update, context)
             self.assertEqual(context.user_data["profile"], "DEFAULT")
             self.assertEqual(context.user_data["region"], "ap-seoul-1")
-            self.assertIn("已切换到账号", reply_text_of(update))
-            self.assertIn("首尔", reply_text_of(update))
+            # 切换成功后直接回主菜单（编辑当前消息，不单独发确认消息）
+            self.assertIn("已切换到账号", edit_text_of(update))
+            self.assertIn("首尔", edit_text_of(update))
+            self.assertIn("Oracle 菜单", edit_text_of(update))
+            self.assertIsNone(reply_text_of(update))
 
     async def test_region_switch_to_home_region(self):
         with patch.object(bot_config, "PROFILES", self.PROFILES), \
@@ -579,7 +714,9 @@ class TestProfileRegions(HandlersExtraTestCase):
                 callback_data="pr:DEFAULT:ap-singapore-1")
             await he.profile_region_callback(update, context)
             self.assertEqual(context.user_data["region"], "ap-singapore-1")
-            self.assertIn("已切换到账号", reply_text_of(update))
+            self.assertIn("已切换到账号", edit_text_of(update))
+            self.assertIn("Oracle 菜单", edit_text_of(update))
+            self.assertIsNone(reply_text_of(update))
 
     async def test_region_switch_rejects_unsubscribed(self):
         with patch.object(bot_config, "PROFILES", self.PROFILES), \
@@ -1250,6 +1387,40 @@ class TestIpIpv6ResumeResizeVolumes(HandlersExtraTestCase):
         self.assertIn("⚠️ 孤儿盘 1 块（共 100GB）", text)
         self.assertIn("boot-b（100GB） 🗑️", reply_button_texts_of(update))
         self.assertEqual(len(context.user_data["volumes"]), 2)
+
+    async def test_handle_volumes_hides_terminated(self):
+        # v1.11.0：已删除 / 删除中的盘一律不显示（文字、按钮、存的
+        # 列表里都没有），连“已删除”分组标题都不出现。
+        volumes = [
+            {"id": "ocid1.bootvolume.oc1..v1", "display-name": "boot-a",
+             "size-in-gbs": 50, "lifecycle-state": "AVAILABLE",
+             "availability-domain": "AD-1"},
+            {"id": "ocid1.bootvolume.oc1..dead", "display-name": "old-test",
+             "size-in-gbs": 47, "lifecycle-state": "TERMINATED",
+             "availability-domain": "AD-1"},
+            {"id": "ocid1.bootvolume.oc1..dying", "display-name": "dying",
+             "size-in-gbs": 47, "lifecycle-state": "TERMINATING",
+             "availability-domain": "AD-1"},
+        ]
+        with patch.object(he, "list_boot_volumes",
+                          return_value=volumes), \
+             patch.object(he, "list_orphan_boot_volumes",
+                          return_value=[]), \
+             patch.object(he, "total_boot_volume_gb", return_value=50):
+            update = make_update()
+            context = make_context()
+            await he.handle_volumes(update, context)
+        text = reply_text_of(update)
+        self.assertIn("🟢 可用 1 块（50GB）", text)
+        self.assertNotIn("已删除", text)
+        self.assertNotIn("删除中", text)
+        buttons = reply_button_texts_of(update)
+        self.assertIn("boot-a（50GB）", buttons)
+        self.assertNotIn("old-test（47GB）", buttons)
+        self.assertNotIn("dying（47GB）", buttons)
+        self.assertEqual(len(context.user_data["volumes"]), 1)
+        self.assertEqual(context.user_data["volumes"][0]["display-name"],
+                         "boot-a")
 
     async def test_volume_detail_and_resize_flow(self):
         volumes = [{"id": "ocid1.bootvolume.oc1..v1",
@@ -2127,6 +2298,31 @@ class TestDisplayNames(HandlersExtraTestCase):
         with patch.object(bot_config, "PROFILES", profiles):
             self.assertEqual(bot_config.profile_display_name("X", 2),
                              "ap-tokyo-1（2 个区）")
+
+    def test_profile_display_name_list(self):
+        """切换列表显示名：多区账号用顿号后缀（新加坡、3 个区），
+        单区账号不加后缀。"""
+        profiles = {
+            "DEFAULT": {"region": "ap-singapore-1",
+                        "compartment_id": "ocid1.tenancy.oc1..aaa"},
+            "ACCOUNT2": {"region": "us-sanjose-1",
+                         "compartment_id": "ocid1.tenancy.oc1..bbb"},
+            "ACCOUNT3": {"region": "us-chicago-1",
+                         "compartment_id": "ocid1.tenancy.oc1..ccc"},
+        }
+        with patch.object(bot_config, "PROFILES", profiles):
+            self.assertEqual(
+                bot_config.profile_display_name_list("DEFAULT", 3),
+                "新加坡、3 个区")
+            self.assertEqual(
+                bot_config.profile_display_name_list("ACCOUNT2", 1),
+                "圣何塞")
+            self.assertEqual(
+                bot_config.profile_display_name_list("ACCOUNT3", None),
+                "芝加哥")
+            self.assertEqual(
+                bot_config.profile_display_name_list("DEFAULT", 0),
+                "新加坡")
 
     def test_profile_keyboard_labels(self):
         """切换键盘：按钮显示显示名，回调仍是 profile 名。"""

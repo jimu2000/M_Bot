@@ -23,6 +23,13 @@ from datetime import datetime
 
 from oci.client import OCIClient, QuotaExceededError
 from oci.grabber import GrabCancelledError, Grabber
+from oci.network import get_public_ip
+from tgbot.billing import FREE_SHAPES
+from tgbot.notify import (
+    fmt_paid_instance_alert,
+    notify_boot_success,
+    notify_dual,
+)
 from web import config
 
 try:
@@ -253,11 +260,73 @@ TASKS = TaskRegistry()
 
 # ---------------- 抢机任务 ----------------
 
-def _run_grabber(registry, task_id, cli, compartment_id, params):
+def _notify_grab_success(registry, task_id, cli, params, result, notify):
+    """抢机成功后的双通道推送（与机器人端 _notify_boot_success 同逻辑）。
+
+    查公网 IP（最多重试 3 次，间隔 3 秒；查不到写"获取中"），调
+    notify_boot_success 发 TG + Bark；付费形状额外发一条置顶提醒。
+    绝不抛异常，通知失败只记进任务日志，不影响任务本身。
+    """
+    try:
+        public_ip = None
+        for attempt in range(3):
+            try:
+                public_ip = get_public_ip(cli, result.instance_id)
+            except Exception:  # noqa: BLE001 - 查 IP 失败就重试/放弃
+                public_ip = None
+            if public_ip or attempt == 2:
+                break
+            time.sleep(3)
+        shape = params.get("shape") or ""
+        ocpus = params.get("ocpus") or 1
+        memory_gb = params.get("memory_gb")
+        if not memory_gb:
+            memory_gb = 1 if shape == "VM.Standard.E2.1.Micro" else 6
+        instances = [{
+            "name": params.get("display_name") or "?",
+            "public_ip": public_ip,
+            "attempts": result.attempts,
+            "elapsed_seconds": result.elapsed_seconds,
+        }]
+        outcome = notify_boot_success(
+            notify.get("token"), notify.get("chat_id"),
+            notify.get("profile_label") or "?",
+            notify.get("region_label") or "?",
+            shape, ocpus, memory_gb,
+            params.get("boot_volume_size_gbs"),
+            instances,
+            root_password=notify.get("root_password"),
+            region_code=notify.get("region_code"),
+            ssh_key_set=bool(params.get("ssh_keys_file")))
+        if outcome.get("errors"):
+            registry.append_log(
+                task_id,
+                "开机成功通知部分失败：" + "; ".join(outcome["errors"]))
+        if shape not in FREE_SHAPES:
+            paid = notify_dual(
+                notify.get("token"), notify.get("chat_id"),
+                "⚠️ 付费实例提醒",
+                fmt_paid_instance_alert(
+                    notify.get("profile_label") or "?",
+                    notify.get("region_label") or "?",
+                    shape, instances),
+                group="paid-instance", pin=True)
+            if paid.get("errors"):
+                registry.append_log(
+                    task_id,
+                    "付费实例提醒部分失败：" + "; ".join(paid["errors"]))
+    except Exception as exc:  # noqa: BLE001 - 通知绝不拖垮任务
+        registry.append_log(task_id, f"开机成功通知失败：{exc}")
+
+
+def _run_grabber(registry, task_id, cli, compartment_id, params,
+                 notify=None):
     """抢机线程体（daemon 线程里跑）。
 
     进度通过 on_event 回调写进任务日志；结束时更新任务状态与结果。
     线程里任何异常都要落到任务状态，不能静默消失。
+    notify 不为空时，抢机成功后双通道推送开机成功通知（TG + Bark，
+    含 root 密码；见 _notify_grab_success）。
     """
     registry.set_status(task_id, "running")
 
@@ -314,10 +383,13 @@ def _run_grabber(registry, task_id, cli, compartment_id, params):
         f"释放 {result.releases} 台 CPU 不符，"
         f"总耗时 {result.elapsed_seconds:.0f} 秒。")
     registry.set_status(task_id, "done")
+    if notify:
+        _notify_grab_success(registry, task_id, cli, params, result,
+                             notify)
 
 
 def start_grab_task(registry, cli, compartment_id, params,
-                    detail_prefix=""):
+                    detail_prefix="", notify=None):
     """注册抢机任务并开 daemon 线程跑 Grabber，返回任务 ID。
 
     params 需含：availability_domain / shape / image_id / subnet_id /
@@ -327,6 +399,8 @@ def start_grab_task(registry, cli, compartment_id, params,
     min_delay / max_delay 为 0 时按未填处理）。
     detail_prefix：任务 detail 前缀（如抢机计划触发时传 "抢机计划 p1"，
     供触发去重时识别同一计划的在跑任务；为空时不加前缀）。
+    notify：双通道通知信息（见 _notify_grab_success），抢机成功后发
+    开机成功通知；为 None 时不通知（抢机计划等内部触发不传）。
     """
     detail = (f"抢机：{params.get('display_name', '?')}"
               f"（{params.get('shape', '?')}）")
@@ -335,7 +409,7 @@ def start_grab_task(registry, cli, compartment_id, params,
     task_id = registry.create("grab", detail=detail)
     thread = threading.Thread(
         target=_run_grabber,
-        args=(registry, task_id, cli, compartment_id, params),
+        args=(registry, task_id, cli, compartment_id, params, notify),
         daemon=True)
     thread.start()
     return task_id

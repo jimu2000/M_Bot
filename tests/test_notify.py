@@ -63,22 +63,28 @@ class TestSendTelegramMessage(unittest.TestCase):
 class TestFmtBootSuccess(unittest.TestCase):
 
     def test_single_instance_with_password(self):
+        # v1.11.0：照 R 探长成功消息的字段结构重排。
         text = notify_mod.fmt_boot_success(
             "新加坡", "首尔", "VM.Standard.A1.Flex", 1, 6, 47,
             [{"name": "ARM_2026-11-24", "public_ip": "203.0.113.10",
               "attempts": 1, "elapsed_seconds": 3.9}],
-            root_password="pw123")
-        self.assertIn("🎉 开机成功", text)
+            root_password="pw123", region_code="ap-seoul-1",
+            ssh_key_set=True)
+        self.assertIn("🎉 恭喜，开机成功！", text)
         self.assertIn("账号：新加坡", text)
-        self.assertIn("地区：首尔", text)
-        self.assertIn("CPU：ARM 1 核", text)
-        self.assertIn("内存：6 GB", text)
-        self.assertIn("硬盘：47 GB", text)
+        self.assertIn("cpu类型：ARM", text)
+        self.assertIn("cpu数量：1 核", text)
+        self.assertIn("内存大小：6 GB", text)
+        self.assertIn("硬盘选择：47 GB", text)
+        self.assertIn("root密码：pw123", text)
+        self.assertIn("公钥：已设置", text)
+        self.assertIn("开机数量：第 1/1 个", text)
         self.assertIn("实例：ARM_2026-11-24", text)
         self.assertIn("抢机次数：1 次", text)
-        self.assertIn("花费时间：3.9 秒", text)
-        self.assertIn("公网 IP：203.0.113.10", text)
-        self.assertIn("root 密码：pw123", text)
+        self.assertIn("花费时间：4 秒", text)
+        self.assertIn("开机地区：ap-seoul-1（首尔）", text)
+        self.assertIn("ip：203.0.113.10", text)
+        self.assertIn("注意📢：root密码机器人不会记忆，请注意保存", text)
 
     def test_no_password_no_line(self):
         text = notify_mod.fmt_boot_success(
@@ -86,9 +92,20 @@ class TestFmtBootSuccess(unittest.TestCase):
             [{"name": "AMD_2026-11-24", "public_ip": None,
               "attempts": 3, "elapsed_seconds": 120.5}],
             root_password=None)
-        self.assertIn("CPU：AMD 1 核", text)
-        self.assertNotIn("root 密码", text)
+        self.assertIn("cpu类型：AMD", text)
+        self.assertNotIn("root密码", text)
+        self.assertNotIn("注意📢", text)
+        self.assertIn("公钥：未设置", text)
         self.assertIn("获取中", text)
+
+    def test_default_disk_and_region_fallback(self):
+        # 硬盘不指定显示"默认"；没有区域代码时只显示中文名。
+        text = notify_mod.fmt_boot_success(
+            "新加坡", "新加坡", "VM.Standard.A1.Flex", 1, 6, None,
+            [{"name": "ARM_2026-11-24", "public_ip": "203.0.113.10",
+              "attempts": 1, "elapsed_seconds": 6.2}])
+        self.assertIn("硬盘选择：默认", text)
+        self.assertIn("开机地区：新加坡", text)
 
     def test_batch_lists_each(self):
         text = notify_mod.fmt_boot_success(
@@ -96,10 +113,13 @@ class TestFmtBootSuccess(unittest.TestCase):
             [{"name": "ARM_2026-11-24-1", "public_ip": "1.2.3.4",
               "attempts": 1, "elapsed_seconds": 5.0},
              {"name": "ARM_2026-11-24-2", "public_ip": "1.2.3.5",
-              "attempts": 2, "elapsed_seconds": 40.0}])
-        self.assertIn("抢到 2 台", text)
-        self.assertIn("ARM_2026-11-24-1", text)
-        self.assertIn("1.2.3.5", text)
+              "attempts": 2, "elapsed_seconds": 40.0}],
+            region_code="ap-singapore-1")
+        self.assertIn("第 1/2 个：ARM_2026-11-24-1", text)
+        self.assertIn("第 2/2 个：ARM_2026-11-24-2", text)
+        self.assertIn("ip：1.2.3.4", text)
+        self.assertIn("ip：1.2.3.5", text)
+        self.assertIn("开机地区：ap-singapore-1（新加坡）", text)
 
 
 class TestNotifyBootSuccess(unittest.TestCase):
@@ -118,7 +138,7 @@ class TestNotifyBootSuccess(unittest.TestCase):
         self.assertTrue(result["bark"])
         self.assertEqual(result["errors"], [])
         self.assertIn("开机成功", tg.call_args[0][2])
-        self.assertEqual(bark.call_args[0][0], "🎉 开机成功")
+        self.assertEqual(bark.call_args[0][0], "🎉 恭喜，开机成功！")
 
     def test_bark_disabled_is_not_an_error(self):
         with patch.object(notify_mod, "send_telegram_message",

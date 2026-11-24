@@ -110,7 +110,25 @@
       max_delay: parseInt($("max-delay").value, 10) || 0,
       target_cpu: $("target-cpu").value.trim(),
       user_data: $("startup-script").value,
+      // root 登录：默认开启；密码前端预填 UUID，留空由后端生成。
+      root_login: $("root-login").checked,
+      root_password: $("root-login").checked
+        ? $("root-password").value.trim() : "",
     };
+  }
+
+  function generateUuidPassword() {
+    // UUID4 的 32 位十六进制（去掉连字符），与机器人端一致。
+    if (window.crypto && window.crypto.randomUUID) {
+      return window.crypto.randomUUID().replace(/-/g, "");
+    }
+    var bytes = new Uint8Array(16);
+    window.crypto.getRandomValues(bytes);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40; // 版本 4
+    bytes[8] = (bytes[8] & 0x3f) | 0x80; // 变体
+    return Array.from(bytes, function (b) {
+      return b.toString(16).padStart(2, "0");
+    }).join("");
   }
 
   async function submitCreate(e) {
@@ -142,6 +160,16 @@
       btn.textContent = "创建中…";
       var result = await RBot.api("/api/create", { method: "POST", body: payload });
       RBot.toast("创建任务已提交", "success");
+      if (result.root_password) {
+        // root 密码只显示这一次（后端不保存、不再可查；抢机成功后
+        // 还会在 Telegram / Bark 通知里带上）。
+        await RBot.confirmDialog(
+          "🔑 root 登录密码（只显示这一次）",
+          "<p>请立即记下，面板不会再显示它：</p>" +
+          "<p><code>" + RBot.escapeHtml(result.root_password) + "</code></p>" +
+          "<p>实例创建完成后用 root + 该密码登录。抢机成功后，密码也会随 Telegram / Bark 通知推送。</p>",
+          "已记下");
+      }
       window.location.href = "/tasks";
     } catch (err) {
       showError("创建失败：" + err.message);
@@ -149,6 +177,12 @@
       btn.disabled = false;
       btn.textContent = "开始创建";
     }
+  }
+
+  function onRootLoginChange() {
+    var on = $("root-login").checked;
+    $("root-password").disabled = !on;
+    $("btn-regen-password").disabled = !on;
   }
 
   document.addEventListener("DOMContentLoaded", function () {
@@ -160,6 +194,13 @@
     });
     $("shape").addEventListener("change", onShapeChange);
     onShapeChange();
+    // root 密码默认预填一个随机 UUID；关掉 root 登录时禁用输入框。
+    $("root-password").value = generateUuidPassword();
+    $("root-login").addEventListener("change", onRootLoginChange);
+    onRootLoginChange();
+    $("btn-regen-password").addEventListener("click", function () {
+      $("root-password").value = generateUuidPassword();
+    });
     document.getElementById("preset-grid").addEventListener("click", function (e) {
       var card = e.target.closest(".preset-card");
       if (card) applyPreset(card);
