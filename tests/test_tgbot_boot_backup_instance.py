@@ -239,10 +239,13 @@ class TestInstanceBootBackup(BootBackupInstanceTestCase):
                              return_value=(3, 5, False, None)), \
                 patch.object(he, "create_boot_volume_backup",
                              return_value={"display-name": "test-backup",
-                                           "id": FAKE_BACKUP}) as create:
+                                           "id": FAKE_BACKUP}) as create, \
+                patch.object(he, "start_backup_watch") as watch:
             await he.instance_boot_backup_callback(update, context)
             create.assert_called_once()
             self.assertEqual(create.call_args.args[1], FAKE_BV)
+            watch.assert_called_once()
+            self.assertEqual(watch.call_args[0][1], FAKE_BACKUP)
         text = reply_text_of(update)
         self.assertIn("创建中", text)
         self.assertIn("4/5", text)
@@ -256,9 +259,12 @@ class TestInstanceBootBackup(BootBackupInstanceTestCase):
                 patch.object(he, "check_backup_quota") as quota, \
                 patch.object(he, "create_boot_volume_backup",
                              return_value={"display-name": "test-backup",
-                                           "id": FAKE_BACKUP}):
+                                           "id": FAKE_BACKUP}), \
+                patch.object(he, "start_backup_watch") as watch:
             await he.instance_boot_backup_callback(update, context)
             quota.assert_not_called()
+            watch.assert_called_once()
+            self.assertEqual(watch.call_args[0][1], FAKE_BACKUP)
         self.assertIn("付费账号", reply_text_of(update))
 
 

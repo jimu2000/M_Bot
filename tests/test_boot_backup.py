@@ -26,6 +26,7 @@ from oci.boot_backup import (
     get_source_instance_shape,
     list_boot_volume_backups,
     restore_boot_volume_backup,
+    wait_for_backup_available,
 )
 from oci.client import OCIError
 
@@ -484,6 +485,61 @@ class TestRestore(unittest.TestCase):
                     shape="VM.Standard.A1.Flex", ocpus=1, memory_gb=6)
             # launch 失败后尽力删掉第 1 步建出来的启动卷，不留孤儿盘。
             mock_delete.assert_called_once_with(cli, FAKE_BV_NEW)
+
+
+class TestWaitForBackupAvailable(unittest.TestCase):
+    """等备份 AVAILABLE（备份创建完成通知的轮询）。"""
+
+    def test_available_immediately(self):
+        cli = MagicMock()
+        cli.run.return_value = {"data": _backup(FAKE_BACKUP, "b1",
+                                                "2026-11-23T10:00:00+00:00")}
+        state = wait_for_backup_available(cli, FAKE_BACKUP)
+        self.assertEqual(state, "AVAILABLE")
+        self.assertEqual(cli.run.call_count, 1)
+
+    @patch("oci.boot_backup.time.sleep")
+    def test_creating_then_available(self, _mock_sleep):
+        cli = MagicMock()
+        cli.run.side_effect = [
+            {"data": _backup(FAKE_BACKUP, "b1",
+                             "2026-11-23T10:00:00+00:00",
+                             state="CREATING")},
+            {"data": _backup(FAKE_BACKUP, "b1",
+                             "2026-11-23T10:00:00+00:00")},
+        ]
+        state = wait_for_backup_available(cli, FAKE_BACKUP)
+        self.assertEqual(state, "AVAILABLE")
+        self.assertEqual(cli.run.call_count, 2)
+
+    @patch("oci.boot_backup.time.sleep")
+    def test_request_received_then_available(self, _mock_sleep):
+        cli = MagicMock()
+        cli.run.side_effect = [
+            {"data": _backup(FAKE_BACKUP, "b1",
+                             "2026-11-23T10:00:00+00:00",
+                             state="REQUEST_RECEIVED")},
+            {"data": _backup(FAKE_BACKUP, "b1",
+                             "2026-11-23T10:00:00+00:00")},
+        ]
+        state = wait_for_backup_available(cli, FAKE_BACKUP)
+        self.assertEqual(state, "AVAILABLE")
+
+    def test_faulty_is_terminal(self):
+        cli = MagicMock()
+        cli.run.return_value = {"data": _backup(
+            FAKE_BACKUP, "b1", "2026-11-23T10:00:00+00:00", state="FAULTY")}
+        state = wait_for_backup_available(cli, FAKE_BACKUP)
+        self.assertEqual(state, "FAULTY")
+        self.assertEqual(cli.run.call_count, 1)
+
+    def test_timeout(self):
+        cli = MagicMock()
+        cli.run.return_value = {"data": _backup(
+            FAKE_BACKUP, "b1", "2026-11-23T10:00:00+00:00",
+            state="CREATING")}
+        with self.assertRaises(TimeoutError):
+            wait_for_backup_available(cli, FAKE_BACKUP, timeout_seconds=0)
 
 
 if __name__ == "__main__":

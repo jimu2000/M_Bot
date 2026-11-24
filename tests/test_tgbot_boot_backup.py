@@ -266,8 +266,9 @@ class TestVolumeBackupCallback(BootBackupBotTestCase):
                   return_value=FAKE_BACKUPS[1])
     @patch.object(he, "check_backup_quota",
                   return_value=(2, 5, False, FAKE_BACKUPS[0]))
-    async def test_backup_when_not_full(self, mock_quota, mock_create,
-                                        _mock_paid):
+    @patch.object(he, "start_backup_watch")
+    async def test_backup_when_not_full(self, mock_watch, mock_quota,
+                                        mock_create, _mock_paid):
         update = make_update("v:backup:0")
         context = make_context()
         context.user_data["volumes"] = FAKE_VOLUMES
@@ -277,6 +278,9 @@ class TestVolumeBackupCallback(BootBackupBotTestCase):
         text = reply_text_of(update)
         self.assertIn("new-backup", text)
         self.assertIn("创建中", text)
+        # 创建成功后起完成通知轮询。
+        mock_watch.assert_called_once()
+        self.assertEqual(mock_watch.call_args[0][1], FAKE_BACKUP)
 
     @patch.object(he, "is_paid_profile", return_value=False)
     @patch.object(he, "create_boot_volume_backup_with_limit_retry",
@@ -284,8 +288,10 @@ class TestVolumeBackupCallback(BootBackupBotTestCase):
     @patch.object(he, "delete_boot_volume_backup")
     @patch.object(he, "check_backup_quota",
                   return_value=(5, 5, True, FAKE_BACKUPS[0]))
+    @patch.object(he, "start_backup_watch")
     async def test_backup_when_full_auto_deletes_oldest(
-            self, mock_quota, mock_delete, mock_create_retry, _mock_paid):
+            self, mock_watch, mock_quota, mock_delete, mock_create_retry,
+            _mock_paid):
         update = make_update("v:backup:0")
         context = make_context()
         context.user_data["volumes"] = FAKE_VOLUMES
@@ -298,12 +304,15 @@ class TestVolumeBackupCallback(BootBackupBotTestCase):
         self.assertIn("已自动删除最早备份", text)
         self.assertIn("old-backup", text)
         self.assertIn("new-backup", text)
+        mock_watch.assert_called_once()
+        self.assertEqual(mock_watch.call_args[0][1], FAKE_BACKUP)
 
     @patch.object(he, "is_paid_profile", return_value=True)
     @patch.object(he, "create_boot_volume_backup",
                   return_value=FAKE_BACKUPS[1])
     @patch.object(he, "check_backup_quota")
-    async def test_backup_when_paid_skips_quota(self, mock_quota,
+    @patch.object(he, "start_backup_watch")
+    async def test_backup_when_paid_skips_quota(self, mock_watch, mock_quota,
                                                mock_create, _mock_paid):
         update = make_update("v:backup:0")
         context = make_context()
@@ -314,6 +323,8 @@ class TestVolumeBackupCallback(BootBackupBotTestCase):
         text = reply_text_of(update)
         self.assertIn("付费账号", text)
         self.assertIn("备份不限 5 个", text)
+        mock_watch.assert_called_once()
+        self.assertEqual(mock_watch.call_args[0][1], FAKE_BACKUP)
 
     async def test_backup_volume_expired(self):
         update = make_update("v:backup:0")
@@ -376,8 +387,9 @@ class TestHandleConfirmBackup(BootBackupBotTestCase):
     @patch.object(he, "delete_boot_volume_backup")
     @patch.object(he, "check_backup_quota",
                   return_value=(5, 5, True, FAKE_BACKUPS[0]))
+    @patch.object(he, "start_backup_watch")
     async def test_deloldestbb_deletes_first_then_creates(
-            self, mock_quota, mock_delete, mock_create):
+            self, mock_watch, mock_quota, mock_delete, mock_create):
         update = make_update()
         context = make_context()
         context.user_data["volumes"] = FAKE_VOLUMES
@@ -394,6 +406,8 @@ class TestHandleConfirmBackup(BootBackupBotTestCase):
         text = reply_text_of(update)
         self.assertIn("old-backup", text)
         self.assertIn("new-backup", text)
+        mock_watch.assert_called_once()
+        self.assertEqual(mock_watch.call_args[0][1], FAKE_BACKUP)
 
     @patch.object(he, "PLAN_DEFAULTS", FAKE_PLAN_DEFAULTS)
     @patch.object(he, "restore_boot_volume_backup")

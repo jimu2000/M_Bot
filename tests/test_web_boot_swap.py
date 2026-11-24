@@ -138,6 +138,36 @@ class TestBootBackupsApi(BootSwapWebTestCase):
         self.assertEqual(r.status_code, 200)
         mock_resolve.assert_called_once_with("ACCOUNT2", "us-sanjose-1")
 
+    @patch("web.routes.instances.list_boot_volume_backups",
+           side_effect=[[], FAKE_BACKUPS])
+    @patch("web.routes.instances.get_boot_volume_attachment",
+           return_value=FAKE_ATTACHMENT)
+    @patch("web.routes.instances.resolve_profile",
+           return_value=(MagicMock(), "ocid1.compartment.oc1..testxxxx"))
+    def test_empty_returns_other_available_count(self, _mock_resolve,
+                                                 _mock_att, _mock_list):
+        """当前盘没可用备份时，返回账号里其他盘的可用备份数。"""
+        r = self.client.get(f"/api/instances/{FAKE_INSTANCE}/boot-backups")
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertEqual(body["backups"], [])
+        self.assertEqual(body["other_available_count"], 1)
+
+    @patch("web.routes.instances.list_boot_volume_backups",
+           side_effect=[[], Exception("boom")])
+    @patch("web.routes.instances.get_boot_volume_attachment",
+           return_value=FAKE_ATTACHMENT)
+    @patch("web.routes.instances.resolve_profile",
+           return_value=(MagicMock(), "ocid1.compartment.oc1..testxxxx"))
+    def test_empty_other_lookup_failure_returns_zero(self, _mock_resolve,
+                                                     _mock_att, _mock_list):
+        """查旧备份失败时 other_available_count 为 0，主流程不受影响。"""
+        r = self.client.get(f"/api/instances/{FAKE_INSTANCE}/boot-backups")
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertEqual(body["backups"], [])
+        self.assertEqual(body["other_available_count"], 0)
+
 
 class TestRestoreBootVolumeApi(BootSwapWebTestCase):
     """POST /api/instances/{id}/restore-boot-volume。"""

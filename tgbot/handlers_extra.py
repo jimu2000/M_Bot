@@ -157,6 +157,7 @@ from tgbot.watchdog import (
 )
 from tgbot.notify import (DEFAULT_BOOT_DISK_GB, fmt_paid_instance_alert,
                           notify_boot_success, notify_dual)
+from tgbot.backup_watch import start_backup_watch
 from tgbot.paid_profiles import is_paid_profile, set_paid_profile
 from tgbot.monitoring import (
     KEEPALIVE_MAX_FAILURES,
@@ -3026,6 +3027,20 @@ async def boot_backup_paid_callback(update, context):
     await _edit_boot_backups(query, context)
 
 
+def _start_backup_watch(update, cli, backup, name):
+    """备份创建成功后起后台线程：等备份 AVAILABLE 后双通道通知。
+
+    chat_id 拿不到（无聊天上下文）或备份无 id 时静默跳过。
+    """
+    chat_id = update.effective_chat.id if update.effective_chat else None
+    backup_id = (backup or {}).get("id")
+    if chat_id is None or not backup_id:
+        return
+    start_backup_watch(cli, backup_id, name,
+                       backup.get("display-name") or "?",
+                       bot_config.TELEGRAM_BOT_TOKEN, chat_id)
+
+
 @require_allowed
 async def volume_backup_callback(update, context):
     """回调 "v:backup:<idx>"：给该启动卷做 FULL 全量备份。
@@ -3087,6 +3102,7 @@ async def volume_backup_callback(update, context):
         await _reply(update, context,
                      f"✅ {name} 的备份「{backup_name}」创建中，"
                      f"几分钟后可用（免费额度 {count + 1}/{limit}）。")
+    _start_backup_watch(update, cli, backup, name)
 
 
 @require_allowed
@@ -3201,6 +3217,7 @@ async def instance_boot_backup_callback(update, context):
         await _reply(update, context,
                      f"✅ {name} 的备份「{backup_name}」创建中，"
                      f"几分钟后可用（免费额度 {count + 1}/{limit}）。")
+    _start_backup_watch(update, cli, backup, name)
 
 
 @require_allowed
@@ -3366,10 +3383,28 @@ async def handle_bootswap(update, context):
     available = [b for b in backups
                  if (b.get("lifecycle-state") or "").upper() == "AVAILABLE"]
     if not available:
+        # 当前盘没备份时，顺便看一眼账号里是否还有别的盘的可用备份
+        # （比如换盘前旧盘的备份）：有就说明白，免得用户以为删盘
+        # 把备份也删了（2026-11-24 用户实问）。查不到也不影响主提示。
+        other_note = ""
+        try:
+            all_backups = await run_sync(
+                list_boot_volume_backups, cli, compartment)
+            others = [b for b in all_backups
+                      if (b.get("lifecycle-state") or "").upper()
+                      == "AVAILABLE"]
+            if others:
+                other_note = (
+                    f"\n注：账号里还有 {len(others)} 个其他启动盘的可用备份"
+                    "（比如换盘前旧盘的备份），删盘不会删备份；原地恢复只列"
+                    "当前启动盘的备份，旧备份可从备份页恢复成新实例。")
+        except Exception:  # noqa: BLE001 - 查不到旧备份也不影响主提示
+            other_note = ""
         await _reply(
             update, context,
             f"实例「{name}」的启动盘还没有可用备份（AVAILABLE）。\n"
-            "请先在菜单 7（启动盘）里给它创建一个备份，几分钟后可用。",
+            "请先在菜单 7（启动盘）里给它创建一个备份，几分钟后可用。"
+            f"{other_note}",
             reply_markup=back_to_oracle_keyboard())
         return
     context.user_data["bootswap_backups"] = available
@@ -5620,6 +5655,8 @@ async def _handle_confirm_inner(action, idx, update, context):
         await _reply(update, context,
                      f"✅ 已删除最早备份「{old_name}」，"
                      f"新备份「{new_name}」创建中，几分钟后可用。")
+        _start_backup_watch(update, cli, backup,
+                            vol.get("display-name") or "?")
         return True
 
     if action == "restorebb":

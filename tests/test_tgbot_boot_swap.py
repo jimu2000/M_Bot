@@ -192,6 +192,41 @@ class TestHandleBootswap(BootSwapBotTestCase):
         self.assertIn("还没有可用备份", reply_text_of(update))
 
     @patch.object(he, "list_boot_volume_backups",
+                  side_effect=[[], FAKE_BACKUPS])
+    @patch.object(he, "get_boot_volume_attachment",
+                  return_value=FAKE_ATTACHMENT)
+    async def test_no_backups_mentions_other_backups(self, _mock_att,
+                                                     _mock_list):
+        """当前盘没备份、账号里还有别的盘的备份时，提示说明旧备份还在。"""
+        update = make_update("i:bootswap:0")
+        context = make_context()
+        context.user_data["pending_idx"] = "0"
+        context.user_data["instances"] = FAKE_INSTANCES
+        await he.handle_bootswap(update, context)
+        text = reply_text_of(update)
+        self.assertIn("还没有可用备份", text)
+        self.assertIn("还有 1 个其他启动盘的可用备份", text)
+        self.assertIn("删盘不会删备份", text)
+        self.assertIn("原地恢复只列当前启动盘的备份", text)
+
+    @patch.object(he, "list_boot_volume_backups",
+                  side_effect=[[], Exception("boom")])
+    @patch.object(he, "get_boot_volume_attachment",
+                  return_value=FAKE_ATTACHMENT)
+    async def test_no_backups_other_lookup_failure_ignored(
+            self, _mock_att, _mock_list):
+        """查旧备份失败时不影响主提示（只显示原来的两句）。"""
+        update = make_update("i:bootswap:0")
+        context = make_context()
+        context.user_data["pending_idx"] = "0"
+        context.user_data["instances"] = FAKE_INSTANCES
+        await he.handle_bootswap(update, context)
+        text = reply_text_of(update)
+        self.assertIn("还没有可用备份", text)
+        self.assertNotIn("删盘不会删备份", text)
+        self.assertNotIn("其他启动盘", text)
+
+    @patch.object(he, "list_boot_volume_backups",
                   return_value=FAKE_BACKUPS)
     @patch.object(he, "get_boot_volume_attachment",
                   return_value=FAKE_ATTACHMENT)

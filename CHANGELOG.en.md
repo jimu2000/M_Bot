@@ -9,6 +9,23 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [1.35.2] - 2026-11-24
+
+### Added
+- Bark notification when a boot-volume backup finishes creating (user request, 2026-11-24: both backup creation and restore should send Bark notifications; previously backup creation only replied "creating" on Telegram and never notified on completion): new module `tgbot/backup_watch.py` — after a successful create, a daemon thread polls the backup status (new `wait_for_backup_available` in `oci/boot_backup.py`, every 30 seconds, up to 30 minutes) and sends a dual-channel Telegram + Bark notification "💾 Backup completed" via notify_dual once the backup is AVAILABLE; a terminal failure state sends "Backup failed", a timeout sends "Backup timed out", and a polling error sends "Backup status unknown". Shared by all three bot creation points (menu 7, instance detail "Boot volume backup", delete-oldest-then-create when full) and the web create endpoint (POST /api/instances/{id}/boot-backups); no thread is started when the token, chat id, or backup id is missing. Restore notifications already existed (notify_dual dual channel); the Bark channel was verified live during this work (test push succeeded).
+
+### Verification
+- Full test suite: 2491 tests, all passing (13 new in v1.35.2: 5 for the wait helper — immediately available, CREATING/REQUEST_RECEIVED then available, FAULTY terminal state, timeout; 8 for the watch thread — success/failure/timeout/error notification copy, no start when the token/chat id/backup id is missing, daemon thread start; 8 existing creation tests now mock the watcher and assert it is started).
+- Live verification: deployed to .160 and restarted the bot and the web panel; services are up with no errors in the log. The Bark channel was verified with a live test push using the production code path.
+
+## [1.35.1] - 2026-11-24
+
+### Changed
+- The "no available backup" message now explains that old backups still exist (user request, 2026-11-24: after deleting an old boot volume, the bot said the instance had no available backup and the user thought the backup had been deleted): in-place restore only lists backups of the current boot volume, so a backup of the pre-swap old volume is not listed — the message was misleading. Bot: when the current volume has no available backup, it also checks for available backups of other volumes in the account and appends a note ("Note: the account still has N available backups of other boot volumes (e.g. backups of the old volume before the swap); deleting a volume does not delete its backups; in-place restore only lists backups of the current boot volume; old backups can be restored as a new instance from the backups page"); a failed lookup leaves the main message unchanged. Web: GET /api/instances/{id}/boot-backups returns other_available_count when the current volume has no backups, and the restore dialog shows the same note.
+
+### Verification
+- 4 new tests in v1.35.1: bot note shown when other backups exist, main message unaffected when the lookup fails; web endpoint returns other_available_count, 0 when the lookup fails.
+
 ## [1.35.0] - 2026-11-24
 
 ### Changed

@@ -94,6 +94,7 @@ from oci.network import (
 from oci.quota import SHAPE_A1_FLEX, SHAPE_E2_MICRO, check_a1_single_instance_cap
 from oci.volume import get_boot_volume, list_boot_volume_attachments
 from tgbot import config as bot_config
+from tgbot.backup_watch import start_backup_watch
 from tgbot.bark import load_bark_config
 from tgbot.cpu_model import (
     cached_cpu_model,
@@ -797,6 +798,8 @@ def boot_backups(instance_id: str,
 
     返回 {ok, boot_volume_id, backups}；backups 每项是精简字典
     （id / display-name / size-in-gbs / lifecycle-state / time-created）。
+    默认模式下 backups 为空时另含 other_available_count（账号里其他
+    启动盘的可用备份数，供前端提示用：删盘不会删备份，旧备份还在）。
     """
     try:
         cli, compartment_id = resolve_profile(profile, region)
@@ -816,8 +819,21 @@ def boot_backups(instance_id: str,
         backups = [b for b in backups
                    if (b.get("lifecycle-state") or "").upper()
                    == "AVAILABLE"]
-    return {"ok": True, "boot_volume_id": boot_volume_id,
-            "backups": backups}
+    result = {"ok": True, "boot_volume_id": boot_volume_id,
+              "backups": backups}
+    if not include_all and not backups:
+        # 当前盘没可用备份时，顺便数一下账号里别的盘的可用备份
+        # （比如换盘前旧盘的备份），前端在提示里说明白，免得用户
+        # 以为删盘把备份也删了（2026-11-24 用户实问）。查不到就当 0，
+        # 不影响主流程。
+        try:
+            all_backups = list_boot_volume_backups(cli, compartment_id)
+            result["other_available_count"] = sum(
+                1 for b in all_backups
+                if (b.get("lifecycle-state") or "").upper() == "AVAILABLE")
+        except Exception:  # noqa: BLE001 - 查不到旧备份也不影响主流程
+            result["other_available_count"] = 0
+    return result
 
 
 @router.post("/api/instances/{instance_id}/boot-backups")
@@ -856,6 +872,20 @@ def create_boot_backup(instance_id: str,
         return error_response(str(exc), status_code=400)
     except OCIError as exc:
         return oci_error_response(exc)
+    # 备份创建成功后起后台线程：等备份 AVAILABLE 后双通道通知
+    # （与机器人端创建点同款；chat_id 拿不到时静默跳过）。
+    chat_id = _notify_chat_id()
+    if chat_id is not None:
+        try:
+            detail = get_instance(cli, instance_id)
+            if isinstance(detail, dict):
+                detail = detail.get("data") or detail
+            inst_name = (detail or {}).get("display-name") or instance_id[-4:]
+        except Exception:  # noqa: BLE001 - 查不到实例名就用 id 尾缀
+            inst_name = instance_id[-4:]
+        start_backup_watch(cli, backup["id"], inst_name,
+                           backup.get("display-name") or "?",
+                           bot_config.TELEGRAM_BOT_TOKEN, chat_id)
     result = {"ok": True, "backup": backup}
     if not paid:
         result["count"] = count + 1

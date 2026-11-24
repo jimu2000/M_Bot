@@ -85,6 +85,11 @@ CREATE_LIMIT_RETRY_INTERVAL_SECONDS = 15
 RESTORE_WAIT_MAX_SECONDS = 1200
 # 等 AVAILABLE 时的轮询间隔（秒）。
 RESTORE_WAIT_INTERVAL_SECONDS = 15
+# 备份创建后等 AVAILABLE 的最长等待（秒）：47GB 全量备份实测约几分钟，
+# 1800 秒（30 分钟）留足余量；轮询间隔 30 秒（备份创建是慢操作，
+# 不必像恢复建卷那样 15 秒一查）。
+BACKUP_WATCH_MAX_SECONDS = 1800
+BACKUP_WATCH_INTERVAL_SECONDS = 30
 # =====================================================
 
 
@@ -192,6 +197,32 @@ def get_boot_volume_backup(cli, backup_id):
     result = cli.run(["bv", "boot-volume-backup", "get",
                       "--boot-volume-backup-id", backup_id])
     return _simplify_backup(_extract_data(result) or {})
+
+
+def wait_for_backup_available(cli, backup_id, timeout_seconds=None,
+                              interval_seconds=None):
+    """轮询备份状态，直到 AVAILABLE 或进入终态。
+
+    AVAILABLE 返回 "AVAILABLE"；进入终态（FAULTY / TERMINATED /
+    TERMINATING）返回该状态；超时抛 TimeoutError。备份刚创建时是
+    REQUEST_RECEIVED / CREATING，需要几分钟才到 AVAILABLE。
+    """
+    timeout = (BACKUP_WATCH_MAX_SECONDS if timeout_seconds is None
+               else timeout_seconds)
+    interval = (BACKUP_WATCH_INTERVAL_SECONDS if interval_seconds is None
+                else interval_seconds)
+    deadline = time.time() + timeout
+    terminal = {"FAULTY", "TERMINATED", "TERMINATING"}
+    while True:
+        backup = get_boot_volume_backup(cli, backup_id)
+        state = (backup.get("lifecycle-state") or "").upper()
+        if state == "AVAILABLE" or state in terminal:
+            return state
+        if time.time() >= deadline:
+            raise TimeoutError(
+                f"等待备份 …{backup_id[-4:]} 可用超时（{timeout} 秒），"
+                f"当前状态：{state or '未知'}")
+        time.sleep(interval)
 
 
 def create_boot_volume_backup(cli, boot_volume_id, display_name=None):

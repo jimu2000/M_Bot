@@ -135,7 +135,12 @@ class TestCreateBootBackup(BootBackupInstanceWebTestCase):
            return_value=FAKE_ATTACHMENT)
     @patch("web.routes.instances.resolve_profile",
            return_value=(MagicMock(), "ocid1.compartment.oc1..testxxxx"))
-    def test_free_not_full_creates(self, _mock_resolve, _mock_att,
+    @patch("web.routes.instances._notify_chat_id", return_value=123)
+    @patch("web.routes.instances.get_instance",
+           return_value={"display-name": "test-inst"})
+    @patch("web.routes.instances.start_backup_watch")
+    def test_free_not_full_creates(self, mock_watch, _mock_get_inst,
+                                   _mock_chat, _mock_resolve, _mock_att,
                                    _mock_paid, _mock_quota, mock_create):
         r = self.client.post(
             f"/api/instances/{FAKE_INSTANCE}/boot-backups")
@@ -147,6 +152,12 @@ class TestCreateBootBackup(BootBackupInstanceWebTestCase):
         self.assertEqual(body["limit"], 5)
         mock_create.assert_called_once()
         self.assertEqual(mock_create.call_args.args[1], FAKE_BV)
+        # 创建成功后起完成通知轮询。
+        mock_watch.assert_called_once()
+        self.assertEqual(mock_watch.call_args[0][1], FAKE_BACKUP)
+        self.assertEqual(mock_watch.call_args[0][2], "test-inst")
+        self.assertEqual(mock_watch.call_args[0][3], "new-backup")
+        self.assertEqual(mock_watch.call_args[0][5], 123)
 
     @patch("web.routes.instances.create_boot_volume_backup")
     @patch("web.routes.instances.check_backup_quota",
@@ -178,13 +189,20 @@ class TestCreateBootBackup(BootBackupInstanceWebTestCase):
            return_value=FAKE_ATTACHMENT)
     @patch("web.routes.instances.resolve_profile",
            return_value=(MagicMock(), "ocid1.compartment.oc1..testxxxx"))
-    def test_paid_skips_quota_check(self, _mock_resolve, _mock_att,
+    @patch("web.routes.instances._notify_chat_id", return_value=123)
+    @patch("web.routes.instances.get_instance",
+           return_value={"display-name": "test-inst"})
+    @patch("web.routes.instances.start_backup_watch")
+    def test_paid_skips_quota_check(self, mock_watch, _mock_get_inst,
+                                    _mock_chat, _mock_resolve, _mock_att,
                                     _mock_paid, mock_quota, _mock_create):
         r = self.client.post(
             f"/api/instances/{FAKE_INSTANCE}/boot-backups")
         self.assertEqual(r.status_code, 200)
         mock_quota.assert_not_called()
         self.assertNotIn("count", r.json())
+        mock_watch.assert_called_once()
+        self.assertEqual(mock_watch.call_args[0][1], FAKE_BACKUP)
 
     @patch("web.routes.instances.get_boot_volume_attachment",
            return_value=None)

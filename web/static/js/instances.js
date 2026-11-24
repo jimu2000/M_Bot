@@ -375,7 +375,11 @@
         currentProfile, currentRegion));
       var backups = res.backups || [];
       if (!backups.length) {
-        listEl.textContent = "这台实例的启动盘还没有可用备份（AVAILABLE）。请先在启动盘页面创建备份，几分钟后可用。";
+        var msg = "这台实例的启动盘还没有可用备份（AVAILABLE）。请先在启动盘页面创建备份，几分钟后可用。";
+        if (res.other_available_count) {
+          msg += "注：账号里还有 " + res.other_available_count + " 个其他启动盘的可用备份（比如换盘前旧盘的备份），删盘不会删备份；原地恢复只列当前启动盘的备份，旧备份可从备份页恢复成新实例。";
+        }
+        listEl.textContent = msg;
         return;
       }
       listEl.innerHTML = "";
