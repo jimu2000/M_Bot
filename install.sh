@@ -17,8 +17,9 @@
 #      已有机器人发 /token 找回（格式如 123456789:AAE...，装到一半会问你）。
 #   2. 你的 Telegram 用户 ID：找 @userinfobot 发 /start 拿到
 #      （纯数字，装到一半会问你；白名单只放这个 ID）。
-#   3. OCI API 密钥：安装后在机器人里用 /uploadapi 上传你的
-#      OCI 配置（~/oci_config + API 私钥），或手动放到 /root/ 下。
+#   3. OCI API 密钥：config 文本发给自己的机器人（/uploadapi），
+#      私钥 .pem 用 scp 传到服务器 /root/ 下（不走 Telegram）。
+#      详细步骤见 README「拿到 OCI API 密钥（详细步骤）」。
 #
 # 非交互安装（跳过提问，变量缺了就用默认值/自动生成）：
 #   MBOT_INSTALL_TOKEN=xxx MBOT_INSTALL_USER_ID=123 \

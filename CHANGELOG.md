@@ -9,6 +9,14 @@
 
 ## [Unreleased]
 
+## [1.35.5] - 2026-11-24
+
+### 文档
+- README 补上 OCI API 密钥详细教程（中英双语）：config 文本与私钥分两条路（config 发给自己的机器人私聊 /uploadapi，私钥 scp 到服务器、不走 Telegram）；密钥对生成、公钥上传控制台、tenancy/user OCID 位置、config 格式（key_file 任意 /root 下路径均可，`oci setup config` 默认的 `~/.oci/oci_api_key.pem` 不用挪）、多账号与 R-Bot 格式、怎么找到自己的机器人、旧 `~/.oci/config` 只作回退、验证方法；install.sh 头注释同步
+
+### 验证
+- 全量测试 2491 个全过（仅文档与注释改动，无代码行为变化）
+
 ## [1.35.4] - 2026-11-24
 
 ### 文档

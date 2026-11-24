@@ -9,6 +9,14 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [1.35.5] - 2026-11-24
+
+### Docs
+- README now has a step-by-step OCI API key tutorial (Chinese and English): the config text and the private key go through two different channels (config to your own bot's private chat via `/uploadapi`, private key via scp to the server, never through Telegram); key-pair generation, uploading the public key in the Console, where to find the tenancy/user OCIDs, the config format (key_file can be any path under `/root/`; the `oci setup config` default `~/.oci/oci_api_key.pem` needs no moving), multiple accounts and R-Bot format, how to find your own bot, the old `~/.oci/config` as fallback only, and how to verify; install.sh header comment updated to match.
+
+### Verification
+- Full test suite: 2491 tests, all passing (docs and comment changes only, no code behavior changed).
+
 ## [1.35.4] - 2026-11-24
 
 ### Docs

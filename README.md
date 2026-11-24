@@ -1,6 +1,6 @@
 # M_Bot Oracle开源管理面板
 
-> **当前版本：v1.35.4** · 更新记录见 [CHANGELOG.md](CHANGELOG.md)（[英文版 / English](CHANGELOG.en.md)）
+> **当前版本：v1.35.5** · 更新记录见 [CHANGELOG.md](CHANGELOG.md)（[英文版 / English](CHANGELOG.en.md)）
 
 [中文](#中文) | [English](#english)
 
@@ -20,7 +20,7 @@ M_Bot 是一个开源的 Oracle Cloud 管理面板：Telegram 机器人 + Web �
 1. 一台 Debian / Ubuntu 服务器（root 权限，1 核 1GB 以上即可）。
 2. Telegram 机器人 Token：见下面「拿到 Telegram 机器人 Token（详细步骤）」。
 3. 你的 Telegram 用户 ID：找 @userinfobot 发 `/start` 拿到（纯数字）。
-4. OCI API 密钥：安装后在机器人里用 `/uploadapi` 上传，或手动放到服务器的 `/root/` 下（配置 `~/oci_config`，私钥 `/root/xxx.pem`）。
+4. OCI API 密钥：见下面「拿到 OCI API 密钥（详细步骤）」。
 
 ### 拿到 Telegram 机器人 Token（详细步骤）
 
@@ -53,6 +53,83 @@ Token 是机器人调用 Telegram Bot API 的通行证，格式是一串数字 +
 重新生成一串新的，旧的立即失效。
 
 **注意：** Token 谁拿到谁就能控制你的机器人，不要发到群聊、不要贴到公开地方。
+
+### 拿到 OCI API 密钥（详细步骤）
+
+OCI API 密钥分两样东西，走两条路，别混了：
+
+- **config 文本**（含 tenancy / user / fingerprint / region / key_file
+  五个键）：发给你**自己的机器人**（私聊，不是群、不是发给任何人），
+  机器人装在你自己的服务器上，配置只落在你自己的机器上。
+- **私钥文件**（.pem）：**不要经 Telegram 发**，用 scp 直接传到服务器。
+
+**第 1 步：生成密钥对（在你电脑或服务器上）：**
+
+```bash
+openssl genrsa -out oci_api_key.pem 2048
+chmod 600 oci_api_key.pem
+openssl rsa -pubout -in oci_api_key.pem -out oci_api_key_public.pem
+openssl rsa -pubout -outform DER -in oci_api_key.pem | openssl md5 -c
+```
+
+最后一行输出的就是指纹（fingerprint），格式如 `aa:bb:cc:...`，记下来，
+第 3 步要用。
+
+**第 2 步：把公钥加到 OCI 控制台：**
+
+1. 登录 OCI 控制台（cloud.oracle.com）。
+2. 右上角头像 → My Profile（我的资料）→ API Keys（API 密钥）→ Add API Key。
+3. 粘贴**公钥**文件（`oci_api_key_public.pem`，以 `-----BEGIN PUBLIC KEY-----`
+   开头的那份）的内容，点 Add。
+4. 控制台会显示指纹，跟第 1 步的指纹对一下，一致就对了。
+
+**第 3 步：拿到 tenancy OCID 与 user OCID：**
+
+- user OCID：在 My Profile 页上，格式 `ocid1.user.oc1...`。
+- tenancy OCID：头像菜单 → 租户名 → OCID，格式 `ocid1.tenancy.oc1...`。
+
+**第 4 步：写 config 文本：**
+
+```ini
+[DEFAULT]
+user=ocid1.user.oc1..xxxx
+fingerprint=aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99
+key_file=/root/oci_api_key.pem
+tenancy=ocid1.tenancy.oc1..xxxx
+region=ap-singapore-1
+```
+
+region 写你的主区域（新加坡 `ap-singapore-1`、圣何塞 `us-sanjose-1`、
+芝加哥 `us-chicago-1`）。多账号就多写几个段（`[ACCOUNT2]`、`[ACCOUNT3]`
+……），一次全导进去；R-Bot 格式的 `oci=begin` / `oci=end` 块也支持。
+
+key_file 写私钥在服务器上的实际路径就行：直接放 `/root/` 下就写
+`/root/oci_api_key.pem`；用 `oci setup config` 生成的密钥默认在
+`~/.oci/oci_api_key.pem`（即 `/root/.oci/oci_api_key.pem`），写这个路径
+也行，不用挪地方——只要在 `/root` 下面，机器人都原样保留。
+
+**第 5 步：config 发给机器人，私钥 scp 到服务器：**
+
+- config：打开你自己的机器人私聊，发 `/uploadapi`，然后发 config 文件
+  （.txt / .conf）或直接粘贴文本，按提示确认，机器人会写到服务器的
+  `~/oci_config`（即 `/root/oci_config`）。找不到自己的机器人？在 Telegram
+  搜索框搜它的 @用户名（建机器人时起的、以 bot 结尾的那个），或在 @BotFather
+  里 `/mybots` → 选你的机器人 → 点 @用户名打开。注意：机器人要先装好 M_Bot
+  （安装时填了这个 Token）才会回消息，没装好之前发了也没反应。如果服务器上
+  还有旧的 `~/.oci/config`，不用管它——M_Bot 优先读 `~/oci_config`，只有它
+  不存在时才读旧文件。
+- 私钥：用 scp 直接传到服务器（改过 SSH 端口的加 `-P 端口`）：
+
+```bash
+scp oci_api_key.pem root@<服务器IP>:/root/oci_api_key.pem
+```
+
+key_file 如果已经在 `/root` 下，机器人保留原路径；否则自动改成
+`/root/<PROFILE>.pem`，scp 时按提示的路径放。
+
+**第 6 步：验证：**
+
+机器人里发 `/oracle`，能列出账号和实例就是通了。
 
 一条命令安装（root 运行，首次运行是安装，再次运行是更新并重启）：
 
@@ -287,9 +364,7 @@ Prerequisites (all required):
 1. A Debian / Ubuntu server (root access, 1 vCPU / 1 GB RAM is enough).
 2. A Telegram bot token: see "Getting your Telegram bot token (step by step)" below.
 3. Your Telegram user ID: send `/start` to @userinfobot (digits only).
-4. An OCI API key: upload it in the bot with `/uploadapi` after installing,
-   or place it in `/root/` on the server manually (config `~/oci_config`,
-   key `/root/xxx.pem`).
+4. An OCI API key: see "Getting your OCI API key (step by step)" below.
 
 ### Getting your Telegram bot token (step by step)
 
@@ -324,6 +399,91 @@ new one; the old one stops working immediately.
 
 **Note:** anyone with the token can control your bot — never post it in a
 group chat or anywhere public.
+
+### Getting your OCI API key (step by step)
+
+The OCI API key is two things, sent through two different channels — don't
+mix them up:
+
+- **The config text** (with the five keys tenancy / user / fingerprint /
+  region / key_file): send it to **your own bot** (a private chat — not a
+  group, not any person). The bot runs on your own server, so the config
+  only ever lands on your own machine.
+- **The private key file** (.pem): **never send it through Telegram**;
+  copy it to the server with scp.
+
+**Step 1: Generate the key pair (on your computer or server):**
+
+```bash
+openssl genrsa -out oci_api_key.pem 2048
+chmod 600 oci_api_key.pem
+openssl rsa -pubout -in oci_api_key.pem -out oci_api_key_public.pem
+openssl rsa -pubout -outform DER -in oci_api_key.pem | openssl md5 -c
+```
+
+The last command prints the fingerprint, like `aa:bb:cc:...` — save it,
+you'll need it in step 3.
+
+**Step 2: Add the public key in the OCI Console:**
+
+1. Log in to the OCI Console (cloud.oracle.com).
+2. Top-right avatar → My Profile → API Keys → Add API Key.
+3. Paste the contents of the **public** key file (`oci_api_key_public.pem`,
+   the one starting with `-----BEGIN PUBLIC KEY-----`), click Add.
+4. The console shows a fingerprint — check it matches the one from step 1.
+
+**Step 3: Get the tenancy OCID and user OCID:**
+
+- User OCID: on the My Profile page, looks like `ocid1.user.oc1...`.
+- Tenancy OCID: avatar menu → tenancy name → OCID, looks like
+  `ocid1.tenancy.oc1...`.
+
+**Step 4: Write the config text:**
+
+```ini
+[DEFAULT]
+user=ocid1.user.oc1..xxxx
+fingerprint=aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99
+key_file=/root/oci_api_key.pem
+tenancy=ocid1.tenancy.oc1..xxxx
+region=ap-singapore-1
+```
+
+Set region to your home region (Singapore `ap-singapore-1`, San Jose
+`us-sanjose-1`, Chicago `us-chicago-1`). For more accounts, add more
+sections (`[ACCOUNT2]`, `[ACCOUNT3]`, ...); they all import in one go.
+R-Bot style `oci=begin` / `oci=end` blocks work too.
+
+Set key_file to the private key's actual path on the server: put the key
+directly under `/root/` and write `/root/oci_api_key.pem`; a key generated
+with `oci setup config` lives at `~/.oci/oci_api_key.pem` (i.e.
+`/root/.oci/oci_api_key.pem`) — write that path, no need to move it. Any
+path under `/root/` is kept as-is.
+
+**Step 5: Send the config to the bot, scp the private key to the server:**
+
+- Config: open a private chat with your own bot, send `/uploadapi`, then
+  send the config file (.txt / .conf) or paste the text, confirm, and the
+  bot writes it to `~/oci_config` on the server (i.e. `/root/oci_config`).
+  Can't find your bot? Search Telegram for its @username (the one ending in
+  `bot` you picked when creating it), or in @BotFather send `/mybots`, pick
+  your bot, and tap its @username. Note: the bot only replies after M_Bot
+  is installed with its token — before that, it won't respond. If the server
+  still has an old `~/.oci/config`, ignore it — M_Bot reads `~/oci_config`
+  first and only falls back to the old file when it doesn't exist.
+- Private key: copy it to the server with scp (add `-P <port>` if you
+  changed your SSH port):
+
+```bash
+scp oci_api_key.pem root@<server-IP>:/root/oci_api_key.pem
+```
+
+If key_file is already under `/root`, the bot keeps that path; otherwise it
+rewrites it to `/root/<PROFILE>.pem` — put the file where it tells you.
+
+**Step 6: Verify:**
+
+Send `/oracle` to the bot; if it lists your accounts and instances, it works.
 
 One command to install (run as root; first run installs, later runs update
 and restart):
