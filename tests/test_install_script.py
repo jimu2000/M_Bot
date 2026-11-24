@@ -482,6 +482,28 @@ class TestInstallScript(unittest.TestCase):
                       self.text)
         self.assertNotIn("gpg --dearmor -o ", self.text)
 
+    def test_bot_enabled_grep_is_bre_safe(self):
+        # v1.37.1：grep 默认是 BRE，.+ 里的 + 是字面加号、永远匹配不到，
+        # 曾导致重跑安装误判“没 Token”而删掉机器人服务。
+        self.assertNotIn("MBOT_TELEGRAM_TOKEN=.+", self.text)
+        self.assertIn('grep -q "^MBOT_TELEGRAM_TOKEN=."', self.text)
+
+    def test_systemd_units_restart_services(self):
+        # v1.37.1：更新模式下服务已在跑，enable --now 不重启，旧进程会
+        # 一直跑旧代码；必须 enable + restart。
+        fn = self.text.split("write_systemd_units() {")[1].split(
+            "\n}\n")[0]
+        self.assertNotIn("enable --now", fn)
+        self.assertIn('systemctl restart "$WEB_SERVICE" "$BOT_SERVICE"',
+                      fn)
+        self.assertIn('systemctl restart "$WEB_SERVICE"', fn)
+
+    def test_update_mode_keeps_bot_when_unit_exists(self):
+        # v1.37.1：env 文件丢了但机器人单元还在时，保留机器人，不擅自拆掉。
+        fn = self.text.split("write_systemd_units() {")[1].split(
+            "\n}\n")[0]
+        self.assertIn('! [ -f "$ENV_FILE" ]', fn)
+
 
 if __name__ == "__main__":
     unittest.main()

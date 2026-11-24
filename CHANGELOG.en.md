@@ -9,6 +9,12 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [1.37.1] - 2026-11-24
+- Fixed a re-run of the one-click install deleting the bot service: the token check in update mode used `.+`, which BRE grep treats as a literal plus sign and never matches, so every re-run concluded "no token" and stopped and removed the bot unit; the check now uses BRE-safe `.`, and the bot is kept when its unit still exists but the env file is lost
+- Fixed the panel still serving old code after a re-run install: the units were applied with `systemctl enable --now`, which does not restart an already-running service, so the old process kept serving old code (that was the /accounts 404); units are now applied with enable + restart
+
+**Verification**: full test suite passes, 2528 tests (3 new in tests/test_install_script.py covering the BRE-safe token check, restart in unit setup, and keeping the bot when the env file is lost). Live verification on the test host: re-running the fixed one-click install restored the bot unit, and after the panel process restarted /accounts works and the certificate page correctly reads the certbot certificate.
+
 ## [1.37.0] - 2026-11-24
 - The certificate page can now read certificates installed by install.sh: the status endpoint looks for a certificate in the order acme.sh → certbot → lego → nginx (the file its ssl_certificate points at), and the response carries a new source field naming where it came from; for the nginx source the domain is derived from the path or the certificate CN. Renewal still only goes through acme.sh; for certbot/lego certificates the page notes they auto-renew and the panel does not renew them
 - The acme.sh scan skips ca.cer (the intermediate certificate) and reads only the leaf certificate; ECC certificate directories named `<domain>_ecc` no longer show the _ecc suffix in the domain, and `?domain=` finds certificates in _ecc directories too

@@ -444,8 +444,14 @@ mbot_services() {
 write_systemd_units() {
     # 更新模式下 prompt_config 没跑，BOT_ENABLED 未设：从 env 文件
     # 看有没有 Token 决定要不要机器人服务。
+    # 注意：grep 默认是 BRE，.+ 里的 + 是字面加号、永远匹配不到，
+    # 所以只用 . 测“值非空”（v1.37.1 修：旧正则把机器人误删了）。
     if [ -z "${BOT_ENABLED:-}" ]; then
-        if grep -q "^MBOT_TELEGRAM_TOKEN=.+" "$ENV_FILE" 2>/dev/null; then
+        if grep -q "^MBOT_TELEGRAM_TOKEN=." "$ENV_FILE" 2>/dev/null; then
+            BOT_ENABLED=1
+        elif [ -f "/etc/systemd/system/${BOT_SERVICE}.service" ] \
+                && ! [ -f "$ENV_FILE" ]; then
+            # env 文件丢了但机器人单元还在：保留机器人，不擅自拆掉。
             BOT_ENABLED=1
         else
             BOT_ENABLED=0
@@ -498,7 +504,11 @@ StandardError=journal
 WantedBy=multi-user.target
 EOF
         systemctl daemon-reload
-        systemctl enable --now "$WEB_SERVICE" "$BOT_SERVICE" \
+        # 必须用 restart 不用 --now：更新模式下服务已在跑，--now 不重启，
+        # 旧进程会一直跑旧代码（v1.37.1 修：面板曾因此停留在旧版）。
+        systemctl enable "$WEB_SERVICE" "$BOT_SERVICE" \
+            || die "设置服务自启失败。"
+        systemctl restart "$WEB_SERVICE" "$BOT_SERVICE" \
             || die "启动服务失败，请看 journalctl -u $WEB_SERVICE / -u $BOT_SERVICE。"
         ok "服务已启动（开机自启）。"
         return 0
@@ -511,8 +521,12 @@ EOF
         info "已停掉旧的机器人服务（本次只装面板）。"
     fi
     systemctl daemon-reload
-    systemctl enable --now "$WEB_SERVICE" \
-        || die "启动面板服务失败，请看 journalctl -u $WEB_SERVICE。"
+    # 必须用 restart 不用 --now：更新模式下服务已在跑，--now 不重启，
+    # 旧进程会一直跑旧代码（v1.37.1 修）。
+    systemctl enable "$WEB_SERVICE" \
+        || die "设置面板服务自启失败。"
+    systemctl restart "$WEB_SERVICE" \
+        || die "启动面板服务失败，请看 journalctl -u $WEB_SERVICE."
     ok "面板服务已启动（开机自启）；未装机器人。"
 }
 

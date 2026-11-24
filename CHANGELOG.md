@@ -9,6 +9,12 @@
 
 ## [Unreleased]
 
+## [1.37.1] - 2026-11-24
+- 修复重跑一键安装误删机器人服务：更新模式下判断 Token 的 grep 用了 BRE 不支持的 `.+`，永远匹配不到，导致每次重跑都判定“没 Token”而停掉并删除机器人单元；改成 BRE 能用的 `.`，且 env 文件丢失但机器人单元还在时保留机器人
+- 修复重跑安装后面板仍跑旧代码：写 systemd 单元后用 `systemctl enable --now`，对已在跑的服务不重启，旧进程一直加载旧代码（/accounts 404 就是这么来的）；改成 enable + restart，更新后服务真正重启
+
+**验证**：全量测试 2528 个全过（新增 tests/test_install_script.py 3 个，覆盖 Token 判断正则的 BRE 安全、单元写入用 restart、env 丢失时保留机器人）。.101 真机验证：重跑修复版一键安装，机器人单元恢复，面板进程重启后 /accounts 正常、证书页正确读出 certbot 证书。
+
 ## [1.37.0] - 2026-11-24
 - 证书管理页现在能读 install.sh 装的证书：状态接口按 acme.sh → certbot → lego → nginx（ssl_certificate 指向的文件）的顺序找证书，响应里新增 source 字段标明来源；nginx 来源的域名从路径或证书 CN 推导。续期仍只走 acme.sh，certbot/lego 来源的证书页面会提示由其自动续期、面板不做续期
 - acme.sh 扫描跳过 ca.cer（中间证书），只读叶子证书；ECC 证书目录 `<domain>_ecc` 的域名不再带 _ecc 后缀显示，`?domain=` 也能找到 _ecc 目录里的证书
