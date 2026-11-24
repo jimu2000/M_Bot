@@ -9,6 +9,11 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [1.40.1] - 2026-11-24
+- Fixed the missing "grab started" confirmation after tapping "Start grabbing": when a root password was set, the whole reply was parsed as Markdown, and the underscore in the instance name (AMD_2026-11-25) was treated as an italic marker, so Telegram rejected the message (Can't parse entities); the dynamic instance name is now escaped with escape_markdown before being put into the message, while the name in the task list stays unescaped
+
+**Verification**: full test suite passes, 2576 tests (1 new regression test: test_start_reply_escapes_underscore_in_name in tests/test_boot_form_handlers.py).
+
 ## [1.40.0] - 2026-11-24
 - Quick boot presets (menu 17) now support editing and deleting: each preset row has three buttons — 🚀 boot / ✏️ edit / 🗑️ delete; editing loads the preset back into the boot form (new `form_from_preset` in tgbot/boot_form.py, inferring cpu/os from shape and image for presets saved by older versions) and saving updates the preset in place, keeping its name; deleting asks for confirmation first, then refreshes the list with a deleted notice
 - Fixed the boot-success notification showing "fetching" for the IP forever: it used to retry only 3 times, 3 seconds apart (giving up in under 10 seconds), while OCI often takes 30+ seconds to assign a public IP; it now waits up to 60 seconds (new `wait_for_public_ip` in oci/network.py), and if the IP still is not there, the notification goes out anyway and a background follow-up thread keeps waiting (new `start_ip_followup` in tgbot/notify.py, up to 10 minutes), sending a Telegram message as soon as the IP appears; bot and web grab flows changed together

@@ -59,6 +59,7 @@ from datetime import datetime, timedelta, timezone
 from io import BytesIO
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.helpers import escape_markdown
 
 from tgbot import config as bot_config
 from tgbot import handlers_client  # 菜单 23/24（内存占用/清除）由该模块实现
@@ -2072,7 +2073,13 @@ async def boot_go_callback(update, context):
     thread.start()
     # 启动后立即清除 pending_boot（里面含带密码的 user-data，不留内存）。
     context.user_data.pop("pending_boot", None)
-    text = (f"🚀 抢机已启动：{grab_label}。"
+    # 有 root 密码时整条消息走 Markdown 解析（密码放代码段）：实例名
+    # 里的下划线（AMD_2026-11-25）会被当成斜体标记、整条消息发送失败
+    # （2026-11-24 真实报错 Can't parse entities: can't find end of the
+    # entity），先转义动态部分；无密码时走纯文本，不转义。
+    label_text = (escape_markdown(grab_label, version=1)
+                  if root_password else grab_label)
+    text = (f"🚀 抢机已启动：{label_text}。"
             "用菜单 21（查看运行中的任务）查看进度。")
     parse_mode = None
     if root_password:

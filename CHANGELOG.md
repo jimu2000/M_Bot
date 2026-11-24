@@ -9,6 +9,11 @@
 
 ## [Unreleased]
 
+## [1.40.1] - 2026-11-24
+- 修复点了"开始抢机"后收不到"抢机已启动"确认的问题：有 root 密码时启动回复整条走 Markdown 解析，实例名里的下划线（AMD_2026-11-25）被当成斜体标记、Telegram 拒绝发送（Can't parse entities）；动态的实例名现在先经 escape_markdown 转义再拼进消息，任务列表里的名字保持原样不转义
+
+**验证**：全量测试 2576 个全过（新增 1 个回归测试 tests/test_boot_form_handlers.py 的 test_start_reply_escapes_underscore_in_name）。
+
 ## [1.40.0] - 2026-11-24
 - 快捷开机（菜单 17）新增编辑与删除：每条配置一行三个按钮，🚀 开机 / ✏️ 编辑 / 🗑️ 删除；编辑把配置反向填进开机表单（新增 tgbot/boot_form.py 的 form_from_preset，旧版预设缺 cpu/os 时按形状与镜像反推），保存后原地更新、名字保持原样；删除先确认再删，删完刷新列表并显示已删除提示
 - 修复抢机成功后通知里 IP 一直是"获取中"：原来只重试 3 次、每次隔 3 秒（不到 10 秒就放弃），OCI 分配公网 IP 经常要 30 秒以上；改成先等 60 秒（新增 oci/network.py 的 wait_for_public_ip），60 秒还没 IP 就先发通知、后台跟进线程继续等（新增 tgbot/notify.py 的 start_ip_followup，最长 10 分钟），IP 一出来补发一条 Telegram 消息；机器人与网页抢机同步改
