@@ -2,7 +2,7 @@
 """配额路由：免费额度汇总 / 能否再开一台 / A1 配置体检 / A1 配额。
 
   - GET /api/quota：A1 / E2 / 启动盘三项免费额度汇总。
-  - GET /api/quota/a1：A1 配额（R-Bot 形状，cap 用免费上限 4 核/24GB）。
+  - GET /api/quota/a1：A1 配额（面板形状，cap 用免费上限 4 核/24GB）。
   - GET /api/quota/a1-health：A1 配置体检（超限检查 + 降配建议）。
   - POST /api/quota/can-launch：body {shape, ocpus, memory_gb}，
     判断能不能再开一台指定规格的实例。
@@ -58,11 +58,11 @@ def quota_summary(profile: str = Query(default=None),
 
 
 def format_a1_quota(usage):
-    """把 get_a1_usage 的结果转成 R-Bot 面板形状（阶段 5 工作包 E）。
+    """把 get_a1_usage 的结果转成 面板形状（阶段 5 工作包 E）。
 
     {capOcpu, capMem, usedOcpu, usedMem, over, overOcpu, overMem,
      instances: [{id, name, ocpus, memoryInGBs, state}]}。
-    cap 用免费上限（4 核/24GB），不要学 R-Bot 把 cap 显示成当前用量；
+    cap 用免费上限（4 核/24GB），不要把 cap 显示成当前用量；
     over 为 True 当且仅当 OCPU 或内存任一项超限；overOcpu/overMem
     是超出的量（未超限时为 0）。instances 只含 RUNNING 的 A1 实例
     （get_a1_usage 本来就只统计 RUNNING），state 恒为 "RUNNING"。
@@ -95,7 +95,7 @@ def format_a1_quota(usage):
 def a1_quota(profile: str = Query(default=None),
              region: str = Query(default=None),
              username: str = Depends(get_current_user)):
-    """A1 配额（R-Bot 形状：cap 为免费上限 4 核/24GB）。"""
+    """A1 配额（面板形状：cap 为免费上限 4 核/24GB）。"""
     try:
         cli, compartment_id = resolve_profile(profile, region)
         usage = get_a1_usage(cli, compartment_id)

@@ -56,7 +56,7 @@ class DeployScriptTest(unittest.TestCase):
         """模板里不含真实 IP / 密码 / Token（只有占位符）。"""
         with open(DEPLOY_SH, encoding="utf-8") as f:
             content = f.read()
-        self.assertNotIn("RBOT_WEB_PASSWORD_HASH='", content)
+        self.assertNotIn("MBOT_WEB_PASSWORD_HASH='", content)
         self.assertIn("<你的账号>", content)
         self.assertIn("<面板服务器 IP>", content)
 

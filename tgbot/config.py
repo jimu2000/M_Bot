@@ -2,8 +2,8 @@
 """Telegram 机器人配置。
 
 配置区在文件顶端，方便修改。真实 Token / OCID 一律不写进代码：
-  - 机器人 Token 从环境变量 RBOT_TELEGRAM_TOKEN 读。
-  - 允许操作的用户 ID 从环境变量 RBOT_ALLOWED_USERS 读（逗号分隔的数字）。
+  - 机器人 Token 从环境变量 MBOT_TELEGRAM_TOKEN 读。
+  - 允许操作的用户 ID 从环境变量 MBOT_ALLOWED_USERS 读（逗号分隔的数字）。
   - OCI 的 profile / region / compartment 在下面 PROFILES 里配，
     真实 OCID 用占位符，部署时改成真实值。
 
@@ -20,13 +20,13 @@ import sys
 # ================= 配置区（改这里） =================
 # Telegram 机器人 Token：从环境变量读，不要硬编码。
 # 获取方式：Telegram 上找 @BotFather，/newbot 创建机器人后会给 Token。
-TELEGRAM_BOT_TOKEN = os.environ.get("RBOT_TELEGRAM_TOKEN", "")
+TELEGRAM_BOT_TOKEN = os.environ.get("MBOT_TELEGRAM_TOKEN", "")
 
 # 允许使用机器人的 Telegram 用户 ID（白名单），逗号分隔。
 # 查自己的 ID：Telegram 上找 @userinfobot，发任意消息即返回你的 ID。
 # 为空时不允许任何人操作（机器人启动时会拒绝启动并提示）。
 ALLOWED_USER_IDS = {
-    int(x) for x in os.environ.get("RBOT_ALLOWED_USERS", "").split(",")
+    int(x) for x in os.environ.get("MBOT_ALLOWED_USERS", "").split(",")
     if x.strip().isdigit()
 }
 
@@ -35,15 +35,15 @@ DEFAULT_PROFILE = "DEFAULT"
 # 默认区域。
 DEFAULT_REGION = "ap-singapore-1"
 # 默认 compartment OCID（占位符；根 compartment 即 tenancy OCID）。
-# 部署时用环境变量 RBOT_COMPARTMENT_DEFAULT 填真实值。
+# 部署时用环境变量 MBOT_COMPARTMENT_DEFAULT 填真实值。
 DEFAULT_COMPARTMENT_ID = os.environ.get(
-    "RBOT_COMPARTMENT_DEFAULT", "ocid1.tenancy.oc1..xxxxxxxx")
+    "MBOT_COMPARTMENT_DEFAULT", "ocid1.tenancy.oc1..xxxxxxxx")
 
 # 多账号配置：profile 名 -> {region, compartment_id}。
 # 每个账号在 ~/.oci/config 里对应一个 profile。
 # 部署时用环境变量填真实 compartment OCID：
-#   RBOT_COMPARTMENT_DEFAULT / RBOT_COMPARTMENT_ACCOUNT2 /
-#   RBOT_COMPARTMENT_ACCOUNT3（根 compartment 即 tenancy OCID）。
+#   MBOT_COMPARTMENT_DEFAULT / MBOT_COMPARTMENT_ACCOUNT2 /
+#   MBOT_COMPARTMENT_ACCOUNT3（根 compartment 即 tenancy OCID）。
 # 未设环境变量的账号不加入 PROFILES。
 def _build_profiles():
     profiles = {
@@ -52,13 +52,13 @@ def _build_profiles():
             "compartment_id": DEFAULT_COMPARTMENT_ID,
         },
     }
-    account2 = os.environ.get("RBOT_COMPARTMENT_ACCOUNT2")
+    account2 = os.environ.get("MBOT_COMPARTMENT_ACCOUNT2")
     if account2:
         profiles["ACCOUNT2"] = {
             "region": "us-sanjose-1",
             "compartment_id": account2,
         }
-    account3 = os.environ.get("RBOT_COMPARTMENT_ACCOUNT3")
+    account3 = os.environ.get("MBOT_COMPARTMENT_ACCOUNT3")
     if account3:
         profiles["ACCOUNT3"] = {
             "region": "us-chicago-1",
@@ -119,9 +119,9 @@ LOG_FILE = os.path.expanduser("~/workspace/rbot-clone/telegram-bot.log")
 PRESETS_FILE = os.path.expanduser("~/workspace/rbot-clone/tgbot/presets.json")
 # 数据目录：监控类配置（流量守护 / 停机保活 / SSL 监控）存这里
 # （traffic_guard.json / keepalive.json / ssl_watch.json 等）。
-# 部署时用 RBOT_TGBOT_DATA_DIR 指到部署路径（如 /opt/rbot-clone/tgbot/data）。
+# 部署时用 MBOT_TGBOT_DATA_DIR 指到部署路径（如 /opt/rbot-clone/tgbot/data）。
 DATA_DIR = os.path.expanduser(os.environ.get(
-    "RBOT_TGBOT_DATA_DIR", "~/workspace/rbot-clone/tgbot/data"))
+    "MBOT_TGBOT_DATA_DIR", "~/workspace/rbot-clone/tgbot/data"))
 # 区域开机配置（每个账号每个区域的可用域 / 子网 / 镜像 OCID）：JSON 文件，
 # 部署时填真实值，不进仓库。格式：
 #   {"DEFAULT": {"ap-seoul-1": {"availability_domain": "...",
@@ -132,13 +132,13 @@ DATA_DIR = os.path.expanduser(os.environ.get(
 # 子网 OCID 不同，不能只按区域查。某 (profile, region) 未配时开机回退
 # 到环境变量的默认部署值（主区）。
 REGION_PLANS_FILE = os.path.expanduser(os.environ.get(
-    "RBOT_REGION_PLANS_FILE", os.path.join(DATA_DIR, "region_plans.json")))
+    "MBOT_REGION_PLANS_FILE", os.path.join(DATA_DIR, "region_plans.json")))
 # 流量守护的 SSH 私钥：阻断 / 限速 / vnstat 查流量要 SSH 到实例上执行，
 # 用这把专用密钥（公钥需加到各实例的 authorized_keys）。未配置时
 # 流量守护只能“仅通知”，阻断/限速/解除按钮会提示未配置。
-# 部署示例：RBOT_GUARD_SSH_KEY=/root/.ssh/rbot_guard
+# 部署示例：MBOT_GUARD_SSH_KEY=/root/.ssh/rbot_guard
 GUARD_SSH_KEY = os.path.expanduser(os.environ.get(
-    "RBOT_GUARD_SSH_KEY", "")) if os.environ.get("RBOT_GUARD_SSH_KEY") else ""
+    "MBOT_GUARD_SSH_KEY", "")) if os.environ.get("MBOT_GUARD_SSH_KEY") else ""
 # 流量守护 SSH 端口与用户名（实例标准配置：root + 14422）。
 GUARD_SSH_PORT = 14422
 GUARD_SSH_USER = "root"
@@ -172,7 +172,7 @@ def get_token():
     """返回机器人 Token；未配置时抛 RuntimeError（启动时检查）。"""
     if not TELEGRAM_BOT_TOKEN:
         raise RuntimeError(
-            "未配置 Telegram 机器人 Token：请设置环境变量 RBOT_TELEGRAM_TOKEN "
+            "未配置 Telegram 机器人 Token：请设置环境变量 MBOT_TELEGRAM_TOKEN "
             "（找 @BotFather 创建机器人后获取）")
     return TELEGRAM_BOT_TOKEN
 

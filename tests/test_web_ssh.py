@@ -295,7 +295,7 @@ class _AuthPatchedTestCase(unittest.TestCase):
         self.client = TestClient(app, raise_server_exceptions=False)
 
     def _auth_cookies(self):
-        return {"rbot_session": "good-token"}
+        return {"mbot_session": "good-token"}
 
 
 class TestREST(_AuthPatchedTestCase):

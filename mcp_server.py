@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MCP 服务器：把 rbot-clone 的 OCI / Cloudflare 只读功能暴露给 MCP 客户端。
+"""MCP 服务器：把 M_Bot 的 OCI / Cloudflare 只读功能暴露给 MCP 客户端。
 
 实现方式：标准库最小 JSON-RPC over stdio，不依赖 MCP Python SDK——
 系统 Python 被 PEP 668 锁定，`pip install mcp`（含 --user）装不上；
@@ -33,19 +33,19 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # ================= 配置区（改这里） =================
 # MCP 服务器名与版本（initialize 返回给客户端）。
-SERVER_NAME = "rbot-clone"
+SERVER_NAME = "mbot"
 SERVER_VERSION = "0.1.0"
 # MCP 协议版本（客户端协商用；2024-11-05 是稳定的公开版本）。
 PROTOCOL_VERSION = "2024-11-05"
 # 默认 OCI profile / region：优先读环境变量，默认值只是示例，可改。
-# RBOT_OCI_PROFILE：~/.oci/config 里的 profile 名，如 DEFAULT / ACCOUNT2。
-DEFAULT_PROFILE = os.environ.get("RBOT_OCI_PROFILE", "DEFAULT")
-# RBOT_OCI_REGION：如 ap-singapore-1 / us-sanjose-1 / us-chicago-1。
-DEFAULT_REGION = os.environ.get("RBOT_OCI_REGION", "ap-singapore-1")
+# MBOT_OCI_PROFILE：~/.oci/config 里的 profile 名，如 DEFAULT / ACCOUNT2。
+DEFAULT_PROFILE = os.environ.get("MBOT_OCI_PROFILE", "DEFAULT")
+# MBOT_OCI_REGION：如 ap-singapore-1 / us-sanjose-1 / us-chicago-1。
+DEFAULT_REGION = os.environ.get("MBOT_OCI_REGION", "ap-singapore-1")
 # 默认 compartment OCID（根 compartment 即 tenancy OCID，占位符）。
-# 真实值用 RBOT_OCI_COMPARTMENT_ID 环境变量或工具参数 compartment_id 传入。
+# 真实值用 MBOT_OCI_COMPARTMENT_ID 环境变量或工具参数 compartment_id 传入。
 DEFAULT_COMPARTMENT_ID = os.environ.get(
-    "RBOT_OCI_COMPARTMENT_ID", "ocid1.tenancy.oc1..xxxxxxxx")
+    "MBOT_OCI_COMPARTMENT_ID", "ocid1.tenancy.oc1..xxxxxxxx")
 # =====================================================
 
 from oci import instance as oci_instance

@@ -14,7 +14,7 @@ DATA_DIR/inspect_reports/{计划id}-{时间戳}.json，摘要经 Telegram
 通知白名单用户（复用 web.telegram_notify）。
 
 定时触发用 APScheduler（与 web/tasks.py 的抢机计划调度器同款）：
-面板启动时默认不启动调度器，设环境变量 RBOT_ENABLE_INSPECT_SCHEDULER=1
+面板启动时默认不启动调度器，设环境变量 MBOT_ENABLE_INSPECT_SCHEDULER=1
 才启动（见 web/app.py 的 lifespan）。
 """
 
@@ -47,10 +47,10 @@ except ImportError:  # pragma: no cover - 依赖缺失时的降级分支
 router = APIRouter()
 
 # ================= 配置区（改这里） =================
-# 巡检调度器开关：设 RBOT_ENABLE_INSPECT_SCHEDULER=1 才在面板启动时
+# 巡检调度器开关：设 MBOT_ENABLE_INSPECT_SCHEDULER=1 才在面板启动时
 # 启动 APScheduler。默认关闭（测试与不需要定时巡检的部署不受影响）。
 ENABLE_INSPECT_SCHEDULER = os.environ.get(
-    "RBOT_ENABLE_INSPECT_SCHEDULER", "") == "1"
+    "MBOT_ENABLE_INSPECT_SCHEDULER", "") == "1"
 # 调度器每隔这么多秒重新从文件同步一次计划。
 INSPECT_SYNC_INTERVAL_SECONDS = 60
 # 报告列表最多返回这么多份（按生成时间倒序）。

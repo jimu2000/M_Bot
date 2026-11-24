@@ -648,14 +648,14 @@ class TestMemhogEnvOverrides(unittest.TestCase):
 
     def _base_env(self):
         env = dict(os.environ)
-        env.pop("RBOT_MEMHOG_SSH_KEY", None)
-        env.pop("RBOT_MEMHOG_SSH_PORT", None)
+        env.pop("MBOT_MEMHOG_SSH_KEY", None)
+        env.pop("MBOT_MEMHOG_SSH_PORT", None)
         return env
 
     def test_env_overrides(self):
         env = self._base_env()
-        env["RBOT_MEMHOG_SSH_KEY"] = "/opt/rbot-clone/web/data/bot_ssh_key"
-        env["RBOT_MEMHOG_SSH_PORT"] = "14422"
+        env["MBOT_MEMHOG_SSH_KEY"] = "/opt/rbot-clone/web/data/bot_ssh_key"
+        env["MBOT_MEMHOG_SSH_PORT"] = "14422"
         key, port = self._read_constants(env)
         self.assertEqual(key, "/opt/rbot-clone/web/data/bot_ssh_key")
         self.assertEqual(port, 14422)
@@ -667,7 +667,7 @@ class TestMemhogEnvOverrides(unittest.TestCase):
 
     def test_invalid_port_env_falls_back_to_22(self):
         env = self._base_env()
-        env["RBOT_MEMHOG_SSH_PORT"] = "not-a-port"
+        env["MBOT_MEMHOG_SSH_PORT"] = "not-a-port"
         _key, port = self._read_constants(env)
         self.assertEqual(port, 22)
 

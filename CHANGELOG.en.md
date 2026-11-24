@@ -9,6 +9,11 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [1.17.2] - 2026-11-24
+
+### Fixed
+- Branding sweep (user feedback, 2026-11-24: no R-Bot clone wording in the repo): removed all "R-Bot / clone" wording across the repo — "R-Bot style/shape" in comments and docstrings became panel shape / M_Bot style, the README disclaimer was rewritten (no longer names the original tool), the deploy.sh header and systemd unit descriptions became M_Bot; internal identifiers renamed too: env var prefix RBOT_ → MBOT_ (the deploy host's env file was updated in sync, old names no longer read), JS namespace window.RBot → window.MBot, session cookie rbot_session → mbot_session, MCP server name and default SMTP description became mbot, temp-file and localStorage key prefixes became mbot. The deploy-side service names and paths (rbot-clone-web/bot, /opt/rbot-clone, /root/.rbot-clone.env) keep the old names — renaming them means migrating the deployment, scheduled separately
+
 ## [1.17.1] - 2026-11-24
 
 ### Fixed

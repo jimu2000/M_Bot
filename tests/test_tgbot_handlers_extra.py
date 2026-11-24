@@ -2293,7 +2293,7 @@ class TestDisplayNames(HandlersExtraTestCase):
     def test_fmt_user_list_header_only(self):
         """用户列表文字只剩标题 + 数量，不再逐条列邮箱（与实例列表同款）。"""
         users = [
-            {"name": "api-user", "email": "a@example.com",
+            {"name": "mbot-test", "email": "a@example.com",
              "lifecycle-state": "ACTIVE"},
             {"name": "api_user", "email": "api@example.com",
              "lifecycle-state": "ACTIVE"},
@@ -2304,15 +2304,15 @@ class TestDisplayNames(HandlersExtraTestCase):
         self.assertIn("云账户（3 个用户）", text)
         self.assertIn("点下面按钮查看详情或操作", text)
         self.assertNotIn("a@example.com", text)
-        self.assertNotIn("api-user", text)
+        self.assertNotIn("mbot-test", text)
         self.assertEqual(he.fmt_user_list([]), "该租户下没有 IAM 用户。")
 
     def test_user_button_text(self):
         """用户按钮：ACTIVE 只显示名；非 ACTIVE 后缀中文状态词。"""
         self.assertEqual(
-            he._user_button_text({"name": "api-user",
+            he._user_button_text({"name": "mbot-test",
                                   "lifecycle-state": "ACTIVE"}),
-            "👤 api-user")
+            "👤 mbot-test")
         self.assertEqual(
             he._user_button_text({"name": "old-user",
                                   "lifecycle-state": "INACTIVE"}),
@@ -2324,7 +2324,7 @@ class TestDisplayNames(HandlersExtraTestCase):
     async def test_handle_users_buttons_are_the_only_list(self):
         """菜单 8：文字是标题，按钮是唯一的列表（邮箱在详情页）。"""
         users = [
-            {"id": "ocid1.user.oc1..aaa", "name": "api-user",
+            {"id": "ocid1.user.oc1..aaa", "name": "mbot-test",
              "email": "a@example.com", "lifecycle-state": "ACTIVE"},
             {"id": "ocid1.user.oc1..bbb", "name": "old-user",
              "email": "b@example.com", "lifecycle-state": "INACTIVE"},
@@ -2336,7 +2336,7 @@ class TestDisplayNames(HandlersExtraTestCase):
         self.assertIn("云账户（2 个用户）", reply_text_of(update))
         self.assertNotIn("a@example.com", reply_text_of(update))
         buttons = reply_button_texts_of(update)
-        self.assertIn("👤 api-user", buttons)
+        self.assertIn("👤 mbot-test", buttons)
         self.assertIn("👤 old-user · 已停用", buttons)
 
     def test_profile_display_name(self):

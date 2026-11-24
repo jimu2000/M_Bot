@@ -2,13 +2,13 @@
 """设置路由（阶段 5 工作包 E）：OCI 代理设置。
 
   - GET /api/settings/oci-proxy：查看当前生效的代理
-    {proxy, source}，source 为 env（环境变量 RBOT_OCI_PROXY）/
+    {proxy, source}，source 为 env（环境变量 MBOT_OCI_PROXY）/
     file（oci_proxy.json）/ none（未配置）。
   - POST /api/settings/oci-proxy：设置代理 {proxy}，proxy 为空字符串
     表示清除；写入 DATA_DIR/oci_proxy.json，立即生效（OCI CLI 调用
     时每次重新解析，不用重启面板）。
 
-注意：环境变量 RBOT_OCI_PROXY 的优先级高于配置文件；环境变量
+注意：环境变量 MBOT_OCI_PROXY 的优先级高于配置文件；环境变量
 已设置时，改配置文件不会改变实际生效的代理（响应里明确提示）。
 代理只影响 OCI CLI 子进程的环境变量，不改全局环境。
 """
@@ -43,7 +43,7 @@ def get_proxy_status():
     source：env（环境变量生效）/ file（配置文件生效）/ none（未配置）。
     环境变量优先于配置文件（见 oci.client.get_oci_proxy）。
     """
-    env_proxy = (os.environ.get("RBOT_OCI_PROXY") or "").strip()
+    env_proxy = (os.environ.get("MBOT_OCI_PROXY") or "").strip()
     if env_proxy and env_proxy.startswith(PROXY_SCHEMES):
         return {"proxy": env_proxy, "source": "env"}
     proxy = get_oci_proxy(proxy_file=_proxy_file())
@@ -84,7 +84,7 @@ def set_oci_proxy_settings(body: OciProxyBody,
     status = get_proxy_status()
     message = "代理已更新，立即生效"
     if status["source"] == "env":
-        message += ("（注意：环境变量 RBOT_OCI_PROXY 已设置且优先级更高，"
+        message += ("（注意：环境变量 MBOT_OCI_PROXY 已设置且优先级更高，"
                     "当前实际生效的仍是环境变量里的代理）")
     return {"ok": True, "proxy": proxy or None, "source": status["source"],
             "effectiveProxy": status["proxy"], "message": message}

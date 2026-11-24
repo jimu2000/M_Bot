@@ -385,7 +385,7 @@ class TestJsonRpc(unittest.TestCase):
         self.assertEqual(response["id"], 1)
         self.assertEqual(response["result"]["protocolVersion"],
                          mcp_server.PROTOCOL_VERSION)
-        self.assertEqual(response["result"]["serverInfo"]["name"], "rbot-clone")
+        self.assertEqual(response["result"]["serverInfo"]["name"], "mbot")
         self.assertEqual(response["result"]["serverInfo"]["version"],
                          mcp_server.SERVER_VERSION)
         self.assertIn("tools", response["result"]["capabilities"])
@@ -488,7 +488,7 @@ class TestServeStdio(unittest.TestCase):
         self.assertEqual(len(responses), 3)
         self.assertEqual([r["id"] for r in responses], [1, 2, 3])
         self.assertEqual(responses[0]["result"]["serverInfo"]["name"],
-                         "rbot-clone")
+                         "mbot")
         self.assertEqual(len(responses[1]["result"]["tools"]), 6)
         payload = json.loads(responses[2]["result"]["content"][0]["text"])
         self.assertTrue(payload["ok"])

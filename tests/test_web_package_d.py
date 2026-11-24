@@ -69,7 +69,7 @@ FAKE_CREDENTIAL = {
     "id": "ocid1.smtpcredential.oc1..testxxxx",
     "username": "ocid1.user.oc1..testxxxx",
     "password": "fake-smtp-password-placeholder",
-    "description": "rbot-clone",
+    "description": "mbot",
 }
 
 
@@ -311,7 +311,7 @@ class TestEmailApi(PackageDTestCase):
                              json={"user_id": FAKE_USER})
         self.assertEqual(r.status_code, 201)
         mock_create.assert_called_once_with(ANY, FAKE_USER,
-                                            description="rbot-clone")
+                                            description="mbot")
 
     def test_unauthenticated_401(self):
         r = self.anon.get("/api/email/senders")
@@ -421,8 +421,8 @@ class TestChangePassword(PackageDTestCase):
     def test_success_updates_env_file(self):
         # env 文件里先有一行会话密钥，改密码后必须保留。
         with open(self._env_file, "w", encoding="utf-8") as f:
-            f.write("RBOT_WEB_SECRET=old-secret-value\n")
-            f.write(f"RBOT_WEB_PASSWORD_HASH='{hash_password(TEST_PASSWORD)}'\n")
+            f.write("MBOT_WEB_SECRET=old-secret-value\n")
+            f.write(f"MBOT_WEB_PASSWORD_HASH='{hash_password(TEST_PASSWORD)}'\n")
         r = self.client.post("/api/auth/change-password",
                              json={"old_password": TEST_PASSWORD,
                                    "new_password": NEW_PASSWORD})
@@ -432,10 +432,10 @@ class TestChangePassword(PackageDTestCase):
         self.assertIn("重启 Web 面板服务后生效", body["message"])
         # env 文件里的哈希已换成新密码的哈希，会话密钥行保留。
         text = self._env_text()
-        self.assertIn("RBOT_WEB_SECRET=old-secret-value", text)
-        self.assertEqual(text.count("RBOT_WEB_PASSWORD_HASH="), 1)
+        self.assertIn("MBOT_WEB_SECRET=old-secret-value", text)
+        self.assertEqual(text.count("MBOT_WEB_PASSWORD_HASH="), 1)
         for line in text.splitlines():
-            if line.startswith("RBOT_WEB_PASSWORD_HASH="):
+            if line.startswith("MBOT_WEB_PASSWORD_HASH="):
                 stored = line.split("=", 1)[1].strip("'\"")
                 self.assertTrue(verify_password(NEW_PASSWORD, stored))
                 self.assertFalse(verify_password(TEST_PASSWORD, stored))
@@ -450,7 +450,7 @@ class TestChangePassword(PackageDTestCase):
                                    "new_password": NEW_PASSWORD})
         self.assertEqual(r.status_code, 200)
         text = self._env_text()
-        self.assertEqual(text.count("RBOT_WEB_PASSWORD_HASH="), 1)
+        self.assertEqual(text.count("MBOT_WEB_PASSWORD_HASH="), 1)
 
     def test_wrong_old_password_401(self):
         r = self.client.post("/api/auth/change-password",

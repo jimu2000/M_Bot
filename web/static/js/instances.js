@@ -1,10 +1,10 @@
-/* 实例管理逻辑：R-Bot 风格卡片布局（每台实例一张卡片）、启动/停止/重启/
+/* 实例管理逻辑：M_Bot 风格卡片布局（每台实例一张卡片）、启动/停止/重启/
    终止（含保留启动盘）、批量操作、改名、重装、串行控制台、IP 管理弹窗
    （换 IP / 附加 IPv6 / 删除 IPv6）、启动盘弹窗（详情 + 扩容）、
    升降配、尝试修复、实例详情弹窗 */
 (function () {
   "use strict";
-  var RBot = window.RBot;
+  var MBot = window.MBot;
   var instances = [];
   var volumesByInstance = {}; // 启动盘：实例 id -> /api/volumes 条目（卡片显示用）
   var selected = {}; // 选中实例的 id 集合（对象当集合用）
@@ -31,10 +31,10 @@
     terminate: "批量删除",
   };
 
-  // 字段归一化：后端返回 R-Bot 形状（camelCase）
+  // 字段归一化：后端返回 面板形状（camelCase）
   // {id, name, publicIp, shape, state, ocpus, memoryInGBs, region, timeCreated}，
   // 过渡期同时双写旧字段，这里优先认新字段，旧字段作兜底。
-  // 注意：列表只含 RUNNING 实例（与 R-Bot 一致）。
+  // 注意：列表只含 RUNNING 实例。
   function norm(inst) {
     return {
       id: inst.id,
@@ -56,12 +56,12 @@
     if (s === "RUNNING") return '<span class="badge badge-green">RUNNING</span>';
     if (s === "STOPPED") return '<span class="badge badge-gray">STOPPED</span>';
     if (s === "TERMINATED") return '<span class="badge badge-red">TERMINATED</span>';
-    return '<span class="badge badge-amber">' + RBot.escapeHtml(state || "—") + "</span>";
+    return '<span class="badge badge-amber">' + MBot.escapeHtml(state || "—") + "</span>";
   }
 
   // 启动盘格子：大小 · VPU + 状态徽标 + 已附加徽标；无数据时显示 "—"
   function bootVolumeCell(inst) {
-    var esc = RBot.escapeHtml;
+    var esc = MBot.escapeHtml;
     var vol = volumesByInstance[String(inst.id)];
     if (!vol) return "—";
     var size = vol.sizeInGBs != null ? vol.sizeInGBs + " GB" : "—";
@@ -116,7 +116,7 @@
       return;
     }
     grid.innerHTML = instances.map(function (raw) {
-      var esc = RBot.escapeHtml;
+      var esc = MBot.escapeHtml;
       var inst = norm(raw);
       var state = (inst.state || "").toUpperCase();
       var running = state === "RUNNING";
@@ -128,8 +128,8 @@
         : "—";
       var spec = (inst.ocpus != null && inst.memory_gb != null)
         ? inst.ocpus + " OCPU / " + inst.memory_gb + " GB" : "—";
-      var created = inst.created ? esc(RBot.formatTime(inst.created)) : "—";
-      // 按钮矩阵（R-Bot 顺序）：关机/启动、重启、串行控制台、重命名、
+      var created = inst.created ? esc(MBot.formatTime(inst.created)) : "—";
+      // 按钮矩阵（固定顺序）：关机/启动、重启、串行控制台、重命名、
       // 升降级、修复、重置镜像、IP 管理、启动盘、删除、删除（保留启动盘）。
       // 启停/重启按状态显示；升降级只对 A1.Flex 显示。
       var actions = "";
@@ -186,14 +186,14 @@
       render();
     }
     try {
-      var url = RBot.withProfile("/api/instances", currentProfile, currentRegion);
+      var url = MBot.withProfile("/api/instances", currentProfile, currentRegion);
       if (force) url += (url.indexOf("?") === -1 ? "?" : "&") + "refresh=1";
-      var data = await RBot.cachedApi("inst:" + (currentProfile || "DEFAULT") + ":" + (currentRegion || ""), url, !!force);
+      var data = await MBot.cachedApi("inst:" + (currentProfile || "DEFAULT") + ":" + (currentRegion || ""), url, !!force);
       if (profileAtStart !== currentProfile || regionAtStart !== currentRegion) return;
       instances = data.instances || [];
       try {
-        var volUrl = RBot.withProfile("/api/volumes", currentProfile, currentRegion);
-        var volData = await RBot.cachedApi("vol:list:" + (currentProfile || "DEFAULT") + ":" + (currentRegion || ""), volUrl, !!force);
+        var volUrl = MBot.withProfile("/api/volumes", currentProfile, currentRegion);
+        var volData = await MBot.cachedApi("vol:list:" + (currentProfile || "DEFAULT") + ":" + (currentRegion || ""), volUrl, !!force);
         if (profileAtStart !== currentProfile || regionAtStart !== currentRegion) return;
         volumesByInstance = {};
         (volData.volumes || []).forEach(function (v) {
@@ -218,7 +218,7 @@
       loading = false;
       document.getElementById("instance-grid").innerHTML =
         '<p class="instance-error">加载失败：' +
-        RBot.escapeHtml(err.message) + "</p>";
+        MBot.escapeHtml(err.message) + "</p>";
       document.getElementById("instance-empty").hidden = true;
     }
   }
@@ -226,19 +226,19 @@
   // 实例操作：start / stop / restart，成功后清前端缓存并刷新列表
   async function instanceAction(id, action, label) {
     try {
-      await RBot.api(RBot.withProfile("/api/instances/" + encodeURIComponent(id) + "/" + action, currentProfile, currentRegion), { method: "POST" });
-      RBot.toast(label + "指令已发送", "success");
-      RBot.cacheClear("inst:");
+      await MBot.api(MBot.withProfile("/api/instances/" + encodeURIComponent(id) + "/" + action, currentProfile, currentRegion), { method: "POST" });
+      MBot.toast(label + "指令已发送", "success");
+      MBot.cacheClear("inst:");
       await loadInstances();
     } catch (err) {
-      RBot.toast(label + "失败：" + err.message, "error");
+      MBot.toast(label + "失败：" + err.message, "error");
     }
   }
 
   // 实例详情弹窗：点实例名打开，显示形状/规格/内外网 IP/IPv6/可用域/启动盘/创建时间
   async function showDetail(instId) {
     try {
-      var res = await RBot.api(RBot.withProfile("/api/instances/" + encodeURIComponent(instId), currentProfile, currentRegion));
+      var res = await MBot.api(MBot.withProfile("/api/instances/" + encodeURIComponent(instId), currentProfile, currentRegion));
       var inst = res.instance || {};
       var cfg = inst["shape-config"] || {};
       document.getElementById("detail-name").textContent = inst["display-name"] || "—";
@@ -261,7 +261,7 @@
       }
       document.getElementById("detail-boot-volume").textContent = bootText;
       document.getElementById("detail-created").textContent =
-        inst["time-created"] ? RBot.formatTime(inst["time-created"]) : "—";
+        inst["time-created"] ? MBot.formatTime(inst["time-created"]) : "—";
       detailTarget = {
         id: instId,
         name: inst["display-name"] || "—",
@@ -270,9 +270,9 @@
       // 引导卷恢复只对运行中 / 已停止的实例可用
       document.getElementById("detail-bootswap-btn").hidden =
         !(detailTarget.state === "RUNNING" || detailTarget.state === "STOPPED");
-      RBot.openModal("detail-modal");
+      MBot.openModal("detail-modal");
     } catch (err) {
-      RBot.toast("加载实例详情失败：" + err.message, "error");
+      MBot.toast("加载实例详情失败：" + err.message, "error");
     }
   }
 
@@ -285,10 +285,10 @@
     document.getElementById("bootswap-confirm-btn").disabled = true;
     var listEl = document.getElementById("bootswap-list");
     listEl.textContent = "加载中…";
-    RBot.closeModal("detail-modal");
-    RBot.openModal("bootswap-modal");
+    MBot.closeModal("detail-modal");
+    MBot.openModal("bootswap-modal");
     try {
-      var res = await RBot.api(RBot.withProfile(
+      var res = await MBot.api(MBot.withProfile(
         "/api/instances/" + encodeURIComponent(bootswapTarget.id) + "/boot-backups",
         currentProfile, currentRegion));
       var backups = res.backups || [];
@@ -309,7 +309,7 @@
           document.getElementById("bootswap-confirm-btn").disabled = false;
         });
         var text = document.createElement("span");
-        var created = b["time-created"] ? RBot.formatTime(b["time-created"]) : "—";
+        var created = b["time-created"] ? MBot.formatTime(b["time-created"]) : "—";
         text.textContent = (b["display-name"] || "—") + "（" +
           (b["size-in-gbs"] != null ? b["size-in-gbs"] + "GB" : "—") +
           "，" + created + "）";
@@ -330,9 +330,9 @@
     document.getElementById("ip-public").textContent = norm(inst).public_ip || "—";
     document.getElementById("ip-private").textContent = "加载中…";
     document.getElementById("ip-ipv6").textContent = "加载中…";
-    RBot.openModal("ip-modal");
+    MBot.openModal("ip-modal");
     try {
-      var res = await RBot.api(RBot.withProfile("/api/instances/" + encodeURIComponent(inst.id), currentProfile, currentRegion));
+      var res = await MBot.api(MBot.withProfile("/api/instances/" + encodeURIComponent(inst.id), currentProfile, currentRegion));
       if (ipTarget !== inst) return; // 弹窗期间切了实例，丢弃旧结果
       document.getElementById("ip-public").textContent = res.public_ip || "—";
       document.getElementById("ip-private").textContent = res.private_ip || "—";
@@ -353,7 +353,7 @@
     var n = norm(inst);
     var vol = null;
     try {
-      var res = await RBot.api(RBot.withProfile("/api/instances/" + encodeURIComponent(inst.id), currentProfile, currentRegion));
+      var res = await MBot.api(MBot.withProfile("/api/instances/" + encodeURIComponent(inst.id), currentProfile, currentRegion));
       if (res.boot_volume_id) {
         vol = {
           volumeId: res.boot_volume_id,
@@ -382,7 +382,7 @@
       }
     }
     if (!vol || !vol.volumeId) {
-      RBot.toast("未找到该实例的启动盘", "error");
+      MBot.toast("未找到该实例的启动盘", "error");
       return;
     }
     bootVolumeTarget = { instance: inst, volumeId: vol.volumeId, size: vol.sizeInGBs };
@@ -400,76 +400,76 @@
     document.getElementById("boot-volume-ocid").title = vol.volumeId;
     document.getElementById("boot-volume-new-size").value =
       vol.sizeInGBs != null ? vol.sizeInGBs + 10 : "";
-    RBot.openModal("boot-volume-modal");
+    MBot.openModal("boot-volume-modal");
   }
 
   // 附加 IPv6：确认后直接执行，成功后回显新地址
   async function addIpv6(inst) {
     var name = norm(inst).name;
-    var ok = await RBot.confirmDialog(
-      "附加 IPv6", "确认给实例 " + RBot.escapeHtml(name) + " 分配一个 IPv6 地址吗？",
+    var ok = await MBot.confirmDialog(
+      "附加 IPv6", "确认给实例 " + MBot.escapeHtml(name) + " 分配一个 IPv6 地址吗？",
       "确认附加", false);
     if (!ok) return;
     try {
-      var res = await RBot.api(RBot.withProfile("/api/instances/" + encodeURIComponent(inst.id) + "/ipv6", currentProfile, currentRegion), { method: "POST" });
-      RBot.toast("已分配 IPv6：" + (res.ipv6 || "—"), "success");
-      RBot.cacheClear("inst:");
+      var res = await MBot.api(MBot.withProfile("/api/instances/" + encodeURIComponent(inst.id) + "/ipv6", currentProfile, currentRegion), { method: "POST" });
+      MBot.toast("已分配 IPv6：" + (res.ipv6 || "—"), "success");
+      MBot.cacheClear("inst:");
       await loadInstances();
     } catch (err) {
-      RBot.toast("附加 IPv6 失败：" + err.message, "error");
+      MBot.toast("附加 IPv6 失败：" + err.message, "error");
     }
   }
 
   // 删除全部 IPv6：二次确认；无 IPv6 时后端返回 ok + 提示
   async function deleteIpv6(inst) {
     var name = norm(inst).name;
-    var ok = await RBot.confirmDialog(
+    var ok = await MBot.confirmDialog(
       "删除 IPv6",
-      "确认删除实例 " + RBot.escapeHtml(name) + " 的全部 IPv6 地址吗？<br>删除后这些地址立即不可达。",
+      "确认删除实例 " + MBot.escapeHtml(name) + " 的全部 IPv6 地址吗？<br>删除后这些地址立即不可达。",
       "确认删除", true);
     if (!ok) return;
     try {
-      var res = await RBot.api(RBot.withProfile("/api/instances/" + encodeURIComponent(inst.id) + "/ipv6", currentProfile, currentRegion), { method: "DELETE" });
+      var res = await MBot.api(MBot.withProfile("/api/instances/" + encodeURIComponent(inst.id) + "/ipv6", currentProfile, currentRegion), { method: "DELETE" });
       var deleted = res.deleted || [];
       if (deleted.length === 0) {
-        RBot.toast(res.message || "该实例没有 IPv6", "info");
+        MBot.toast(res.message || "该实例没有 IPv6", "info");
       } else {
-        RBot.toast("已删除 " + deleted.length + " 个 IPv6 地址", "success");
+        MBot.toast("已删除 " + deleted.length + " 个 IPv6 地址", "success");
       }
-      RBot.cacheClear("inst:");
+      MBot.cacheClear("inst:");
       await loadInstances();
     } catch (err) {
-      RBot.toast("删除 IPv6 失败：" + err.message, "error");
+      MBot.toast("删除 IPv6 失败：" + err.message, "error");
     }
   }
 
   // 尝试修复：确认后调接口，在弹窗里展示修复报告
   async function doRepair(inst) {
     var name = norm(inst).name;
-    var ok = await RBot.confirmDialog(
+    var ok = await MBot.confirmDialog(
       "尝试修复",
-      "确认尝试修复实例 " + RBot.escapeHtml(name) + " 吗？<br>只检查实例状态、主 VNIC 与公网 IP，公网 IP 缺失时重新附加一个临时公网 IP，不做其他改动。",
+      "确认尝试修复实例 " + MBot.escapeHtml(name) + " 吗？<br>只检查实例状态、主 VNIC 与公网 IP，公网 IP 缺失时重新附加一个临时公网 IP，不做其他改动。",
       "确认修复", false);
     if (!ok) return;
     try {
-      var res = await RBot.api(RBot.withProfile("/api/instances/" + encodeURIComponent(inst.id) + "/repair", currentProfile, currentRegion), { method: "POST" });
+      var res = await MBot.api(MBot.withProfile("/api/instances/" + encodeURIComponent(inst.id) + "/repair", currentProfile, currentRegion), { method: "POST" });
       var report = res.report || {};
       document.getElementById("repair-name").textContent = name;
       document.getElementById("repair-report").innerHTML =
         (report.checks || []).map(function (c) {
           var mark = c.status === "fixed" ? "🔧" : "✅";
-          return "<li>" + mark + " " + RBot.escapeHtml(c.name) + "："
-            + RBot.escapeHtml(c.detail || "") + "</li>";
+          return "<li>" + mark + " " + MBot.escapeHtml(c.name) + "："
+            + MBot.escapeHtml(c.detail || "") + "</li>";
         }).join("");
       document.getElementById("repair-summary").textContent =
         report.repaired
           ? "已修复：新公网 IP " + (report.new_ip || "—")
           : "检查通过，无需修复。当前公网 IP：" + (report.public_ip || "—");
-      RBot.openModal("repair-modal");
-      RBot.cacheClear("inst:");
+      MBot.openModal("repair-modal");
+      MBot.cacheClear("inst:");
       await loadInstances();
     } catch (err) {
-      RBot.toast("修复失败：" + err.message, "error");
+      MBot.toast("修复失败：" + err.message, "error");
     }
   }
 
@@ -489,7 +489,7 @@
         "此操作不可撤销，将永久删除引导卷，实例上的数据会全部丢失。";
       document.getElementById("btn-confirm-terminate").textContent = "确认终止";
     }
-    RBot.openModal("terminate-modal");
+    MBot.openModal("terminate-modal");
   }
 
   // 批量操作：调 POST /api/instances/batch，汇报每台结果
@@ -497,25 +497,25 @@
     var ids = selectedIds();
     if (ids.length === 0) return;
     try {
-      var res = await RBot.api(RBot.withProfile("/api/instances/batch", currentProfile, currentRegion), {
+      var res = await MBot.api(MBot.withProfile("/api/instances/batch", currentProfile, currentRegion), {
         method: "POST",
         body: { action: action, instance_ids: ids, confirm: !!confirm },
       });
       var ok = (res.succeeded || []).length;
       var bad = (res.failed || []).length;
       if (bad === 0) {
-        RBot.toast(label + "完成：成功 " + ok + " 台", "success");
+        MBot.toast(label + "完成：成功 " + ok + " 台", "success");
       } else {
         var detail = (res.failed || []).map(function (f) {
           return f.id.slice(-4) + "：" + f.error;
         }).join("；");
-        RBot.toast(label + "：成功 " + ok + " 台，失败 " + bad + " 台（" + detail + "）", "error");
+        MBot.toast(label + "：成功 " + ok + " 台，失败 " + bad + " 台（" + detail + "）", "error");
       }
       selected = {};
-      RBot.cacheClear("inst:");
+      MBot.cacheClear("inst:");
       await loadInstances();
     } catch (err) {
-      RBot.toast(label + "失败：" + err.message, "error");
+      MBot.toast(label + "失败：" + err.message, "error");
     }
   }
 
@@ -525,19 +525,19 @@
     // 不让页面空白。
     var profileSelect = document.getElementById("profile-select");
     var regionSelect = document.getElementById("region-select");
-    RBot.fillProfileSelect(profileSelect).then(function (profile) {
+    MBot.fillProfileSelect(profileSelect).then(function (profile) {
       currentProfile = profile;
-      currentRegion = RBot.fillRegionSelect(regionSelect, currentProfile);
+      currentRegion = MBot.fillRegionSelect(regionSelect, currentProfile);
       loadInstances();
     }).catch(function () {
       loadInstances();
     });
     profileSelect.addEventListener("change", function (e) {
       currentProfile = e.target.value;
-      RBot.setProfile(currentProfile);
+      MBot.setProfile(currentProfile);
       // 切账号时区域重置为新账号的主区（与机器人端一致）。
-      RBot.setRegion(null);
-      currentRegion = RBot.fillRegionSelect(regionSelect, currentProfile);
+      MBot.setRegion(null);
+      currentRegion = MBot.fillRegionSelect(regionSelect, currentProfile);
       selected = {};
       // 切账号时先清空列表并显示加载占位，再加载新账号数据，
       // 避免旧账号卡片闪一帧（v1.3.0 留下的小瑕疵）。
@@ -549,7 +549,7 @@
     });
     regionSelect.addEventListener("change", function (e) {
       currentRegion = e.target.value;
-      RBot.setRegion(currentRegion);
+      MBot.setRegion(currentRegion);
       selected = {};
       instances = [];
       volumesByInstance = {};
@@ -581,14 +581,14 @@
           document.getElementById("batch-terminate-count").textContent = targets.length;
           document.getElementById("batch-terminate-names").innerHTML =
             targets.map(function (raw) {
-              return "<li>" + RBot.escapeHtml(norm(raw).name) + "</li>";
+              return "<li>" + MBot.escapeHtml(norm(raw).name) + "</li>";
             }).join("");
-          RBot.openModal("batch-terminate-modal");
+          MBot.openModal("batch-terminate-modal");
           return;
         }
         var names = targets.map(function (raw) { return norm(raw).name; }).join("、");
-        var ok = await RBot.confirmDialog(
-          label, "确认" + label + "以下实例吗？<br>" + RBot.escapeHtml(names),
+        var ok = await MBot.confirmDialog(
+          label, "确认" + label + "以下实例吗？<br>" + MBot.escapeHtml(names),
           "确认" + label, false);
         if (ok) await batchAction(action, label, false);
       });
@@ -606,7 +606,7 @@
       }
       var copyBtn = e.target.closest("[data-copy]");
       if (copyBtn) {
-        RBot.copyText(copyBtn.getAttribute("data-copy"), "IP");
+        MBot.copyText(copyBtn.getAttribute("data-copy"), "IP");
         return;
       }
       var btn = e.target.closest("[data-act]");
@@ -633,7 +633,7 @@
           (n.ocpus != null ? n.ocpus + " 核 / " + n.memory_gb + " GB" : "未知");
         document.getElementById("resize-ocpus").value = n.ocpus != null ? n.ocpus : 2;
         document.getElementById("resize-memory").value = n.memory_gb != null ? n.memory_gb : 12;
-        RBot.openModal("resize-modal");
+        MBot.openModal("resize-modal");
       } else if (act === "repair") doRepair(inst);
       else if (act === "terminate") openTerminateModal(inst, false);
       else if (act === "terminate-keep") openTerminateModal(inst, true);
@@ -641,16 +641,16 @@
         renameTarget = inst;
         document.getElementById("rename-current").textContent = norm(inst).name;
         document.getElementById("rename-name").value = norm(inst).name;
-        RBot.openModal("rename-modal");
+        MBot.openModal("rename-modal");
       } else if (act === "reinstall") {
         reinstallTarget = inst;
         document.getElementById("reinstall-name").textContent = norm(inst).name;
         document.getElementById("reinstall-confirm-name").value = "";
-        RBot.openModal("reinstall-modal");
+        MBot.openModal("reinstall-modal");
       } else if (act === "console") {
         (async function () {
           try {
-            var res = await RBot.api(RBot.withProfile("/api/instances/" + encodeURIComponent(instId) + "/console", currentProfile, currentRegion));
+            var res = await MBot.api(MBot.withProfile("/api/instances/" + encodeURIComponent(instId) + "/console", currentProfile, currentRegion));
             var conn = res.console || {};
             consoleCommand = conn["connection-string"] || "";
             document.getElementById("console-name").textContent = norm(inst).name;
@@ -660,9 +660,9 @@
               consoleCommand || "未返回连接命令";
             document.getElementById("console-fingerprint").textContent =
               conn.fingerprint ? "指纹：" + conn.fingerprint : "";
-            RBot.openModal("console-modal");
+            MBot.openModal("console-modal");
           } catch (err) {
-            RBot.toast("获取串行控制台失败：" + err.message, "error");
+            MBot.toast("获取串行控制台失败：" + err.message, "error");
           }
         })();
       }
@@ -674,19 +674,19 @@
       var inst = terminateTarget;
       var preserve = terminatePreserve;
       try {
-        await RBot.api(RBot.withProfile("/api/instances/" + encodeURIComponent(inst.id) + "/terminate", currentProfile, currentRegion), {
+        await MBot.api(MBot.withProfile("/api/instances/" + encodeURIComponent(inst.id) + "/terminate", currentProfile, currentRegion), {
           method: "POST",
           body: { confirm: true, preserve_boot_volume: preserve },
         });
-        RBot.toast(preserve
+        MBot.toast(preserve
           ? "实例已终止，引导卷已保留（可在启动盘页面删除）"
           : "实例已终止，引导卷已永久删除", "success");
-        RBot.closeModal("terminate-modal");
-        RBot.cacheClear("inst:");
-        if (preserve) RBot.cacheClear("vol:");
+        MBot.closeModal("terminate-modal");
+        MBot.cacheClear("inst:");
+        if (preserve) MBot.cacheClear("vol:");
         await loadInstances();
       } catch (err) {
-        RBot.toast("终止失败：" + err.message, "error");
+        MBot.toast("终止失败：" + err.message, "error");
       }
     });
 
@@ -701,17 +701,17 @@
       var btn = document.getElementById("bootswap-confirm-btn");
       btn.disabled = true;
       try {
-        await RBot.api(RBot.withProfile(
+        await MBot.api(MBot.withProfile(
           "/api/instances/" + encodeURIComponent(bootswapTarget.id) + "/restore-boot-volume",
           currentProfile, currentRegion), {
           method: "POST",
           body: { backup_id: bootswapSelected, confirm: true },
         });
-        RBot.toast("引导卷恢复已开始，进度请在任务页查看", "success");
-        RBot.closeModal("bootswap-modal");
+        MBot.toast("引导卷恢复已开始，进度请在任务页查看", "success");
+        MBot.closeModal("bootswap-modal");
         window.location.href = "/tasks";
       } catch (err) {
-        RBot.toast("恢复失败：" + err.message, "error");
+        MBot.toast("恢复失败：" + err.message, "error");
         btn.disabled = false;
       }
     });
@@ -721,27 +721,27 @@
       if (!ipTarget) return;
       changeIpTarget = ipTarget;
       document.getElementById("change-ip-name").textContent = norm(ipTarget).name;
-      RBot.closeModal("ip-modal");
-      RBot.openModal("change-ip-modal");
+      MBot.closeModal("ip-modal");
+      MBot.openModal("change-ip-modal");
     });
     document.getElementById("btn-ip-add-ipv6").addEventListener("click", function () {
       if (!ipTarget) return;
       var inst = ipTarget;
-      RBot.closeModal("ip-modal");
+      MBot.closeModal("ip-modal");
       addIpv6(inst);
     });
     document.getElementById("btn-ip-delete-ipv6").addEventListener("click", function () {
       if (!ipTarget) return;
       var inst = ipTarget;
-      RBot.closeModal("ip-modal");
+      MBot.closeModal("ip-modal");
       deleteIpv6(inst);
     });
 
     // 启动盘弹窗里的"备份启动卷"：配额检查 + 满了提示删最早，全在共享流程里
     document.getElementById("btn-boot-volume-backup").addEventListener("click", async function () {
       if (!bootVolumeTarget || !bootVolumeTarget.volumeId) return;
-      var created = await RBot.backupBootVolume(bootVolumeTarget.volumeId, currentProfile);
-      if (created) RBot.closeModal("boot-volume-modal");
+      var created = await MBot.backupBootVolume(bootVolumeTarget.volumeId, currentProfile);
+      if (created) MBot.closeModal("boot-volume-modal");
     });
 
     // 启动盘扩容：前端先校验新容量大于当前容量，后端再校验一次
@@ -750,31 +750,31 @@
       if (!bootVolumeTarget) return;
       var size = parseInt(document.getElementById("boot-volume-new-size").value, 10);
       if (!size || size <= 0) {
-        RBot.toast("新容量必须是正整数（GB）", "error");
+        MBot.toast("新容量必须是正整数（GB）", "error");
         return;
       }
       if (bootVolumeTarget.size != null && size <= bootVolumeTarget.size) {
-        RBot.toast("新容量必须大于当前容量 " + bootVolumeTarget.size + "GB", "error");
+        MBot.toast("新容量必须大于当前容量 " + bootVolumeTarget.size + "GB", "error");
         return;
       }
-      var ok = await RBot.confirmDialog(
+      var ok = await MBot.confirmDialog(
         "确认扩容",
-        "确认把实例 " + RBot.escapeHtml(norm(bootVolumeTarget.instance).name)
+        "确认把实例 " + MBot.escapeHtml(norm(bootVolumeTarget.instance).name)
         + " 的启动盘扩到 " + size + "GB 吗？<br>扩容后无法缩回，扩出的部分会计入 200GB 免费额度。",
         "确认扩容", false);
       if (!ok) return;
       try {
-        await RBot.api(RBot.withProfile("/api/volumes/" + encodeURIComponent(bootVolumeTarget.volumeId) + "/resize", currentProfile, currentRegion), {
+        await MBot.api(MBot.withProfile("/api/volumes/" + encodeURIComponent(bootVolumeTarget.volumeId) + "/resize", currentProfile, currentRegion), {
           method: "POST",
           body: { size_in_gbs: size },
         });
-        RBot.toast("扩容已提交，启动盘正在扩大到 " + size + "GB", "success");
-        RBot.closeModal("boot-volume-modal");
-        RBot.cacheClear("vol:");
-        RBot.cacheClear("inst:");
+        MBot.toast("扩容已提交，启动盘正在扩大到 " + size + "GB", "success");
+        MBot.closeModal("boot-volume-modal");
+        MBot.cacheClear("vol:");
+        MBot.cacheClear("inst:");
         await loadInstances();
       } catch (err) {
-        RBot.toast("扩容失败：" + err.message, "error");
+        MBot.toast("扩容失败：" + err.message, "error");
       }
     });
 
@@ -783,16 +783,16 @@
       if (!changeIpTarget) return;
       var inst = changeIpTarget;
       try {
-        var res = await RBot.api(RBot.withProfile("/api/instances/" + encodeURIComponent(inst.id) + "/change-ip", currentProfile, currentRegion), {
+        var res = await MBot.api(MBot.withProfile("/api/instances/" + encodeURIComponent(inst.id) + "/change-ip", currentProfile, currentRegion), {
           method: "POST",
           body: { confirm: true },
         });
-        RBot.toast("换 IP 成功：" + (res.old_ip || "—") + " → " + (res.new_ip || "—"), "success");
-        RBot.closeModal("change-ip-modal");
-        RBot.cacheClear("inst:");
+        MBot.toast("换 IP 成功：" + (res.old_ip || "—") + " → " + (res.new_ip || "—"), "success");
+        MBot.closeModal("change-ip-modal");
+        MBot.cacheClear("inst:");
         await loadInstances();
       } catch (err) {
-        RBot.toast("换 IP 失败：" + err.message, "error");
+        MBot.toast("换 IP 失败：" + err.message, "error");
       }
     });
 
@@ -803,30 +803,30 @@
       var ocpus = parseInt(document.getElementById("resize-ocpus").value, 10);
       var memory = parseInt(document.getElementById("resize-memory").value, 10);
       if (!ocpus || ocpus < 1 || ocpus > 4) {
-        RBot.toast("OCPU 必须在 1–4 之间（免费额度上限 4 核）", "error");
+        MBot.toast("OCPU 必须在 1–4 之间（免费额度上限 4 核）", "error");
         return;
       }
       if (!memory || memory < 1 || memory > 24) {
-        RBot.toast("内存必须在 1–24GB 之间（免费额度上限 24GB）", "error");
+        MBot.toast("内存必须在 1–24GB 之间（免费额度上限 24GB）", "error");
         return;
       }
       try {
-        await RBot.api(RBot.withProfile("/api/instances/" + encodeURIComponent(resizeTarget.id) + "/resize", currentProfile, currentRegion), {
+        await MBot.api(MBot.withProfile("/api/instances/" + encodeURIComponent(resizeTarget.id) + "/resize", currentProfile, currentRegion), {
           method: "POST",
           body: { ocpus: ocpus, memory_gb: memory, confirm: true },
         });
-        RBot.toast("改规格已提交（" + ocpus + " 核 / " + memory + "GB），实例可能会重启", "success");
-        RBot.closeModal("resize-modal");
-        RBot.cacheClear("inst:");
+        MBot.toast("改规格已提交（" + ocpus + " 核 / " + memory + "GB），实例可能会重启", "success");
+        MBot.closeModal("resize-modal");
+        MBot.cacheClear("inst:");
         await loadInstances();
       } catch (err) {
-        RBot.toast("升/降配失败：" + err.message, "error");
+        MBot.toast("升/降配失败：" + err.message, "error");
       }
     });
 
     // 确认批量删除：带 confirm:true
     document.getElementById("btn-confirm-batch-terminate").addEventListener("click", async function () {
-      RBot.closeModal("batch-terminate-modal");
+      MBot.closeModal("batch-terminate-modal");
       await batchAction("terminate", "批量删除", true);
     });
 
@@ -836,20 +836,20 @@
       if (!renameTarget) return;
       var newName = document.getElementById("rename-name").value.trim();
       if (!newName) {
-        RBot.toast("新实例名不能为空", "error");
+        MBot.toast("新实例名不能为空", "error");
         return;
       }
       try {
-        await RBot.api(RBot.withProfile("/api/instances/" + encodeURIComponent(renameTarget.id) + "/rename", currentProfile, currentRegion), {
+        await MBot.api(MBot.withProfile("/api/instances/" + encodeURIComponent(renameTarget.id) + "/rename", currentProfile, currentRegion), {
           method: "POST",
           body: { name: newName },
         });
-        RBot.toast("实例已改名为 " + newName, "success");
-        RBot.closeModal("rename-modal");
-        RBot.cacheClear("inst:");
+        MBot.toast("实例已改名为 " + newName, "success");
+        MBot.closeModal("rename-modal");
+        MBot.cacheClear("inst:");
         await loadInstances();
       } catch (err) {
-        RBot.toast("改名失败：" + err.message, "error");
+        MBot.toast("改名失败：" + err.message, "error");
       }
     });
 
@@ -859,26 +859,26 @@
       if (!reinstallTarget) return;
       var confirmName = document.getElementById("reinstall-confirm-name").value;
       if (confirmName !== norm(reinstallTarget).name) {
-        RBot.toast("输入的实例名与实际不符，请完整输入实例名", "error");
+        MBot.toast("输入的实例名与实际不符，请完整输入实例名", "error");
         return;
       }
       try {
-        await RBot.api(RBot.withProfile("/api/instances/" + encodeURIComponent(reinstallTarget.id) + "/reinstall", currentProfile, currentRegion), {
+        await MBot.api(MBot.withProfile("/api/instances/" + encodeURIComponent(reinstallTarget.id) + "/reinstall", currentProfile, currentRegion), {
           method: "POST",
           body: { confirm: true, confirm_name: confirmName },
         });
-        RBot.toast("重装已提交，系统盘正在重建", "success");
-        RBot.closeModal("reinstall-modal");
-        RBot.cacheClear("inst:");
+        MBot.toast("重装已提交，系统盘正在重建", "success");
+        MBot.closeModal("reinstall-modal");
+        MBot.cacheClear("inst:");
         await loadInstances();
       } catch (err) {
-        RBot.toast("重装失败：" + err.message, "error");
+        MBot.toast("重装失败：" + err.message, "error");
       }
     });
 
     // 复制串行控制台连接命令
     document.getElementById("btn-copy-console").addEventListener("click", function () {
-      if (consoleCommand) RBot.copyText(consoleCommand, "连接命令");
+      if (consoleCommand) MBot.copyText(consoleCommand, "连接命令");
     });
   });
 })();

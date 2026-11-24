@@ -15,7 +15,7 @@
   {# 左侧装饰：终端输出示意（纯静态文本，非真实命令输出） #}
   <div class="login-side" aria-hidden="true">
     <pre><span class="cmd">$</span> uname -a
-Linux rbot-clone 6.1.0-amd64 x86_64 GNU/Linux
+Linux mbot 6.1.0-amd64 x86_64 GNU/Linux
 
 <span class="cmd">$</span> uptime
  02:30:00 up 42 days,  3 users,  load average: 0.08, 0.04, 0.01
@@ -62,7 +62,7 @@ Swap:             0B      0B     0B</pre>
           </span>
           <input type="password" id="password" name="password" placeholder="密码" required>
         </div>
-        {# 图形验证码：仅当后端开启 RBOT_CAPTCHA_ENABLED 时显示（login.js 拉取 /api/auth/captcha 决定） #}
+        {# 图形验证码：仅当后端开启 MBOT_CAPTCHA_ENABLED 时显示（login.js 拉取 /api/auth/captcha 决定） #}
         <div id="captcha-block" hidden>
           <div class="login-field">
             <span class="field-icon">

@@ -6,7 +6,7 @@
 CPU 使用率与网络速率需要两次采样，中间间隔 SAMPLE_INTERVAL 秒。
 
   - GET /api/system：原有嵌套格式（顶栏资源监控栏用，保持不变）。
-  - GET /api/system/health：R-Bot 形状（/client/health 风格，阶段 5
+  - GET /api/system/health：面板形状（/client/health 风格，阶段 5
     工作包 E），含 CPU 型号/核数、内存/磁盘 GB 与占用率、网速、
     进程 RSS MB、uptime 秒。
 """
@@ -99,7 +99,7 @@ def _read_uptime_seconds():
 
 
 def get_health_status(sample_interval=SAMPLE_INTERVAL):
-    """采样并返回 R-Bot 形状的健康状态（/client/health 风格）。
+    """采样并返回 面板形状的健康状态（/client/health 风格）。
 
     {cpu: {model, cores, usagePercent},
      memory: {totalGB, usedGB, freeGB, usagePercent},
@@ -206,6 +206,6 @@ def system_status(username: str = Depends(get_current_user)):
 
 @router.get("/api/system/health")
 def system_health(username: str = Depends(get_current_user)):
-    """返回 R-Bot 形状的健康状态（CPU 型号/核数、内存/磁盘 GB、
+    """返回 面板形状的健康状态（CPU 型号/核数、内存/磁盘 GB、
     网速、进程 RSS、uptime）。"""
     return {"ok": True, **get_health_status()}

@@ -156,14 +156,14 @@ class TestCreateSmtpCredential(unittest.TestCase):
             "id": "ocid1.smtpcredential.oc1..xxxxxxxx",
             "username": "ocid1.user.oc1..xxxxxxxx",
             "password": FAKE_PASSWORD,
-            "description": "rbot-clone",
+            "description": "mbot",
         }})
         result = create_smtp_credential(cli, FAKE_USER)
         self.assertEqual(result["password"], FAKE_PASSWORD)
         cli.run.assert_called_once_with(
             ["iam", "smtp-credential", "create",
              "--user-id", FAKE_USER,
-             "--description", "rbot-clone"])
+             "--description", "mbot"])
 
     def test_custom_description(self):
         cli = _mock_cli({"data": {}})

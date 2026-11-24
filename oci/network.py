@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""网络模块：VNIC、公网 IP、内网 IP 管理（R-Bot 的“换 IP”等功能）。
+"""网络模块：VNIC、公网 IP、内网 IP 管理（“换 IP”等功能）。
 
 全部函数接受一个 OCIClient 对象作为第一个参数，命令通过 client.run()
 发给官方 OCI CLI。args 里不带 --profile / --region（client 自动追加）。
@@ -297,7 +297,7 @@ def list_private_ips(cli, vnic_id):
 
 def change_public_ip(cli, compartment_id, instance_id,
                      display_name=DEFAULT_CHANGED_IP_NAME):
-    """换 IP 的完整流程（R-Bot 的“换 IP”功能）。
+    """换 IP 的完整流程（“换 IP”功能）。
 
     步骤：
       1. 查实例主 VNIC 及其主内网 IP；

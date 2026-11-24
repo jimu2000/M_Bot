@@ -1,7 +1,7 @@
 #!/bin/bash
-# R-Bot 开源克隆版部署脚本（模板，阶段 5 工作包 E）。
+# M_Bot部署脚本（模板，阶段 5 工作包 E）。
 #
-# 借鉴自 R-Bot 管理脚本 sh_client_bot.sh（见 docs/rbot-sh_client_bot.sh）：
+# 管理脚本设计要点：
 #   1. systemd 单元 Restart=always + RestartSec=10（崩了自动拉起）；
 #   2. 原子升级：新版下载到同文件系统临时目录 -> 校验 -> mv 覆盖
 #      （避开 /tmp 空间不足与跨文件系统 mv 非原子的问题）；
@@ -27,10 +27,10 @@
 set -euo pipefail
 
 # ================= 配置区（部署前改这里） =================
-# 安装目录（克隆版代码放这里；不要用 /tmp，重启会丢）。
+# 安装目录（M_Bot 代码放这里；不要用 /tmp，重启会丢）。
 INSTALL_DIR="/opt/rbot-clone"
 # 代码来源（git 仓库地址，占位符；或改成发布包 URL）。
-REPO_URL="https://github.com/<你的账号>/rbot-clone.git"
+REPO_URL="https://github.com/<你的账号>/M_Bot.git"
 # 运行用户（建议用专用用户；root 运行也可以，但不要用 nobody）。
 SERVICE_USER="root"
 # systemd 服务名。
@@ -41,7 +41,7 @@ ENV_FILE="/root/.rbot-clone.env"
 VENV_DIR="$INSTALL_DIR/venv"
 # 端口文件（端口解析优先级第 3 级；文件不存在时用默认端口）。
 PORT_FILE="$INSTALL_DIR/.port"
-# 默认端口（端口解析优先级最后一级，与 R-Bot 一致用 9527）。
+# 默认端口（端口解析优先级最后一级，9527）。
 DEFAULT_PORT=9527
 # 升级锁文件（flock 用，防并发升级）。
 UPGRADE_LOCK="$INSTALL_DIR/.upgrade.lock"
@@ -50,8 +50,7 @@ BACKUP_DIR="$INSTALL_DIR/.backup"
 # =====================================================
 
 # ---------- 端口解析（优先级：参数 > 进程命令行 > 文件 > 默认） ----------
-# 与 R-Bot 的端口解析优先级一致（Java 传入 > 进程命令行 --server.port >
-# 监听探测 > .r_client.port 文件 > 默认 9527），克隆版简化为四级。
+# 端口解析优先级：参数 > 进程命令行 > 文件 > 默认 9527。
 resolve_port() {
     # 第 1 级：命令行参数 --port=xxxx（deploy.sh 的第一个参数透传时用）。
     for arg in "$@"; do
@@ -80,12 +79,12 @@ resolve_port() {
 
 # ---------- systemd 单元 ----------
 # Restart=always + RestartSec=10：进程崩了 10 秒后自动拉起
-# （借鉴 R-Bot 的 rbot.service：Type=simple，Restart=always，RestartSec=10）。
+# （Type=simple，Restart=always，RestartSec=10）。
 write_systemd_unit() {
     local port="$1"
     cat > "/etc/systemd/system/${SERVICE_NAME}.service" <<EOF
 [Unit]
-Description=R-Bot Open Source Clone Web Panel
+Description=M_Bot Web Panel
 After=network.target
 
 [Service]
@@ -136,7 +135,7 @@ cmd_install() {
     if [ ! -f "$ENV_FILE" ]; then
         echo "错误：环境文件 $ENV_FILE 不存在。"
         echo "请先运行 python3 -m web.auth 生成管理员密码哈希，"
-        echo "再把 RBOT_WEB_PASSWORD_HASH 与 RBOT_WEB_SECRET 写进该文件（600 权限）。"
+        echo "再把 MBOT_WEB_PASSWORD_HASH 与 MBOT_WEB_SECRET 写进该文件（600 权限）。"
         exit 1
     fi
     chmod 600 "$ENV_FILE"
@@ -149,7 +148,7 @@ cmd_install() {
 }
 
 # ---------- 原子升级 ----------
-# 借鉴 R-Bot 的原子升级：下载到安装目录内的临时目录（与目标同文件系统，
+# 原子升级：下载到安装目录内的临时目录（与目标同文件系统，
 # mv 才原子，避开 /tmp 空间不足）-> 校验 -> mv 覆盖；升级锁防并发。
 cmd_upgrade() {
     # 升级锁：拿不到锁说明已有升级在进行，直接退出（flock 非阻塞）。

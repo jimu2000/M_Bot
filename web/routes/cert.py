@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """证书管理（阶段 5 工作包 E）：ACME 证书状态与续期。
 
-  - GET /api/cert/status：读面板服务器的 ACME 证书，返回 R-Bot 形状
+  - GET /api/cert/status：读面板服务器的 ACME 证书，返回 面板形状
     {acmeEnabled, domain, issuer, notBefore, notAfter, remainingHours,
      status}；无证书时 status="none"，其余字段为 None。
   - POST /api/cert/renew：跑 acme.sh --renew 续期（body 须含 confirm=true），
     异步执行，返回 taskId；GET /api/cert/renew/{taskId} 查执行状态。
 
-证书路径：优先读环境变量 RBOT_ACME_HOME（默认 ~/.acme.sh），域名
-优先用查询参数 ?domain=，否则用环境变量 RBOT_CERT_DOMAIN，否则
+证书路径：优先读环境变量 MBOT_ACME_HOME（默认 ~/.acme.sh），域名
+优先用查询参数 ?domain=，否则用环境变量 MBOT_CERT_DOMAIN，否则
 自动取 acme.sh 目录下第一个有 .cer 的域名。
 证书解析优先用 cryptography（已装时），否则调 openssl 命令行兜底。
 """
@@ -31,12 +31,12 @@ router = APIRouter()
 
 # ================= 配置区（改这里） =================
 # acme.sh 家目录（部署时 root 运行，默认 /root/.acme.sh）。
-ACME_HOME = os.environ.get("RBOT_ACME_HOME",
+ACME_HOME = os.environ.get("MBOT_ACME_HOME",
                            os.path.expanduser("~/.acme.sh"))
 # acme.sh 可执行文件路径（默认 ACME_HOME 下的 acme.sh）。
-ACME_SH = os.environ.get("RBOT_ACME_SH", os.path.join(ACME_HOME, "acme.sh"))
+ACME_SH = os.environ.get("MBOT_ACME_SH", os.path.join(ACME_HOME, "acme.sh"))
 # 默认域名（不设时自动检测 acme.sh 目录下第一个有证书的域名）。
-CERT_DOMAIN = os.environ.get("RBOT_CERT_DOMAIN", "")
+CERT_DOMAIN = os.environ.get("MBOT_CERT_DOMAIN", "")
 # 续期命令超时（秒）：acme.sh 续期含 DNS/HTTP 验证，一般 1 分钟内完成。
 RENEW_TIMEOUT_SECONDS = 300
 # 剩余时间小于这么多小时即判为“即将过期”（7 天）。
@@ -142,7 +142,7 @@ def _iso(dt):
 
 
 def get_cert_status(domain=None):
-    """返回证书状态（R-Bot 形状）。
+    """返回证书状态（面板形状）。
 
     status：none（无证书）/ valid（有效）/ expiring（7 天内过期）/
     expired（已过期）。remainingHours 为负数表示已过期这么多小时。
@@ -257,7 +257,7 @@ class RenewBody(BaseModel):
 @router.get("/api/cert/status")
 def cert_status(domain: str = Query(default=None),
                 username: str = Depends(get_current_user)):
-    """返回 ACME 证书状态（R-Bot 形状；无证书时 status="none"）。"""
+    """返回 ACME 证书状态（面板形状；无证书时 status="none"）。"""
     if domain and not _DOMAIN_RE.match(domain):
         return error_response(f"域名格式非法：{domain}", status_code=400)
     return {"ok": True, **get_cert_status(domain)}

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """启动卷备份路由：列表 / 配额 / 创建 / 删除 / 从备份恢复。
 
-R-Bot 没有这个功能，这是 M_Bot 独有的。
+M_Bot 独有功能。
 
   - GET /api/boot-backups/quota：备份额度（数量 / 上限 5 /
     是否已满 / 最早备份信息 / 是否付费账号）。付费账号不限 5 个，
     返回 paid=true、limit=null、full=false。创建备份前前端先调它。
-  - GET /api/boot-backups：备份列表（R-Bot 风格 camelCase 字段，
+  - GET /api/boot-backups：备份列表（camelCase 字段，
     同时双写 kebab-case 旧字段）。
   - POST /api/boot-backups：创建 FULL 全量备份，body
     {boot_volume_id, display_name?, delete_oldest?}。付费账号直接
@@ -74,7 +74,7 @@ _SHAPE_AUTO = "auto"
 
 
 def format_backup(backup):
-    """把备份条目转成 R-Bot 风格形状（camelCase 为主，双写旧字段）。
+    """把备份条目转成 面板形状（camelCase 为主，双写旧字段）。
 
     新字段：{backupId, displayName, bootVolumeId, sizeInGBs,
     lifecycleState, sourceType, type, timeCreated, imageId}。
@@ -173,8 +173,8 @@ class RestoreBody(BaseModel):
     shape：不传或 "auto" 表示用备份来源实例的形状（查不到用默认
     A1.Flex 1 核 / 6GB）；传具体规格名则用它（A1.Flex 可配 ocpus /
     memory_gb）。availability_domain / subnet_id / ssh_keys_file
-    不传时用部署默认值（环境变量 RBOT_PLAN_AD / RBOT_PLAN_SUBNET_ID /
-    RBOT_PLAN_SSH_KEYS_FILE，与抢机计划共用）。
+    不传时用部署默认值（环境变量 MBOT_PLAN_AD / MBOT_PLAN_SUBNET_ID /
+    MBOT_PLAN_SSH_KEYS_FILE，与抢机计划共用）。
     """
 
     display_name: str = None
@@ -380,11 +380,11 @@ def restore(backup_id: str,
         if availability_domain in (None, "", _AD_PLACEHOLDER):
             return error_response(
                 "未配置可用域：请在请求里传 availability_domain，或在部署"
-                "环境变量 RBOT_PLAN_AD 里配置。", status_code=400)
+                "环境变量 MBOT_PLAN_AD 里配置。", status_code=400)
         if subnet_id in (None, "", _SUBNET_PLACEHOLDER):
             return error_response(
                 "未配置子网：请在请求里传 subnet_id，或在部署环境变量 "
-                "RBOT_PLAN_SUBNET_ID 里配置。", status_code=400)
+                "MBOT_PLAN_SUBNET_ID 里配置。", status_code=400)
         if ssh_keys_file in (None, "", _SSH_KEYS_PLACEHOLDER):
             # 恢复出来的系统保留原机的 authorized_keys，原密钥照样能登录，
             # 所以 SSH 公钥文件不是必须的；没配就传空字符串（不传该参数）。

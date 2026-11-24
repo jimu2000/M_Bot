@@ -144,7 +144,7 @@ class _SFTPTestCase(unittest.TestCase):
         self.client = TestClient(app, raise_server_exceptions=False)
 
     def _auth_cookies(self):
-        return {"rbot_session": "good-token"}
+        return {"mbot_session": "good-token"}
 
     def _no_session(self):
         self.mock_manager.get.return_value = None
@@ -909,7 +909,7 @@ class TestLoopbackSFTP(unittest.TestCase):
         self.ssh_client.close()
 
     def _cookies(self):
-        return {"rbot_session": "good-token"}
+        return {"mbot_session": "good-token"}
 
     def test_full_flow_list_upload_download_rename_delete(self):
         # 1. list：家目录就是临时目录，预置文件都在

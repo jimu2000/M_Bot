@@ -7,7 +7,7 @@
 存储：tgbot/data/paid_profiles.json（0600 权限），内容是
 {"paid": ["PROFILE1", ...]}。bot 与网页端共用同一份文件
 （网页端 import 本模块，路径走 bot_config.DATA_DIR，即
-RBOT_TGBOT_DATA_DIR，部署时两端同 env 文件）。
+MBOT_TGBOT_DATA_DIR，部署时两端同 env 文件）。
 """
 
 import json

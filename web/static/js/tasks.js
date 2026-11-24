@@ -5,7 +5,7 @@
  * 进度消息 message/progress/last_message、日志 logs/log_lines。 */
 (function () {
   "use strict";
-  var RBot = window.RBot;
+  var MBot = window.MBot;
   var tasks = [];
   var expandedId = null; // 当前展开的任务 id
   var pollTimer = null;
@@ -27,11 +27,11 @@
 
   function statusBadge(t) {
     var s = taskStatus(t);
-    if (isRunning(t)) return '<span class="badge badge-blue">' + RBot.escapeHtml(s) + "</span>";
-    if (s === "SUCCESS" || s === "COMPLETED" || s === "DONE") return '<span class="badge badge-green">' + RBot.escapeHtml(s) + "</span>";
-    if (s === "FAILED" || s === "ERROR") return '<span class="badge badge-red">' + RBot.escapeHtml(s) + "</span>";
-    if (s === "CANCELLED" || s === "CANCELED") return '<span class="badge badge-gray">' + RBot.escapeHtml(s) + "</span>";
-    return '<span class="badge badge-gray">' + RBot.escapeHtml(s) + "</span>";
+    if (isRunning(t)) return '<span class="badge badge-blue">' + MBot.escapeHtml(s) + "</span>";
+    if (s === "SUCCESS" || s === "COMPLETED" || s === "DONE") return '<span class="badge badge-green">' + MBot.escapeHtml(s) + "</span>";
+    if (s === "FAILED" || s === "ERROR") return '<span class="badge badge-red">' + MBot.escapeHtml(s) + "</span>";
+    if (s === "CANCELLED" || s === "CANCELED") return '<span class="badge badge-gray">' + MBot.escapeHtml(s) + "</span>";
+    return '<span class="badge badge-gray">' + MBot.escapeHtml(s) + "</span>";
   }
 
   function render() {
@@ -43,7 +43,7 @@
       return;
     }
     tbody.innerHTML = tasks.map(function (t) {
-      var esc = RBot.escapeHtml;
+      var esc = MBot.escapeHtml;
       var id = String(t.id);
       var expanded = expandedId === id;
       var cancelBtn = isRunning(t)
@@ -57,7 +57,7 @@
           "<td><b>" + esc(t.type || t.kind || "—") + "</b>" +
             (sub ? "<br><span style=\"color: var(--text-muted); font-size: 12px;\">" + esc(sub) + "</span>" : "") + "</td>" +
           "<td>" + statusBadge(t) + "</td>" +
-          "<td>" + esc(RBot.formatTime(t.started_at || t.created_at)) + "</td>" +
+          "<td>" + esc(MBot.formatTime(t.started_at || t.created_at)) + "</td>" +
           "<td>" + esc(taskMessage(t)) + "</td>" +
           '<td><div class="row-actions">' + cancelBtn + "</div></td>" +
         "</tr>";
@@ -73,7 +73,7 @@
 
   async function loadTasks() {
     try {
-      var data = await RBot.api("/api/tasks");
+      var data = await MBot.api("/api/tasks");
       tasks = data.tasks || [];
       render();
       // 有运行中的任务时自动轮询，否则停掉轮询
@@ -87,7 +87,7 @@
     } catch (err) {
       document.getElementById("task-tbody").innerHTML =
         '<tr><td colspan="5" style="text-align: center; color: var(--danger);">加载失败：' +
-        RBot.escapeHtml(err.message) + "</td></tr>";
+        MBot.escapeHtml(err.message) + "</td></tr>";
     }
   }
 
@@ -95,7 +95,7 @@
     var pre = document.getElementById("task-logs-" + id);
     if (!pre) return;
     try {
-      var data = await RBot.api("/api/tasks/" + encodeURIComponent(id));
+      var data = await MBot.api("/api/tasks/" + encodeURIComponent(id));
       var task = data.task || data;
       var logs = task.logs || task.log_lines || [];
       if (typeof logs === "string") {
@@ -115,18 +115,18 @@
   }
 
   async function cancelTask(id) {
-    var ok = await RBot.confirmDialog(
+    var ok = await MBot.confirmDialog(
       "取消任务",
       "<p>确定要取消这个任务吗？正在进行的抢机/创建会立即停止。</p>",
       "确认取消", true
     );
     if (!ok) return;
     try {
-      await RBot.api("/api/tasks/" + encodeURIComponent(id) + "/cancel", { method: "POST" });
-      RBot.toast("任务已取消", "success");
+      await MBot.api("/api/tasks/" + encodeURIComponent(id) + "/cancel", { method: "POST" });
+      MBot.toast("任务已取消", "success");
       await loadTasks();
     } catch (err) {
-      RBot.toast("取消失败：" + err.message, "error");
+      MBot.toast("取消失败：" + err.message, "error");
     }
   }
 
@@ -140,7 +140,7 @@
       return;
     }
     tbody.innerHTML = plans.map(function (p) {
-      var esc = RBot.escapeHtml;
+      var esc = MBot.escapeHtml;
       var shape = (p.shape || "").replace("VM.Standard.", "");
       var badge = p.enabled
         ? '<span class="badge badge-green">已启用</span>'
@@ -163,12 +163,12 @@
 
   async function loadPlans() {
     try {
-      var data = await RBot.api("/api/plans");
+      var data = await MBot.api("/api/plans");
       plans = data.plans || [];
     } catch (err) {
       document.getElementById("plan-tbody").innerHTML =
         '<tr><td colspan="5" style="text-align: center; color: var(--danger);">加载失败：' +
-        RBot.escapeHtml(err.message) + "</td></tr>";
+        MBot.escapeHtml(err.message) + "</td></tr>";
       return;
     }
     renderPlans();
@@ -176,30 +176,30 @@
 
   async function togglePlan(id, enabled) {
     try {
-      await RBot.api("/api/plans/" + encodeURIComponent(id) + "/toggle", {
+      await MBot.api("/api/plans/" + encodeURIComponent(id) + "/toggle", {
         method: "POST",
         body: { enabled: enabled },
       });
-      RBot.toast(enabled ? "计划已启用" : "计划已停用", "success");
+      MBot.toast(enabled ? "计划已启用" : "计划已停用", "success");
       await loadPlans();
     } catch (err) {
-      RBot.toast("操作失败：" + err.message, "error");
+      MBot.toast("操作失败：" + err.message, "error");
     }
   }
 
   async function deletePlan(id) {
-    var ok = await RBot.confirmDialog(
+    var ok = await MBot.confirmDialog(
       "删除抢机计划",
-      "<p>确定要删除抢机计划 <b>" + RBot.escapeHtml(id) + "</b> 吗？之后不再按该计划定时抢机。</p>",
+      "<p>确定要删除抢机计划 <b>" + MBot.escapeHtml(id) + "</b> 吗？之后不再按该计划定时抢机。</p>",
       "确认删除", true
     );
     if (!ok) return;
     try {
-      await RBot.api("/api/plans/" + encodeURIComponent(id), { method: "DELETE" });
-      RBot.toast("计划已删除", "success");
+      await MBot.api("/api/plans/" + encodeURIComponent(id), { method: "DELETE" });
+      MBot.toast("计划已删除", "success");
       await loadPlans();
     } catch (err) {
-      RBot.toast("删除失败：" + err.message, "error");
+      MBot.toast("删除失败：" + err.message, "error");
     }
   }
 
@@ -249,25 +249,25 @@
       var ocpus = parseInt(document.getElementById("plan-ocpus").value, 10);
       var memoryGb = parseInt(document.getElementById("plan-memory").value, 10);
       if (!cron) {
-        RBot.toast("请填写 cron 表达式", "error");
+        MBot.toast("请填写 cron 表达式", "error");
         return;
       }
       if (!ocpus || ocpus < 1 || ocpus > 4 || !memoryGb || memoryGb < 1 || memoryGb > 24) {
-        RBot.toast("OCPU 需 1-4，内存需 1-24GB", "error");
+        MBot.toast("OCPU 需 1-4，内存需 1-24GB", "error");
         return;
       }
       try {
-        await RBot.api("/api/plans", {
+        await MBot.api("/api/plans", {
           method: "POST",
           body: { cron: cron, shape: shape, ocpus: ocpus, memory_gb: memoryGb },
         });
-        RBot.toast("抢机计划已添加", "success");
+        MBot.toast("抢机计划已添加", "success");
         document.getElementById("add-plan-form").reset();
         document.getElementById("plan-ocpus").value = 1;
         document.getElementById("plan-memory").value = 6;
         await loadPlans();
       } catch (err) {
-        RBot.toast("添加失败：" + err.message, "error");
+        MBot.toast("添加失败：" + err.message, "error");
       }
     });
   });

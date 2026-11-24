@@ -10,7 +10,7 @@ POST ciphertext（base64）+ iv（原文）到 Bark 推送地址。
 配置存 tgbot/data/bark.json（0600 权限）：
 {"url": Bark 推送地址, "key": 32 位加密 Key, "enabled": 开关,
  "chat_id": 通知发到哪个 Telegram 聊天（定时任务用）}。
-环境变量 RBOT_BARK_URL / RBOT_BARK_KEY 可作 url/key 的默认值
+环境变量 MBOT_BARK_URL / MBOT_BARK_KEY 可作 url/key 的默认值
 （文件里已配置的值优先；开关只认文件里的值，默认关闭）。
 Key 与 URL 绝不记日志、不出现在报错里。
 """
@@ -107,8 +107,8 @@ def load_bark_config(path=None):
     返回 {"url": str, "key": str, "enabled": bool}。
     """
     cfg = {
-        "url": os.environ.get("RBOT_BARK_URL", ""),
-        "key": os.environ.get("RBOT_BARK_KEY", ""),
+        "url": os.environ.get("MBOT_BARK_URL", ""),
+        "key": os.environ.get("MBOT_BARK_KEY", ""),
         "enabled": False,
         "chat_id": None,
     }

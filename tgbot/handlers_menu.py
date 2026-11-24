@@ -59,7 +59,7 @@ VERSION_FILE = os.path.join(PROJECT_ROOT, "VERSION")
 # 面板管理员明文密码文件（/raninfo 写这里，600 权限；部署时是
 # /root/.rbot-clone-admin-password，机器人以 root 运行所以 ~ 就是 /root）。
 ADMIN_PASSWORD_FILE = os.environ.get(
-    "RBOT_WEB_ADMIN_PASSWORD_FILE",
+    "MBOT_WEB_ADMIN_PASSWORD_FILE",
     os.path.expanduser("~/.rbot-clone-admin-password"))
 # /raninfo 生成的新密码长度（字母+数字，满足面板密码强度要求）。
 RANINFO_PASSWORD_LENGTH = 20
@@ -67,7 +67,7 @@ RANINFO_PASSWORD_LENGTH = 20
 
 # ---------------- 命令菜单 ----------------
 # (命令, 中文说明)：启动时注册到 Telegram 菜单（setMyCommands）。
-# 文案照 R-Bot 菜单来；/me 改成"查看我的信息"，不提闪电权益。
+# 文案照菜单来；/me 改成"查看我的信息"，不提闪电权益。
 BOT_COMMANDS = [
     ("start", "欢迎与主菜单"),
     ("help", "获取帮助"),
@@ -284,7 +284,7 @@ def update_env_file_vars(updates, env_file=None):
     parent = os.path.dirname(path)
     if parent:
         os.makedirs(parent, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(dir=parent or ".", prefix=".rbot-env-")
+    fd, tmp_path = tempfile.mkstemp(dir=parent or ".", prefix=".mbot-env-")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.writelines(output)
@@ -437,7 +437,7 @@ async def oci_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"{pending['fields'].get('key_file')}\n\n"
         "生效方法：重启机器人服务（/admin 里可重启）；"
         "如需在菜单里切换到该账号，还需在 env 文件里加对应 compartment "
-        "变量（RBOT_COMPARTMENT_XXX）后重启。")
+        "变量（MBOT_COMPARTMENT_XXX）后重启。")
 
 
 async def _confirm_oci_azure(update, context, pending):
@@ -555,7 +555,7 @@ def reset_admin_password(env_file=None, password_file=None):
       1. 生成 20 位随机密码；
       2. 用 web.auth.hash_password 算哈希（pbkdf2_sha256，100000 次，
          与面板 verify_password 配套），写进 env 文件的
-         RBOT_WEB_PASSWORD_HASH（复用 web/routes/auth.py 的原子写）；
+         MBOT_WEB_PASSWORD_HASH（复用 web/routes/auth.py 的原子写）；
       3. 明文写进密码文件（原子写，600 权限）；
       4. 重启面板服务生效。
     调用方只把返回的明文发给白名单用户一次，不要记日志。
@@ -572,7 +572,7 @@ def reset_admin_password(env_file=None, password_file=None):
     parent = os.path.dirname(path)
     if parent:
         os.makedirs(parent, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(dir=parent or ".", prefix=".rbot-pw-")
+    fd, tmp_path = tempfile.mkstemp(dir=parent or ".", prefix=".mbot-pw-")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(new_password + "\n")

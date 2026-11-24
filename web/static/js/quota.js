@@ -21,8 +21,8 @@
     document.getElementById("quota-loading").hidden = false;
     document.getElementById("quota-error").hidden = true;
     document.getElementById("quota-cards").hidden = true;
-    RBot.cachedApi("quota:summary:" + prof,
-      RBot.withProfile("/api/quota", currentProfile, currentRegion), !!force).then(function (res) {
+    MBot.cachedApi("quota:summary:" + prof,
+      MBot.withProfile("/api/quota", currentProfile, currentRegion), !!force).then(function (res) {
       var s = res.summary;
       document.getElementById("quota-profile").textContent = res.profileLabel || res.profile || "—";
       document.getElementById("quota-overall").textContent = s.overall_ok
@@ -50,12 +50,12 @@
     });
   }
 
-  // A1 配额（R-Bot 形状）：调 GET /api/quota/a1，超限时在 A1 卡片追加警告
+  // A1 配额（面板形状）：调 GET /api/quota/a1，超限时在 A1 卡片追加警告
   function loadA1Quota(force) {
     var el = document.getElementById("a1-over-warning");
     if (!el) return;
-    RBot.cachedApi("quota:a1:" + (currentProfile || "DEFAULT") + ":" + (currentRegion || ""),
-      RBot.withProfile("/api/quota/a1", currentProfile, currentRegion), !!force).then(function (res) {
+    MBot.cachedApi("quota:a1:" + (currentProfile || "DEFAULT") + ":" + (currentRegion || ""),
+      MBot.withProfile("/api/quota/a1", currentProfile, currentRegion), !!force).then(function (res) {
       var a1 = res.a1 || {};
       if (a1.over) {
         var parts = [];
@@ -83,8 +83,8 @@
     var listEl = document.getElementById("a1-health-list");
     statusEl.textContent = "加载中…";
     listEl.innerHTML = "";
-    RBot.cachedApi("quota:health:" + (currentProfile || "DEFAULT") + ":" + (currentRegion || ""),
-      RBot.withProfile("/api/quota/a1-health", currentProfile, currentRegion), !!force).then(function (res) {
+    MBot.cachedApi("quota:health:" + (currentProfile || "DEFAULT") + ":" + (currentRegion || ""),
+      MBot.withProfile("/api/quota/a1-health", currentProfile, currentRegion), !!force).then(function (res) {
       var health = res.health || {};
       var suggestions = health.suggestions || [];
       statusEl.textContent = health.overall_ok
@@ -94,7 +94,7 @@
         var mark = SEVERITY_MARK[item.severity] || "•";
         var color = SEVERITY_COLOR[item.severity] || "inherit";
         return '<li style="color: ' + color + '; margin: 4px 0;">' +
-          mark + " " + RBot.escapeHtml(item.message || "") + "</li>";
+          mark + " " + MBot.escapeHtml(item.message || "") + "</li>";
       }).join("");
     }).catch(function (err) {
       statusEl.textContent = "体检加载失败：" + (err.message || err);
@@ -107,24 +107,24 @@
     // 不让页面空白。
     var profileSelect = document.getElementById("profile-select");
     var regionSelect = document.getElementById("region-select");
-    RBot.fillProfileSelect(profileSelect).then(function (profile) {
+    MBot.fillProfileSelect(profileSelect).then(function (profile) {
       currentProfile = profile;
-      currentRegion = RBot.fillRegionSelect(regionSelect, currentProfile);
+      currentRegion = MBot.fillRegionSelect(regionSelect, currentProfile);
       loadQuota();
     }).catch(function () {
       loadQuota();
     });
     profileSelect.addEventListener("change", function (e) {
       currentProfile = e.target.value;
-      RBot.setProfile(currentProfile);
+      MBot.setProfile(currentProfile);
       // 切账号时区域重置为新账号的主区（与机器人端一致）。
-      RBot.setRegion(null);
-      currentRegion = RBot.fillRegionSelect(regionSelect, currentProfile);
+      MBot.setRegion(null);
+      currentRegion = MBot.fillRegionSelect(regionSelect, currentProfile);
       loadQuota();
     });
     regionSelect.addEventListener("change", function (e) {
       currentRegion = e.target.value;
-      RBot.setRegion(currentRegion);
+      MBot.setRegion(currentRegion);
       loadQuota();
     });
     document.getElementById("btn-refresh-quota").addEventListener("click", function () { loadQuota(true); });

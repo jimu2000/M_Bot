@@ -565,7 +565,7 @@ class TestRaninfoPassword(unittest.TestCase):
                 env_content = f.read()
             self.assertIn("KEEP_ME=yes", env_content)
             hash_line = [line for line in env_content.splitlines()
-                         if line.startswith("RBOT_WEB_PASSWORD_HASH=")][0]
+                         if line.startswith("MBOT_WEB_PASSWORD_HASH=")][0]
             stored_hash = hash_line.split("=", 1)[1].strip("'")
             self.assertTrue(stored_hash.startswith("pbkdf2_sha256$"))
             # 哈希与面板 verify_password 配套：新密码能验过，错密码验不过。

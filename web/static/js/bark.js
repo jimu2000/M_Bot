@@ -51,7 +51,7 @@
 
   async function load() {
     try {
-      statusData = await RBot.api("/api/bark/status");
+      statusData = await MBot.api("/api/bark/status");
       render();
     } catch (err) {
       showError("加载失败：" + err.message);
@@ -62,19 +62,19 @@
     var url = document.getElementById("bark-url-input").value.trim();
     var key = document.getElementById("bark-key-input").value.trim();
     if (!url && !key) {
-      RBot.toast("请至少填写 Bark 地址或加密 Key", "error");
+      MBot.toast("请至少填写 Bark 地址或加密 Key", "error");
       return;
     }
     try {
-      statusData = await RBot.api("/api/bark/config", {
+      statusData = await MBot.api("/api/bark/config", {
         method: "POST", body: { url: url, key: key },
       });
       document.getElementById("bark-url-input").value = "";
       document.getElementById("bark-key-input").value = "";
-      RBot.toast("已保存", "success");
+      MBot.toast("已保存", "success");
       render();
     } catch (err) {
-      RBot.toast("保存失败：" + err.message, "error");
+      MBot.toast("保存失败：" + err.message, "error");
     }
   }
 
@@ -82,34 +82,34 @@
     if (!statusData) return;
     var target = !statusData.enabled;
     try {
-      statusData = await RBot.api("/api/bark/toggle", {
+      statusData = await MBot.api("/api/bark/toggle", {
         method: "POST", body: { enabled: target },
       });
-      RBot.toast(target ? "Bark 推送已开启" : "Bark 推送已关闭", "success");
+      MBot.toast(target ? "Bark 推送已开启" : "Bark 推送已关闭", "success");
       render();
     } catch (err) {
-      RBot.toast("操作失败：" + err.message, "error");
+      MBot.toast("操作失败：" + err.message, "error");
     }
   }
 
   async function testPush() {
     try {
-      await RBot.api("/api/bark/test", { method: "POST", body: {} });
-      RBot.toast("测试推送已发送，请查看手机 Bark", "success");
+      await MBot.api("/api/bark/test", { method: "POST", body: {} });
+      MBot.toast("测试推送已发送，请查看手机 Bark", "success");
     } catch (err) {
-      RBot.toast("测试推送失败：" + err.message, "error");
+      MBot.toast("测试推送失败：" + err.message, "error");
     }
   }
 
   async function generateKey() {
-    var ok = await RBot.confirmDialog(
+    var ok = await MBot.confirmDialog(
       "🎲 生成新的 Bark 加密 Key？",
       "<p>生成后旧 Key 立即失效：Bark App 里要同步改成新 Key，" +
       "否则推送解不开；账单脚本、各主机流量脚本、邮件转发器还在用旧 Key，也要同步更新。</p>",
       "确定生成", true);
     if (!ok) return;
     try {
-      var result = await RBot.api("/api/bark/generate-key", { method: "POST", body: {} });
+      var result = await MBot.api("/api/bark/generate-key", { method: "POST", body: {} });
       statusData = result;
       render();
       // Key 只显示这一次（后端保存后不再可查；必须同步到 Bark App）。
@@ -119,11 +119,11 @@
         body += "<p style=\"text-align: center;\"><img src=\"" + result.qr_png +
           "\" alt=\"Bark 加密 Key 二维码\" style=\"width: 180px; height: 180px;\"></p>";
       }
-      body += "<p><code>" + RBot.escapeHtml(result.key) + "</code></p>" +
+      body += "<p><code>" + MBot.escapeHtml(result.key) + "</code></p>" +
         "<p>旧 Key 已失效，账单脚本、各主机流量脚本、邮件转发器还在用旧 Key，需要同步更新。</p>";
-      await RBot.confirmDialog("🔑 新的 Bark 加密 Key（只显示这一次）", body, "已记下");
+      await MBot.confirmDialog("🔑 新的 Bark 加密 Key（只显示这一次）", body, "已记下");
     } catch (err) {
-      RBot.toast("生成失败：" + err.message, "error");
+      MBot.toast("生成失败：" + err.message, "error");
     }
   }
 

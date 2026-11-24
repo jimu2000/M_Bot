@@ -4,12 +4,12 @@
   - 密码哈希用标准库 hashlib.pbkdf2_hmac（sha256，100000 次，盐 16 字节），
     格式 "pbkdf2_sha256$iterations$salt_hex$hash_hex"，只存哈希不存明文。
   - 登录失败锁定：连续失败达阈值后锁定，锁定时长翻倍增长
-    （1 → 2 → 4 → 8 → 16 → 30 分钟封顶，与 R-Bot 的行为一致）。
+    （1 → 2 → 4 → 8 → 16 → 30 分钟封顶）。
   - 会话用 secrets.token_urlsafe 生成 token，内存字典存放，过期自动失效。
 
 命令行用法（生成管理员密码哈希）：
     python3 -m web.auth
-按提示输入两次密码后打印哈希，把它设为环境变量 RBOT_WEB_PASSWORD_HASH。
+按提示输入两次密码后打印哈希，把它设为环境变量 MBOT_WEB_PASSWORD_HASH。
 """
 
 import getpass
@@ -269,9 +269,9 @@ def _main():
     print()
     print(hash_password(password))
     print()
-    print("把上面这行设为环境变量 RBOT_WEB_PASSWORD_HASH 后再启动面板，"
+    print("把上面这行设为环境变量 MBOT_WEB_PASSWORD_HASH 后再启动面板，"
           "例如：")
-    print("  export RBOT_WEB_PASSWORD_HASH='<上面那行>'")
+    print("  export MBOT_WEB_PASSWORD_HASH='<上面那行>'")
 
 
 if __name__ == "__main__":

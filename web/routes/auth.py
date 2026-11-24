@@ -2,7 +2,7 @@
 """认证路由：登录 / 登出 / 当前用户 / 改密码 / 验证码 / Telegram 登录。
 
   - POST /api/auth/login：JSON {username, password}，锁定返回 429 + 剩余秒数，
-    成功设 HttpOnly cookie rbot_session。图形验证码开启时
+    成功设 HttpOnly cookie mbot_session。图形验证码开启时
     （config.CAPTCHA_ENABLED）还需带 captchaId + captchaAnswer。
   - GET /api/auth/captcha：取图形验证码（未开启时返回 {enabled: false}）。
   - POST /api/auth/telegram/send-code：发 Telegram 登录验证码
@@ -80,7 +80,7 @@ def validate_new_password(password):
 
 
 def update_password_hash_in_env_file(new_hash, env_file=None):
-    """把新密码哈希写进 env 文件的 RBOT_WEB_PASSWORD_HASH 行。
+    """把新密码哈希写进 env 文件的 MBOT_WEB_PASSWORD_HASH 行。
 
     env_file 默认取 web/config.py 的 ENV_FILE（不要写死路径）。
     保留文件里的其他行（会话密钥等）；没有该行时追加一行；
@@ -93,11 +93,11 @@ def update_password_hash_in_env_file(new_hash, env_file=None):
     if os.path.exists(path):
         with open(path, encoding="utf-8") as f:
             lines = f.readlines()
-    new_line = f"RBOT_WEB_PASSWORD_HASH='{new_hash}'\n"
+    new_line = f"MBOT_WEB_PASSWORD_HASH='{new_hash}'\n"
     found = False
     output = []
     for line in lines:
-        if line.startswith("RBOT_WEB_PASSWORD_HASH="):
+        if line.startswith("MBOT_WEB_PASSWORD_HASH="):
             output.append(new_line)
             found = True
         else:
@@ -108,7 +108,7 @@ def update_password_hash_in_env_file(new_hash, env_file=None):
     if parent:
         os.makedirs(parent, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(dir=parent or ".",
-                                    prefix=".rbot-env-")
+                                    prefix=".mbot-env-")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.writelines(output)
@@ -207,7 +207,7 @@ def telegram_send_code(request: Request):
         TELEGRAM_CODES.revoke(code_id)
         return error_response(
             "Telegram 机器人未配置或发送失败：请检查面板服务器的 "
-            "RBOT_TELEGRAM_TOKEN 与 RBOT_ALLOWED_USERS",
+            "MBOT_TELEGRAM_TOKEN 与 MBOT_ALLOWED_USERS",
             status_code=503)
     TELEGRAM_CODES.mark_sent(client_key)
     return {"ok": True, "codeId": code_id,

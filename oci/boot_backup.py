@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """启动卷备份与恢复：备份系统启动卷、从备份恢复出新实例。
 
-R-Bot 没有这个功能（网页与机器人均无备份/恢复入口），这是 M_Bot 独有的。
+M_Bot 独有功能：备份与恢复入口。
 
 原创实现，参考 OCI CLI 公开命令（oci bv boot-volume-backup ... /
 oci bv boot-volume create / oci compute instance launch）编写。

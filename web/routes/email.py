@@ -45,7 +45,7 @@ class CreateSmtpCredentialBody(BaseModel):
     """生成 SMTP 凭据请求体。"""
 
     user_id: str
-    description: str = "rbot-clone"
+    description: str = "mbot"
 
 
 @router.get("/api/email/senders")

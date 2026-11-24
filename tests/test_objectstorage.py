@@ -216,7 +216,7 @@ class TestUploadObject(unittest.TestCase):
         cli = _mock_cli({"data": {}})
         with self.assertRaises(ValueError):
             upload_object(cli, FAKE_BUCKET, "file.txt",
-                          "/tmp/does-not-exist-api-user.txt",
+                          "/tmp/does-not-exist-mbot-test.txt",
                           namespace=FAKE_NAMESPACE)
         cli.run.assert_not_called()
 

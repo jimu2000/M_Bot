@@ -1,7 +1,7 @@
 /* 主机面板逻辑：加载主机卡片、搜索过滤、添加/编辑/删除主机 */
 (function () {
   "use strict";
-  var RBot = window.RBot;
+  var MBot = window.MBot;
   var hosts = []; // 全部主机缓存
   var filterText = "";
 
@@ -12,13 +12,13 @@
 
   // 渲染一张主机卡片
   function hostCard(h) {
-    var esc = RBot.escapeHtml;
+    var esc = MBot.escapeHtml;
     var tags = Array.isArray(h.tags) ? h.tags : [];
     var tagsHtml = tags.map(function (t) {
       return '<span class="tag-chip">' + esc(t) + "</span>";
     }).join("");
     var addr = h.host + (h.port && h.port !== 22 ? ":" + h.port : "");
-    var lastUsed = h.last_used ? RBot.timeAgo(h.last_used) : "从未使用";
+    var lastUsed = h.last_used ? MBot.timeAgo(h.last_used) : "从未使用";
     var online = h.last_used && (Date.now() - new Date(h.last_used).getTime() < 24 * 3600 * 1000);
     // 平台信息行：后端没有 platform 字段，显示备注（notes）或密钥路径提示
     var platform = h.notes || h.platform || "";
@@ -67,7 +67,7 @@
     var errBox = document.getElementById("host-error");
     errBox.hidden = true;
     try {
-      var data = await RBot.api("/api/hosts");
+      var data = await MBot.api("/api/hosts");
       hosts = data.hosts || [];
       render();
     } catch (err) {
@@ -90,7 +90,7 @@
     document.getElementById("host-notes").value = host ? host.notes || "" : "";
     document.getElementById("host-tags").value = host && Array.isArray(host.tags) ? host.tags.join(", ") : "";
     toggleAuthFields();
-    RBot.openModal("host-modal");
+    MBot.openModal("host-modal");
   }
 
   function toggleAuthFields() {
@@ -117,7 +117,7 @@
     if (authType === "key") {
       payload.key_path = document.getElementById("host-key-path").value.trim();
       if (!payload.key_path) {
-        RBot.toast("密钥认证必须填写密钥文件路径", "error");
+        MBot.toast("密钥认证必须填写密钥文件路径", "error");
         return;
       }
     }
@@ -125,34 +125,34 @@
     btn.disabled = true;
     try {
       if (id) {
-        await RBot.api("/api/hosts/" + encodeURIComponent(id), { method: "PUT", body: payload });
-        RBot.toast("主机已更新", "success");
+        await MBot.api("/api/hosts/" + encodeURIComponent(id), { method: "PUT", body: payload });
+        MBot.toast("主机已更新", "success");
       } else {
-        await RBot.api("/api/hosts", { method: "POST", body: payload });
-        RBot.toast("主机已添加", "success");
+        await MBot.api("/api/hosts", { method: "POST", body: payload });
+        MBot.toast("主机已添加", "success");
       }
-      RBot.closeModal("host-modal");
+      MBot.closeModal("host-modal");
       await loadHosts();
     } catch (err) {
-      RBot.toast("保存失败：" + err.message, "error");
+      MBot.toast("保存失败：" + err.message, "error");
     } finally {
       btn.disabled = false;
     }
   }
 
   async function deleteHost(id, name) {
-    var ok = await RBot.confirmDialog(
+    var ok = await MBot.confirmDialog(
       "删除主机",
-      "<p>确定要删除主机 <b>" + RBot.escapeHtml(name) + "</b> 吗？只删除本面板的保存记录，不影响服务器本身。</p>",
+      "<p>确定要删除主机 <b>" + MBot.escapeHtml(name) + "</b> 吗？只删除本面板的保存记录，不影响服务器本身。</p>",
       "确认删除", true
     );
     if (!ok) return;
     try {
-      await RBot.api("/api/hosts/" + encodeURIComponent(id), { method: "DELETE" });
-      RBot.toast("主机已删除", "success");
+      await MBot.api("/api/hosts/" + encodeURIComponent(id), { method: "DELETE" });
+      MBot.toast("主机已删除", "success");
       await loadHosts();
     } catch (err) {
-      RBot.toast("删除失败：" + err.message, "error");
+      MBot.toast("删除失败：" + err.message, "error");
     }
   }
 
@@ -166,13 +166,13 @@
     if (!loadingEl || !bodyEl) return;
     var url = "/api/cloud-report/summary";
     if (force) url += "?refresh=1";
-    RBot.cachedApi("cloudreport", url, !!force).then(function (res) {
+    MBot.cachedApi("cloudreport", url, !!force).then(function (res) {
       var groups = res.groups || [];
       if (groups.length === 0) {
         loadingEl.textContent = "暂无已配置账号。";
         return;
       }
-      var esc = RBot.escapeHtml;
+      var esc = MBot.escapeHtml;
       bodyEl.innerHTML = groups.map(function (g) {
         // 显示名优先（后端 v1.15.0 起带 profileLabel），旧缓存没有时回落配置键名。
         var label = g.profileLabel || g.profile;
@@ -197,7 +197,7 @@
       loadingEl.hidden = true;
       bodyEl.hidden = false;
       if (res.generatedAtEpochSec) {
-        genEl.textContent = "生成于 " + RBot.formatTime(res.generatedAtEpochSec * 1000);
+        genEl.textContent = "生成于 " + MBot.formatTime(res.generatedAtEpochSec * 1000);
         genEl.hidden = false;
       }
     }).catch(function (err) {
@@ -224,7 +224,7 @@
     document.getElementById("host-grid").addEventListener("click", function (e) {
       var copyBtn = e.target.closest("[data-copy]");
       if (copyBtn) {
-        RBot.copyText(copyBtn.getAttribute("data-copy"), "地址");
+        MBot.copyText(copyBtn.getAttribute("data-copy"), "地址");
         return;
       }
       var btn = e.target.closest("[data-act]");

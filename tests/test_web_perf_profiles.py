@@ -77,7 +77,7 @@ FAKE_PROFILES = {
 
 
 def _fake_group(profile):
-    """summarize_profile 的假返回值（R-Bot 形状的最小子集）。"""
+    """summarize_profile 的假返回值（面板形状的最小子集）。"""
     return {"profile": profile, "region": "ap-singapore-1",
             "instances": {"total": 1, "byState": {"RUNNING": 1}},
             "volumes": {"count": 1, "totalGB": 47},
@@ -371,7 +371,7 @@ class TestProfileTemplates(_Base):
         self.assertIn("cacheSet", js)
         self.assertIn("cacheClear", js)
         self.assertIn("cachedApi", js)
-        # profile 切换：与 R-Bot 同款 localStorage 键名
+        # profile 切换：与面板同款 localStorage 键名
         self.assertIn("cloud_active_profile", js)
         self.assertIn("fillProfileSelect", js)
         self.assertIn("withProfile", js)

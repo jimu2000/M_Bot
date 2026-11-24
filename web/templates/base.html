@@ -12,8 +12,8 @@
 <script>
 (function () {
   try {
-    var t = localStorage.getItem("rbot-theme") || "classic";
-    var m = localStorage.getItem("rbot-mode") || "light";
+    var t = localStorage.getItem("mbot-theme") || "classic";
+    var m = localStorage.getItem("mbot-mode") || "light";
     document.documentElement.setAttribute("data-theme", t);
     document.documentElement.setAttribute("data-mode", t === "starry" ? "dark" : m);
   } catch (e) { /* 隐私模式下 localStorage 不可用时用默认主题 */ }

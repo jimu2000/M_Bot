@@ -1,6 +1,6 @@
 /* M_Bot Oracle开源管理面板 · 通用工具
  * api() / toast() / copyText() / 主题切换 / 资源栏轮询 / 弹窗工具
- * 各页面脚本都依赖这里的 RBot 全局对象。 */
+ * 各页面脚本都依赖这里的 MBot 全局对象。 */
 (function () {
   "use strict";
 
@@ -34,7 +34,7 @@
   }
 
   /* ---------- 前端缓存（Map + TTL + 按前缀清除） ---------- */
-  // 与 R-Bot 的 CloudCache 同款模型：内存 Map，默认 15 分钟 TTL，
+  // CloudCache 模型：内存 Map，默认 15 分钟 TTL，
   // 键按资源 + profile 区分（如 "inst:DEFAULT"、"vol:list:DEFAULT"），
   // 写操作后按前缀清缓存。页面内存里的缓存，刷新页面即失效；
   // 服务端还有一层缓存（实例 30 秒、云报告 60 秒），两层叠加。
@@ -375,8 +375,8 @@
     // 星夜固定暗色
     root.setAttribute("data-mode", theme === "starry" ? "dark" : mode);
     try {
-      localStorage.setItem("rbot-theme", theme);
-      localStorage.setItem("rbot-mode", mode);
+      localStorage.setItem("mbot-theme", theme);
+      localStorage.setItem("mbot-mode", mode);
     } catch (e) { /* 忽略存储失败 */ }
     var sel = document.getElementById("theme-select");
     if (sel) sel.value = theme;
@@ -527,7 +527,7 @@
   });
 
   /* 暴露给各页面脚本 */
-  window.RBot = {
+  window.MBot = {
     api: api,
     toast: toast,
     copyText: copyText,

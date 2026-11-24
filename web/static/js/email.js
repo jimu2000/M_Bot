@@ -1,7 +1,7 @@
 /* Email Delivery 逻辑：发件人列表/创建、SMTP 凭据生成（只显示一次） */
 (function () {
   "use strict";
-  var RBot = window.RBot;
+  var MBot = window.MBot;
   var senders = [];
   var users = [];
 
@@ -9,8 +9,8 @@
     var s = (state || "").toUpperCase();
     if (s === "ACTIVE") return '<span class="badge badge-green">ACTIVE</span>';
     if (s === "CREATING") return '<span class="badge badge-amber">CREATING</span>';
-    if (s === "INACTIVE" || s === "DELETED") return '<span class="badge badge-red">' + RBot.escapeHtml(state) + "</span>";
-    return '<span class="badge badge-gray">' + RBot.escapeHtml(state || "—") + "</span>";
+    if (s === "INACTIVE" || s === "DELETED") return '<span class="badge badge-red">' + MBot.escapeHtml(state) + "</span>";
+    return '<span class="badge badge-gray">' + MBot.escapeHtml(state || "—") + "</span>";
   }
 
   function renderSenders() {
@@ -20,13 +20,13 @@
       return;
     }
     tbody.innerHTML = senders.map(function (s) {
-      var esc = RBot.escapeHtml;
+      var esc = MBot.escapeHtml;
       var email = s["email-address"] || s.email_address || "—";
       var state = s["lifecycle-state"] || s.lifecycle_state || "";
       return (
         "<tr><td><b>" + esc(email) + "</b></td>" +
         "<td>" + stateBadge(state) + "</td>" +
-        "<td>" + esc(RBot.formatTime(s["time-created"] || s.time_created)) + "</td></tr>"
+        "<td>" + esc(MBot.formatTime(s["time-created"] || s.time_created)) + "</td></tr>"
       );
     }).join("");
   }
@@ -38,7 +38,7 @@
       return;
     }
     select.innerHTML = users.map(function (u) {
-      var esc = RBot.escapeHtml;
+      var esc = MBot.escapeHtml;
       var label = u.name || u.id;
       if (u.email) label += "（" + u.email + "）";
       return '<option value="' + esc(u.id) + '">' + esc(label) + "</option>";
@@ -54,15 +54,15 @@
 
   async function loadAll() {
     try {
-      var data = await RBot.api("/api/email/senders");
+      var data = await MBot.api("/api/email/senders");
       senders = data.senders || [];
     } catch (err) {
       document.getElementById("sender-tbody").innerHTML =
         '<tr><td colspan="3" style="text-align: center; color: var(--danger);">加载失败：' +
-        RBot.escapeHtml(err.message) + "</td></tr>";
+        MBot.escapeHtml(err.message) + "</td></tr>";
     }
     try {
-      var u = await RBot.api("/api/email/users");
+      var u = await MBot.api("/api/email/users");
       users = u.users || [];
     } catch (err) {
       document.getElementById("smtp-user").innerHTML =
@@ -82,15 +82,15 @@
       var email = document.getElementById("sender-email").value.trim();
       if (!email) return;
       try {
-        await RBot.api("/api/email/senders", {
+        await MBot.api("/api/email/senders", {
           method: "POST",
           body: { email_address: email },
         });
-        RBot.toast("发件人已创建，请到该邮箱点击验证链接", "success");
+        MBot.toast("发件人已创建，请到该邮箱点击验证链接", "success");
         document.getElementById("create-sender-form").reset();
         await loadAll();
       } catch (err) {
-        RBot.toast("创建失败：" + err.message, "error");
+        MBot.toast("创建失败：" + err.message, "error");
       }
     });
 
@@ -100,10 +100,10 @@
       var userId = document.getElementById("smtp-user").value;
       var description = document.getElementById("smtp-description").value.trim();
       if (!userId) {
-        RBot.toast("请先选择 IAM 用户", "error");
+        MBot.toast("请先选择 IAM 用户", "error");
         return;
       }
-      var ok = await RBot.confirmDialog(
+      var ok = await MBot.confirmDialog(
         "生成 SMTP 凭据",
         "<p>将为选中的 IAM 用户生成一组新的 SMTP 凭据。</p>" +
         "<p>密码只在生成后显示一次，请立即保存，关闭后无法再次查看。</p>",
@@ -111,17 +111,17 @@
       );
       if (!ok) return;
       try {
-        var data = await RBot.api("/api/email/smtp-credentials", {
+        var data = await MBot.api("/api/email/smtp-credentials", {
           method: "POST",
-          body: { user_id: userId, description: description || "rbot-clone" },
+          body: { user_id: userId, description: description || "mbot" },
         });
         var cred = data.credential || {};
         document.getElementById("smtp-username-result").value = cred.username || "";
         document.getElementById("smtp-password-result").value = cred.password || "";
         document.getElementById("smtp-result").hidden = false;
-        RBot.toast("SMTP 凭据已生成，请立即保存", "success");
+        MBot.toast("SMTP 凭据已生成，请立即保存", "success");
       } catch (err) {
-        RBot.toast("生成失败：" + err.message, "error");
+        MBot.toast("生成失败：" + err.message, "error");
       }
     });
 
@@ -129,7 +129,7 @@
     document.getElementById("btn-copy-smtp").addEventListener("click", async function () {
       var username = document.getElementById("smtp-username-result").value;
       var password = document.getElementById("smtp-password-result").value;
-      await RBot.copyText("用户名：" + username + "\n密码：" + password, "SMTP 凭据");
+      await MBot.copyText("用户名：" + username + "\n密码：" + password, "SMTP 凭据");
     });
 
     // 关闭凭据结果区（同时清掉页面上的密码）

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""对象存储模块：Bucket 与对象管理（R-Bot Web 面板的“对象存储”功能）。
+"""对象存储模块：Bucket 与对象管理（Web 面板的“对象存储”功能）。
 
 原创实现，参考 OCI CLI 公开命令（oci os ...）编写。
 所有函数都接受一个 oci.client.OCIClient 对象作为第一个参数。

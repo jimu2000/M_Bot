@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""OCI 抢机循环：反复尝试创建实例，直到抢到为止（R-Bot 开源克隆的 oci 模块）。
+"""OCI 抢机循环：反复尝试创建实例，直到抢到为止。
 
-原创实现，参考 R-Bot（semicons/java_oci_manage）的公开功能说明与
-~/workspace/oracle-billing/e2_provision_orchestrator.py 里已验证的流程重写，
-不是复制 R-Bot 的代码（R-Bot 是闭源二进制，无源码可抄）。
+原创实现，参考 ~/workspace/oracle-billing/e2_provision_orchestrator.py 里
+已验证的流程编写。
 
 流程要点（已验证）：
   - 创建用 `oci compute instance launch --no-retry`（OCI CLI 默认内部重试会把
@@ -88,7 +87,7 @@ from oci.client import OCIError, OutOfCapacityError, QuotaExceededError, RateLim
 # 整轮约 30 秒。
 CREATE_INTERVAL = 25
 # 抢机抖动范围（秒）：实际间隔为 CREATE_INTERVAL +/- CREATE_JITTER，
-# 即 20~30 秒随机，借鉴 R-Bot 的延迟区间做法，避免固定节律被限流。
+# 即 20~30 秒随机，避免固定节律被限流。
 CREATE_JITTER = 5
 # 429 限流指数退避的初始等待（秒），每次翻倍。
 BACKOFF_INITIAL = 60
@@ -232,7 +231,7 @@ class Grabber:
             return None
         if self._user_data_file is None:
             with tempfile.NamedTemporaryFile(
-                    mode="w", encoding="utf-8", prefix="rbot-user-data-",
+                    mode="w", encoding="utf-8", prefix="mbot-user-data-",
                     suffix=".sh", delete=False) as f:
                 f.write(self.user_data)
                 self._user_data_file = f.name

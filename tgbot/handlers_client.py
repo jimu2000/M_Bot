@@ -133,19 +133,19 @@ MEMHOG_FRACTION = 0.25
 # 占用进程持有时长（秒，10**9 秒约 31 年，相当于永久持有）。
 MEMHOG_SLEEP_SECONDS = 10 ** 9
 # 占用进程的日志文件（远程主机上）。
-MEMHOG_LOG_PATH = "/tmp/rbot_memhog.log"
+MEMHOG_LOG_PATH = "/tmp/mbot_memhog.log"
 # 实例 SSH 默认值（hosts.json 里按 IP 匹配不到已保存主机时用）：
 # 用户名 / 端口 / 密钥（面板服务器上的默认密钥，需已加到实例上）。
-# 端口与密钥可由环境变量覆盖：RBOT_MEMHOG_SSH_PORT（默认 22，
-# 生产实例用 14422）、RBOT_MEMHOG_SSH_KEY（默认 ~/.ssh/id_ed25519；
+# 端口与密钥可由环境变量覆盖：MBOT_MEMHOG_SSH_PORT（默认 22，
+# 生产实例用 14422）、MBOT_MEMHOG_SSH_KEY（默认 ~/.ssh/id_ed25519；
 # 面板服务器上没有该私钥时必须设，指向部署用的专用密钥）。
 MEMHOG_SSH_USER = "root"
 try:
-    MEMHOG_SSH_PORT = int(os.environ.get("RBOT_MEMHOG_SSH_PORT", "22"))
+    MEMHOG_SSH_PORT = int(os.environ.get("MBOT_MEMHOG_SSH_PORT", "22"))
 except ValueError:
     MEMHOG_SSH_PORT = 22
 MEMHOG_SSH_KEY = os.path.expanduser(
-    os.environ.get("RBOT_MEMHOG_SSH_KEY", "~/.ssh/id_ed25519"))
+    os.environ.get("MBOT_MEMHOG_SSH_KEY", "~/.ssh/id_ed25519"))
 # =====================================================
 
 

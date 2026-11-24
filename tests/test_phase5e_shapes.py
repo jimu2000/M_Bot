@@ -2,10 +2,10 @@
 """阶段 5 工作包 E：API 响应形状对齐的测试（TestClient + mock）。
 
 覆盖：
-  - GET /api/instances：R-Bot 形状、RUNNING 过滤、shape-config 取 OCPU/内存。
-  - GET /api/volumes：R-Bot 形状、挂载关系富化、富化失败降级。
+  - GET /api/instances：面板形状、RUNNING 过滤、shape-config 取 OCPU/内存。
+  - GET /api/volumes：面板形状、挂载关系富化、富化失败降级。
   - GET /api/quota/a1：cap 用免费上限 4/24、over 计算。
-  - GET /api/system/health：R-Bot 形状各字段。
+  - GET /api/system/health：面板形状各字段。
   - GET /api/monitor/rules：复用 tgbot 监控开关。
   - oci 层：list_instances(include_shape_config) / list_boot_volumes 的
     time-created / list_boot_volume_attachments(include_id)。
@@ -104,7 +104,7 @@ class Phase5eShapesTestCase(unittest.TestCase):
 
 
 class TestInstanceShape(Phase5eShapesTestCase):
-    """GET /api/instances 的 R-Bot 形状。"""
+    """GET /api/instances 的 面板形状。"""
 
     def setUp(self):
         super().setUp()
@@ -134,7 +134,7 @@ class TestInstanceShape(Phase5eShapesTestCase):
     @patch("web.routes.instances.list_instances",
            return_value=FAKE_INSTANCES_RAW)
     def test_stopped_filtered_out(self, mock_list, mock_ip):
-        """STOPPED 实例不在列表里（与 R-Bot 一致）。"""
+        """STOPPED 实例不在列表里。"""
         r = self.client.get("/api/instances")
         ids = [i["id"] for i in r.json()["instances"]]
         self.assertNotIn(FAKE_INSTANCE_2, ids)
@@ -163,7 +163,7 @@ class TestInstanceShape(Phase5eShapesTestCase):
 
 
 class TestVolumeShape(Phase5eShapesTestCase):
-    """GET /api/volumes 的 R-Bot 形状。"""
+    """GET /api/volumes 的 面板形状。"""
 
     def setUp(self):
         super().setUp()
@@ -227,7 +227,7 @@ class TestVolumeShape(Phase5eShapesTestCase):
 
 
 class TestA1QuotaShape(Phase5eShapesTestCase):
-    """GET /api/quota/a1 的 R-Bot 形状。"""
+    """GET /api/quota/a1 的 面板形状。"""
 
     def setUp(self):
         super().setUp()
@@ -276,7 +276,7 @@ class TestA1QuotaShape(Phase5eShapesTestCase):
 
 
 class TestHealthShape(Phase5eShapesTestCase):
-    """GET /api/system/health 的 R-Bot 形状。"""
+    """GET /api/system/health 的 面板形状。"""
 
     def setUp(self):
         super().setUp()

@@ -64,12 +64,12 @@
     instances.forEach(function (inst) {
       var on = !!enabled[inst.id];
       html += "<tr>" +
-        "<td>" + RBot.escapeHtml(inst["display-name"] || "?") + "</td>" +
-        "<td>" + RBot.escapeHtml(inst["public-ip"] || "—") + "</td>" +
+        "<td>" + MBot.escapeHtml(inst["display-name"] || "?") + "</td>" +
+        "<td>" + MBot.escapeHtml(inst["public-ip"] || "—") + "</td>" +
         "<td><button type=\"button\" class=\"btn\" data-gfw-toggle=\"" +
-        RBot.escapeHtml(inst.id) + "\" data-enabled=\"" + (on ? "1" : "0") +
+        MBot.escapeHtml(inst.id) + "\" data-enabled=\"" + (on ? "1" : "0") +
         "\">" + (on ? "✅ 已开启" : "☐ 未开启") + "</button></td>" +
-        "<td>" + RBot.escapeHtml(lastCheckText(inst.id)) + "</td>" +
+        "<td>" + MBot.escapeHtml(lastCheckText(inst.id)) + "</td>" +
         "</tr>";
     });
     tbody.innerHTML = html;
@@ -86,9 +86,9 @@
     document.getElementById("gfw-error").hidden = true;
     document.getElementById("gfw-body").hidden = true;
     Promise.all([
-      RBot.api("/api/gfw/status"),
-      RBot.cachedApi("gfw:instances:" + currentProfile + ":" + (currentRegion || ""),
-        RBot.withProfile("/api/gfw/instances", currentProfile, currentRegion), !!force)
+      MBot.api("/api/gfw/status"),
+      MBot.cachedApi("gfw:instances:" + currentProfile + ":" + (currentRegion || ""),
+        MBot.withProfile("/api/gfw/instances", currentProfile, currentRegion), !!force)
     ]).then(function (results) {
       statusData = results[0];
       instances = (results[1] && results[1].instances) || [];
@@ -105,7 +105,7 @@
     instances.forEach(function (item) {
       if (item.id === instanceId) inst = item;
     });
-    RBot.api("/api/gfw/toggle", {
+    MBot.api("/api/gfw/toggle", {
       method: "POST",
       body: JSON.stringify({
         instance_id: instanceId,
@@ -116,32 +116,32 @@
         ip: inst ? inst["public-ip"] : ""
       })
     }).then(function () {
-      RBot.toast(enable ? "已开启监控" : "已关闭监控", "success");
+      MBot.toast(enable ? "已开启监控" : "已关闭监控", "success");
       loadAll(true);
     }).catch(function (err) {
-      RBot.toast("切换失败：" + (err && err.message ? err.message : err), "error");
+      MBot.toast("切换失败：" + (err && err.message ? err.message : err), "error");
     });
   }
 
   document.addEventListener("DOMContentLoaded", function () {
     var profileSelect = document.getElementById("profile-select");
     var regionSelect = document.getElementById("region-select");
-    RBot.fillProfileSelect(profileSelect).then(function (profile) {
+    MBot.fillProfileSelect(profileSelect).then(function (profile) {
       currentProfile = profile || "DEFAULT";
-      currentRegion = RBot.fillRegionSelect(regionSelect, currentProfile);
+      currentRegion = MBot.fillRegionSelect(regionSelect, currentProfile);
       loadAll(false);
     });
     profileSelect.addEventListener("change", function (e) {
       currentProfile = e.target.value;
-      RBot.setProfile(currentProfile);
+      MBot.setProfile(currentProfile);
       // 切账号时区域重置为新账号的主区（与机器人端一致）。
-      RBot.setRegion(null);
-      currentRegion = RBot.fillRegionSelect(regionSelect, currentProfile);
+      MBot.setRegion(null);
+      currentRegion = MBot.fillRegionSelect(regionSelect, currentProfile);
       loadAll(true);
     });
     regionSelect.addEventListener("change", function (e) {
       currentRegion = e.target.value;
-      RBot.setRegion(currentRegion);
+      MBot.setRegion(currentRegion);
       loadAll(true);
     });
     document.getElementById("btn-refresh-gfw").addEventListener("click", function () {
@@ -151,25 +151,25 @@
       var input = document.getElementById("gfw-key-input");
       var key = (input.value || "").trim();
       if (!key) {
-        RBot.toast("请先粘贴 API Key", "error");
+        MBot.toast("请先粘贴 API Key", "error");
         return;
       }
-      RBot.api("/api/gfw/key", {
+      MBot.api("/api/gfw/key", {
         method: "POST",
         body: JSON.stringify({ key: key })
       }).then(function (res) {
         input.value = "";
-        RBot.toast("API Key 已保存（" + res.key_masked + "）", "success");
+        MBot.toast("API Key 已保存（" + res.key_masked + "）", "success");
         loadAll(true);
       }).catch(function (err) {
-        RBot.toast("保存失败：" + (err && err.message ? err.message : err), "error");
+        MBot.toast("保存失败：" + (err && err.message ? err.message : err), "error");
       });
     });
     document.getElementById("btn-gfw-check-now").addEventListener("click", function () {
-      RBot.api("/api/gfw/check-now", { method: "POST" }).then(function () {
-        RBot.toast("已开始检查，完成后发通知", "success");
+      MBot.api("/api/gfw/check-now", { method: "POST" }).then(function () {
+        MBot.toast("已开始检查，完成后发通知", "success");
       }).catch(function (err) {
-        RBot.toast("检查失败：" + (err && err.message ? err.message : err), "error");
+        MBot.toast("检查失败：" + (err && err.message ? err.message : err), "error");
       });
     });
   });

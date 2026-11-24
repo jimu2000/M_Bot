@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """监控规则路由（阶段 5 工作包 E）。
 
-  - GET /api/monitor/rules：返回 R-Bot 形状
+  - GET /api/monitor/rules：返回 面板形状
     {monitorEnabled, autoOpenEnabled, rules}。
 
 开关复用 Telegram 机器人侧已有的监控配置（tgbot/monitoring.py）：
@@ -43,5 +43,5 @@ def get_monitor_rules():
 
 @router.get("/api/monitor/rules")
 def monitor_rules(username: str = Depends(get_current_user)):
-    """返回监控规则（R-Bot 形状；rules 暂为空列表）。"""
+    """返回监控规则（面板形状；rules 暂为空列表）。"""
     return {"ok": True, **get_monitor_rules()}

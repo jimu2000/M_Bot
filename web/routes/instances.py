@@ -2,7 +2,7 @@
 """实例路由：列表 / 详情 / 启动 / 停止 / 重启 / 终止 / 批量 / 改名 / 重装 /
 串行控制台 / 换 IP / IPv6 / 升降配 / 尝试修复。
 
-  - GET /api/instances：列表（R-Bot 形状，见 format_instance；只含
+  - GET /api/instances：列表（面板形状，见 format_instance；只含
     RUNNING 状态实例，每项补上公网 IP，取不到时为 None）。
     各实例的公网 IP 并行取（线程池）；列表结果服务端缓存 30 秒，
     手动刷新时传 refresh=1 绕过缓存；写操作成功后清对应账号的缓存。
@@ -253,9 +253,9 @@ def _detail_extras(cli, compartment_id, instance_id, availability_domain):
 
 
 def format_instance(inst, public_ip, region):
-    """把 list_instances 的条目转成 R-Bot 面板形状（阶段 5 工作包 E）。
+    """把 list_instances 的条目转成 面板形状（阶段 5 工作包 E）。
 
-    新形状（camelCase，与 R-Bot /cloud/oci/instances 一致）：
+    新形状（camelCase 字段）：
     {id, name, publicIp, shape, state, ocpus, memoryInGBs, region,
      timeCreated}。ocpus / memoryInGBs 取自 shape-config（list_instances
     需带 include_shape_config=True，否则为 None）。
@@ -289,11 +289,10 @@ def list_all(profile: str = Query(default=None),
              state: str = Query(default="running"),
              refresh: bool = Query(default=False),
              username: str = Depends(get_current_user)):
-    """列出该账号指定区域下的实例（R-Bot 形状，每项补公网 IP）。
+    """列出该账号指定区域下的实例（面板形状，每项补公网 IP）。
 
     region 不传时用该 profile 的主区；传了则列该订阅区域的实例。
-    state=running（默认）：只含 RUNNING 状态实例（与 R-Bot
-    /cloud/oci/instances 一致）。
+    state=running（默认）：只含 RUNNING 状态实例。
     state=all：含全部非 TERMINATED 实例（RUNNING/STOPPED/STOPPING 等），
     用于从面板启动已停实例；TERMINATED 的实例始终不含。
     refresh=true：绕过服务端缓存，强制重新查询（前端刷新按钮用）。
@@ -609,8 +608,7 @@ def delete_all_ipv6(instance_id: str,
                     username: str = Depends(get_current_user)):
     """删除实例主 VNIC 的全部 IPv6。
 
-    无 IPv6 时返回 ok + 提示，不报错。注意与 R-Bot 的区别：R-Bot 按
-    单个 IPv6 ID 删除，本接口一次删全部（与面板“删除 IPv6”按钮语义一致）。
+    无 IPv6 时返回 ok + 提示，不报错。本接口一次删全部（与面板“删除 IPv6”按钮语义一致）。
     """
     try:
         cli, _compartment_id = resolve_profile(profile, region)

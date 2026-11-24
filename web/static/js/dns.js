@@ -1,8 +1,8 @@
 /* DNS 管理页：Zone 选择、记录表格、添加/编辑/删除、代理状态切换。
- * 记录内容一律用 textContent 渲染（防 XSS），错误用 RBot.toast 提示。 */
+ * 记录内容一律用 textContent 渲染（防 XSS），错误用 MBot.toast 提示。 */
 (function () {
   "use strict";
-  var RBot = window.RBot;
+  var MBot = window.MBot;
 
   var zones = [];
   var records = [];
@@ -47,11 +47,11 @@
   }
 
   function loadZones() {
-    RBot.api("/api/dns/zones").then(function (res) {
+    MBot.api("/api/dns/zones").then(function (res) {
       zones = res.zones || [];
       renderZones();
     }).catch(function (err) {
-      RBot.toast("加载 Zone 失败：" + (err.message || err), "error");
+      MBot.toast("加载 Zone 失败：" + (err.message || err), "error");
     });
   }
 
@@ -130,11 +130,11 @@
     if (type) params.push("type=" + encodeURIComponent(type));
     if (name) params.push("name=" + encodeURIComponent(name));
     if (params.length) url += "?" + params.join("&");
-    RBot.api(url).then(function (res) {
+    MBot.api(url).then(function (res) {
       records = res.records || [];
       renderRecords();
     }).catch(function (err) {
-      RBot.toast("加载记录失败：" + (err.message || err), "error");
+      MBot.toast("加载记录失败：" + (err.message || err), "error");
     });
   }
 
@@ -149,12 +149,12 @@
     document.getElementById("record-content").value = rec ? rec.content : "";
     document.getElementById("record-ttl").value = rec && rec.ttl != null ? rec.ttl : 1;
     document.getElementById("record-proxied").checked = !!(rec && rec.proxied);
-    RBot.openModal("record-modal");
+    MBot.openModal("record-modal");
   }
 
   function saveRecord() {
     if (!currentZoneId) {
-      RBot.toast("请先选择 Zone", "error");
+      MBot.toast("请先选择 Zone", "error");
       return;
     }
     var recordId = document.getElementById("record-id").value;
@@ -166,7 +166,7 @@
       ttl: parseInt(document.getElementById("record-ttl").value, 10) || 1,
     };
     if (!body.name || !body.content) {
-      RBot.toast("名称和内容不能为空", "error");
+      MBot.toast("名称和内容不能为空", "error");
       return;
     }
     var url = "/api/dns/zones/" + encodeURIComponent(currentZoneId) + "/records";
@@ -175,32 +175,32 @@
       url += "/" + encodeURIComponent(recordId);
       method = "PUT";
     }
-    RBot.api(url, { method: method, body: body }).then(function () {
-      RBot.closeModal("record-modal");
-      RBot.toast(recordId ? "记录已更新" : "记录已添加", "success");
+    MBot.api(url, { method: method, body: body }).then(function () {
+      MBot.closeModal("record-modal");
+      MBot.toast(recordId ? "记录已更新" : "记录已添加", "success");
       loadRecords();
     }).catch(function (err) {
-      RBot.toast("保存失败：" + (err.message || err), "error");
+      MBot.toast("保存失败：" + (err.message || err), "error");
     });
   }
 
   /* ---------- 删除 / 代理切换 ---------- */
 
   function deleteRecord(rec) {
-    RBot.confirmDialog(
+    MBot.confirmDialog(
       "删除 DNS 记录",
-      "<p>确定删除记录 <b>" + RBot.escapeHtml(rec.type + " " + rec.name) +
+      "<p>确定删除记录 <b>" + MBot.escapeHtml(rec.type + " " + rec.name) +
         "</b> 吗？此操作不可撤销。</p>",
       "确认删除", true
     ).then(function (ok) {
       if (!ok) return;
       var url = "/api/dns/zones/" + encodeURIComponent(currentZoneId) +
         "/records/" + encodeURIComponent(rec.id);
-      return RBot.api(url, { method: "DELETE" }).then(function () {
-        RBot.toast("记录已删除", "success");
+      return MBot.api(url, { method: "DELETE" }).then(function () {
+        MBot.toast("记录已删除", "success");
         loadRecords();
       }).catch(function (err) {
-        RBot.toast("删除失败：" + (err.message || err), "error");
+        MBot.toast("删除失败：" + (err.message || err), "error");
       });
     });
   }
@@ -208,12 +208,12 @@
   function toggleProxied(rec) {
     var url = "/api/dns/zones/" + encodeURIComponent(currentZoneId) +
       "/records/" + encodeURIComponent(rec.id) + "/proxied";
-    RBot.api(url, { method: "POST", body: { proxied: !rec.proxied } })
+    MBot.api(url, { method: "POST", body: { proxied: !rec.proxied } })
       .then(function () {
-        RBot.toast(rec.proxied ? "已关闭代理" : "已开启代理", "success");
+        MBot.toast(rec.proxied ? "已关闭代理" : "已开启代理", "success");
         loadRecords();
       }).catch(function (err) {
-        RBot.toast("切换代理状态失败：" + (err.message || err), "error");
+        MBot.toast("切换代理状态失败：" + (err.message || err), "error");
       });
   }
 

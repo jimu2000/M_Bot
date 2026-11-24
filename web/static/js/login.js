@@ -1,7 +1,7 @@
 /* 登录页逻辑：密码登录（含可选图形验证码）+ Telegram 验证码登录 + 429 锁定倒计时 */
 (function () {
   "use strict";
-  var RBot = window.RBot;
+  var MBot = window.MBot;
   var lockoutTimer = null;
   var captchaId = null;      // 当前图形验证码 id（后端开启验证码时才有）
   var captchaEnabled = false;
@@ -52,7 +52,7 @@
     var input = document.getElementById("captcha-answer");
     if (!block || !img) return;
     try {
-      var res = await RBot.api("/api/auth/captcha", { noRedirect: true });
+      var res = await MBot.api("/api/auth/captcha", { noRedirect: true });
       if (res.enabled) {
         captchaEnabled = true;
         captchaId = res.captchaId;
@@ -135,13 +135,13 @@
         tgSendBtn.disabled = true;
         tgSendBtn.textContent = "发送中…";
         try {
-          var res = await RBot.api("/api/auth/telegram/send-code", {
+          var res = await MBot.api("/api/auth/telegram/send-code", {
             method: "POST",
             body: {},
             noRedirect: true,
           });
           tgCodeId = res.codeId;
-          RBot.toast("验证码已发送到 Telegram，5 分钟内有效", "success");
+          MBot.toast("验证码已发送到 Telegram，5 分钟内有效", "success");
           startTgCooldown(60);
           var codeInput = document.getElementById("tg-code");
           if (codeInput) codeInput.focus();
@@ -173,7 +173,7 @@
         tgBtn.disabled = true;
         tgBtn.textContent = "登录中…";
         try {
-          await RBot.api("/api/auth/telegram/verify", {
+          await MBot.api("/api/auth/telegram/verify", {
             method: "POST",
             body: { code_id: tgCodeId, code: code },
             noRedirect: true,
@@ -212,7 +212,7 @@
       btn.textContent = "登录中…";
       try {
         // noRedirect：登录页自己处理 401/429，不跳回登录页
-        await RBot.api("/api/auth/login", {
+        await MBot.api("/api/auth/login", {
           method: "POST",
           body: body,
           noRedirect: true,

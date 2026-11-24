@@ -6,7 +6,7 @@ Web 面板侧发 Telegram 消息用：Telegram 验证码登录（发登录码）
 python-telegram-bot 的 Application（面板进程里没有 bot 实例）。
 
   - Token 与白名单用户复用 tgbot/config.py（环境变量
-    RBOT_TELEGRAM_TOKEN / RBOT_ALLOWED_USERS）。
+    MBOT_TELEGRAM_TOKEN / MBOT_ALLOWED_USERS）。
   - send_telegram_message(token, chat_id, text)：发一条消息，
     成功返回 True，失败返回 False（不抛异常，调用方按失败处理）。
   - send_to_allowed_users(text)：发给全部白名单用户，返回成功数。

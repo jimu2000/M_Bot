@@ -2,7 +2,7 @@
 """图形验证码（阶段 5 工作包 E，登录验证码，可选开启）。
 
   - 开关：web/config.py 的 CAPTCHA_ENABLED（环境变量
-    RBOT_CAPTCHA_ENABLED=1 才开启），默认关闭，登录流程不变。
+    MBOT_CAPTCHA_ENABLED=1 才开启），默认关闭，登录流程不变。
   - 生成：5 位数字/字母（去掉易混淆的 0/O/1/I/l），Pillow 画 PNG；
     Pillow 未安装时用 SVG 字符画兜底（纯标准库）。
   - 存储：内存字典 captcha_id -> {answer, expires}，5 分钟过期，

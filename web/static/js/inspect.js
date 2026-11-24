@@ -1,7 +1,7 @@
 /* 巡检计划页：计划增删 + 立即巡检 + 最近报告列表。 */
 (function () {
   "use strict";
-  var RBot = window.RBot;
+  var MBot = window.MBot;
   var schedules = [];
 
   function renderSchedules() {
@@ -13,7 +13,7 @@
       return;
     }
     tbody.innerHTML = schedules.map(function (s) {
-      var esc = RBot.escapeHtml;
+      var esc = MBot.escapeHtml;
       var targets = (s.targets || []).join("、");
       if (targets.length > 60) targets = targets.slice(0, 60) + "…";
       return (
@@ -40,7 +40,7 @@
       return;
     }
     tbody.innerHTML = reports.map(function (r) {
-      var esc = RBot.escapeHtml;
+      var esc = MBot.escapeHtml;
       var instances = r.instances || [];
       var running = instances.filter(function (i) { return i.state === "RUNNING"; }).length;
       var volumes = r.volumes || {};
@@ -48,7 +48,7 @@
       return (
         "<tr>" +
           "<td class=\"mono\">" + esc(r.scheduleId || "—") + "</td>" +
-          "<td>" + esc(r.startedAt ? RBot.formatTime(r.startedAt) : "—") + "</td>" +
+          "<td>" + esc(r.startedAt ? MBot.formatTime(r.startedAt) : "—") + "</td>" +
           "<td>" + instances.length + " 台（RUNNING " + running + "）</td>" +
           "<td>" + (volumes.count || 0) + " 块 / " + (volumes.totalGB || 0) + " GB</td>" +
           "<td>" + (r.ok
@@ -61,16 +61,16 @@
 
   async function loadAll() {
     try {
-      var data = await RBot.api("/api/inspect-schedules");
+      var data = await MBot.api("/api/inspect-schedules");
       schedules = data.schedules || [];
       renderSchedules();
     } catch (err) {
       document.getElementById("inspect-tbody").innerHTML =
         '<tr><td colspan="5" style="text-align: center; color: var(--danger);">加载失败：' +
-        RBot.escapeHtml(err.message) + "</td></tr>";
+        MBot.escapeHtml(err.message) + "</td></tr>";
     }
     try {
-      var rep = await RBot.api("/api/inspect-reports");
+      var rep = await MBot.api("/api/inspect-reports");
       renderReports(rep.reports || []);
     } catch (err) {
       document.getElementById("report-tbody").innerHTML =
@@ -87,21 +87,21 @@
       var cron = document.getElementById("inspect-cron").value.trim();
       var targetsRaw = document.getElementById("inspect-targets").value.trim();
       if (!cron || !targetsRaw) {
-        RBot.toast("cron 与目标实例都不能为空", "error");
+        MBot.toast("cron 与目标实例都不能为空", "error");
         return;
       }
       var targets = targetsRaw.split(",").map(function (t) { return t.trim(); })
         .filter(function (t) { return t.length > 0; });
       try {
-        await RBot.api("/api/inspect-schedules", {
+        await MBot.api("/api/inspect-schedules", {
           method: "POST",
           body: { cron: cron, targets: targets, enabled: true },
         });
-        RBot.toast("巡检计划已添加", "success");
+        MBot.toast("巡检计划已添加", "success");
         document.getElementById("inspect-cron").value = "";
         await loadAll();
       } catch (err) {
-        RBot.toast("添加失败：" + err.message, "error");
+        MBot.toast("添加失败：" + err.message, "error");
       }
     });
 
@@ -113,23 +113,23 @@
       var act = btn.getAttribute("data-act");
       if (act === "run") {
         try {
-          await RBot.api("/api/inspect-schedules/" + encodeURIComponent(id) + "/run", { method: "POST" });
-          RBot.toast("巡检已提交，稍后刷新看报告", "success");
+          await MBot.api("/api/inspect-schedules/" + encodeURIComponent(id) + "/run", { method: "POST" });
+          MBot.toast("巡检已提交，稍后刷新看报告", "success");
           setTimeout(loadAll, 3000);
         } catch (err) {
-          RBot.toast("提交巡检失败：" + err.message, "error");
+          MBot.toast("提交巡检失败：" + err.message, "error");
         }
       } else if (act === "delete") {
-        var ok = await RBot.confirmDialog(
-          "删除巡检计划", "确认删除计划 <b>" + RBot.escapeHtml(id) + "</b> 吗？此后不再定时巡检。",
+        var ok = await MBot.confirmDialog(
+          "删除巡检计划", "确认删除计划 <b>" + MBot.escapeHtml(id) + "</b> 吗？此后不再定时巡检。",
           "确认删除", true);
         if (!ok) return;
         try {
-          await RBot.api("/api/inspect-schedules/" + encodeURIComponent(id), { method: "DELETE" });
-          RBot.toast("巡检计划已删除", "success");
+          await MBot.api("/api/inspect-schedules/" + encodeURIComponent(id), { method: "DELETE" });
+          MBot.toast("巡检计划已删除", "success");
           await loadAll();
         } catch (err) {
-          RBot.toast("删除失败：" + err.message, "error");
+          MBot.toast("删除失败：" + err.message, "error");
         }
       }
     });

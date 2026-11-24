@@ -70,7 +70,7 @@ class ChunkedUploadTestCase(unittest.TestCase):
         self.addCleanup(self._data_dir_patcher.stop)
         self.addCleanup(self._tmp.cleanup)
         self.client = TestClient(app)
-        self.headers = {"Cookie": "rbot_session=good-token"}
+        self.headers = {"Cookie": "mbot_session=good-token"}
 
     def _init(self, filename="big.bin", size=2 * CHUNK_UPLOAD_SIZE + 100,
               path=None, prefix="/api/ssh/sessions"):
@@ -153,7 +153,7 @@ class TestChunkedUploadFlow(ChunkedUploadTestCase):
         self.assertFalse(os.path.exists(upload_dir))
 
     def test_terminal_prefix_works(self):
-        """R-Bot 风格的 /api/terminal/{id}/sftp/upload/* 前缀同样可用。"""
+        """M_Bot 风格的 /api/terminal/{id}/sftp/upload/* 前缀同样可用。"""
         size = 100
         r = self._init(size=size, prefix="/api/terminal")
         self.assertEqual(r.status_code, 200)

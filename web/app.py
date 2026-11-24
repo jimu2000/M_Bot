@@ -8,7 +8,7 @@
 
 启动前必须设置管理员密码哈希（否则拒绝启动）：
     python3 -m web.auth          # 交互生成哈希
-    export RBOT_WEB_PASSWORD_HASH='<生成的哈希>'
+    export MBOT_WEB_PASSWORD_HASH='<生成的哈希>'
 
 WebSocket 路由（Web SSH 终端）在 web/ssh.py 里，由另一个子代理负责；
 导入失败时跳过并打印警告，不让面板崩掉。
@@ -54,8 +54,8 @@ async def _lifespan(app):
     """应用生命周期：启动时按需启动抢机计划与巡检调度器，关闭时停掉。
 
     调度器默认关闭（config.ENABLE_PLAN_SCHEDULER，环境变量
-    RBOT_ENABLE_PLAN_SCHEDULER=1 才启动；巡检调度器同理，
-    环境变量 RBOT_ENABLE_INSPECT_SCHEDULER=1），测试不受影响。
+    MBOT_ENABLE_PLAN_SCHEDULER=1 才启动；巡检调度器同理，
+    环境变量 MBOT_ENABLE_INSPECT_SCHEDULER=1），测试不受影响。
     """
     if config.ENABLE_PLAN_SCHEDULER:
         from web.tasks import start_plan_scheduler
@@ -74,13 +74,13 @@ def create_app():
     """FastAPI 应用工厂。
 
     ADMIN_PASSWORD_HASH 未设置时抛 RuntimeError 拒绝启动
-    （测试时可通过环境变量 RBOT_WEB_PASSWORD_HASH 设一个测试哈希绕过）。
+    （测试时可通过环境变量 MBOT_WEB_PASSWORD_HASH 设一个测试哈希绕过）。
     """
     if not config.ADMIN_PASSWORD_HASH:
         raise RuntimeError(
             "未设置管理员密码哈希，拒绝启动。"
             "先运行 python3 -m web.auth 生成哈希，"
-            "再设环境变量 RBOT_WEB_PASSWORD_HASH 后启动。")
+            "再设环境变量 MBOT_WEB_PASSWORD_HASH 后启动。")
 
     app = FastAPI(title="M_Bot Web 面板", version="1.2.0",
                   lifespan=_lifespan)
@@ -154,7 +154,7 @@ def create_app():
 
 # 模块级 app 实例，供 `uvicorn web.app:app` 使用。
 # 密码哈希未设置时不创建（create_app 会抛 RuntimeError；此时按
-# 模块 docstring 先设 RBOT_WEB_PASSWORD_HASH 再启动）。测试 import
+# 模块 docstring 先设 MBOT_WEB_PASSWORD_HASH 再启动）。测试 import
 # 本模块时哈希未设置，不会触发创建，不影响测试。
 if config.ADMIN_PASSWORD_HASH:
     app = create_app()

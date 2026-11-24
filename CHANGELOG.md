@@ -9,6 +9,11 @@
 
 ## [Unreleased]
 
+## [1.17.2] - 2026-11-24
+
+### 修复
+- 品牌字眼扫荡（用户反馈 2026-11-24：仓库里不要出现 R-Bot 克隆字眼）：全仓库清掉“R-Bot / 克隆”相关措辞——注释与文档字符串里的“R-Bot 风格/形状”改成面板形状、M_Bot 风格，README 免责声明重写（不再点名原工具），deploy.sh 标题与 systemd 服务描述改成 M_Bot；内部标识同步改名：环境变量前缀 RBOT_ → MBOT_（部署机的 env 文件同步改，旧名不再读取）、JS 命名空间 window.RBot → window.MBot、会话 cookie rbot_session → mbot_session、MCP 服务器名与 SMTP 默认描述改成 mbot、临时文件与 localStorage 键名前缀改成 mbot。部署侧的服务名与路径（rbot-clone-web/bot、/opt/rbot-clone、/root/.rbot-clone.env）仍是旧名，改它们等于迁移部署，另行安排
+
 ## [1.17.1] - 2026-11-24
 
 ### 修复

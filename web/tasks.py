@@ -47,23 +47,23 @@ except ImportError:  # pragma: no cover - 依赖缺失时的降级分支
 # ocpus / memory_gb / enabled（见 GrabberPlanRegistry），其余字段
 # （可用域 / 镜像 / 子网 / 实例名 / SSH 公钥文件）优先取计划里的
 # 可选字段，缺了就用下面这些默认值。
-# 部署时用环境变量填真实值（RBOT_PLAN_AD / RBOT_PLAN_IMAGE_ID /
-# RBOT_PLAN_SUBNET_ID / RBOT_PLAN_SSH_KEYS_FILE），不改代码。
+# 部署时用环境变量填真实值（MBOT_PLAN_AD / MBOT_PLAN_IMAGE_ID /
+# MBOT_PLAN_SUBNET_ID / MBOT_PLAN_SSH_KEYS_FILE），不改代码。
 PLAN_DEFAULTS = {
     # 可用域（如 "xxxx:AP-SINGAPORE-1-AD-1"，OCI 控制台实例详情里看）。
     "availability_domain": os.environ.get(
-        "RBOT_PLAN_AD", "xxxx:AP-SINGAPORE-1-AD-1"),
+        "MBOT_PLAN_AD", "xxxx:AP-SINGAPORE-1-AD-1"),
     # 系统镜像 OCID（查法见 web/config.py 的 IMAGE_IDS 注释）。
     "image_id": os.environ.get(
-        "RBOT_PLAN_IMAGE_ID", "ocid1.image.oc1..xxxxxxxx"),
+        "MBOT_PLAN_IMAGE_ID", "ocid1.image.oc1..xxxxxxxx"),
     # 子网 OCID（OCI 控制台 VCN 里看）。
     "subnet_id": os.environ.get(
-        "RBOT_PLAN_SUBNET_ID", "ocid1.subnet.oc1..xxxxxxxx"),
+        "MBOT_PLAN_SUBNET_ID", "ocid1.subnet.oc1..xxxxxxxx"),
     # 实例显示名（计划里没填 display_name 时用它 + 计划 id 后缀）。
     "display_name": "plan-grab",
     # SSH 公钥文件路径（实例的 authorized_keys 内容来源）。
     "ssh_keys_file": os.environ.get(
-        "RBOT_PLAN_SSH_KEYS_FILE", "/path/to/keys.pub"),
+        "MBOT_PLAN_SSH_KEYS_FILE", "/path/to/keys.pub"),
     # 目标 CPU（E2 抢机筛 7J13 用；A1 填 None 表示抢到就留）。
     "target_cpu": None,
 }

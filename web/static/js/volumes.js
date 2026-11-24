@@ -1,7 +1,7 @@
 /* 启动盘逻辑：卷表格、扩容、删除、孤儿盘列表、启动卷备份 */
 (function () {
   "use strict";
-  var RBot = window.RBot;
+  var MBot = window.MBot;
   var volumes = [];
   var orphans = [];
   var backups = [];
@@ -17,7 +17,7 @@
   var selectedBackups = {}; // 多选删除：已选备份 id -> true
   var backupPaid = false; // 当前账号是否付费（备份不限 5 个）
 
-  // 字段归一化：后端返回 R-Bot 形状（camelCase）
+  // 字段归一化：后端返回 面板形状（camelCase）
   // {volumeId, attachmentId, displayName, sizeInGBs, vpusPerGB,
   //  lifecycleState, instanceId, instanceName, attached, attachmentState,
   //  availabilityDomain, timeCreated}，过渡期同时双写旧字段，
@@ -43,13 +43,13 @@
     var s = (state || "").toUpperCase();
     if (s === "AVAILABLE") return '<span class="badge badge-green">AVAILABLE</span>';
     if (s === "IN-USE") return '<span class="badge badge-blue">IN-USE</span>';
-    if (s === "PROVISIONING" || s === "RESTORING") return '<span class="badge badge-amber">' + RBot.escapeHtml(state) + "</span>";
-    if (s === "TERMINATED" || s === "FAULTY") return '<span class="badge badge-red">' + RBot.escapeHtml(state) + "</span>";
-    return '<span class="badge badge-gray">' + RBot.escapeHtml(state || "—") + "</span>";
+    if (s === "PROVISIONING" || s === "RESTORING") return '<span class="badge badge-amber">' + MBot.escapeHtml(state) + "</span>";
+    if (s === "TERMINATED" || s === "FAULTY") return '<span class="badge badge-red">' + MBot.escapeHtml(state) + "</span>";
+    return '<span class="badge badge-gray">' + MBot.escapeHtml(state || "—") + "</span>";
   }
 
   function volumeRow(raw, showInstance) {
-    var esc = RBot.escapeHtml;
+    var esc = MBot.escapeHtml;
     var v = norm(raw);
     var instanceCell = showInstance
       ? "<td>" + (v.instance_id
@@ -81,7 +81,7 @@
     );
   }
 
-  // 备份字段归一化：后端返回 R-Bot 形状（camelCase）
+  // 备份字段归一化：后端返回 面板形状（camelCase）
   // {backupId, displayName, bootVolumeId, sizeInGBs, lifecycleState,
   //  sourceType, type, timeCreated, imageId}，过渡期同时双写旧字段。
   function normBackup(b) {
@@ -101,9 +101,9 @@
   function backupStateBadge(state) {
     var s = (state || "").toUpperCase();
     if (s === "AVAILABLE") return '<span class="badge badge-green">AVAILABLE</span>';
-    if (s === "CREATING" || s === "REQUEST_RECEIVED") return '<span class="badge badge-amber">' + RBot.escapeHtml(state) + "</span>";
-    if (s === "TERMINATED" || s === "FAULTY") return '<span class="badge badge-red">' + RBot.escapeHtml(state) + "</span>";
-    return '<span class="badge badge-gray">' + RBot.escapeHtml(state || "—") + "</span>";
+    if (s === "CREATING" || s === "REQUEST_RECEIVED") return '<span class="badge badge-amber">' + MBot.escapeHtml(state) + "</span>";
+    if (s === "TERMINATED" || s === "FAULTY") return '<span class="badge badge-red">' + MBot.escapeHtml(state) + "</span>";
+    return '<span class="badge badge-gray">' + MBot.escapeHtml(state || "—") + "</span>";
   }
 
   // 来源卷名：备份记录只有 bootVolumeId，在已加载的卷列表里找名字，
@@ -119,7 +119,7 @@
   }
 
   function backupRow(raw) {
-    var esc = RBot.escapeHtml;
+    var esc = MBot.escapeHtml;
     var b = normBackup(raw);
     var canRestore = (b.state || "").toUpperCase() === "AVAILABLE";
     var checked = selectedBackups[b.id] ? " checked" : "";
@@ -132,7 +132,7 @@
         "<td><span class=\"mono\" title=\"" + esc(b.boot_volume_id || "") + "\">" + esc(sourceVolumeName(b.boot_volume_id)) + "</span></td>" +
         "<td>" + esc(b.size) + " GB</td>" +
         "<td>" + backupStateBadge(b.state) + "</td>" +
-        "<td>" + esc(RBot.formatTime(b.time_created)) + "</td>" +
+        "<td>" + esc(MBot.formatTime(b.time_created)) + "</td>" +
         '<td><div class="row-actions">' +
           '<button type="button" class="btn btn-sm btn-primary" data-act="restore"' +
             (canRestore ? "" : " disabled title=\"只有 AVAILABLE 状态的备份才能恢复\"") + ">恢复</button>" +
@@ -217,20 +217,20 @@
     var gen = loadGen; // 捕获当前代次，切账号后旧代次不再写回
     var prof = (currentProfile || "DEFAULT") + ":" + (currentRegion || "");
     try {
-      var data = await RBot.cachedApi("bb:list:" + prof,
-        RBot.withProfile("/api/boot-backups", currentProfile, currentRegion), !!force);
+      var data = await MBot.cachedApi("bb:list:" + prof,
+        MBot.withProfile("/api/boot-backups", currentProfile, currentRegion), !!force);
       if (gen !== loadGen) return;
       backups = data.backups || [];
     } catch (err) {
       if (gen !== loadGen) return;
       document.getElementById("backup-tbody").innerHTML =
         '<tr><td colspan="7" style="text-align: center; color: var(--danger);">加载失败：' +
-        RBot.escapeHtml(err.message) + "</td></tr>";
+        MBot.escapeHtml(err.message) + "</td></tr>";
       backups = [];
     }
     try {
-      var quota = await RBot.cachedApi("bb:quota:" + prof,
-        RBot.withProfile("/api/boot-backups/quota", currentProfile, currentRegion), !!force);
+      var quota = await MBot.cachedApi("bb:quota:" + prof,
+        MBot.withProfile("/api/boot-backups/quota", currentProfile, currentRegion), !!force);
       if (gen !== loadGen) return;
       backupPaid = !!quota.paid;
       var el = document.getElementById("backup-quota");
@@ -256,19 +256,19 @@
     var gen = ++loadGen; // 新一代次加载开始，旧代次的结果作废
     var prof = (currentProfile || "DEFAULT") + ":" + (currentRegion || "");
     try {
-      var data = await RBot.cachedApi("vol:list:" + prof,
-        RBot.withProfile("/api/volumes", currentProfile, currentRegion), !!force);
+      var data = await MBot.cachedApi("vol:list:" + prof,
+        MBot.withProfile("/api/volumes", currentProfile, currentRegion), !!force);
       if (gen !== loadGen) return;
       volumes = data.volumes || [];
     } catch (err) {
       if (gen !== loadGen) return;
       document.getElementById("volume-tbody").innerHTML =
         '<tr><td colspan="6" style="text-align: center; color: var(--danger);">加载失败：' +
-        RBot.escapeHtml(err.message) + "</td></tr>";
+        MBot.escapeHtml(err.message) + "</td></tr>";
     }
     try {
-      var o = await RBot.cachedApi("vol:orphans:" + prof,
-        RBot.withProfile("/api/volumes/orphans", currentProfile, currentRegion), !!force);
+      var o = await MBot.cachedApi("vol:orphans:" + prof,
+        MBot.withProfile("/api/volumes/orphans", currentProfile, currentRegion), !!force);
       if (gen !== loadGen) return;
       // 兼容两种返回键名：orphans 或 volumes
       orphans = o.orphans || o.volumes || [];
@@ -298,19 +298,19 @@
     var profileSelect = document.getElementById("profile-select");
     var regionSelect = document.getElementById("region-select");
     showLoading();
-    RBot.fillProfileSelect(profileSelect).then(function (profile) {
+    MBot.fillProfileSelect(profileSelect).then(function (profile) {
       currentProfile = profile;
-      currentRegion = RBot.fillRegionSelect(regionSelect, currentProfile);
+      currentRegion = MBot.fillRegionSelect(regionSelect, currentProfile);
       loadAll();
     }).catch(function () {
       loadAll();
     });
     profileSelect.addEventListener("change", function (e) {
       currentProfile = e.target.value;
-      RBot.setProfile(currentProfile);
+      MBot.setProfile(currentProfile);
       // 切账号时区域重置为新账号的主区（与机器人端一致）。
-      RBot.setRegion(null);
-      currentRegion = RBot.fillRegionSelect(regionSelect, currentProfile);
+      MBot.setRegion(null);
+      currentRegion = MBot.fillRegionSelect(regionSelect, currentProfile);
       // 切账号时先清空列表、显示加载中（含配额标题），再加载新
       // 账号数据，避免旧账号数据一直显示到新数据回来（同
       // instances.js v1.6.0 的做法；浏览器实测 2026-11-24：不清空
@@ -324,7 +324,7 @@
     });
     regionSelect.addEventListener("change", function (e) {
       currentRegion = e.target.value;
-      RBot.setRegion(currentRegion);
+      MBot.setRegion(currentRegion);
       volumes = [];
       orphans = [];
       backups = [];
@@ -350,7 +350,7 @@
           var input = document.getElementById("resize-size");
           input.min = resizeTarget.size + 1;
           input.value = resizeTarget.size + 10;
-          RBot.openModal("resize-modal");
+          MBot.openModal("resize-modal");
         } else if (act === "vpus") {
           vpusTarget = norm(vol);
           document.getElementById("vpus-name").textContent = vpusTarget.name;
@@ -358,17 +358,17 @@
             vpusTarget.vpus != null ? vpusTarget.vpus : "未知";
           document.getElementById("vpus-value").value =
             vpusTarget.vpus != null ? String(vpusTarget.vpus) : "10";
-          RBot.openModal("vpus-modal");
+          MBot.openModal("vpus-modal");
         } else if (act === "backup") {
           // 备份启动卷：配额检查 + 满了提示删最早，全在共享流程里。
           var bv = norm(vol);
-          RBot.backupBootVolume(bv.id, currentProfile).then(function (created) {
+          MBot.backupBootVolume(bv.id, currentProfile).then(function (created) {
             if (created) loadBackups(true);
           });
         } else if (act === "delete") {
           deleteTarget = norm(vol);
           document.getElementById("delete-volume-name").textContent = deleteTarget.name;
-          RBot.openModal("delete-volume-modal");
+          MBot.openModal("delete-volume-modal");
         }
       });
     });
@@ -387,11 +387,11 @@
         document.getElementById("restore-name").value = restoreTarget.name + "-restored";
         document.getElementById("restore-shape").value = "auto";
         document.getElementById("restore-flex-group").hidden = true;
-        RBot.openModal("restore-modal");
+        MBot.openModal("restore-modal");
       } else if (act === "delete-backup") {
         deleteBackupTarget = normBackup(raw);
         document.getElementById("delete-backup-name").textContent = deleteBackupTarget.name;
-        RBot.openModal("delete-backup-modal");
+        MBot.openModal("delete-backup-modal");
       }
     });
 
@@ -419,44 +419,44 @@
         var raw = findBackup(id);
         return raw ? normBackup(raw).name : id;
       });
-      var ok = await RBot.confirmDialog(
+      var ok = await MBot.confirmDialog(
         "删除所选备份",
         "<p>即将删除 " + ids.length + " 个备份：</p><p>" +
-          names.map(function (n) { return "• " + RBot.escapeHtml(n); }).join("<br>") +
+          names.map(function (n) { return "• " + MBot.escapeHtml(n); }).join("<br>") +
           "</p><p>删除后无法再用它们恢复实例，不可恢复。</p>",
         "确认删除 " + ids.length + " 个备份", true);
       if (!ok) return;
       try {
-        var res = await RBot.api(RBot.withProfile("/api/boot-backups/delete-batch", currentProfile, currentRegion), {
+        var res = await MBot.api(MBot.withProfile("/api/boot-backups/delete-batch", currentProfile, currentRegion), {
           method: "POST",
           body: { backup_ids: ids },
         });
         var deleted = (res.deleted || []).length;
         var failed = res.failed || [];
-        RBot.toast(failed.length
+        MBot.toast(failed.length
           ? "已删除 " + deleted + " 个备份，" + failed.length + " 个失败"
           : "已删除 " + deleted + " 个备份", failed.length ? "error" : "success");
         selectedBackups = {};
-        RBot.cacheClear("bb:");
+        MBot.cacheClear("bb:");
         await loadBackups(true);
       } catch (err) {
-        RBot.toast("批量删除失败：" + err.message, "error");
+        MBot.toast("批量删除失败：" + err.message, "error");
       }
     });
 
     // 付费账号开关：与机器人端共用同一份配置
     document.getElementById("btn-toggle-paid").addEventListener("click", async function () {
       try {
-        var res = await RBot.api(RBot.withProfile("/api/boot-backups/paid", currentProfile, currentRegion), {
+        var res = await MBot.api(MBot.withProfile("/api/boot-backups/paid", currentProfile, currentRegion), {
           method: "POST",
           body: { paid: !backupPaid },
         });
         backupPaid = !!res.paid;
-        RBot.toast(backupPaid ? "已设为付费账号，备份不限 5 个" : "已设为免费账号，备份上限 5 个", "success");
-        RBot.cacheClear("bb:");
+        MBot.toast(backupPaid ? "已设为付费账号，备份不限 5 个" : "已设为免费账号，备份上限 5 个", "success");
+        MBot.cacheClear("bb:");
         await loadBackups(true);
       } catch (err) {
-        RBot.toast("切换失败：" + err.message, "error");
+        MBot.toast("切换失败：" + err.message, "error");
       }
     });
 
@@ -472,7 +472,7 @@
       if (!restoreTarget) return;
       var name = document.getElementById("restore-name").value.trim();
       if (!name) {
-        RBot.toast("新实例名不能为空", "error");
+        MBot.toast("新实例名不能为空", "error");
         return;
       }
       var shape = document.getElementById("restore-shape").value;
@@ -483,17 +483,17 @@
       }
       var submitBtn = e.target.querySelector('button[type="submit"]');
       submitBtn.disabled = true;
-      RBot.toast("正在从备份重建启动盘并开机，请耐心等待…", "info");
+      MBot.toast("正在从备份重建启动盘并开机，请耐心等待…", "info");
       try {
-        var res = await RBot.api(RBot.withProfile("/api/boot-backups/" + encodeURIComponent(restoreTarget.id) + "/restore", currentProfile, currentRegion), {
+        var res = await MBot.api(MBot.withProfile("/api/boot-backups/" + encodeURIComponent(restoreTarget.id) + "/restore", currentProfile, currentRegion), {
           method: "POST",
           body: body,
         });
-        RBot.toast("恢复成功，新实例 ID：" + (res.instance_id || "").slice(-12), "success");
-        RBot.closeModal("restore-modal");
-        RBot.cacheClear("inst:");
+        MBot.toast("恢复成功，新实例 ID：" + (res.instance_id || "").slice(-12), "success");
+        MBot.closeModal("restore-modal");
+        MBot.cacheClear("inst:");
       } catch (err) {
-        RBot.toast("恢复失败：" + err.message, "error");
+        MBot.toast("恢复失败：" + err.message, "error");
       } finally {
         submitBtn.disabled = false;
       }
@@ -503,13 +503,13 @@
     document.getElementById("btn-confirm-delete-backup").addEventListener("click", async function () {
       if (!deleteBackupTarget) return;
       try {
-        await RBot.api(RBot.withProfile("/api/boot-backups/" + encodeURIComponent(deleteBackupTarget.id) + "?confirm=true", currentProfile, currentRegion), { method: "DELETE" });
-        RBot.toast("备份已删除", "success");
-        RBot.closeModal("delete-backup-modal");
-        RBot.cacheClear("bb:");
+        await MBot.api(MBot.withProfile("/api/boot-backups/" + encodeURIComponent(deleteBackupTarget.id) + "?confirm=true", currentProfile, currentRegion), { method: "DELETE" });
+        MBot.toast("备份已删除", "success");
+        MBot.closeModal("delete-backup-modal");
+        MBot.cacheClear("bb:");
         await loadBackups(true);
       } catch (err) {
-        RBot.toast("删除备份失败：" + err.message, "error");
+        MBot.toast("删除备份失败：" + err.message, "error");
       }
     });
 
@@ -519,20 +519,20 @@
       if (!resizeTarget) return;
       var newSize = parseInt(document.getElementById("resize-size").value, 10);
       if (!newSize || newSize <= resizeTarget.size) {
-        RBot.toast("新容量必须大于当前大小", "error");
+        MBot.toast("新容量必须大于当前大小", "error");
         return;
       }
       try {
-        await RBot.api(RBot.withProfile("/api/volumes/" + encodeURIComponent(resizeTarget.id) + "/resize", currentProfile, currentRegion), {
+        await MBot.api(MBot.withProfile("/api/volumes/" + encodeURIComponent(resizeTarget.id) + "/resize", currentProfile, currentRegion), {
           method: "POST",
           body: { size_in_gbs: newSize },
         });
-        RBot.toast("扩容已提交", "success");
-        RBot.closeModal("resize-modal");
-        RBot.cacheClear("vol:");
+        MBot.toast("扩容已提交", "success");
+        MBot.closeModal("resize-modal");
+        MBot.cacheClear("vol:");
         await loadAll();
       } catch (err) {
-        RBot.toast("扩容失败：" + err.message, "error");
+        MBot.toast("扩容失败：" + err.message, "error");
       }
     });
 
@@ -542,20 +542,20 @@
       if (!vpusTarget) return;
       var newVpus = parseInt(document.getElementById("vpus-value").value, 10);
       if ([10, 20, 30].indexOf(newVpus) === -1) {
-        RBot.toast("VPU 只能是 10、20 或 30", "error");
+        MBot.toast("VPU 只能是 10、20 或 30", "error");
         return;
       }
       try {
-        await RBot.api(RBot.withProfile("/api/volumes/" + encodeURIComponent(vpusTarget.id) + "/vpus", currentProfile, currentRegion), {
+        await MBot.api(MBot.withProfile("/api/volumes/" + encodeURIComponent(vpusTarget.id) + "/vpus", currentProfile, currentRegion), {
           method: "POST",
           body: { vpus_per_gb: newVpus },
         });
-        RBot.toast("VPU 已改为 " + newVpus, "success");
-        RBot.closeModal("vpus-modal");
-        RBot.cacheClear("vol:");
+        MBot.toast("VPU 已改为 " + newVpus, "success");
+        MBot.closeModal("vpus-modal");
+        MBot.cacheClear("vol:");
         await loadAll();
       } catch (err) {
-        RBot.toast("改 VPU 失败：" + err.message, "error");
+        MBot.toast("改 VPU 失败：" + err.message, "error");
       }
     });
 
@@ -563,13 +563,13 @@
     document.getElementById("btn-confirm-delete-volume").addEventListener("click", async function () {
       if (!deleteTarget) return;
       try {
-        await RBot.api(RBot.withProfile("/api/volumes/" + encodeURIComponent(deleteTarget.id), currentProfile, currentRegion), { method: "DELETE" });
-        RBot.toast("启动盘已删除", "success");
-        RBot.closeModal("delete-volume-modal");
-        RBot.cacheClear("vol:");
+        await MBot.api(MBot.withProfile("/api/volumes/" + encodeURIComponent(deleteTarget.id), currentProfile, currentRegion), { method: "DELETE" });
+        MBot.toast("启动盘已删除", "success");
+        MBot.closeModal("delete-volume-modal");
+        MBot.cacheClear("vol:");
         await loadAll();
       } catch (err) {
-        RBot.toast("删除失败：" + err.message, "error");
+        MBot.toast("删除失败：" + err.message, "error");
       }
     });
   });

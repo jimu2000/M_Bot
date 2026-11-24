@@ -29,10 +29,10 @@ import subprocess
 
 # ================= 配置区（改这里） =================
 # OCI CLI 可执行文件路径，按以下顺序解析（部署到不同机器时不用改代码）：
-#   1. 环境变量 RBOT_OCI_CLI（部署时可显式指定）；
+#   1. 环境变量 MBOT_OCI_CLI（部署时可显式指定）；
 #   2. PATH 里的 oci（pip install oci-cli 装进 venv 时就在 PATH 里）；
 #   3. 回退 ~/oci-venv/bin/oci（本机开发环境的旧路径）。
-OCI_CLI = (os.environ.get("RBOT_OCI_CLI")
+OCI_CLI = (os.environ.get("MBOT_OCI_CLI")
            or shutil.which("oci")
            or os.path.expanduser("~/oci-venv/bin/oci"))
 # ~/.oci/config 里的 profile 名（多账号时建多个 profile，如 DEFAULT / ACCOUNT2）。
@@ -43,13 +43,13 @@ DEFAULT_REGION = "ap-singapore-1"
 DEFAULT_TIMEOUT = 120
 # OCI 代理（阶段 5 工作包 E）：代理只影响 OCI CLI 子进程的环境变量，
 # 不改全局环境。解析优先级：
-#   1. 环境变量 RBOT_OCI_PROXY（如 "http://127.0.0.1:7890"）；
+#   1. 环境变量 MBOT_OCI_PROXY（如 "http://127.0.0.1:7890"）；
 #   2. JSON 文件（见 PROXY_FILE，Web 设置页 /api/settings/oci-proxy 写它），
 #      格式 {"proxy": "http://127.0.0.1:7890"}，proxy 为空字符串表示不代理。
 #   3. 都没有时不设代理。
-# 文件路径可用环境变量 RBOT_OCI_PROXY_FILE 覆盖（测试用）。
+# 文件路径可用环境变量 MBOT_OCI_PROXY_FILE 覆盖（测试用）。
 PROXY_FILE = os.environ.get(
-    "RBOT_OCI_PROXY_FILE",
+    "MBOT_OCI_PROXY_FILE",
     os.path.expanduser("~/workspace/rbot-clone/web/data/oci_proxy.json"))
 # 代理地址允许的协议前缀（与 tgbot 机器人代理 PROXY_SCHEMES 一致）。
 PROXY_SCHEMES = ("http://", "https://", "socks5://")
@@ -59,11 +59,11 @@ PROXY_SCHEMES = ("http://", "https://", "socks5://")
 def get_oci_proxy(proxy_file=None):
     """解析当前生效的 OCI 代理地址；未配置返回 None。
 
-    优先级：环境变量 RBOT_OCI_PROXY > JSON 配置文件。
+    优先级：环境变量 MBOT_OCI_PROXY > JSON 配置文件。
     配置文件不存在 / 损坏 / proxy 为空时返回 None（不代理）。
     地址不带允许的协议前缀时返回 None（不把非法值传给子进程）。
     """
-    proxy = (os.environ.get("RBOT_OCI_PROXY") or "").strip()
+    proxy = (os.environ.get("MBOT_OCI_PROXY") or "").strip()
     if proxy:
         return proxy if proxy.startswith(PROXY_SCHEMES) else None
     path = proxy_file or PROXY_FILE
@@ -160,7 +160,7 @@ class OCIClient:
         self.oci_cli = oci_cli
         self.timeout = timeout
         # proxy：显式传入的代理地址；None 表示每次调用时自动解析
-        # （环境变量 RBOT_OCI_PROXY 或 oci_proxy.json），设置后立即生效。
+        # （环境变量 MBOT_OCI_PROXY 或 oci_proxy.json），设置后立即生效。
         self.proxy = proxy
 
     def run_raw(self, args, profile=None, region=None, timeout=None):

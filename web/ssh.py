@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 SSH_CONNECT_TIMEOUT = 10       # SSH 连接超时（秒）
 SSH_BANNER_TIMEOUT = 10        # 欢迎横幅命令执行超时（秒）
 OUTPUT_BUFFER_LINES = 1000     # 每个会话保留的最近输出行数（供重连回放快照）
-MAX_SESSIONS = 20              # 最大并发 SSH 会话数（R-Bot 挂起上限也是 20）
+MAX_SESSIONS = 20              # 最大并发 SSH 会话数（最大并发 20）
 IDLE_TIMEOUT_MINUTES = 30      # 会话空闲超时（分钟），超时自动关闭
 SESSION_GRACE_MINUTES = 5      # WebSocket 断开后会话保留时长（分钟），供重连
 CLEANUP_INTERVAL_SECONDS = 60  # 空闲清理后台线程的检查间隔（秒）
@@ -56,7 +56,7 @@ WS_OUTPUT_POLL_SECONDS = 0.02  # 输出泵轮询 channel 的间隔（秒）
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 KNOWN_HOSTS_PATH = DATA_DIR / "known_hosts"  # AutoAddPolicy 记住的 host key
 HOSTS_FILE = DATA_DIR / "hosts.json"         # 已保存主机列表（host_id 查询用）
-SESSION_COOKIE = "rbot_session"              # 登录会话 cookie 名
+SESSION_COOKIE = "mbot_session"              # 登录会话 cookie 名
 
 try:
     # 与面板其他模块共用配置：hosts.json 在 web.config.DATA_DIR 下，
@@ -80,7 +80,7 @@ R_BOT_ART = r"""
 |_| \_\    |____/ \___/ |_|
 """
 
-# 欢迎横幅里跑的系统信息命令（与 R-Bot 终端一致）
+# 欢迎横幅里跑的系统信息命令
 BANNER_COMMAND = "uname -a; uptime; df -h /; free -h"
 
 

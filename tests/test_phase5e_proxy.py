@@ -46,7 +46,7 @@ class ProxyResolutionTest(unittest.TestCase):
 
     def test_env_var_wins(self):
         self._write_proxy_file({"proxy": "http://127.0.0.1:1111"})
-        with patch.dict(os.environ, {"RBOT_OCI_PROXY": PROXY}):
+        with patch.dict(os.environ, {"MBOT_OCI_PROXY": PROXY}):
             self.assertEqual(get_oci_proxy(proxy_file=self.proxy_file), PROXY)
 
     def test_file_fallback(self):
@@ -73,12 +73,12 @@ class ProxyResolutionTest(unittest.TestCase):
         self._write_proxy_file({"proxy": "ftp://127.0.0.1:21"})
         with patch.dict(os.environ, {}, clear=True):
             self.assertIsNone(get_oci_proxy(proxy_file=self.proxy_file))
-        with patch.dict(os.environ, {"RBOT_OCI_PROXY": "example.com:8080"}):
+        with patch.dict(os.environ, {"MBOT_OCI_PROXY": "example.com:8080"}):
             self.assertIsNone(get_oci_proxy(proxy_file=self.proxy_file))
 
     def test_socks5_allowed(self):
         with patch.dict(os.environ,
-                        {"RBOT_OCI_PROXY": "socks5://127.0.0.1:1080"}):
+                        {"MBOT_OCI_PROXY": "socks5://127.0.0.1:1080"}):
             self.assertEqual(get_oci_proxy(proxy_file=self.proxy_file),
                              "socks5://127.0.0.1:1080")
 
@@ -191,7 +191,7 @@ class ProxySettingsApiTest(unittest.TestCase):
 
     def test_env_var_priority_noted(self):
         self.client.post("/api/settings/oci-proxy", json={"proxy": PROXY})
-        with patch.dict(os.environ, {"RBOT_OCI_PROXY":
+        with patch.dict(os.environ, {"MBOT_OCI_PROXY":
                                      "http://127.0.0.1:9999"}):
             r = self.client.post("/api/settings/oci-proxy",
                                  json={"proxy": PROXY})

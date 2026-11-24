@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Telegram 机器人入口（R-Bot 克隆阶段 2）。
+"""Telegram 机器人入口（M_Bot阶段 2）。
 
 用法：
-    export RBOT_TELEGRAM_TOKEN="<BotFather 给的 Token>"
-    export RBOT_ALLOWED_USERS="<你的 Telegram 用户 ID>"
+    export MBOT_TELEGRAM_TOKEN="<BotFather 给的 Token>"
+    export MBOT_ALLOWED_USERS="<你的 Telegram 用户 ID>"
     python3 -m tgbot.bot
 
 机器人用 polling 方式收消息（不需要公网端口、不需要域名）。
-白名单是硬规则：不在 RBOT_ALLOWED_USERS 里的用户发任何命令都直接拒绝。
+白名单是硬规则：不在 MBOT_ALLOWED_USERS 里的用户发任何命令都直接拒绝。
 """
 
 import datetime
@@ -97,7 +97,7 @@ def build_application():
     token = bot_config.get_token()  # 未配置时抛 RuntimeError，启动即失败
     if not bot_config.ALLOWED_USER_IDS:
         raise RuntimeError(
-            "未配置白名单：请设置环境变量 RBOT_ALLOWED_USERS（逗号分隔的 "
+            "未配置白名单：请设置环境变量 MBOT_ALLOWED_USERS（逗号分隔的 "
             "Telegram 用户 ID），否则谁都无法使用机器人。")
 
     application = (Application.builder().token(token)

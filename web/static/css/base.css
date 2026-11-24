@@ -324,7 +324,7 @@ textarea { resize: vertical; min-height: 74px; }
 }
 .name-btn:hover { text-decoration: underline; }
 
-/* ================= 实例卡片（R-Bot 风格，手机端优先） ================= */
+/* ================= 实例卡片（M_Bot 风格，手机端优先） ================= */
 #batch-bar {
   display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
   padding: 12px 16px; margin-bottom: 16px;

@@ -1,7 +1,7 @@
 /* 证书管理页：调 GET /api/cert/status 渲染证书状态，续期走 POST /api/cert/renew（异步任务 + 轮询状态）。 */
 (function () {
   "use strict";
-  var RBot = window.RBot;
+  var MBot = window.MBot;
   var renewTimer = null;
   var currentDomain = null;
 
@@ -24,15 +24,15 @@
     document.getElementById("cert-loading").hidden = false;
     document.getElementById("cert-error").hidden = true;
     document.getElementById("cert-cards").hidden = true;
-    RBot.api("/api/cert/status").then(function (res) {
+    MBot.api("/api/cert/status").then(function (res) {
       currentDomain = res.domain;
       document.getElementById("cert-acme").textContent = res.acmeEnabled ? "已安装" : "未安装";
       document.getElementById("cert-domain").textContent = res.domain || "—";
       document.getElementById("cert-issuer").textContent = res.issuer || "—";
       document.getElementById("cert-not-before").textContent =
-        res.notBefore ? RBot.formatTime(res.notBefore) : "—";
+        res.notBefore ? MBot.formatTime(res.notBefore) : "—";
       document.getElementById("cert-not-after").textContent =
-        res.notAfter ? RBot.formatTime(res.notAfter) : "—";
+        res.notAfter ? MBot.formatTime(res.notAfter) : "—";
       document.getElementById("cert-remaining").textContent = fmtHours(res.remainingHours);
       var statusEl = document.getElementById("cert-status");
       statusEl.textContent = STATUS_TEXT[res.status] || res.status || "—";
@@ -60,7 +60,7 @@
     var outputEl = document.getElementById("cert-renew-output");
     document.getElementById("cert-renew-card").hidden = false;
     if (renewTimer) clearTimeout(renewTimer);
-    RBot.api("/api/cert/renew/" + encodeURIComponent(taskId)).then(function (res) {
+    MBot.api("/api/cert/renew/" + encodeURIComponent(taskId)).then(function (res) {
       var task = res.task || {};
       statusEl.textContent = "状态：" + (task.status || "—") +
         (task.error ? "（" + task.error + "）" : "");
@@ -68,10 +68,10 @@
       if (task.status === "running") {
         renewTimer = setTimeout(function () { pollRenew(taskId); }, 2000);
       } else if (task.status === "done") {
-        RBot.toast("证书续期成功", "success");
+        MBot.toast("证书续期成功", "success");
         loadCert();
       } else {
-        RBot.toast("证书续期失败：" + (task.error || "未知错误"), "error");
+        MBot.toast("证书续期失败：" + (task.error || "未知错误"), "error");
       }
     }).catch(function (err) {
       statusEl.textContent = "查询续期状态失败：" + (err.message || err);
@@ -83,20 +83,20 @@
     document.getElementById("btn-refresh-cert").addEventListener("click", loadCert);
     document.getElementById("btn-renew-cert").addEventListener("click", async function () {
       if (!currentDomain) return;
-      var ok = await RBot.confirmDialog(
+      var ok = await MBot.confirmDialog(
         "续期证书",
-        "确认对域名 <b>" + RBot.escapeHtml(currentDomain) + "</b> 执行 acme.sh 续期吗？",
+        "确认对域名 <b>" + MBot.escapeHtml(currentDomain) + "</b> 执行 acme.sh 续期吗？",
         "确认续期", false);
       if (!ok) return;
       try {
-        var res = await RBot.api("/api/cert/renew", {
+        var res = await MBot.api("/api/cert/renew", {
           method: "POST",
           body: { domain: currentDomain, confirm: true },
         });
-        RBot.toast("续期任务已提交，正在执行…", "info");
+        MBot.toast("续期任务已提交，正在执行…", "info");
         pollRenew(res.taskId);
       } catch (err) {
-        RBot.toast("提交续期失败：" + err.message, "error");
+        MBot.toast("提交续期失败：" + err.message, "error");
       }
     });
   });

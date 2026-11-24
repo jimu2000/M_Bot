@@ -5,7 +5,7 @@
 GET 每个页面，断言 200 且关键元素存在。
 
 运行：python3 -m unittest tests.test_web_pages -v
-同时会把每个页面渲染后的 HTML 存到 /tmp/rbot-pages/ 供协调员检查。
+同时会把每个页面渲染后的 HTML 存到 /tmp/mbot-pages/ 供协调员检查。
 """
 
 import os
@@ -21,7 +21,7 @@ from fastapi.testclient import TestClient
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WEB_DIR = os.path.join(ROOT, "web")
-DUMP_DIR = "/tmp/rbot-pages"
+DUMP_DIR = "/tmp/mbot-pages"
 
 
 def build_test_app():
@@ -58,7 +58,7 @@ class TestWebPages(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.client = TestClient(build_test_app())
-        # 渲染每个页面并存到 /tmp/rbot-pages/ 供协调员检查
+        # 渲染每个页面并存到 /tmp/mbot-pages/ 供协调员检查
         os.makedirs(DUMP_DIR, exist_ok=True)
         cls.pages = {}
         for path in ("/login", "/overview", "/instances", "/volumes", "/create", "/tasks"):

@@ -12,7 +12,7 @@ paramiko.SFTPClient.from_transport(transport) 开 SFTP 会话，每个 SSH
     真实路径再校验，跳出家目录的拒绝访问。
   - 上传 / 在线编辑有大小上限；编辑只允许文本扩展名（或无扩展名）。
 
-分块上传（阶段 5 工作包 E，R-Bot /sftp/upload* 风格）：
+分块上传（阶段 5 工作包 E，/sftp/upload* 风格）：
   init -> chunk（多轮）-> complete，另有 progress 查询与 cancel 取消。
   分块暂存 DATA_DIR/sftp_uploads/{uploadId}/，complete 成功或 cancel
   后清理；超期（UPLOAD_STALE_HOURS）未完成的由 init 时顺带清理。

@@ -1,4 +1,4 @@
-# R-Bot 克隆依赖（阶段 1 + 阶段 2 + 阶段 3）
+# M_Bot依赖（阶段 1 + 阶段 2 + 阶段 3）
 # 安装：pip install -r requirements.txt
 # 注意：OCI 调用走官方 OCI CLI（subprocess），不在这里依赖 oci SDK。
 

@@ -8,7 +8,7 @@
 
 数据存在 DATA_DIR/term_favorites.json，结构
 {version: 1, items: [{id, name, command, hostId}]}，
-与 R-Bot /term-favorites 的 {version, items} 形状一致。
+与 /term-favorites 的 {version, items} 形状一致。
 hostId 为空字符串表示不限主机（任意终端都能用）。
 """
 
@@ -25,7 +25,7 @@ from web.deps import error_response, get_current_user
 
 router = APIRouter()
 
-# 收藏夹文件格式版本（与 R-Bot 一致，固定 1）。
+# 收藏夹文件格式版本（固定 1）。
 FAVORITES_VERSION = 1
 # 单条收藏的命令最大长度（字符）。
 MAX_COMMAND_LENGTH = 2000

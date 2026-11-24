@@ -151,8 +151,8 @@ class TestBarkConfig(unittest.TestCase):
         self.assertEqual(mode, 0o600)
 
     def test_missing_file_uses_env_defaults(self):
-        with patch.dict(os.environ, {"RBOT_BARK_URL": TEST_URL,
-                                     "RBOT_BARK_KEY": TEST_KEY}):
+        with patch.dict(os.environ, {"MBOT_BARK_URL": TEST_URL,
+                                     "MBOT_BARK_KEY": TEST_KEY}):
             cfg = bark_mod.load_bark_config(self.path)
         self.assertEqual(cfg["url"], TEST_URL)
         self.assertEqual(cfg["key"], TEST_KEY)
@@ -170,8 +170,8 @@ class TestBarkConfig(unittest.TestCase):
         with open(self.path, "w", encoding="utf-8") as f:
             json.dump({"url": "https://example.com/x/",
                        "key": "E" * 32, "enabled": True}, f)
-        with patch.dict(os.environ, {"RBOT_BARK_URL": TEST_URL,
-                                     "RBOT_BARK_KEY": TEST_KEY}):
+        with patch.dict(os.environ, {"MBOT_BARK_URL": TEST_URL,
+                                     "MBOT_BARK_KEY": TEST_KEY}):
             cfg = bark_mod.load_bark_config(self.path)
         self.assertEqual(cfg["url"], "https://example.com/x/")
         self.assertTrue(cfg["enabled"])

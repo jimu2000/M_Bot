@@ -81,12 +81,12 @@ from tgbot.services import (
 )
 
 # ================= 配置区（改这里） =================
-# /oracle 菜单：(callback key, 显示文字)，1-34 项与 R-Bot 的 34 项菜单对应
-# （来源：docs/references.md）；35 项以后是克隆新增（阶段 5）。
+# /oracle 菜单：(callback key, 显示文字)，1-34 项是菜单编号
+# （来源：docs/references.md）；35 项以后是后续新增（阶段 5）。
 # key 是短标识，显示文字带原编号。
 # 注意：13 号已删（用户要求 2026-11-24：菜单顶行已有“切换账号”按钮，
 # 菜单里的 13. profile管理 是重复入口，没必要留）；其余编号保持不动，
-# 不重新编号（1-34 与 R-Bot 的编号对应关系、用户叫惯的“菜单 19 流量”
+# 不重新编号（1-34 是用户叫惯的编号，如“菜单 19 流量”
 # 这类叫法都不变）。切换账号功能本身还在（o:profiles 回调 + 顶行按钮）。
 ORACLE_MENU_ITEMS = [
     ("boot", "1. 开机(刷机)"),
@@ -335,7 +335,7 @@ def confirm_keyboard(action, idx, confirm_text="✅ 确认执行"):
 
 
 def boot_preset_keyboard():
-    """开机预设选择键盘（R-Bot 的快速配置预填）。"""
+    """开机预设选择键盘（快速配置预填）。"""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("AMD 微型 1C/1G（E2.1.Micro）",
                               callback_data="b:boot:e2")],

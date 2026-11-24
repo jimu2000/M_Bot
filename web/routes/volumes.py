@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """磁盘路由（启动盘）：列表 / 详情 / 扩容 / 删除 / 孤儿盘 / 改 VPU。
 
-  - GET /api/volumes：启动盘列表（R-Bot 形状，见 format_volume；
+  - GET /api/volumes：启动盘列表（面板形状，见 format_volume；
     含挂载关系与挂载实例名）。
   - GET /api/volumes/orphans：孤儿启动盘（AVAILABLE 且无挂载关系，
-    同样返回 R-Bot 形状）。
+    同样返回 面板形状）。
   - GET /api/volumes/{id}：单个启动盘详情。
   - POST /api/volumes/{id}/resize：body {size_in_gbs}，必须大于当前容量。
   - POST /api/volumes/{id}/vpus：body {vpus_per_gb}，只能是 10/20/30。
@@ -74,9 +74,9 @@ def _instance_name_map(cli, compartment_id):
 
 
 def format_volume(volume, attachment=None, instance_name=None):
-    """把启动盘条目转成 R-Bot 面板形状（阶段 5 工作包 E）。
+    """把启动盘条目转成 面板形状（阶段 5 工作包 E）。
 
-    新形状（camelCase，与 R-Bot /cloud/oci/volumes 一致）：
+    新形状（camelCase 字段）：
     {volumeId, attachmentId, displayName, sizeInGBs, vpusPerGB,
      lifecycleState, instanceId, instanceName, attached,
      attachmentState, availabilityDomain, timeCreated}。
@@ -116,7 +116,7 @@ def format_volume(volume, attachment=None, instance_name=None):
 
 
 def _format_volumes(cli, compartment_id, volumes):
-    """给一批启动盘补挂载关系与实例名，返回 R-Bot 形状列表。"""
+    """给一批启动盘补挂载关系与实例名，返回 面板形状列表。"""
     attachments = _attachment_map(cli, compartment_id, volumes)
     names = _instance_name_map(cli, compartment_id)
     formatted = []
@@ -162,7 +162,7 @@ def orphans(profile: str = Query(default=None),
 def list_all(profile: str = Query(default=None),
              region: str = Query(default=None),
              username: str = Depends(get_current_user)):
-    """列出该账号指定区域下的全部启动盘（R-Bot 形状，含挂载关系）。"""
+    """列出该账号指定区域下的全部启动盘（面板形状，含挂载关系）。"""
     try:
         cli, compartment_id = resolve_profile(profile, region)
         volumes = list_boot_volumes(cli, compartment_id)

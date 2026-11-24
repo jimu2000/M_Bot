@@ -2,7 +2,7 @@
 """云报告汇总路由（阶段 5 工作包 E）。
 
   - GET /api/cloud-report/summary：汇总各账号（各 profile）的实例数
-    （按状态分）、磁盘总数与 GB、A1/E2 配额用量，返回 R-Bot 形状
+    （按状态分）、磁盘总数与 GB、A1/E2 配额用量，返回 面板形状
     {groups: [{profile, region, instances, volumes, quota}],
      generatedAtEpochSec}。
 
@@ -121,7 +121,7 @@ def build_cloud_report():
 @router.get("/api/cloud-report/summary")
 def cloud_report_summary(refresh: bool = Query(default=False),
                          username: str = Depends(get_current_user)):
-    """返回各账号的云报告汇总（R-Bot 形状）。
+    """返回各账号的云报告汇总（面板形状）。
 
     refresh=true：绕过服务端缓存，强制重新汇总（前端刷新按钮用）。
     """

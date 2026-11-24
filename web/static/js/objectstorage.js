@@ -1,7 +1,7 @@
 /* 对象存储逻辑：Bucket 列表/创建/删除、对象列表/上传/删除 */
 (function () {
   "use strict";
-  var RBot = window.RBot;
+  var MBot = window.MBot;
   var buckets = [];
   var objects = [];
   var currentBucket = null;
@@ -38,13 +38,13 @@
       return;
     }
     tbody.innerHTML = buckets.map(function (b) {
-      var esc = RBot.escapeHtml;
+      var esc = MBot.escapeHtml;
       var access = b["public-access-type"] || b.public_access_type || "—";
       var tier = b["storage-tier"] || b.storage_tier || "—";
       return (
         '<tr data-bucket-name="' + esc(b.name) + '">' +
           "<td><b>" + esc(b.name) + "</b></td>" +
-          "<td>" + esc(RBot.formatTime(b["time-created"] || b.time_created)) + "</td>" +
+          "<td>" + esc(MBot.formatTime(b["time-created"] || b.time_created)) + "</td>" +
           "<td>" + esc(access) + "</td>" +
           "<td>" + esc(tier) + "</td>" +
           '<td><div class="row-actions">' +
@@ -63,12 +63,12 @@
       return;
     }
     tbody.innerHTML = objects.map(function (o) {
-      var esc = RBot.escapeHtml;
+      var esc = MBot.escapeHtml;
       return (
         '<tr data-object-name="' + esc(o.name) + '">' +
           "<td><b>" + esc(o.name) + "</b></td>" +
           "<td>" + esc(formatSize(o.size)) + "</td>" +
-          "<td>" + esc(RBot.formatTime(o["time-created"] || o.time_created)) + "</td>" +
+          "<td>" + esc(MBot.formatTime(o["time-created"] || o.time_created)) + "</td>" +
           '<td><div class="row-actions">' +
             '<button type="button" class="btn btn-sm btn-danger" data-act="delete">删除</button>' +
           "</div></td>" +
@@ -79,12 +79,12 @@
 
   async function loadBuckets() {
     try {
-      var data = await RBot.api("/api/objectstorage/buckets");
+      var data = await MBot.api("/api/objectstorage/buckets");
       buckets = data.buckets || [];
     } catch (err) {
       document.getElementById("bucket-tbody").innerHTML =
         '<tr><td colspan="5" style="text-align: center; color: var(--danger);">加载失败：' +
-        RBot.escapeHtml(err.message) + "</td></tr>";
+        MBot.escapeHtml(err.message) + "</td></tr>";
       return;
     }
     renderBuckets();
@@ -92,18 +92,18 @@
 
   async function loadObjects(bucketName) {
     try {
-      var data = await RBot.api("/api/objectstorage/buckets/" + encodeURIComponent(bucketName) + "/objects");
+      var data = await MBot.api("/api/objectstorage/buckets/" + encodeURIComponent(bucketName) + "/objects");
       objects = data.objects || [];
     } catch (err) {
       document.getElementById("object-tbody").innerHTML =
         '<tr><td colspan="4" style="text-align: center; color: var(--danger);">加载失败：' +
-        RBot.escapeHtml(err.message) + "</td></tr>";
+        MBot.escapeHtml(err.message) + "</td></tr>";
       return;
     }
     renderObjects();
   }
 
-  // 上传用 multipart（RBot.api 只发 JSON），这里直接用 fetch。
+  // 上传用 multipart（MBot.api 只发 JSON），这里直接用 fetch。
   async function uploadFile(bucketName, file, objectName) {
     var formData = new FormData();
     formData.append("file", file);
@@ -135,7 +135,7 @@
       }
     });
     document.getElementById("btn-new-bucket").addEventListener("click", function () {
-      RBot.openModal("create-bucket-modal");
+      MBot.openModal("create-bucket-modal");
     });
     document.getElementById("btn-back-buckets").addEventListener("click", function () {
       showBucketsView();
@@ -155,7 +155,7 @@
         deleteBucketTarget = name;
         document.getElementById("delete-bucket-name").textContent = name;
         document.getElementById("delete-bucket-empty").checked = false;
-        RBot.openModal("delete-bucket-modal");
+        MBot.openModal("delete-bucket-modal");
       }
     });
 
@@ -166,7 +166,7 @@
       var row = btn.closest("[data-object-name]");
       deleteObjectTarget = row.getAttribute("data-object-name");
       document.getElementById("delete-object-name").textContent = deleteObjectTarget;
-      RBot.openModal("delete-object-modal");
+      MBot.openModal("delete-object-modal");
     });
 
     // 确认创建 Bucket
@@ -175,16 +175,16 @@
       var name = document.getElementById("bucket-name").value.trim();
       if (!name) return;
       try {
-        await RBot.api("/api/objectstorage/buckets", {
+        await MBot.api("/api/objectstorage/buckets", {
           method: "POST",
           body: { name: name },
         });
-        RBot.toast("Bucket 已创建", "success");
-        RBot.closeModal("create-bucket-modal");
+        MBot.toast("Bucket 已创建", "success");
+        MBot.closeModal("create-bucket-modal");
         document.getElementById("create-bucket-form").reset();
         await loadBuckets();
       } catch (err) {
-        RBot.toast("创建失败：" + err.message, "error");
+        MBot.toast("创建失败：" + err.message, "error");
       }
     });
 
@@ -195,12 +195,12 @@
       var url = "/api/objectstorage/buckets/" + encodeURIComponent(deleteBucketTarget) +
         (empty ? "?empty=true" : "");
       try {
-        await RBot.api(url, { method: "DELETE" });
-        RBot.toast("Bucket 已删除", "success");
-        RBot.closeModal("delete-bucket-modal");
+        await MBot.api(url, { method: "DELETE" });
+        MBot.toast("Bucket 已删除", "success");
+        MBot.closeModal("delete-bucket-modal");
         await loadBuckets();
       } catch (err) {
-        RBot.toast("删除失败：" + err.message, "error");
+        MBot.toast("删除失败：" + err.message, "error");
       }
     });
 
@@ -208,15 +208,15 @@
     document.getElementById("btn-confirm-delete-object").addEventListener("click", async function () {
       if (!currentBucket || !deleteObjectTarget) return;
       try {
-        await RBot.api(
+        await MBot.api(
           "/api/objectstorage/buckets/" + encodeURIComponent(currentBucket) +
           "/objects/" + encodeURIComponent(deleteObjectTarget),
           { method: "DELETE" });
-        RBot.toast("对象已删除", "success");
-        RBot.closeModal("delete-object-modal");
+        MBot.toast("对象已删除", "success");
+        MBot.closeModal("delete-object-modal");
         await loadObjects(currentBucket);
       } catch (err) {
-        RBot.toast("删除失败：" + err.message, "error");
+        MBot.toast("删除失败：" + err.message, "error");
       }
     });
 
@@ -227,7 +227,7 @@
       var fileInput = document.getElementById("upload-file");
       var file = fileInput.files[0];
       if (!file) {
-        RBot.toast("请先选择文件", "error");
+        MBot.toast("请先选择文件", "error");
         return;
       }
       var objectName = document.getElementById("upload-name").value.trim();
@@ -236,11 +236,11 @@
       btn.textContent = "上传中…";
       try {
         await uploadFile(currentBucket, file, objectName || null);
-        RBot.toast("上传成功", "success");
+        MBot.toast("上传成功", "success");
         document.getElementById("upload-form").reset();
         await loadObjects(currentBucket);
       } catch (err) {
-        RBot.toast("上传失败：" + err.message, "error");
+        MBot.toast("上传失败：" + err.message, "error");
       } finally {
         btn.disabled = false;
         btn.textContent = "上传";

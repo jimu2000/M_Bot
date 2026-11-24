@@ -270,16 +270,16 @@ def get_serial_console(cli, instance_id, ssh_public_key_file=None):
 
     ssh_public_key_file：串行控制台登录用的 SSH 公钥文件（OCI CLI
     必填参数 --ssh-public-key-file，缺了报 Missing option）。
-    不传时依次取环境变量 RBOT_CONSOLE_SSH_KEY_FILE、~/.ssh/id_ed25519.pub；
+    不传时依次取环境变量 MBOT_CONSOLE_SSH_KEY_FILE、~/.ssh/id_ed25519.pub；
     都没有时抛 ValueError（调用方应提示用户先配置）。
     """
     key_file = (ssh_public_key_file
-                or os.environ.get("RBOT_CONSOLE_SSH_KEY_FILE")
+                or os.environ.get("MBOT_CONSOLE_SSH_KEY_FILE")
                 or os.path.expanduser("~/.ssh/id_ed25519.pub"))
     if not os.path.isfile(key_file):
         raise ValueError(
             f"串行控制台需要 SSH 公钥文件，未找到：{key_file}。"
-            "请设环境变量 RBOT_CONSOLE_SSH_KEY_FILE 指向一个公钥文件。")
+            "请设环境变量 MBOT_CONSOLE_SSH_KEY_FILE 指向一个公钥文件。")
     created = _unwrap(cli.run(
         ["compute", "instance-console-connection", "create",
          "--instance-id", instance_id,

@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """SolusVM stub：实现 CloudProvider，方法尚未实现。
 
-R-Bot 原版用 SolusVM API 管理 racknerd 等 VPS 商的机器（开机/重启/
-重装等），本模块以后接同一套 API。
+SolusVM API 可管理 racknerd 等 VPS 商的机器（开机/重启/重装等），本模块以后接这套 API。
 
 凭据（环境变量注入，绝不硬编码）：
     SOLUSVM_API_URL    SolusVM 面板 API 地址（如 https://面板域名/api/client）
