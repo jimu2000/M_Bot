@@ -516,6 +516,85 @@ class TestInstallScript(unittest.TestCase):
         self.assertIn("$(running_services)", up)
         self.assertNotIn("$(mbot_services)", up)
 
+    # ---------- 定时自动升级（v1.39.0） ----------
+
+    def test_auto_upgrade_cron_setup(self):
+        # cron 行含 schedule + 临时副本 + auto-upgrade + 日志重定向；
+        # 临时副本是关键：git pull 会更新 install.sh 本身，直接跑
+        # 原文件会被中途改写。
+        fn = self.text.split("setup_auto_upgrade() {")[1].split(
+            "\n}\n")[0]
+        self.assertIn('"$AUTO_UPGRADE_SCHEDULE"', fn)
+        self.assertIn('"$UPGRADE_CRON"', fn)
+        self.assertIn('"$UPGRADE_LOG"', fn)
+        self.assertIn("cp %s/install.sh /tmp/mbot-install-run.sh", fn)
+        self.assertIn("bash /tmp/mbot-install-run.sh auto-upgrade", fn)
+        self.assertIn('chmod 644 "$UPGRADE_CRON"', fn)
+        self.assertIn('AUTO_UPGRADE_SCHEDULE="0 4 * * *"', self.text)
+        self.assertIn('UPGRADE_CRON="/etc/cron.d/mbot-auto-upgrade"',
+                      self.text)
+        self.assertIn('UPGRADE_LOG="/var/log/mbot-upgrade.log"',
+                      self.text)
+
+    def test_auto_upgrade_opt_out(self):
+        fn = self.text.split("setup_auto_upgrade() {")[1].split(
+            "\n}\n")[0]
+        self.assertIn("MBOT_INSTALL_NO_AUTO_UPGRADE", fn)
+        self.assertIn('rm -f "$UPGRADE_CRON"', fn)
+
+    def test_auto_upgrade_skips_when_current(self):
+        # 已是最新版时提前返回，不碰服务。
+        fn = self.text.split("cmd_auto_upgrade() {")[1].split(
+            "\n}\n")[0]
+        self.assertIn("git fetch origin main --quiet", fn)
+        self.assertIn("git rev-parse HEAD", fn)
+        self.assertIn("git rev-parse origin/main", fn)
+        self.assertIn("无需升级", fn)
+        self.assertIn("return 0", fn)
+
+    def test_auto_upgrade_restarts_only_running_services(self):
+        # 自动升级的重启同样走 running_services，不走 mbot_services，
+        # 不拉起被特意停掉的服务；子 shell 里不要用 local。
+        fn = self.text.split("cmd_auto_upgrade() {")[1].split(
+            "\n}\n")[0]
+        self.assertIn("$(running_services)", fn)
+        self.assertNotIn("$(mbot_services)", fn)
+        sub = fn.split("if (")[1].split("); then")[0]
+        self.assertNotIn("local ", sub)
+
+    def test_auto_upgrade_notifies_on_failure(self):
+        fn = self.text.split("_notify_upgrade_failure() {")[1].split(
+            "\n}\n")[0]
+        self.assertIn("from tgbot.bark import send_bark", fn)
+        self.assertIn("MBOT_TGBOT_DATA_DIR", fn)
+        self.assertIn('group="upgrade"', fn)
+        self.assertIn("2>/dev/null", fn)
+        self.assertIn("|| true", fn)
+        auto = self.text.split("cmd_auto_upgrade() {")[1].split(
+            "\n}\n")[0]
+        self.assertIn('_notify_upgrade_failure "拉取远端失败"', auto)
+        self.assertIn('_notify_upgrade_failure "升级步骤失败"', auto)
+
+    def test_install_sets_up_auto_upgrade(self):
+        fn = self.text.split("cmd_install() {")[1].split("\n}\n")[0]
+        self.assertIn("setup_auto_upgrade", fn)
+
+    def test_uninstall_removes_upgrade_cron(self):
+        fn = self.text.split("cmd_uninstall() {")[1].split("\n}\n")[0]
+        self.assertIn('rm -f "$UPGRADE_CRON" "$UPGRADE_LOG"', fn)
+
+    def test_health_check_skips_disabled_bot(self):
+        # 机器人单元存在但已禁用+未运行时，不判失败，只报 info。
+        fn = self.text.split("health_check() {")[1].split("\n}\n")[0]
+        self.assertIn('systemctl is-enabled --quiet "$BOT_SERVICE"',
+                      fn)
+        self.assertIn("机器人服务已停用，跳过检查。", fn)
+
+    def test_auto_upgrade_subcommands_dispatched(self):
+        self.assertIn("auto-upgrade) cmd_auto_upgrade ;;", self.text)
+        self.assertIn("setup-auto-upgrade) setup_auto_upgrade ;;",
+                      self.text)
+
 
 if __name__ == "__main__":
     unittest.main()

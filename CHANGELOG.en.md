@@ -9,6 +9,15 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [1.39.0] - 2026-11-24
+- New scheduled auto-upgrade: installation now sets up a cron job (daily at 04:00 server local time) running `install.sh auto-upgrade`; it first compares the local and remote versions, and when already up to date it only logs and touches no service; when a new version exists it pulls the code, installs dependencies, restarts only running or enabled services, and runs a health check
+- Auto-upgrade failures send a Bark notification (titled "M_Bot 自动升级失败", with hostname, reason, and log path; silently skipped when Bark is not configured or disabled, and notification errors never affect the upgrade flow)
+- The cron job runs install.sh from a temporary copy, so a git pull updating install.sh itself cannot rewrite the running script; setting `MBOT_INSTALL_NO_AUTO_UPGRADE` skips the cron setup
+- New subcommands `install.sh auto-upgrade` (run one check-and-upgrade cycle manually) and `install.sh setup-auto-upgrade` (enable the cron on an existing install without touching services); uninstall removes the auto-upgrade cron and log
+- Fixed health_check treating a deliberately disabled bot as a failure: when the bot unit exists but is disabled and inactive it now only logs an info line and skips the check, instead of warning and failing (otherwise hosts with the bot intentionally stopped would report a false failure on every auto-upgrade)
+
+**Verification**: full test suite passes, 2554 tests (9 new in tests/test_install_script.py). Live verification: running auto-upgrade manually on the test host reports "already up to date" without restarting services; another host upgraded from v1.31.0 via upgrade to v1.39.0 and then enabled the cron.
+
 ## [1.38.1] - 2026-11-24
 - Fixed deleting an account leaving an extra blank line in the config file: remove_oci_profile unconditionally appended a `\n` after removing the last section, while adding a section never adds a separator blank line, so the file no longer matched the original byte-for-byte; removal now only drops the section's own lines and leaves everything else untouched
 - Fixed upgrades reviving a deliberately stopped service: `install.sh upgrade` restarted every installed service unconditionally, bringing back a bot that had been stopped and disabled; it now only restarts services that are running or enabled

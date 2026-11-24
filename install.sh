@@ -10,7 +10,7 @@
 #     && chmod +x install.sh && bash install.sh
 #
 # 管理命令（安装后，在任意目录运行）：
-#   bash install.sh start|stop|restart|status|log|upgrade|uninstall
+#   bash install.sh start|stop|restart|status|log|upgrade|auto-upgrade|setup-auto-upgrade|uninstall
 #
 # 安装前准备（缺一不可，装完机器人才能工作）：
 #   1. Telegram 机器人 Token：@BotFather 处获得——新建机器人发 /newbot，
@@ -99,6 +99,11 @@ ACME_WEBROOT="/var/www/mbot-acme"
 # lego run 兼续期：证书没到续期窗口时直接跳过）。
 RENEW_SCRIPT="/usr/local/bin/mbot-renew-cert.sh"
 RENEW_CRON="/etc/cron.d/mbot-cert-renew"
+# 定时自动升级（每天凌晨 4 点跑 install.sh auto-upgrade；已是
+# 最新版时只记日志不重启服务，有新版时才升级；失败时 Bark 通知）。
+UPGRADE_CRON="/etc/cron.d/mbot-auto-upgrade"
+UPGRADE_LOG="/var/log/mbot-upgrade.log"
+AUTO_UPGRADE_SCHEDULE="0 4 * * *"
 # =====================================================
 
 # ---------- 输出 ----------
@@ -1503,9 +1508,11 @@ health_check() {
     if [ -f "/etc/systemd/system/${BOT_SERVICE}.service" ]; then
         if systemctl is-active --quiet "$BOT_SERVICE"; then
             ok "机器人服务运行中。"
-        else
+        elif systemctl is-enabled --quiet "$BOT_SERVICE" 2>/dev/null; then
             warn "机器人服务未运行（常见原因是 Token 不对）！看日志：journalctl -u $BOT_SERVICE -n 50"
             fail=1
+        else
+            info "机器人服务已停用，跳过检查。"
         fi
     else
         info "未装机器人服务，跳过检查。"
@@ -1681,7 +1688,7 @@ print_access_info() {
             fi
         fi
     fi
-    echo "管理命令：bash install.sh start|stop|restart|status|log|upgrade|uninstall"
+    echo "管理命令：bash install.sh start|stop|restart|status|log|upgrade|auto-upgrade|setup-auto-upgrade|uninstall"
     echo "=================================================="
 }
 
@@ -1711,6 +1718,7 @@ cmd_install() {
         info "nginx 配置已存在，跳过（想换域名请删 $NGINX_CONF 后重跑）。"
     fi
     health_check || warn "健康检查有告警，见上面日志。"
+    setup_auto_upgrade
     if [ "$FRESH_INSTALL" = "1" ]; then
         self_test "$ADMIN_PASSWORD"
         print_access_info
@@ -1718,6 +1726,89 @@ cmd_install() {
         echo
         echo "更新完成：代码已更新到 v$(installed_version)，服务已重启。"
         echo "查看状态：bash install.sh status"
+    fi
+}
+
+# 定时自动升级的 cron 设置：每天凌晨 4 点跑一次
+# install.sh auto-upgrade；已是最新版时只记日志不重启服务，
+# 有新版时才升级。用临时副本执行，避免 git pull 更新 install.sh
+# 本身时正在运行的脚本被改写。MBOT_INSTALL_NO_AUTO_UPGRADE
+# 非空时删掉 cron 文件并跳过。
+setup_auto_upgrade() {
+    if [ -n "${MBOT_INSTALL_NO_AUTO_UPGRADE:-}" ]; then
+        rm -f "$UPGRADE_CRON"
+        info "已跳过自动升级设置（MBOT_INSTALL_NO_AUTO_UPGRADE）。"
+        return 0
+    fi
+    printf '%s root (cp %s/install.sh /tmp/mbot-install-run.sh && bash /tmp/mbot-install-run.sh auto-upgrade) >> %s 2>&1\n' \
+        "$AUTO_UPGRADE_SCHEDULE" "$INSTALL_DIR" "$UPGRADE_LOG" > "$UPGRADE_CRON"
+    chmod 644 "$UPGRADE_CRON"
+    ok "定时自动升级已设置（每天凌晨 4 点，有新版时才升级）。"
+}
+
+# 自动升级失败时 Bark 通知（Bark 未配置或未开启时静默跳过）。
+# $1 = 失败原因简述。通知本身的任何异常都吞掉，绝不能影响升级流程。
+_notify_upgrade_failure() {
+    local reason="$1"
+    MBOT_TGBOT_DATA_DIR="$INSTALL_DIR/tgbot/data" \
+        "$VENV_DIR/bin/python" - "$INSTALL_DIR" "$UPGRADE_LOG" "$reason" \
+        2>/dev/null <<'PYEOF' || true
+import socket
+import sys
+sys.path.insert(0, sys.argv[1])
+try:
+    from tgbot.bark import send_bark
+    ok, err = send_bark(
+        "M_Bot 自动升级失败",
+        "主机 %s：%s，详见 %s。"
+        % (socket.gethostname(), sys.argv[3], sys.argv[2]),
+        group="upgrade")
+    if not ok:
+        print("Bark 通知未发出：%s" % err)
+except Exception as exc:  # noqa: BLE001 - 通知失败不影响升级流程
+    print("Bark 通知异常：%s" % exc)
+PYEOF
+}
+
+cmd_auto_upgrade() {
+    # 定时自动升级（cron 调用）：先比对本地与远端版本，已是
+    # 最新版时只记日志、不碰服务；有新版时走完整升级流程；
+    # 失败时记日志并 Bark 通知（Bark 配好且已开启时）。
+    require_root
+    [ -d "$INSTALL_DIR/.git" ] || die "未安装（$INSTALL_DIR 不存在），先运行不带参数的安装。"
+    cd "$INSTALL_DIR" || die "无法进入 $INSTALL_DIR。"
+    info "自动升级检查开始（当前版本 v$(installed_version)）。"
+    if ! git fetch origin main --quiet 2>/dev/null; then
+        warn "拉取远端失败，跳过本次检查。"
+        _notify_upgrade_failure "拉取远端失败"
+        return 0
+    fi
+    local local_head remote_head
+    local_head=$(git rev-parse HEAD)
+    remote_head=$(git rev-parse origin/main)
+    if [ "$local_head" = "$remote_head" ]; then
+        info "已是最新版（v$(installed_version)），无需升级。"
+        return 0
+    fi
+    info "发现新版，开始升级…"
+    # 升级步骤放子 shell 里跑：update_code 失败时 die 只退出子 shell，
+    # 外层能捕获失败并 Bark 通知；子 shell 里不要用 local。
+    if (
+        set -e
+        update_code
+        "$VENV_DIR/bin/pip" install --quiet -r "$INSTALL_DIR/requirements.txt"
+        "$VENV_DIR/bin/pip" install --quiet oci-cli
+        to_restart=$(running_services)
+        if [ -n "$to_restart" ]; then
+            # shellcheck disable=SC2086
+            systemctl restart $to_restart
+        fi
+        health_check
+    ); then
+        ok "自动升级完成（版本 v$(installed_version)）。"
+    else
+        warn "自动升级失败，服务保持原状，见日志 $UPGRADE_LOG。"
+        _notify_upgrade_failure "升级步骤失败"
     fi
 }
 
@@ -1743,7 +1834,7 @@ cmd_uninstall() {
     require_root
     echo "即将卸载 M_Bot：停服务、删 systemd 单元、删 nginx 反代、删 $INSTALL_DIR。"
     echo "环境文件 $ENV_FILE 与密码文件 $ADMIN_PASSWORD_FILE 会保留（凭据不删）。"
-    echo "证书续期 cron 与脚本会删掉；/etc/lego 里的证书与 CF Token 保留（重装还能用）。"
+    echo "证书续期 cron 与脚本、定时自动升级 cron 与日志会删掉；/etc/lego 里的证书与 CF Token 保留（重装还能用）。"
     printf "确认卸载？输入 yes 继续："
     read -r ans || true
     [ "$ans" = "yes" ] || { echo "已取消。"; exit 0; }
@@ -1752,6 +1843,7 @@ cmd_uninstall() {
     rm -f "/etc/systemd/system/${WEB_SERVICE}.service" \
         "/etc/systemd/system/${BOT_SERVICE}.service"
     rm -f "$RENEW_CRON" "$RENEW_SCRIPT"
+    rm -f "$UPGRADE_CRON" "$UPGRADE_LOG"
     systemctl daemon-reload
     rm -f "$NGINX_CONF"
     nginx -t >/dev/null 2>&1 && systemctl reload nginx 2>/dev/null || true
@@ -1770,9 +1862,11 @@ case "${1:-}" in
     status)     systemctl status $(mbot_services) --no-pager ;;
     log)        journalctl $(mbot_services | sed 's/^/-u /;s/ / -u /g') -n 100 --no-pager ;;
     upgrade)    cmd_upgrade ;;
+    auto-upgrade) cmd_auto_upgrade ;;
+    setup-auto-upgrade) setup_auto_upgrade ;;
     uninstall)  cmd_uninstall ;;
     *)
-        echo "用法：$0 [start|stop|restart|status|log|upgrade|uninstall]"
+        echo "用法：$0 [start|stop|restart|status|log|upgrade|auto-upgrade|setup-auto-upgrade|uninstall]"
         echo "不带参数：首次运行安装，再次运行更新并重启。"
         exit 1
         ;;
