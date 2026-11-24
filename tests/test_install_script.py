@@ -504,6 +504,18 @@ class TestInstallScript(unittest.TestCase):
             "\n}\n")[0]
         self.assertIn('! [ -f "$ENV_FILE" ]', fn)
 
+    def test_upgrade_restarts_only_running_or_enabled(self):
+        # v1.38.1：升级不要拉起被特意停掉并禁用的服务（如只用面板
+        # 时禁用的机器人）；只重启在跑或已设自启的服务。
+        self.assertIn("running_services() {", self.text)
+        fn = self.text.split("running_services() {")[1].split(
+            "\n}\n")[0]
+        self.assertIn('systemctl is-active -q "$svc"', fn)
+        self.assertIn('systemctl is-enabled -q "$svc"', fn)
+        up = self.text.split("cmd_upgrade() {")[1].split("\n}\n")[0]
+        self.assertIn("$(running_services)", up)
+        self.assertNotIn("$(mbot_services)", up)
+
 
 if __name__ == "__main__":
     unittest.main()

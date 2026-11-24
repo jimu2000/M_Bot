@@ -9,6 +9,12 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [1.38.1] - 2026-11-24
+- Fixed deleting an account leaving an extra blank line in the config file: remove_oci_profile unconditionally appended a `\n` after removing the last section, while adding a section never adds a separator blank line, so the file no longer matched the original byte-for-byte; removal now only drops the section's own lines and leaves everything else untouched
+- Fixed upgrades reviving a deliberately stopped service: `install.sh upgrade` restarted every installed service unconditionally, bringing back a bot that had been stopped and disabled; it now only restarts services that are running or enabled
+
+**Verification**: full test suite passes, 2545 tests (2 new: 1 in tests/test_web_oci_profiles.py covering byte-identical config after an add-then-delete round trip; 1 in tests/test_install_script.py covering upgrades restarting only running or enabled services). Live verification on the main host: verify_v138.py passes 19/19 (fake account FAKEDEL01 added then deleted, config and env both restored byte-for-byte).
+
 ## [1.38.0] - 2026-11-24
 - Configured accounts on the cloud accounts page can now be deleted: each row gains a delete button (with a confirmation prompt), removing the config section and the compartment variable; the private key file is only removed when no other account shares it
 - Deletion guards: DEFAULT is the default account and cannot be deleted; at least one account must remain; the panel list updates immediately after deletion, and the bot needs a restart to pick it up

@@ -578,6 +578,24 @@ class WebOciProfilesTestCase(unittest.TestCase):
         self.assertIn("cf_email=a@example.com", content)
         self.assertFalse(remove_oci_profile("DROP"))
 
+    def test_remove_oci_profile_round_trip_byte_identical(self):
+        # v1.38.1 回归：添加再删除一个段后，文件必须与原来逐字节一致。
+        from tgbot.handlers_client import (
+            append_oci_profile, remove_oci_profile)
+        original = ("[KEEP]\nuser=%s\nfingerprint=%s\n"
+                    "key_file=/root/keep.pem\ntenancy=%s\n"
+                    "region=ap-singapore-1\n"
+                    % (FAKE_USER, FAKE_FINGERPRINT, FAKE_TENANCY))
+        with open(self._config_path, "w", encoding="utf-8") as handle:
+            handle.write(original)
+        append_oci_profile("TEMP", {
+            "user": FAKE_USER, "fingerprint": FAKE_FINGERPRINT,
+            "key_file": "/root/temp.pem", "tenancy": FAKE_TENANCY_2,
+            "region": "us-chicago-1"})
+        self.assertIn("[TEMP]", self._read_config())
+        self.assertTrue(remove_oci_profile("TEMP"))
+        self.assertEqual(self._read_config(), original)
+
 
 if __name__ == "__main__":
     unittest.main()

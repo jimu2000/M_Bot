@@ -441,6 +441,18 @@ mbot_services() {
     fi
 }
 
+running_services() {
+    # 升级时只重启“在跑或已设自启”的服务：被特意停掉并禁用
+    # 的服务（如机器人留着不用）不要擅自拉起来。
+    local svc
+    for svc in $(mbot_services); do
+        if systemctl is-active -q "$svc" 2>/dev/null \
+                || systemctl is-enabled -q "$svc" 2>/dev/null; then
+            printf '%s ' "$svc"
+        fi
+    done
+}
+
 write_systemd_units() {
     # 更新模式下 prompt_config 没跑，BOT_ENABLED 未设：从 env 文件
     # 看有没有 Token 决定要不要机器人服务。
@@ -1716,8 +1728,13 @@ cmd_upgrade() {
     update_code
     "$VENV_DIR/bin/pip" install --quiet -r "$INSTALL_DIR/requirements.txt"
     "$VENV_DIR/bin/pip" install --quiet oci-cli
-    # shellcheck disable=SC2086
-    systemctl restart $(mbot_services)
+    # 只重启在跑或已设自启的服务（特意停掉并禁用的不拉起来）。
+    local to_restart
+    to_restart=$(running_services)
+    if [ -n "$to_restart" ]; then
+        # shellcheck disable=SC2086
+        systemctl restart $to_restart
+    fi
     health_check || warn "健康检查有告警，见上面日志。"
     ok "升级完成（版本 v$(installed_version)）。"
 }

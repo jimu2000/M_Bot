@@ -969,11 +969,8 @@ def remove_oci_profile(profile, path=None):
             output.append(line)
     if not removed:
         return False
-    # 删段后文件尾部可能留下多余空行，收掉（只动尾部）。
-    while output and not output[-1].strip():
-        output.pop()
-    if output:
-        output.append("\n")
+    # 只删段内行，其余内容（包括段前后的空行）原样保留，不做任何
+    # 收尾处理——添加时不加分隔空行，删段后文件即恢复原样。
     with open(target, "w", encoding="utf-8") as handle:
         handle.writelines(output)
     try:
