@@ -60,6 +60,14 @@
     return '<span class="badge badge-amber">' + MBot.escapeHtml(state || "—") + "</span>";
   }
 
+  // E2.1.Micro 后面加“永久免费”。
+  function fmtShape(shape) {
+    if (shape === "VM.Standard.E2.1.Micro" || shape === "E2.1.Micro") {
+      return shape + "永久免费";
+    }
+    return shape;
+  }
+
   // 启动盘格子：大小 · VPU + 状态徽标 + 已附加徽标；无数据时显示 "—"
   function bootVolumeCell(inst) {
     var esc = MBot.escapeHtml;
@@ -161,7 +169,7 @@
           "</div>" +
           '<div class="instance-meta">' +
             '<div class="instance-meta-row"><span class="instance-meta-label">公网 IP</span><span class="instance-meta-value">' + ipCell + "</span></div>" +
-            '<div class="instance-meta-row"><span class="instance-meta-label">Shape</span><span class="instance-meta-value mono">' + esc(inst.shape) + "</span></div>" +
+            '<div class="instance-meta-row"><span class="instance-meta-label">Shape</span><span class="instance-meta-value mono">' + esc(fmtShape(inst.shape)) + "</span></div>" +
             '<div class="instance-meta-row"><span class="instance-meta-label">CPU 型号</span><span class="instance-meta-value mono">' + esc(inst.cpuModel || "未检测") + "</span></div>" +
             '<div class="instance-meta-row"><span class="instance-meta-label">规格</span><span class="instance-meta-value">' + esc(spec) + "</span></div>" +
             '<div class="instance-meta-row"><span class="instance-meta-label">启动盘</span><span class="instance-meta-value">' + bootVolumeCell(inst) + "</span></div>" +
@@ -177,8 +185,8 @@
 
   // 加载实例列表（走前端缓存；force=true 时跳过前端缓存并带 refresh=1
   // 绕过服务端缓存）。后端并行取公网 IP + 30 秒服务端缓存，首次约 3-5 秒。
-  // 同时并行拉启动盘列表（复用 volumes 页的 "vol:list:" 缓存键），按
-  // instanceId 拼到卡片上；启动盘拉取失败时降级（卡片显示"—"），
+  // 实例与启动盘两个请求并行发（复用 volumes 页的 "vol:list:" 缓存键），
+  // 启动盘按 instanceId 拼到卡片上；启动盘拉取失败时降级（卡片显示"—"），
   // 不影响实例列表。切账号/区域期间旧请求的结果直接丢弃，不覆盖新数据。
   async function loadInstances(force) {
     var profileAtStart = currentProfile;
@@ -190,22 +198,23 @@
     try {
       var url = MBot.withProfile("/api/instances", currentProfile, currentRegion);
       if (force) url += (url.indexOf("?") === -1 ? "?" : "&") + "refresh=1";
+      var volUrl = MBot.withProfile("/api/volumes", currentProfile, currentRegion);
+      if (force) volUrl += (volUrl.indexOf("?") === -1 ? "?" : "&") + "refresh=1";
+      // 两个请求同时发出，启动盘失败时降级为 null（不影响实例列表）。
+      var volPromise = MBot.cachedApi("vol:list:" + (currentProfile || "DEFAULT") + ":" + (currentRegion || ""), volUrl, !!force).catch(function () { return null; });
       var data = await MBot.cachedApi("inst:" + (currentProfile || "DEFAULT") + ":" + (currentRegion || ""), url, !!force);
       if (profileAtStart !== currentProfile || regionAtStart !== currentRegion) return;
       instances = data.instances || [];
-      try {
-        var volUrl = MBot.withProfile("/api/volumes", currentProfile, currentRegion);
-        var volData = await MBot.cachedApi("vol:list:" + (currentProfile || "DEFAULT") + ":" + (currentRegion || ""), volUrl, !!force);
-        if (profileAtStart !== currentProfile || regionAtStart !== currentRegion) return;
-        volumesByInstance = {};
+      var volData = await volPromise;
+      if (profileAtStart !== currentProfile || regionAtStart !== currentRegion) return;
+      volumesByInstance = {};
+      if (volData) {
         (volData.volumes || []).forEach(function (v) {
           var iid = v.instanceId || v["instance-id"];
           if (iid && !volumesByInstance[String(iid)]) {
             volumesByInstance[String(iid)] = v;
           }
         });
-      } catch (volErr) {
-        volumesByInstance = {};
       }
       // 刷新后清理已不存在实例的选中状态
       var alive = {};
@@ -244,7 +253,7 @@
       var inst = res.instance || {};
       var cfg = inst["shape-config"] || {};
       document.getElementById("detail-name").textContent = inst["display-name"] || "—";
-      document.getElementById("detail-shape").textContent = inst.shape || "—";
+      document.getElementById("detail-shape").textContent = fmtShape(inst.shape) || "—";
       document.getElementById("detail-cpu-model").textContent = res.cpu_model || "未检测";
       document.getElementById("detail-spec").textContent =
         (cfg.ocpus != null ? cfg.ocpus + " OCPU / " + cfg["memory-in-gbs"] + " GB" : "—");

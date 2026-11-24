@@ -14,6 +14,10 @@
 会被当成 volume_id 匹配。
 """
 
+from concurrent.futures import ThreadPoolExecutor
+import threading
+import time
+
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
@@ -37,6 +41,32 @@ from web.deps import (
 )
 
 router = APIRouter()
+
+# ================= 配置区（改这里） =================
+# 启动盘列表服务端缓存 TTL（秒）：列表接口每次要跑 3 次 OCI CLI
+# （1 次 list + 挂载关系 + 实例名），串行约 5 秒；30 秒内重复访问
+# 直接返回缓存，手动刷新（refresh=1）绕过缓存。
+VOLUMES_CACHE_TTL = 30
+# =====================================================
+
+# 启动盘列表缓存：(profile, region, "list"/"orphans") ->
+# {"expires": 单调时钟过期点, "payload": 响应体}。只放内存不写盘。
+_VOLUMES_CACHE = {}
+_VOLUMES_CACHE_LOCK = threading.Lock()
+
+
+def clear_volumes_cache(profile=None):
+    """清启动盘列表缓存：指定 profile 时只清该账号，否则全清。
+
+    写操作（扩容/改 VPU/删除）成功后调用，避免列表显示旧数据；
+    单元测试在 setUp 里调用，避免缓存跨测试串数据。
+    """
+    with _VOLUMES_CACHE_LOCK:
+        if profile is None:
+            _VOLUMES_CACHE.clear()
+        else:
+            for key in [k for k in _VOLUMES_CACHE if k[0] == profile]:
+                del _VOLUMES_CACHE[key]
 
 
 # 视为“已挂载”的挂载状态（与 list_orphan_boot_volumes 的判断一致）。
@@ -116,9 +146,18 @@ def format_volume(volume, attachment=None, instance_name=None):
 
 
 def _format_volumes(cli, compartment_id, volumes):
-    """给一批启动盘补挂载关系与实例名，返回 面板形状列表。"""
-    attachments = _attachment_map(cli, compartment_id, volumes)
-    names = _instance_name_map(cli, compartment_id)
+    """给一批启动盘补挂载关系与实例名，返回 面板形状列表。
+
+    挂载关系与实例名是两个独立的 OCI 查询，并行跑（各 1 次 CLI，
+    约省一半时间）；两个查询各自降级，失败不影响对方。
+    """
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        att_future = pool.submit(_attachment_map, cli, compartment_id,
+                                 volumes)
+        names_future = pool.submit(_instance_name_map, cli,
+                                   compartment_id)
+        attachments = att_future.result()
+        names = names_future.result()
     formatted = []
     for volume in volumes:
         att = attachments.get(volume.get("id"))
@@ -142,39 +181,73 @@ class VpusBody(BaseModel):
 @router.get("/api/volumes/orphans")
 def orphans(profile: str = Query(default=None),
             region: str = Query(default=None),
+            refresh: bool = Query(default=False),
             username: str = Depends(get_current_user)):
-    """列出孤儿启动盘（可清理的、释放实例后留下的盘）。"""
+    """列出孤儿启动盘（可清理的、释放实例后留下的盘）。
+
+    refresh=true：绕过服务端缓存，强制重新查询（前端刷新按钮用）。
+    """
     try:
         cli, compartment_id = resolve_profile(profile, region)
+        profile_name = profile or config.DEFAULT_PROFILE
+        cache_key = (profile_name, cli.region, "orphans")
+        if not refresh:
+            with _VOLUMES_CACHE_LOCK:
+                entry = _VOLUMES_CACHE.get(cache_key)
+            if entry and time.monotonic() < entry["expires"]:
+                return entry["payload"]
         volumes = list_orphan_boot_volumes(cli, compartment_id)
         volumes = _format_volumes(cli, compartment_id, volumes)
     except ValueError as exc:
         return error_response(str(exc), status_code=400)
     except OCIError as exc:
         return oci_error_response(exc)
-    return {"ok": True,
-            "profile": profile or config.DEFAULT_PROFILE,
-            "region": cli.region,
-            "volumes": volumes}
+    payload = {"ok": True,
+               "profile": profile_name,
+               "region": cli.region,
+               "volumes": volumes}
+    with _VOLUMES_CACHE_LOCK:
+        _VOLUMES_CACHE[cache_key] = {
+            "expires": time.monotonic() + VOLUMES_CACHE_TTL,
+            "payload": payload,
+        }
+    return payload
 
 
 @router.get("/api/volumes")
 def list_all(profile: str = Query(default=None),
              region: str = Query(default=None),
+             refresh: bool = Query(default=False),
              username: str = Depends(get_current_user)):
-    """列出该账号指定区域下的全部启动盘（面板形状，含挂载关系）。"""
+    """列出该账号指定区域下的全部启动盘（面板形状，含挂载关系）。
+
+    refresh=true：绕过服务端缓存，强制重新查询（前端刷新按钮用）。
+    """
     try:
         cli, compartment_id = resolve_profile(profile, region)
+        profile_name = profile or config.DEFAULT_PROFILE
+        cache_key = (profile_name, cli.region, "list")
+        if not refresh:
+            with _VOLUMES_CACHE_LOCK:
+                entry = _VOLUMES_CACHE.get(cache_key)
+            if entry and time.monotonic() < entry["expires"]:
+                return entry["payload"]
         volumes = list_boot_volumes(cli, compartment_id)
         volumes = _format_volumes(cli, compartment_id, volumes)
     except ValueError as exc:
         return error_response(str(exc), status_code=400)
     except OCIError as exc:
         return oci_error_response(exc)
-    return {"ok": True,
-            "profile": profile or config.DEFAULT_PROFILE,
-            "region": cli.region,
-            "volumes": volumes}
+    payload = {"ok": True,
+               "profile": profile_name,
+               "region": cli.region,
+               "volumes": volumes}
+    with _VOLUMES_CACHE_LOCK:
+        _VOLUMES_CACHE[cache_key] = {
+            "expires": time.monotonic() + VOLUMES_CACHE_TTL,
+            "payload": payload,
+        }
+    return payload
 
 
 @router.get("/api/volumes/{volume_id}")
@@ -213,6 +286,7 @@ def resize(volume_id: str,
         return error_response(str(exc), status_code=400)
     except OCIError as exc:
         return oci_error_response(exc)
+    clear_volumes_cache(profile or config.DEFAULT_PROFILE)
     return {"ok": True, "volume": volume}
 
 
@@ -233,6 +307,7 @@ def update_vpus(volume_id: str,
         return error_response(str(exc), status_code=400)
     except OCIError as exc:
         return oci_error_response(exc)
+    clear_volumes_cache(profile or config.DEFAULT_PROFILE)
     return {"ok": True, "volume": volume}
 
 
@@ -249,4 +324,5 @@ def delete(volume_id: str,
         return error_response(str(exc), status_code=400)
     except OCIError as exc:
         return oci_error_response(exc)
+    clear_volumes_cache(profile or config.DEFAULT_PROFILE)
     return {"ok": True, "volume_id": volume_id}

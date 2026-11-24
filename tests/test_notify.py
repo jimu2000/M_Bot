@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 
 from tgbot import notify as notify_mod
 import tgbot.handlers_extra as he
+from tgbot.cpu_policy import BootKeys
 from tgbot.services import TaskRegistry
 from oci.grabber import GrabResult
 
@@ -120,6 +121,21 @@ class TestFmtBootSuccess(unittest.TestCase):
         self.assertIn("ip：1.2.3.4", text)
         self.assertIn("ip：1.2.3.5", text)
         self.assertIn("开机地区：ap-singapore-1（新加坡）", text)
+
+    def test_cpu_unverified_adds_warning(self):
+        text = notify_mod.fmt_boot_success(
+            "圣何塞", "圣何塞", "VM.Standard.E2.1.Micro", 1, 1, 47,
+            [{"name": "AMD_2026-11-25", "public_ip": "203.0.113.10",
+              "attempts": 1, "elapsed_seconds": 3.0}],
+            cpu_unverified=True)
+        self.assertIn("⚠️ CPU 未验明，请人工核对", text)
+
+    def test_cpu_verified_no_warning(self):
+        text = notify_mod.fmt_boot_success(
+            "圣何塞", "圣何塞", "VM.Standard.E2.1.Micro", 1, 1, 47,
+            [{"name": "AMD_2026-11-25", "public_ip": "203.0.113.10",
+              "attempts": 1, "elapsed_seconds": 3.0}])
+        self.assertNotIn("CPU 未验明", text)
 
 
 class TestNotifyBootSuccess(unittest.TestCase):
@@ -271,6 +287,135 @@ class TestGrabberThreadNotify(unittest.TestCase):
         get_ip.assert_called_once()
         self.assertEqual(get_ip.call_args[0][1],
                          "ocid1.instance.oc1..aaa1")
+
+
+class TestGrabberThreadCpuFilter(unittest.TestCase):
+    """_run_grabber_thread 的 CPU 筛选注入：合并 keys + hook + 规则列表。"""
+
+    def setUp(self):
+        self.tasks = TaskRegistry()
+        self._tasks = patch.object(he, "TASKS", self.tasks)
+        self._tasks.start()
+        self.addCleanup(self._tasks.stop)
+        self.preset = {
+            "display_name": "AMD_2026-11-25",
+            "shape": "VM.Standard.E2.1.Micro",
+            "availability_domain": "AD-1", "image_id": "img",
+            "subnet_id": "subnet", "ocpus": 1, "memory_gb": 1,
+            "count": 1, "target_cpu": "7J13",
+            "ssh_keys_file": "/tmp/user_keys.pub",
+        }
+        self.result = GrabResult(
+            instance_id="ocid1.instance.oc1..aaa1", releases=0,
+            attempts=1, elapsed_seconds=3.0)
+
+    def _fake_grabber(self, result):
+        grabber = MagicMock()
+        grabber.run.return_value = result
+        return grabber
+
+    def _combined_keys(self, path, guard_included):
+        cm = MagicMock()
+        cm.return_value.__enter__.return_value = BootKeys(
+            path=path, guard_included=guard_included)
+        return cm
+
+    def test_filter_on_injects_hook_and_combined_keys(self):
+        fake = self._fake_grabber(self.result)
+        hook = MagicMock()
+        with patch.object(he, "Grabber",
+                          return_value=fake) as mock_grabber_cls, \
+                patch.object(he, "combined_boot_keys",
+                             self._combined_keys("/tmp/combined.pub",
+                                                 True)), \
+                patch.object(he, "get_allowed_cpu_models",
+                             return_value=["7J13", "7745"]), \
+                patch.object(he, "make_cpu_check_hook",
+                             return_value=hook) as mock_hook_fn, \
+                patch.object(he, "save_preset"):
+            task_id = self.tasks.register("grab")
+            he._run_grabber_thread(task_id, MagicMock(), "comp", self.preset)
+        self.assertEqual(self.tasks.get(task_id)["status"], "done")
+        kwargs = mock_grabber_cls.call_args[1]
+        self.assertEqual(kwargs["target_cpu"], ["7J13", "7745"])
+        self.assertEqual(mock_grabber_cls.call_args[0][7],
+                         "/tmp/combined.pub")
+        self.assertIs(fake.cpu_check_hook, hook)
+        mock_hook_fn.assert_called_once()
+
+    def test_filter_on_no_guard_warns_and_runs_unfiltered(self):
+        fake = self._fake_grabber(self.result)
+        with patch.object(he, "Grabber",
+                          return_value=fake) as mock_grabber_cls, \
+                patch.object(he, "combined_boot_keys",
+                             self._combined_keys("/tmp/user_keys.pub",
+                                                 False)), \
+                patch.object(he, "get_allowed_cpu_models",
+                             return_value=["7J13", "7745"]), \
+                patch.object(he, "make_cpu_check_hook") as mock_hook_fn, \
+                patch.object(he, "save_preset"):
+            task_id = self.tasks.register("grab")
+            he._run_grabber_thread(task_id, MagicMock(), "comp", self.preset)
+        kwargs = mock_grabber_cls.call_args[1]
+        self.assertIsNone(kwargs["target_cpu"])
+        self.assertEqual(mock_grabber_cls.call_args[0][7],
+                         "/tmp/user_keys.pub")
+        mock_hook_fn.assert_not_called()
+        # 警告要留在最终详情里（on_event 的单行详情会被成功详情覆盖）
+        self.assertIn("未配置 guard 密钥",
+                      self.tasks.get(task_id)["detail"])
+
+    def test_filter_off_no_guard_keys_no_hook(self):
+        preset = dict(self.preset)
+        preset["target_cpu"] = None
+        fake = self._fake_grabber(self.result)
+        with patch.object(he, "Grabber",
+                          return_value=fake) as mock_grabber_cls, \
+                patch.object(he, "combined_boot_keys",
+                             self._combined_keys("/tmp/user_keys.pub",
+                                                 False)) as mock_keys, \
+                patch.object(he, "make_cpu_check_hook") as mock_hook_fn, \
+                patch.object(he, "save_preset"):
+            task_id = self.tasks.register("grab")
+            he._run_grabber_thread(task_id, MagicMock(), "comp", preset)
+        kwargs = mock_grabber_cls.call_args[1]
+        self.assertIsNone(kwargs["target_cpu"])
+        mock_hook_fn.assert_not_called()
+        self.assertFalse(mock_keys.call_args[1]["include_guard"])
+
+    def test_cpu_check_failed_flag_reaches_notify(self):
+        # Grabber 发 cpu_check_failed 事件时，成功通知带未验明标志
+        fake = self._fake_grabber(self.result)
+        mock_grabber_cls = MagicMock(return_value=fake)
+
+        def run_side_effect():
+            on_event = mock_grabber_cls.call_args[1]["on_event"]
+            on_event("cpu_check_failed", "CPU 查不到型号，暂留实例。")
+            return self.result
+
+        fake.run.side_effect = run_side_effect
+        notify = {"token": "T", "chat_id": 654321,
+                  "profile_label": "圣何塞", "region_label": "圣何塞",
+                  "root_password": "pw" + "123"}
+        with patch.object(he, "Grabber", mock_grabber_cls), \
+                patch.object(he, "combined_boot_keys",
+                             self._combined_keys("/tmp/combined.pub",
+                                                 True)), \
+                patch.object(he, "get_allowed_cpu_models",
+                             return_value=["7J13", "7745"]), \
+                patch.object(he, "make_cpu_check_hook",
+                             return_value=MagicMock()), \
+                patch.object(he, "wait_for_public_ip",
+                             return_value="203.0.113.10"), \
+                patch.object(he, "save_preset"), \
+                patch.object(he, "notify_boot_success",
+                             return_value={"telegram": True, "bark": False,
+                                           "errors": []}) as notify_fn:
+            task_id = self.tasks.register("grab")
+            he._run_grabber_thread(task_id, MagicMock(), "comp",
+                                   self.preset, notify=notify)
+        self.assertTrue(notify_fn.call_args[1]["cpu_unverified"])
+        self.assertIn("CPU 未验明", self.tasks.get(task_id)["detail"])
 
 
 class TestSendTelegramMessageFull(unittest.TestCase):

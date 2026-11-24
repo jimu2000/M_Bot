@@ -140,13 +140,16 @@ def cpu_type_label(shape):
 
 def fmt_boot_success(profile_label, region_label, shape, ocpus,
                      memory_gb, disk_gb, instances, root_password=None,
-                     region_code=None, ssh_key_set=False):
+                     region_code=None, ssh_key_set=False,
+                     cpu_unverified=False):
     """开机成功通知全文（照 R 探长成功消息的字段结构）。
 
     instances：每台 {"name", "public_ip", "attempts", "elapsed_seconds"}。
     root_password 只有设置时才出现（密码行 + 末尾的注意行）。
     disk_gb 为 None 时硬盘行显示"默认"（镜像默认大小）。
     region_code 是区域代码（如 ap-seoul-1），有则与中文名一起显示。
+    cpu_unverified 为 True 时追加一行 CPU 未验明提醒（抢机时 SSH
+    查不到 CPU 型号，实例暂留未释放）。
     """
     lines = ["🎉 恭喜，开机成功！"]
     lines.append(f"账号：{profile_label}")
@@ -181,6 +184,8 @@ def fmt_boot_success(profile_label, region_label, shape, ocpus,
                 f"ip：{inst.get('public_ip') or '获取中，稍后在实例列表查看'}")
             lines.append(f"花费时间：{inst['elapsed_seconds']:.0f} 秒")
             lines.append(f"抢机次数：{inst['attempts']} 次")
+    if cpu_unverified:
+        lines.append("⚠️ CPU 未验明，请人工核对")
     if root_password:
         lines.append("注意📢：root密码机器人不会记忆，请注意保存")
     return "\n".join(lines)
@@ -189,7 +194,7 @@ def fmt_boot_success(profile_label, region_label, shape, ocpus,
 def notify_boot_success(token, chat_id, profile_label, region_label,
                         shape, ocpus, memory_gb, disk_gb, instances,
                         root_password=None, region_code=None,
-                        ssh_key_set=False):
+                        ssh_key_set=False, cpu_unverified=False):
     """开机成功双通道推送：Telegram + Bark（Bark 未开启时只推 TG）。
 
     返回 {"telegram": bool, "bark": bool, "errors": [str]}。
@@ -199,7 +204,8 @@ def notify_boot_success(token, chat_id, profile_label, region_label,
                             memory_gb, disk_gb, instances,
                             root_password=root_password,
                             region_code=region_code,
-                            ssh_key_set=ssh_key_set)
+                            ssh_key_set=ssh_key_set,
+                            cpu_unverified=cpu_unverified)
     result = {"telegram": False, "bark": False, "errors": []}
     try:
         ok, err = send_telegram_message(token, chat_id, text)

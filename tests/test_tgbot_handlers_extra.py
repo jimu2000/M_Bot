@@ -1104,11 +1104,13 @@ class TestBoot(HandlersExtraTestCase):
             "cancelled")
         with patch.object(he, "Grabber", mock_grabber_cls):
             await he.boot_go_callback(update, context)
-        task_id = self.tasks.list_all()[0]["id"]
-        for _ in range(50):
-            if self.tasks.get(task_id)["status"] == "cancelled":
-                break
-            await asyncio.sleep(0.1)
+            task_id = self.tasks.list_all()[0]["id"]
+            # 等待必须留在 Grabber 的 patch 里：线程构造 Grabber 时
+            # patch 已退出就会拿到真实 Grabber，任务变 failed。
+            for _ in range(50):
+                if self.tasks.get(task_id)["status"] == "cancelled":
+                    break
+                await asyncio.sleep(0.1)
         self.assertEqual(self.tasks.get(task_id)["status"], "cancelled")
 
 

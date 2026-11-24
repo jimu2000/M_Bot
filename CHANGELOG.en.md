@@ -9,6 +9,15 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [1.41.0] - 2026-11-24
+- CPU filter rules are now configurable and actually wired in (the "only grab 7J13" option used to be a no-op — the hook was never injected): new tgbot/cpu_policy.py, rules live in tgbot/data/cpu_policy.json (0600), default keeps only 7J13/7745; at boot the guard public key is merged into the launch SSH keys (new combined_boot_keys), the Grabber gets a cpu_check_hook, and a grabbed instance is SSH-checked first — a non-matching CPU is released (boot volume permanently deleted) and grabbing continues; when the CPU cannot be verified the instance is kept and marked "unverified" instead of being released; without a guard key configured, grabbed instances are kept and the detail says so; bot and web grabbing changed together, button text follows the configured rules
+- Grabber target_cpu now accepts a list (any listed model matches); a hook returning None or raising is treated as unverified and the instance is kept
+- Bot and web tasks are now shared: both sides use web/data/tasks.json (new tgbot/task_store.py, file-locked read-modify-write, atomic replace on write), so the bot sees web grabbing tasks and the web sees bot tasks; cancelling the other side's task writes cancel_requested, and the other side's watcher thread sets the stop event to stop grabbing; task IDs carry an origin prefix (bot-g1 / web-g1), legacy unprefixed IDs still work; on startup only the current side's unfinished tasks are recovered
+- E2.1.Micro shape display now shows "永久免费" (permanently free) in bot details/presets and web instance cards/detail dialogs
+- Web loading optimization: boot volume and orphan volume lists get a 30-second server cache (same as the instance list, refresh=1 bypasses it, cleared after resize/VPU change/delete/terminate/restore); attachment and instance-name lookups now run in parallel; the instances page fetches instances and volumes in parallel, the volumes page fetches volumes/orphans and backups/quota in parallel; measured cold loads: instances page ~9.8s → ~4.7s, volumes page ~13.5s → ~5.2s
+
+**Verified**: full suite 2650 tests pass (74 new: tests/test_cpu_policy.py 24, tests/test_task_store.py 27, tests/test_web_grab_cpu.py 4, the rest in test_grabber.py, test_notify.py, test_v1220_cpu_tasks.py, test_tgbot_instance_list.py, test_web_api.py, test_phase5e_shapes.py; plus 3 racy tests fixed: waits added before reading Grabber call_args after POST, and a wait moved inside the Grabber patch). Live verification: /api/instances and /api/volumes timings measured on the deployment host before deciding the approach; cold-load timings re-measured after deploy.
+
 ## [1.40.1] - 2026-11-24
 - Fixed the missing "grab started" confirmation after tapping "Start grabbing": when a root password was set, the whole reply was parsed as Markdown, and the underscore in the instance name (AMD_2026-11-25) was treated as an italic marker, so Telegram rejected the message (Can't parse entities); the dynamic instance name is now escaped with escape_markdown before being put into the message, while the name in the task list stays unescaped
 

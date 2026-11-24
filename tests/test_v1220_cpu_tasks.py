@@ -7,7 +7,7 @@ test_tgbot_instance_list.py 里）。
     当前选中带 ✅；A1 / 无 preset 时无选项行。
   - tgbot.boot_form.fmt_boot_form_summary 与
     tgbot.handlers_extra.fmt_boot_preset：E2 始终显示目标 CPU 行
-    （只留 7J13 / 什么 CPU 都可以），A1 不显示。
+    （只留配置里的型号，默认 7J13/7745 / 什么 CPU 都可以），A1 不显示。
   - tgbot.handlers_extra.boot_cpu_callback：切换 target_cpu 并
     就地刷新摘要。
   - tgbot.services.TaskRegistry.register(label) / fmt_task_list /
@@ -27,6 +27,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tgbot import config as bot_config  # noqa: E402
+from tgbot import cpu_policy  # noqa: E402
 from tgbot.boot_form import fmt_boot_form_summary  # noqa: E402
 from tgbot.keyboards import (  # noqa: E402
     boot_confirm_keyboard,
@@ -113,19 +114,34 @@ def edit_keyboard_of(update):
     return kwargs.get("reply_markup")
 
 
-class TestBootConfirmKeyboard(unittest.TestCase):
+class _DefaultCpuPolicyMixin:
+    """把 CPU 规则文件指到不存在的临时路径（用默认 7J13/7745）。"""
+
+    def setUp(self):
+        super().setUp()
+        self._policy_tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._policy_tmpdir.cleanup)
+        patcher = patch.object(
+            cpu_policy, "policy_path",
+            return_value=os.path.join(self._policy_tmpdir.name,
+                                      "cpu_policy.json"))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+
+class TestBootConfirmKeyboard(_DefaultCpuPolicyMixin, unittest.TestCase):
     """确认键盘：E2 有 CPU 选项行，A1 没有。"""
 
     def test_e2_with_7j13_marks_only_7j13(self):
         rows = _rows(boot_confirm_keyboard(_e2_preset("7J13")))
-        self.assertEqual(rows[0], [("✅ 只抢 7J13", "b:cpu:7j13"),
+        self.assertEqual(rows[0], [("✅ 只抢 7J13/7745", "b:cpu:7j13"),
                                    ("什么 CPU 都可以", "b:cpu:any")])
         self.assertEqual(rows[1], [("🚀 开始抢机", "b:go")])
         self.assertEqual(rows[2], [("❌ 取消", "x")])
 
     def test_e2_any_cpu_marks_any(self):
         rows = _rows(boot_confirm_keyboard(_e2_preset(None)))
-        self.assertEqual(rows[0], [("只抢 7J13", "b:cpu:7j13"),
+        self.assertEqual(rows[0], [("只抢 7J13/7745", "b:cpu:7j13"),
                                    ("✅ 什么 CPU 都可以", "b:cpu:any")])
 
     def test_a1_no_cpu_row(self):
@@ -139,12 +155,12 @@ class TestBootConfirmKeyboard(unittest.TestCase):
                                 [("❌ 取消", "x")]])
 
 
-class TestCpuSummaryLine(unittest.TestCase):
+class TestCpuSummaryLine(_DefaultCpuPolicyMixin, unittest.TestCase):
     """摘要里的目标 CPU 行：E2 始终有，A1 没有。"""
 
     def test_form_e2_7j13(self):
         text = fmt_boot_form_summary(_e2_preset("7J13"), True, "可以创建")
-        self.assertIn("目标 CPU：只留含 7J13 的，不符就释放继续抢", text)
+        self.assertIn("目标 CPU：只留 7J13/7745，不符就释放继续抢", text)
 
     def test_form_e2_any(self):
         text = fmt_boot_form_summary(_e2_preset(None), True, "可以创建")
@@ -156,7 +172,7 @@ class TestCpuSummaryLine(unittest.TestCase):
 
     def test_preset_e2_7j13(self):
         text = he.fmt_boot_preset(_e2_preset("7J13"), True, "可以创建")
-        self.assertIn("目标 CPU：只留含 7J13 的，不符就释放继续抢", text)
+        self.assertIn("目标 CPU：只留 7J13/7745，不符就释放继续抢", text)
 
     def test_preset_e2_any(self):
         text = he.fmt_boot_preset(_e2_preset(None), True, "可以创建")
@@ -167,10 +183,12 @@ class TestCpuSummaryLine(unittest.TestCase):
         self.assertNotIn("目标 CPU", text)
 
 
-class TestBootCpuCallback(unittest.IsolatedAsyncioTestCase):
+class TestBootCpuCallback(_DefaultCpuPolicyMixin,
+                          unittest.IsolatedAsyncioTestCase):
     """b:cpu 回调：切换 target_cpu，就地刷新摘要。"""
 
     def setUp(self):
+        super().setUp()
         self._old_allowed = bot_config.ALLOWED_USER_IDS
         bot_config.ALLOWED_USER_IDS = {TEST_USER_ID}
 
@@ -202,9 +220,9 @@ class TestBootCpuCallback(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(context.user_data["pending_boot"]["target_cpu"],
                          "7J13")
         text = edit_text_of(update)
-        self.assertIn("目标 CPU：只留含 7J13 的", text)
+        self.assertIn("目标 CPU：只留 7J13/7745", text)
         rows = _rows(edit_keyboard_of(update))
-        self.assertEqual(rows[0][0][0], "✅ 只抢 7J13")
+        self.assertEqual(rows[0][0][0], "✅ 只抢 7J13/7745")
 
     async def test_preset_summary_kind(self):
         # 一键开机路径用 fmt_boot_preset（标题是“开机配置：”）。

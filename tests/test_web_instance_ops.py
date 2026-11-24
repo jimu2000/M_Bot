@@ -38,6 +38,7 @@ from web.app import create_app
 from web.auth import LOGIN_GUARD, SESSIONS, hash_password
 from web.routes.cloudreport import clear_cloud_report_cache
 from web.routes.instances import clear_instance_list_cache
+from web.routes.volumes import clear_volumes_cache
 from web.tasks import TASKS
 
 # 占位符（测试里不出现真实 OCID / IP）
@@ -88,6 +89,7 @@ class InstanceOpsTestCase(unittest.TestCase):
         self._data_dir_patcher = patch("web.config.DATA_DIR", self._tmp.name)
         self._data_dir_patcher.start()
         clear_instance_list_cache()
+        clear_volumes_cache()
         clear_cloud_report_cache()
         LOGIN_GUARD.reset()
         SESSIONS.reset()

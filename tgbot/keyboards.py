@@ -81,6 +81,7 @@ callback_data 规范（Telegram 限制 64 字节，OCID 约 100 字节放不下�
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
+from tgbot.cpu_policy import get_allowed_cpu_models
 from tgbot.monitoring import (TRAFFIC_GUARD_THRESHOLD_PRESETS,
                               fmt_threshold_gb,
                               traffic_guard_action_label)
@@ -367,19 +368,21 @@ def boot_preset_keyboard():
 def boot_confirm_keyboard(preset=None):
     """开机确认键盘（点开始抢机后进后台任务）。
 
-    E2 才有 CPU 选项行（只抢 7J13 / 什么 CPU 都可以），放在
-    “开始抢机”上面；当前选中的带 ✅。A1 不筛 CPU，不显示该行。
+    E2 才有 CPU 选项行（只抢配置里的型号 / 什么 CPU 都可以），放在
+    “开始抢机”上面；当前选中的带 ✅。型号列表读 cpu_policy.json，
+    默认 7J13/7745。A1 不筛 CPU，不显示该行。
     preset 为 None 时按旧行为（无选项行，兼容旧调用）。
     """
     rows = []
     if preset is not None and preset.get("shape") == "VM.Standard.E2.1.Micro":
-        only_7j13 = bool(preset.get("target_cpu"))
+        only_allowed = bool(preset.get("target_cpu"))
+        cpu_label = "只抢 " + "/".join(get_allowed_cpu_models())
         rows.append([
             InlineKeyboardButton(
-                ("✅ " if only_7j13 else "") + "只抢 7J13",
+                ("✅ " if only_allowed else "") + cpu_label,
                 callback_data="b:cpu:7j13"),
             InlineKeyboardButton(
-                ("✅ " if not only_7j13 else "") + "什么 CPU 都可以",
+                ("✅ " if not only_allowed else "") + "什么 CPU 都可以",
                 callback_data="b:cpu:any"),
         ])
     rows.append([InlineKeyboardButton("🚀 开始抢机", callback_data="b:go")])

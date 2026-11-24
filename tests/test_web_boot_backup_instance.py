@@ -25,6 +25,7 @@ from web import config
 from web.app import create_app
 from web.auth import LOGIN_GUARD, SESSIONS, hash_password
 from web.routes.instances import clear_instance_list_cache
+from web.routes.volumes import clear_volumes_cache
 from web.tasks import TASKS
 
 # 占位符（测试里不出现真实 OCID / IP）
@@ -71,6 +72,7 @@ class BootBackupInstanceWebTestCase(unittest.TestCase):
         self._data_dir_patcher = patch("web.config.DATA_DIR", self._tmp.name)
         self._data_dir_patcher.start()
         clear_instance_list_cache()
+        clear_volumes_cache()
         LOGIN_GUARD.reset()
         SESSIONS.reset()
         TASKS.reset()

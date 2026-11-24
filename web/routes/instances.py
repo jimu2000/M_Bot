@@ -119,6 +119,7 @@ from tgbot.watchdog import (
     probe_command,
 )
 from web import config
+from web.routes.volumes import clear_volumes_cache
 from web.deps import (
     error_response,
     get_current_user,
@@ -456,6 +457,8 @@ def batch(body: BatchBody,
         return oci_error_response(exc)
     clear_instance_list_cache(profile or config.DEFAULT_PROFILE)
     if body.action == "terminate":
+        # 批量终止默认永删引导卷，启动盘列表缓存也要清。
+        clear_volumes_cache(profile or config.DEFAULT_PROFILE)
         for instance_id in result["succeeded"]:
             delete_cpu_model(instance_id)
     return {"ok": True, "action": body.action,
@@ -641,6 +644,8 @@ def terminate(instance_id: str,
     except OCIError as exc:
         return oci_error_response(exc)
     clear_instance_list_cache(profile or config.DEFAULT_PROFILE)
+    # 终止默认永删引导卷（保留时变孤儿盘），启动盘列表缓存也要清。
+    clear_volumes_cache(profile or config.DEFAULT_PROFILE)
     return {"ok": True, "instance_id": instance_id, "action": "terminate",
             "preserve_boot_volume": body.preserve_boot_volume}
 
@@ -957,6 +962,8 @@ def restore_boot_volume(instance_id: str,
     except OCIError as exc:
         return oci_error_response(exc)
     clear_instance_list_cache(profile or config.DEFAULT_PROFILE)
+    # 换盘任务会新建一块启动盘并删旧盘（30 秒缓存自愈，启动时先清一次）。
+    clear_volumes_cache(profile or config.DEFAULT_PROFILE)
     return {"ok": True, "instance_id": instance_id, "task_id": task_id,
             "message": "引导卷恢复已开始，进度请在任务页查看"}
 

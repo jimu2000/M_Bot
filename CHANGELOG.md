@@ -9,6 +9,15 @@
 
 ## [Unreleased]
 
+## [1.41.0] - 2026-11-24
+- CPU 筛选规则写进配置并真正接线（以前\"只抢 7J13\"是摆设，hook 从未注入）：新增 tgbot/cpu_policy.py，规则放 tgbot/data/cpu_policy.json（0600），默认只留 7J13/7745；抢机时把 guard 公钥拼进启动 SSH keys（新增 combined_boot_keys），Grabber 注入 cpu_check_hook，抢到先 SSH 验 CPU，不符就释放（永删引导卷）继续抢；CPU 查不到时暂留实例并标\"未验明\"，不释放未验明的机器；guard 密钥未配置时抢到即留并在详情里写明；机器人与网页抢机同步改，按钮文案随规则动态显示
+- Grabber 的 target_cpu 支持列表（多型号任一匹配即留），hook 返回 None 或抛异常时按未验明暂留
+- 机器人与网页的任务互通：两边共用 web/data/tasks.json（新增 tgbot/task_store.py，文件锁保护读-改-写，原子替换写盘），机器人里能看到网页的抢机任务，网页上能看到机器人的；任一端取消对方的任务时写 cancel_requested，另一端的监听线程置 stop_event 停下抢机；任务 ID 带来源前缀（bot-g1 / web-g1），旧版无前缀 ID 仍兼容；服务启动时只恢复本来源未结束的任务
+- E2.1.Micro 规格显示加\"永久免费\"（机器人详情/预设与网页实例卡片/详情弹窗同步）
+- 网页加载优化：启动盘列表与孤儿盘列表加 30 秒服务端缓存（与实例列表同款，refresh=1 绕过，扩容/改 VPU/删除/终止/恢复后自动清缓存）；挂载关系与实例名两个查询并行跑；实例页的实例与启动盘两个请求并行发，启动盘页的卷/孤儿盘、备份/配额各并行发；实测冷加载：实例页约 9.8 秒 → 约 4.7 秒，启动盘页约 13.5 秒 → 约 5.2 秒
+
+**验证**：全量测试 2650 个全过（新增 74 个：tests/test_cpu_policy.py 24 个、tests/test_task_store.py 27 个、tests/test_web_grab_cpu.py 4 个，其余在 test_grabber.py、test_notify.py、test_v1220_cpu_tasks.py、test_tgbot_instance_list.py、test_web_api.py、test_phase5e_shapes.py；另修 3 处测试抢跑：POST 后立即读 Grabber call_args 的测试加等待、Grabber patch 提前退出的测试把等待留在 patch 里）。真机验证：.160 上 /api/instances 与 /api/volumes 各接口耗时实测后定方案；部署后复测冷加载耗时。
+
 ## [1.40.1] - 2026-11-24
 - 修复点了"开始抢机"后收不到"抢机已启动"确认的问题：有 root 密码时启动回复整条走 Markdown 解析，实例名里的下划线（AMD_2026-11-25）被当成斜体标记、Telegram 拒绝发送（Can't parse entities）；动态的实例名现在先经 escape_markdown 转义再拼进消息，任务列表里的名字保持原样不转义
 

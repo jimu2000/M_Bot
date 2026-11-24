@@ -24,6 +24,7 @@ from fastapi.testclient import TestClient
 
 from oci.client import NotFoundError, RateLimitError
 from oci.grabber import GrabResult
+from tgbot.cpu_policy import BootKeys
 from web import config
 from web import deps as deps_mod
 from web.app import create_app
@@ -31,6 +32,7 @@ from web.auth import LOGIN_GUARD, SESSIONS, hash_password
 from web.deps import effective_region, get_profile_regions, resolve_profile
 from web.routes.cloudreport import clear_cloud_report_cache
 from web.routes.instances import clear_instance_list_cache
+from web.routes.volumes import clear_volumes_cache
 from web import tasks as tasks_mod
 from web.tasks import TASKS
 
@@ -114,6 +116,7 @@ class WebApiTestCase(unittest.TestCase):
         self._data_dir_patcher.start()
         # 清服务端缓存（实例列表 / 云报告），避免缓存跨测试串数据。
         clear_instance_list_cache()
+        clear_volumes_cache()
         clear_cloud_report_cache()
         LOGIN_GUARD.reset()
         SESSIONS.reset()
@@ -786,6 +789,10 @@ class TestCreateAndTasksApi(WebApiTestCase):
         self.assertEqual(r.status_code, 422)
         self.assertFalse(r.json()["ok"])
 
+    @patch("web.tasks.combined_boot_keys")
+    @patch("web.tasks.get_allowed_cpu_models",
+            return_value=["7J13", "7745"])
+    @patch("web.tasks.make_cpu_check_hook", return_value=MagicMock())
     @patch("web.tasks.notify_boot_success",
             return_value={"telegram": True, "bark": False, "errors": []})
     @patch("web.tasks.wait_for_public_ip", return_value="203.0.113.10")
@@ -793,8 +800,16 @@ class TestCreateAndTasksApi(WebApiTestCase):
     @patch("web.routes.create.can_launch", return_value=(True, "可以创建"))
     def test_create_full_fields_passed_to_grabber(self, mock_can,
                                                   mock_grabber_cls,
-                                                  mock_ip, mock_notify):
-        """带全字段创建时，全部新字段透传给 Grabber（阶段 3b 接入）。"""
+                                                  mock_ip, mock_notify,
+                                                  mock_hook_fn, mock_allowed,
+                                                  mock_keys):
+        """带全字段创建时，全部新字段透传给 Grabber（阶段 3b 接入）。
+
+        target_cpu 非空时按 CPU 规则翻译成配置里的型号列表
+        （默认 7J13/7745），启动 keys 用拼进 guard 公钥的合并文件。
+        """
+        mock_keys.return_value.__enter__.return_value = BootKeys(
+            path="/tmp/combined.pub", guard_included=True)
         mock_grabber_cls.return_value.run.return_value = GrabResult(
             instance_id=FAKE_INSTANCE, attempts=1, releases=0,
             elapsed_seconds=5.0)
@@ -826,11 +841,13 @@ class TestCreateAndTasksApi(WebApiTestCase):
         self.assertEqual(kwargs["min_delay"], 20)
         self.assertEqual(kwargs["max_delay"], 50)
         self.assertEqual(kwargs["user_data"], "#!/bin/bash\necho hi\n")
-        self.assertEqual(kwargs["target_cpu"], "7J13")
+        self.assertEqual(kwargs["target_cpu"], ["7J13", "7745"])
         # 位置参数仍是原来的 8 个（cli/compartment/AD/shape/image/subnet/
-        # display_name/ssh_keys_file），A1 形状也正确传到位置参数里。
+        # display_name/ssh_keys_file），A1 形状也正确传到位置参数里；
+        # ssh_keys_file 是拼进 guard 公钥的合并文件。
         args = mock_grabber_cls.call_args.args
         self.assertEqual(args[3], "VM.Standard.A1.Flex")
+        self.assertEqual(args[7], "/tmp/combined.pub")
 
     @patch("web.tasks.notify_boot_success",
             return_value={"telegram": True, "bark": False, "errors": []})
@@ -849,6 +866,12 @@ class TestCreateAndTasksApi(WebApiTestCase):
         self.assertEqual(r.status_code, 200)
         password = r.json()["root_password"]
         self.assertRegex(password, r"^[0-9a-f]{32}$")
+        # 等抢机线程构造 Grabber（线程里先写任务文件，POST 返回时
+        # 不一定已调到 Grabber，直接读 call_args 会抢跑）。
+        deadline = time.time() + 2.0
+        while not mock_grabber_cls.called and time.time() < deadline:
+            time.sleep(0.05)
+        self.assertTrue(mock_grabber_cls.called, "应已构造 Grabber")
         kwargs = mock_grabber_cls.call_args.kwargs
         self.assertIn("chpasswd", kwargs["user_data"])
         self.assertIn(password, kwargs["user_data"])
@@ -882,6 +905,11 @@ class TestCreateAndTasksApi(WebApiTestCase):
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()["root_password"],
                          "0123456789abcdef0123456789abcdef")
+        # 等抢机线程构造 Grabber（同上，POST 返回时线程不一定已调到）。
+        deadline = time.time() + 2.0
+        while not mock_grabber_cls.called and time.time() < deadline:
+            time.sleep(0.05)
+        self.assertTrue(mock_grabber_cls.called, "应已构造 Grabber")
         kwargs = mock_grabber_cls.call_args.kwargs
         self.assertIn("0123456789abcdef0123456789abcdef",
                       kwargs["user_data"])
@@ -905,6 +933,11 @@ class TestCreateAndTasksApi(WebApiTestCase):
         r = self.client.post("/api/create", json=body)
         self.assertEqual(r.status_code, 200)
         self.assertIsNone(r.json()["root_password"])
+        # 等抢机线程构造 Grabber（POST 返回时线程不一定已调到）。
+        deadline = time.time() + 2.0
+        while not mock_grabber_cls.called and time.time() < deadline:
+            time.sleep(0.05)
+        self.assertTrue(mock_grabber_cls.called, "应已构造 Grabber")
         kwargs = mock_grabber_cls.call_args.kwargs
         self.assertEqual(kwargs["user_data"], "#!/bin/bash\necho hi\n")
         self._wait_task_status(r.json()["task_id"], ("done", "failed"))

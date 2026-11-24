@@ -148,6 +148,9 @@ from tgbot.gfw import (
     set_api_key,
     set_instance_enabled,
 )
+from tgbot.cpu_policy import (combined_boot_keys,
+                              get_allowed_cpu_models, make_cpu_check_hook)
+from tgbot.task_store import start_cancel_watcher
 from tgbot.handlers_client import put_remote_file, run_remote_command
 from tgbot.watchdog import (
     WatchdogError,
@@ -198,6 +201,7 @@ from tgbot.monitoring import (
 from tgbot.services import (
     TASKS,
     fmt_duration,
+    fmt_shape_spec,
     fmt_error,
     fmt_instance_list,
     fmt_quota_summary,
@@ -1326,17 +1330,17 @@ def volume_resize_keyboard(idx):
 
 def fmt_boot_preset(preset, ok, reason):
     """开机预设的配置摘要 + 配额预检结果。"""
-    shape = preset["shape"].replace("VM.Standard.", "")
     lines = [
         "🚀 开机配置：",
         "",
-        f"规格：{shape}（{preset['ocpus']} 核 / {preset['memory_gb']}GB）",
+        f"规格：{fmt_shape_spec(preset['shape'], preset['ocpus'], preset['memory_gb'])}",
         f"实例名：{preset['display_name']}",
     ]
     if preset.get("shape") == SHAPE_E2_MICRO:
         if preset.get("target_cpu"):
-            lines.append(f"目标 CPU：只留含 {preset['target_cpu']} 的，"
-                         "不符就释放继续抢")
+            lines.append("目标 CPU：只留 " +
+                         "/".join(get_allowed_cpu_models()) +
+                         "，不符就释放继续抢")
         else:
             lines.append("目标 CPU：什么 CPU 都可以，抢到就留")
     lines.append("")
@@ -1813,15 +1817,29 @@ def _run_grabber_thread(task_id, cli, compartment_id, preset, notify=None):
     count > 1 时逐台抢，实例名加 -1、-2… 后缀；中途配额不足或取消时
     停下并在详情里写已抢到的台数。
     新参数（表单/快捷开机的新字段）一律用 .get 兜底，旧版预设照常跑。
-    注意：target_cpu 只有在 cpu_check_hook 注入时才筛 CPU，机器人
-    目前未注入 hook（SSH 查 CPU 的逻辑在编排器里），E2 抢到即留。
+    注意：target_cpu 非空时按 tgbot/cpu_policy.py 的规则筛 CPU（只留
+    配置里的型号，默认 7J13/7745）：开机时把 guard 公钥拼进启动
+    SSH keys，Grabber 注入 cpu_check_hook，抢到先 SSH 验 CPU，
+    不符释放（永删引导卷）继续抢；guard 密钥未配置时筛不了，
+    任务详情里写明并抢到即留。
     notify（可选）：{"token", "chat_id", "profile_label", "region_label",
     "root_password"}，成功后双通道推送开机成功通知（TG + Bark，
     Bark 未开启时只推 TG；root_password 为空时不带密码行）。
     通知失败不影响任务状态，只记日志（密码绝不进日志）。
     """
+    cpu_unverified = False
+    filter_warning = None
+
     def on_event(_event_type, message):
+        nonlocal cpu_unverified
+        if _event_type == "cpu_check_failed":
+            cpu_unverified = True
         TASKS.update(task_id, detail=message)
+
+    # 跨进程取消监听：网页端点取消时，对方把 cancel_requested 写进
+    # 共享文件，这里轮询到后置 stop_event，抢机循环随即停下。
+    start_cancel_watcher(TASKS.tasks_file, task_id,
+                         TASKS.stop_event(task_id))
 
     count = preset.get("count", 1) or 1
     base_name = preset["display_name"]
@@ -1829,30 +1847,47 @@ def _run_grabber_thread(task_id, cli, compartment_id, preset, notify=None):
     total_attempts = 0
     total_releases = 0
     total_elapsed = 0.0
+    filtering = bool(preset.get("target_cpu"))
     try:
-        for i in range(count):
-            display_name = base_name if count == 1 else f"{base_name}-{i + 1}"
-            grabber = Grabber(
-                cli, compartment_id,
-                preset["availability_domain"], preset["shape"],
-                preset["image_id"], preset["subnet_id"],
-                display_name, preset.get("ssh_keys_file"),
-                target_cpu=preset.get("target_cpu"),
-                on_event=on_event,
-                stop_event=TASKS.stop_event(task_id),
-                ocpus=preset.get("ocpus"),
-                memory_gb=preset.get("memory_gb"),
-                boot_volume_size_gbs=preset.get("boot_volume_size_gbs"),
-                assign_public_ip=preset.get("assign_public_ip", True),
-                assign_ipv6=preset.get("assign_ipv6", False),
-                user_data=preset.get("user_data"),
-                min_delay=preset.get("min_delay"),
-                max_delay=preset.get("max_delay"))
-            result = grabber.run()
-            successes.append(result)
-            total_attempts += result.attempts
-            total_releases += result.releases
-            total_elapsed += result.elapsed_seconds
+        with combined_boot_keys(preset.get("ssh_keys_file"),
+                                include_guard=filtering) as boot_keys:
+            if filtering and not boot_keys.guard_included:
+                filter_warning = "未配置 guard 密钥，CPU 筛选未生效"
+                on_event("cpu_filter_unavailable",
+                         f"{filter_warning}，抢到即留。")
+                target_cpus = None
+                hook = None
+            elif filtering:
+                target_cpus = get_allowed_cpu_models()
+                hook = make_cpu_check_hook(cli, run_remote_command)
+            else:
+                target_cpus = None
+                hook = None
+            for i in range(count):
+                display_name = base_name if count == 1 else f"{base_name}-{i + 1}"
+                grabber = Grabber(
+                    cli, compartment_id,
+                    preset["availability_domain"], preset["shape"],
+                    preset["image_id"], preset["subnet_id"],
+                    display_name, boot_keys.path,
+                    target_cpu=target_cpus,
+                    on_event=on_event,
+                    stop_event=TASKS.stop_event(task_id),
+                    ocpus=preset.get("ocpus"),
+                    memory_gb=preset.get("memory_gb"),
+                    boot_volume_size_gbs=preset.get("boot_volume_size_gbs"),
+                    assign_public_ip=preset.get("assign_public_ip", True),
+                    assign_ipv6=preset.get("assign_ipv6", False),
+                    user_data=preset.get("user_data"),
+                    min_delay=preset.get("min_delay"),
+                    max_delay=preset.get("max_delay"))
+                if hook is not None:
+                    grabber.cpu_check_hook = hook
+                result = grabber.run()
+                successes.append(result)
+                total_attempts += result.attempts
+                total_releases += result.releases
+                total_elapsed += result.elapsed_seconds
     except GrabCancelledError:
         TASKS.update(task_id, status="cancelled", detail="抢机已取消。")
         return
@@ -1877,12 +1912,18 @@ def _run_grabber_thread(task_id, cli, compartment_id, preset, notify=None):
                   f"共尝试 {total_attempts} 次，"
                   f"释放 {total_releases} 台 CPU 不符，"
                   f"总耗时 {fmt_duration(total_elapsed)}。")
+    if filter_warning:
+        detail += f"（{filter_warning}，抢到即留）"
+    if cpu_unverified:
+        detail += "（CPU 未验明，请人工核对）"
     TASKS.update(task_id, status="done", detail=detail)
     saved = {key: value for key, value in preset.items()
              if key not in ("user_data", "root_password")}
     save_preset(saved)
     if notify:
-        _notify_boot_success(cli, preset, successes, notify)
+        notify_with_flag = dict(notify)
+        notify_with_flag["cpu_unverified"] = cpu_unverified
+        _notify_boot_success(cli, preset, successes, notify_with_flag)
 
 
 def _notify_boot_success(cli, preset, successes, notify):
@@ -1927,7 +1968,8 @@ def _notify_boot_success(cli, preset, successes, notify):
             instances,
             root_password=notify.get("root_password"),
             region_code=notify.get("region_code"),
-            ssh_key_set=bool(preset.get("ssh_keys_file")))
+            ssh_key_set=bool(preset.get("ssh_keys_file")),
+            cpu_unverified=notify.get("cpu_unverified", False))
         if result.get("errors"):
             logger.warning("开机成功通知部分失败：%s",
                            "; ".join(result["errors"]))

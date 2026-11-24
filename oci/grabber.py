@@ -12,8 +12,10 @@
     也可在构造时用 min_delay/max_delay 指定区间，见 Grabber.__init__）。
   - 429 限流（RateLimitError）时指数退避：60 -> 120 -> 240 -> 480 -> 600 秒上限。
   - 配额不足（QuotaExceededError）时停下并通知，重试没用，不要无限循环。
-  - 抢到后如设了 target_cpu，用 cpu_check_hook 查 CPU 型号；不对就终止实例
-    （--preserve-boot-volume false 永久删引导卷）+ 通知 + 继续抢。
+  - 抢到后如设了 target_cpu（单个子串或子串列表），用 cpu_check_hook
+    查 CPU 型号；型号不在列表里就终止实例（--preserve-boot-volume
+    false 永久删引导卷）+ 通知 + 继续抢；查不到型号（hook 返回
+    None 或抛异常）时暂留实例不释放，通知里写明请人工核对。
   - Flex 形状（如 VM.Standard.A1.Flex）可用 ocpus/memory_gb 指定核数内存，
     以 --shape-config '{"ocpus":N,"memoryInGBs":M}' 传给 launch；固定规格形状
     （如 VM.Standard.E2.1.Micro）永远不传 shape-config。
@@ -147,7 +149,9 @@ class Grabber:
             None / 空字符串时不传该参数（不用公钥时配合 root 密码登录，
             见 tgbot/boot_form.py 的 root 登录选项；OCI launch 本身不强制
             要求 SSH 公钥）。
-        target_cpu: 目标 CPU 型号子串（如 "7J13"），None 表示不查 CPU、抢到就留。
+        target_cpu: 目标 CPU 型号子串（如 "7J13"），或子串列表（如
+            ["7J13", "7745"]，含任一子串即留）。None / 空表示不查
+            CPU、抢到就留。实际列表存在 self.target_cpus 里。
         on_event: 可选回调 on_event(event_type, message)，事件类型：
             "attempt"（每次尝试）、"launched"（抢到）、"wrong_cpu"（CPU 不对已释放）、
             "rate_limited"（429 退避）、"quota"（配额不足停下）、"done"（完成）、
@@ -183,6 +187,11 @@ class Grabber:
         self.display_name = display_name
         self.ssh_keys_file = ssh_keys_file
         self.target_cpu = target_cpu
+        # 归一成列表：字符串变单元素列表，列表去空；原值保留作兼容。
+        if isinstance(target_cpu, str):
+            self.target_cpus = [target_cpu] if target_cpu else []
+        else:
+            self.target_cpus = [t for t in (target_cpu or []) if t]
         self.on_event = on_event
         self.stop_event = stop_event
         self.ocpus = ocpus
@@ -203,9 +212,11 @@ class Grabber:
             self._jitter = CREATE_JITTER
         # 启动脚本临时文件路径（惰性创建，见 _ensure_user_data_file）。
         self._user_data_file = None
-        # 可注入的 CPU 检查函数，签名 cpu_check_hook(instance_id, public_ip) -> str，
-        # 返回 CPU 型号字符串（如 "AMD EPYC 7J13"）。默认 None（不查 CPU）。
-        # SSH 查 CPU 的逻辑由调用方提供（编排器里已有实现），模块本身不依赖 SSH。
+        # 可注入的 CPU 检查函数，签名 cpu_check_hook(instance_id, public_ip)
+        # -> str | None，返回 CPU 型号字符串（如 "AMD EPYC 7J13"），
+        # 查不到返回 None（run() 收到 None 时暂留实例）。默认 None（不查 CPU）。
+        # SSH 查 CPU 的逻辑由调用方提供（tgbot/cpu_policy.py 的
+        # make_cpu_check_hook），模块本身不依赖 SSH。
         self.cpu_check_hook = None
 
     # ---------------- 内部小工具 ----------------
@@ -492,12 +503,24 @@ class Grabber:
                 self._sleep(wait)
                 continue
             self._emit("launched", f"抢到了！实例 {instance_id[-4:]}")
-            if self.target_cpu and self.cpu_check_hook is not None:
+            if self.target_cpus and self.cpu_check_hook is not None:
                 public_ip = self.get_public_ip(instance_id)
-                cpu = self.cpu_check_hook(instance_id, public_ip)
-                if self.target_cpu not in cpu:
+                try:
+                    cpu = self.cpu_check_hook(instance_id, public_ip)
+                    check_error = None
+                except Exception as exc:  # noqa: BLE001 - 检查本身失败不杀抢机
+                    cpu = None
+                    check_error = str(exc)
+                if cpu is None:
+                    # 查不到型号：不释放没验明的机器，暂留并提醒人工核对。
+                    reason = (f"检查出错（{check_error}）" if check_error
+                              else "查不到型号")
+                    self._emit("cpu_check_failed",
+                               f"CPU {reason}，暂留实例，请人工核对。")
+                elif not any(t in cpu for t in self.target_cpus):
                     self._emit("wrong_cpu",
-                               f"CPU 是 {cpu}（不是 {self.target_cpu}），"
+                               f"CPU 是 {cpu}（不在 "
+                               f"{'、'.join(self.target_cpus)} 里），"
                                f"释放实例并永久删除引导卷，继续抢。")
                     self.terminate_instance(instance_id)
                     releases += 1

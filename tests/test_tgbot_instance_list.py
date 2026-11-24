@@ -18,6 +18,7 @@ from tgbot.keyboards import instance_list_keyboard  # noqa: E402
 from tgbot.services import (  # noqa: E402
     fmt_instance_detail,
     fmt_instance_list,
+    fmt_shape_spec,
     instance_group_title,
     short_shape,
     sort_instances_by_group,
@@ -107,6 +108,28 @@ class TestShortShape(unittest.TestCase):
     def test_empty(self):
         self.assertEqual(short_shape(""), "?")
         self.assertEqual(short_shape(None), "?")
+
+
+class TestFmtShapeSpec(unittest.TestCase):
+    """规格行：E2.1.Micro 后面加“永久免费”，其他规格不加。"""
+
+    def test_e2_full_shape(self):
+        self.assertEqual(
+            fmt_shape_spec("VM.Standard.E2.1.Micro", 1, 1),
+            "E2.1.Micro（1 核 / 1GB）永久免费")
+
+    def test_e2_already_stripped(self):
+        self.assertEqual(
+            fmt_shape_spec("E2.1.Micro", 1, 1),
+            "E2.1.Micro（1 核 / 1GB）永久免费")
+
+    def test_a1_no_suffix(self):
+        self.assertEqual(fmt_shape_spec("VM.Standard.A1.Flex", 1, 6),
+                         "A1.Flex（1 核 / 6GB）")
+
+    def test_empty_shape(self):
+        self.assertEqual(fmt_shape_spec("", 1, 1), "?（1 核 / 1GB）")
+        self.assertEqual(fmt_shape_spec(None, 1, 1), "?（1 核 / 1GB）")
 
 
 class TestFmtInstanceList(unittest.TestCase):
@@ -256,7 +279,7 @@ class TestFmtInstanceDetail(unittest.TestCase):
     def test_cpu_model_shown(self):
         text = fmt_instance_detail(self._detail(), FAKE_IP, "AMD EPYC 7J13")
         self.assertIn("CPU 型号：AMD EPYC 7J13", text)
-        self.assertIn("规格：E2.1.Micro（1 核 / 1GB）", text)
+        self.assertIn("规格：E2.1.Micro（1 核 / 1GB）永久免费", text)
 
     def test_cpu_model_unknown_when_none(self):
         text = fmt_instance_detail(self._detail(), FAKE_IP)

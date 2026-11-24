@@ -31,6 +31,7 @@ from web.app import create_app
 from web.auth import LOGIN_GUARD, SESSIONS, hash_password
 from web.routes.cloudreport import clear_cloud_report_cache
 from web.routes.instances import clear_instance_list_cache
+from web.routes.volumes import clear_volumes_cache
 
 FAKE_INSTANCE = "ocid1.instance.oc1..testxxxx"
 FAKE_INSTANCE_2 = "ocid1.instance.oc1..testyyyy"
@@ -87,6 +88,7 @@ class Phase5eShapesTestCase(unittest.TestCase):
         self._data_dir_patcher.start()
         # 清服务端缓存（实例列表 / 云报告），避免缓存跨测试串数据。
         clear_instance_list_cache()
+        clear_volumes_cache()
         clear_cloud_report_cache()
         LOGIN_GUARD.reset()
         SESSIONS.reset()
@@ -226,7 +228,83 @@ class TestVolumeShape(Phase5eShapesTestCase):
         self.assertEqual(r.status_code, 401)
 
 
-class TestA1QuotaShape(Phase5eShapesTestCase):
+class TestVolumesCache(Phase5eShapesTestCase):
+    """GET /api/volumes 与 /api/volumes/orphans 的服务端 30 秒缓存
+    （v1.41.0：冷加载约 5 秒，缓存后重复访问直接返回）。"""
+
+    def setUp(self):
+        super().setUp()
+        self._login()
+
+    @patch("web.routes.volumes.list_instances", return_value=[])
+    @patch("web.routes.volumes.list_boot_volume_attachments",
+           return_value=[])
+    @patch("web.routes.volumes.list_boot_volumes",
+           return_value=FAKE_VOLUMES_RAW)
+    def test_second_list_served_from_cache(self, mock_list, mock_atts,
+                                           mock_insts):
+        """30 秒内第二次请求不重新查 OCI。"""
+        r1 = self.client.get("/api/volumes")
+        r2 = self.client.get("/api/volumes")
+        self.assertEqual(r1.status_code, 200)
+        self.assertEqual(r2.status_code, 200)
+        self.assertEqual(r1.json(), r2.json())
+        mock_list.assert_called_once()
+
+    @patch("web.routes.volumes.list_instances", return_value=[])
+    @patch("web.routes.volumes.list_boot_volume_attachments",
+           return_value=[])
+    @patch("web.routes.volumes.list_boot_volumes",
+           return_value=FAKE_VOLUMES_RAW)
+    def test_refresh_bypasses_cache(self, mock_list, mock_atts,
+                                    mock_insts):
+        """refresh=1 绕过缓存，重新查 OCI。"""
+        self.client.get("/api/volumes")
+        self.client.get("/api/volumes?refresh=1")
+        self.assertEqual(mock_list.call_count, 2)
+
+    @patch("web.routes.volumes.list_instances", return_value=[])
+    @patch("web.routes.volumes.list_boot_volume_attachments",
+           return_value=[])
+    @patch("web.routes.volumes.list_boot_volumes",
+           return_value=FAKE_VOLUMES_RAW)
+    @patch("web.routes.volumes.delete_boot_volume", return_value=None)
+    def test_delete_clears_cache(self, mock_delete, mock_list, mock_atts,
+                                 mock_insts):
+        """删除启动盘后缓存清掉，下一次列表重新查 OCI。"""
+        self.client.get("/api/volumes")
+        r = self.client.delete(f"/api/volumes/{FAKE_VOLUME}")
+        self.assertEqual(r.status_code, 200)
+        self.client.get("/api/volumes")
+        self.assertEqual(mock_list.call_count, 2)
+
+    @patch("web.routes.volumes.list_instances", return_value=[])
+    @patch("web.routes.volumes.list_boot_volume_attachments",
+           return_value=[])
+    @patch("web.routes.volumes.list_orphan_boot_volumes",
+           return_value=FAKE_VOLUMES_RAW[1:])
+    def test_orphans_cached(self, mock_orphans, mock_atts, mock_insts):
+        """孤儿盘列表同样走缓存。"""
+        self.client.get("/api/volumes/orphans")
+        self.client.get("/api/volumes/orphans")
+        mock_orphans.assert_called_once()
+
+    def test_clear_volumes_cache_profile_scoped(self):
+        """按 profile 清缓存时其他账号的条目不受影响。"""
+        from web.routes import volumes as volumes_routes
+
+        volumes_routes._VOLUMES_CACHE[("DEFAULT", "ap-singapore-1",
+                                       "list")] = {"expires": 999999,
+                                                   "payload": {}}
+        volumes_routes._VOLUMES_CACHE[("ACCOUNT2", "us-sanjose-1",
+                                       "list")] = {"expires": 999999,
+                                                   "payload": {}}
+        clear_volumes_cache("DEFAULT")
+        self.assertNotIn(("DEFAULT", "ap-singapore-1", "list"),
+                         volumes_routes._VOLUMES_CACHE)
+        self.assertIn(("ACCOUNT2", "us-sanjose-1", "list"),
+                      volumes_routes._VOLUMES_CACHE)
+        clear_volumes_cache()
     """GET /api/quota/a1 的 面板形状。"""
 
     def setUp(self):

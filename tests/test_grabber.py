@@ -309,6 +309,81 @@ class TestRun(unittest.TestCase):
         self.assertIn("done", events)
 
     @patch("oci.grabber.time.sleep")
+    def test_target_cpu_list_keeps_any_match(self, mock_sleep):
+        # target_cpu 传列表：7745 也留，7551 释放
+        cli = MagicMock(spec=OCIClient)
+        cli.run_text.side_effect = _run_text_dispatch(
+            list_result="",
+            launch_results=[FAKE_INSTANCE_A, FAKE_INSTANCE_B],
+            get_result="TERMINATED")
+        cli.run.return_value = None  # terminate 不返回 JSON
+        events = []
+        grabber = _make_grabber(cli=cli, target_cpu=["7J13", "7745"],
+                                on_event=lambda e, m: events.append(e))
+        grabber.cpu_check_hook = MagicMock(
+            side_effect=["AMD EPYC 7551", "AMD EPYC 7745"])
+        with patch.object(Grabber, "get_public_ip",
+                          return_value="203.0.113.10"):
+            result = grabber.run()
+        self.assertEqual(result.instance_id, FAKE_INSTANCE_B)
+        self.assertEqual(result.attempts, 2)
+        self.assertEqual(result.releases, 1)
+        self.assertIn("wrong_cpu", events)
+        self.assertIn("done", events)
+
+    @patch("oci.grabber.time.sleep")
+    def test_cpu_check_none_keeps_instance(self, mock_sleep):
+        # hook 返回 None（查不到型号）：暂留第一台，不释放
+        cli = MagicMock(spec=OCIClient)
+        cli.run_text.side_effect = _run_text_dispatch(
+            list_result="", launch_results=[FAKE_INSTANCE_A])
+        events = []
+        grabber = _make_grabber(cli=cli, target_cpu=["7J13", "7745"],
+                                on_event=lambda e, m: events.append(e))
+        grabber.cpu_check_hook = MagicMock(return_value=None)
+        with patch.object(Grabber, "get_public_ip",
+                          return_value="203.0.113.10"):
+            result = grabber.run()
+        self.assertEqual(result.instance_id, FAKE_INSTANCE_A)
+        self.assertEqual(result.attempts, 1)
+        self.assertEqual(result.releases, 0)
+        self.assertIn("cpu_check_failed", events)
+        self.assertIn("done", events)
+        terminate_calls = [c for c in cli.run.call_args_list
+                           if "terminate" in c.args[0]]
+        self.assertEqual(len(terminate_calls), 0)
+
+    @patch("oci.grabber.time.sleep")
+    def test_cpu_check_raises_keeps_instance(self, mock_sleep):
+        # hook 抛异常：同样暂留，不杀抢机
+        cli = MagicMock(spec=OCIClient)
+        cli.run_text.side_effect = _run_text_dispatch(
+            list_result="", launch_results=[FAKE_INSTANCE_A])
+        events = []
+        grabber = _make_grabber(cli=cli, target_cpu="7J13",
+                                on_event=lambda e, m: events.append(e))
+        grabber.cpu_check_hook = MagicMock(
+            side_effect=RuntimeError("ssh boom"))
+        with patch.object(Grabber, "get_public_ip",
+                          return_value="203.0.113.10"):
+            result = grabber.run()
+        self.assertEqual(result.instance_id, FAKE_INSTANCE_A)
+        self.assertEqual(result.releases, 0)
+        self.assertIn("cpu_check_failed", events)
+        self.assertIn("done", events)
+
+    def test_target_cpus_normalized(self):
+        # 字符串归一成单元素列表，列表原样，None/空串归一成空列表
+        self.assertEqual(_make_grabber(target_cpu="7J13").target_cpus,
+                         ["7J13"])
+        self.assertEqual(
+            _make_grabber(target_cpu=["7J13", "7745"]).target_cpus,
+            ["7J13", "7745"])
+        self.assertEqual(_make_grabber(target_cpu=None).target_cpus, [])
+        self.assertEqual(_make_grabber(target_cpu="").target_cpus, [])
+        self.assertEqual(_make_grabber().target_cpus, [])
+
+    @patch("oci.grabber.time.sleep")
     def test_no_capacity_retries_then_succeeds(self, mock_sleep):
         # 无容量时按 interval 等待后重试，抢到后返回统计
         cli = MagicMock(spec=OCIClient)

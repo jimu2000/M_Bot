@@ -25,7 +25,11 @@ from oci.boot_swap import BootSwapError, swap_boot_volume
 from oci.client import OCIClient, QuotaExceededError
 from oci.grabber import GrabCancelledError, Grabber
 from oci.network import get_public_ip, wait_for_public_ip
+from tgbot import task_store
 from tgbot.billing import FREE_SHAPES
+from tgbot.cpu_policy import (combined_boot_keys,
+                              get_allowed_cpu_models, make_cpu_check_hook)
+from tgbot.handlers_client import run_remote_command
 from tgbot.notify import (
     fmt_paid_instance_alert,
     notify_boot_success,
@@ -81,190 +85,113 @@ PLAN_SYNC_INTERVAL_SECONDS = 60
 
 
 class TaskRegistry:
-    """后台长任务的注册表：线程安全，支持创建/查询/日志/取消。"""
+    """后台长任务的注册表：线程安全，支持创建/查询/日志/取消。
 
-    def __init__(self):
+    任务记录存在共享文件 tasks.json（tgbot/task_store.py，与机器人
+    同一份），每次查询都重新读文件，所以机器人建的任务这里也看得见；
+    stop_event 只存内存（本进程的任务才有），对方进程的任务取消时
+    走跨进程请求（对方的监听线程收到后置 stop_event）。
+    """
+
+    def __init__(self, tasks_file=None):
         self._lock = threading.RLock()
-        self._tasks = {}
-        self._counter = 0
-        self._load()
+        self._stop_events = {}
+        # tasks_file 为空时每次从 task_store.tasks_path() 读（跟随
+        # web.config.DATA_DIR 的变化，方便测试替换）。
+        self._tasks_file = tasks_file
 
-    # ---------------- 持久化 ----------------
+    @property
+    def tasks_file(self):
+        """共享任务文件路径（每次解析，测试替换 DATA_DIR 后立即生效）。"""
+        return self._tasks_file or task_store.tasks_path()
 
-    def _persist_path(self):
-        """任务记录文件路径（每次都从 config 读 DATA_DIR，方便测试替换）。"""
-        return os.path.join(config.DATA_DIR, "tasks.json")
-
-    def _save(self):
-        """把任务公开视图写盘（失败时静默跳过，不影响任务本身）。"""
-        try:
-            os.makedirs(config.DATA_DIR, exist_ok=True)
-            with open(self._persist_path(), "w", encoding="utf-8") as f:
-                json.dump(self._public_list_locked(), f, ensure_ascii=False)
-        except OSError:
-            pass
-
-    def _load(self):
-        """启动时从 tasks.json 恢复任务记录。
-
-        之前还在跑的任务（pending/running）标记为 cancelled 并追加一条
-        日志——进程重启后原线程已不存在，不可能还在跑。
-        """
-        try:
-            with open(self._persist_path(), encoding="utf-8") as f:
-                records = json.load(f)
-        except (OSError, ValueError):
-            return
-        if not isinstance(records, list):
-            return
-        with self._lock:
-            for record in records:
-                task_id = record.get("id")
-                if not task_id:
-                    continue
-                task = {
-                    "id": task_id,
-                    "kind": record.get("kind", "?"),
-                    "status": record.get("status", "cancelled"),
-                    "detail": record.get("detail", ""),
-                    "label": record.get("label"),
-                    "logs": list(record.get("logs") or []),
-                    "result": record.get("result"),
-                    "created_at": record.get("created_at", time.time()),
-                    "stop_event": threading.Event(),
-                }
-                if task["status"] in ("pending", "running"):
-                    task["status"] = "cancelled"
-                    task["logs"].append(self._stamp("服务重启，任务已中断。"))
-                self._tasks[task_id] = task
-                # 恢复计数器，避免新任务 ID 与旧任务冲突。
-                digits = "".join(ch for ch in task_id if ch.isdigit())
-                if digits:
-                    self._counter = max(self._counter, int(digits))
-
-    # ---------------- 内部工具 ----------------
-
-    @staticmethod
-    def _stamp(message):
-        """给日志消息加时间前缀。"""
-        return f"[{datetime.now().strftime('%H:%M:%S')}] {message}"
-
-    def _public(self, task):
-        """任务的公开视图（去掉 stop_event，logs 复制一份）。"""
-        return {
-            "id": task["id"],
-            "kind": task["kind"],
-            "status": task["status"],
-            "detail": task["detail"],
-            "label": task.get("label"),
-            "logs": list(task["logs"]),
-            "result": task["result"],
-            "created_at": task["created_at"],
-        }
-
-    def _public_list_locked(self):
-        """全部任务的公开视图列表（调用方需已持有锁）。"""
-        return [self._public(t) for t in self._tasks.values()]
+    def recover(self):
+        """启动时调用（web/app.create_app）：把本进程上次未结束的任务
+        标为已中断；对方进程的任务不动。"""
+        task_store.recover_interrupted(self.tasks_file, "web")
 
     # ---------------- 注册 / 查询 ----------------
 
     def create(self, kind, detail="", label=None):
-        """注册一个任务，返回短 ID（如抢机任务 "g1"）。初始状态 pending。
+        """注册一个任务，返回 ID（如抢机任务 "web-g1"）。初始状态 pending。
 
         label 是显示用的任务说明（如 "E2.1.Micro（新加坡）·
         AMD_2026-11-24"），任务页用它当第一列，不再直接暴露
         grab 这类内部类型；旧任务没有 label 时前端退回 kind。
         """
         with self._lock:
-            self._counter += 1
-            task_id = f"{kind[0]}{self._counter}"
-            self._tasks[task_id] = {
-                "id": task_id,
-                "kind": kind,
-                "status": "pending",
-                "detail": detail,
-                "label": label,
-                "logs": [],
-                "result": None,
-                "created_at": time.time(),
-                "stop_event": threading.Event(),
-            }
-            self._save()
-            return task_id
+            record = task_store.create_record(
+                self.tasks_file, "web", kind, detail, label)
+            self._stop_events[record["id"]] = threading.Event()
+            return record["id"]
 
     def get(self, task_id):
-        """取任务的公开视图；不存在返回 None。"""
+        """取任务的公开视图；不存在返回 None（含机器人建的任务）。"""
         with self._lock:
-            task = self._tasks.get(task_id)
-            return self._public(task) if task else None
+            return task_store.get_record(self.tasks_file, task_id)
 
     def list(self):
-        """全部任务的公开视图列表（按注册顺序）。"""
+        """全部任务的公开视图列表（按注册顺序，含机器人建的任务）。"""
         with self._lock:
-            return self._public_list_locked()
+            return task_store.load_records(self.tasks_file)
 
     def stop_event(self, task_id):
-        """取任务的 stop_event（任务循环里检查它）；任务不存在返回 None。"""
+        """取任务的 stop_event（任务循环里检查它）；任务不存在或
+        是对方进程的任务时返回 None。"""
         with self._lock:
-            task = self._tasks.get(task_id)
-            return task["stop_event"] if task else None
+            return self._stop_events.get(task_id)
 
     # ---------------- 更新 ----------------
 
     def append_log(self, task_id, message):
-        """往任务日志里追加一条消息（带时间前缀）。任务不存在返回 False。"""
+        """往任务日志里追加一条消息（带时间前缀），同时刷新详情为
+        最新消息（机器人端任务列表只显示详情）。任务不存在返回 False。"""
         with self._lock:
-            task = self._tasks.get(task_id)
-            if task is None:
-                return False
-            task["logs"].append(self._stamp(message))
-            self._save()
-            return True
+            record = task_store.update_record(
+                self.tasks_file, task_id, detail=message, log=message)
+            return record is not None
 
     def set_status(self, task_id, status):
         """更新任务状态。任务不存在返回 False。"""
         with self._lock:
-            task = self._tasks.get(task_id)
-            if task is None:
-                return False
-            task["status"] = status
-            self._save()
-            return True
+            record = task_store.update_record(
+                self.tasks_file, task_id, status=status)
+            return record is not None
 
     def set_result(self, task_id, result):
         """更新任务结果（JSON 可序列化字典）。任务不存在返回 False。"""
         with self._lock:
-            task = self._tasks.get(task_id)
-            if task is None:
-                return False
-            task["result"] = result
-            self._save()
-            return True
+            record = task_store.update_record(
+                self.tasks_file, task_id, result=result)
+            return record is not None
 
     def cancel(self, task_id):
-        """取消任务：置 stop_event 并把状态标为 cancelled。
+        """取消任务：本进程的任务置 stop_event 并把状态标为 cancelled；
+        对方进程的任务发跨进程取消请求（对方的监听线程执行）。
 
         返回 True 表示任务存在且在运行中；False 表示任务不存在或已结束。
         """
         with self._lock:
-            task = self._tasks.get(task_id)
-            if task is None or task["status"] not in ("pending", "running"):
-                return False
-            task["stop_event"].set()
-            task["status"] = "cancelled"
-            task["logs"].append(self._stamp("任务已取消。"))
-            self._save()
-            return True
+            if task_id in self._stop_events:
+                task = task_store.get_record(self.tasks_file, task_id)
+                if task is None or task["status"] not in ("pending",
+                                                          "running"):
+                    return False
+                self._stop_events[task_id].set()
+                task_store.update_record(
+                    self.tasks_file, task_id, status="cancelled",
+                    log="任务已取消。")
+                return True
+            return task_store.request_cancel(self.tasks_file, task_id)
 
     def reset(self):
         """清空全部任务（测试用）。"""
         with self._lock:
-            self._tasks.clear()
-            self._counter = 0
-            self._save()
+            self._stop_events.clear()
+            task_store.clear_records(self.tasks_file)
 
 
-# 全局任务注册表（单进程内共享）。
+# 全局任务注册表（任务记录与机器人共用 tasks.json）。
 TASKS = TaskRegistry()
 
 
@@ -305,7 +232,8 @@ def _notify_grab_success(registry, task_id, cli, params, result, notify):
             instances,
             root_password=notify.get("root_password"),
             region_code=notify.get("region_code"),
-            ssh_key_set=bool(params.get("ssh_keys_file")))
+            ssh_key_set=bool(params.get("ssh_keys_file")),
+            cpu_unverified=notify.get("cpu_unverified", False))
         if outcome.get("errors"):
             registry.append_log(
                 task_id,
@@ -335,31 +263,62 @@ def _run_grabber(registry, task_id, cli, compartment_id, params,
     线程里任何异常都要落到任务状态，不能静默消失。
     notify 不为空时，抢机成功后双通道推送开机成功通知（TG + Bark，
     含 root 密码；见 _notify_grab_success）。
+    target_cpu 非空时按 tgbot/cpu_policy.py 的规则筛 CPU（只留
+    配置里的型号，默认 7J13/7745）：开机时把 guard 公钥拼进启动
+    SSH keys，Grabber 注入 cpu_check_hook，抢到先 SSH 验 CPU，
+    不符释放（永删引导卷）继续抢；guard 密钥未配置时筛不了，
+    日志里写明并抢到即留。
     """
     registry.set_status(task_id, "running")
 
+    cpu_unverified = False
+
     def on_event(_event_type, message):
+        nonlocal cpu_unverified
+        if _event_type == "cpu_check_failed":
+            cpu_unverified = True
         registry.append_log(task_id, message)
 
-    grabber = Grabber(
-        cli, compartment_id,
-        params["availability_domain"], params["shape"],
-        params["image_id"], params["subnet_id"],
-        params["display_name"], params["ssh_keys_file"],
-        target_cpu=params.get("target_cpu"),
-        on_event=on_event,
-        stop_event=registry.stop_event(task_id),
-        # 0 表示未填（表单默认值），转 None 后 Grabber 用默认行为。
-        ocpus=params.get("ocpus") or None,
-        memory_gb=params.get("memory_gb") or None,
-        boot_volume_size_gbs=params.get("boot_volume_size_gbs"),
-        assign_public_ip=params.get("assign_public_ip", True),
-        assign_ipv6=params.get("assign_ipv6", False),
-        user_data=params.get("user_data") or None,
-        min_delay=params.get("min_delay") or None,
-        max_delay=params.get("max_delay") or None)
+    # 跨进程取消监听：机器人端点取消时，对方把 cancel_requested 写进
+    # 共享文件，这里轮询到后置 stop_event，抢机循环随即停下。
+    task_store.start_cancel_watcher(registry.tasks_file, task_id,
+                                    registry.stop_event(task_id))
+
+    filtering = bool(params.get("target_cpu"))
     try:
-        result = grabber.run()
+        with combined_boot_keys(params.get("ssh_keys_file"),
+                                include_guard=filtering) as boot_keys:
+            if filtering and not boot_keys.guard_included:
+                on_event("cpu_filter_unavailable",
+                         "未配置 guard 密钥，CPU 筛选未生效，抢到即留。")
+                target_cpus = None
+                hook = None
+            elif filtering:
+                target_cpus = get_allowed_cpu_models()
+                hook = make_cpu_check_hook(cli, run_remote_command)
+            else:
+                target_cpus = None
+                hook = None
+            grabber = Grabber(
+                cli, compartment_id,
+                params["availability_domain"], params["shape"],
+                params["image_id"], params["subnet_id"],
+                params["display_name"], boot_keys.path,
+                target_cpu=target_cpus,
+                on_event=on_event,
+                stop_event=registry.stop_event(task_id),
+                # 0 表示未填（表单默认值），转 None 后 Grabber 用默认行为。
+                ocpus=params.get("ocpus") or None,
+                memory_gb=params.get("memory_gb") or None,
+                boot_volume_size_gbs=params.get("boot_volume_size_gbs"),
+                assign_public_ip=params.get("assign_public_ip", True),
+                assign_ipv6=params.get("assign_ipv6", False),
+                user_data=params.get("user_data") or None,
+                min_delay=params.get("min_delay") or None,
+                max_delay=params.get("max_delay") or None)
+            if hook is not None:
+                grabber.cpu_check_hook = hook
+            result = grabber.run()
     except GrabCancelledError:
         registry.set_status(task_id, "cancelled")
         registry.append_log(task_id, "抢机已取消。")
@@ -392,8 +351,10 @@ def _run_grabber(registry, task_id, cli, compartment_id, params,
         f"总耗时 {result.elapsed_seconds:.0f} 秒。")
     registry.set_status(task_id, "done")
     if notify:
+        notify_with_flag = dict(notify)
+        notify_with_flag["cpu_unverified"] = cpu_unverified
         _notify_grab_success(registry, task_id, cli, params, result,
-                             notify)
+                             notify_with_flag)
 
 
 def start_grab_task(registry, cli, compartment_id, params,

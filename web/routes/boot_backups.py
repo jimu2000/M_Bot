@@ -60,6 +60,7 @@ from web.deps import (
     resolve_profile,
 )
 from web.routes.instances import clear_instance_list_cache
+from web.routes.volumes import clear_volumes_cache
 from web.tasks import PLAN_DEFAULTS
 
 router = APIRouter()
@@ -400,6 +401,8 @@ def restore(backup_id: str,
             shape=shape, ocpus=ocpus, memory_gb=memory_gb,
             assign_public_ip=body.assign_public_ip)
         clear_instance_list_cache(profile or config.DEFAULT_PROFILE)
+        # 恢复新建了一块启动盘，启动盘列表缓存也要清。
+        clear_volumes_cache(profile or config.DEFAULT_PROFILE)
     except ValueError as exc:
         return error_response(str(exc), status_code=400)
     except OCIError as exc:

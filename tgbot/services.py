@@ -22,6 +22,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from tgbot import config as bot_config
+from tgbot import task_store
 from oci.client import (
     AuthError,
     NotFoundError,
@@ -179,6 +180,19 @@ def short_shape(shape):
     return shape.split(".")[0]
 
 
+def fmt_shape_spec(shape, ocpus, memory):
+    """规格行：E2.1.Micro 后面加“永久免费”。
+
+    如 E2.1.Micro（1 核 / 1GB）永久免费；其他规格不加。
+    shape 可带 VM.Standard. 前缀，也可已是简称。
+    """
+    short = (shape or "?").replace("VM.Standard.", "")
+    text = f"{short}（{ocpus} 核 / {memory}GB）"
+    if short == "E2.1.Micro":
+        text += "永久免费"
+    return text
+
+
 # 实例列表分组：组顺序与组头（fmt_instance_list 与
 # instance_list_keyboard 共用，保证文字与按钮顺序一致）。
 # 已终止（TERMINATED）不在组里：sort_instances_by_group 直接
@@ -312,7 +326,7 @@ def fmt_instance_detail(inst, public_ip=None, cpu_model=None):
         f"🖥️ {name}",
         f"ID：{_tail(data.get('id'))}",
         f"状态：{state}",
-        f"规格：{shape}（{ocpus} 核 / {memory}GB）",
+        f"规格：{fmt_shape_spec(shape, ocpus, memory)}",
         f"CPU 型号：{cpu_model or '未知'}",
         f"可用域：{ad}",
         f"创建时间：{created}",
@@ -378,36 +392,85 @@ class TaskRegistry:
     注册时传入；没有 label 的旧任务在显示时退回“任务 <id>”。
     status：running / done / failed / cancelled。
     取消是协作式的：任务循环里要定期检查 stop_event（grabber.run 已支持）。
+
+    tasks_file 非空时任务记录同步写进共享文件（tgbot/task_store.py，
+    与网页版同一份 tasks.json），查询时合并对方进程的任务；对方
+    进程的任务没有本地 stop_event（取到 None），取消时走跨进程
+    请求（对方的监听线程收到后置 stop_event）。tasks_file 为空时
+    纯内存（单元测试用，不碰文件）。
     """
 
-    def __init__(self):
+    def __init__(self, tasks_file=None, origin="bot"):
         self._lock = threading.Lock()
         self._tasks = {}
         self._counter = 0
+        self.tasks_file = tasks_file
+        self.origin = origin
+
+    def recover(self):
+        """启动时调用：把本进程上次未结束的任务标为已中断。"""
+        if self.tasks_file:
+            task_store.recover_interrupted(self.tasks_file, self.origin)
+            # 同步内存副本：内存里的任务全是本进程的，同样标为已中断。
+            with self._lock:
+                for task in self._tasks.values():
+                    if task.get("status") in ("pending", "running"):
+                        task["status"] = "cancelled"
+                        task["detail"] = "服务重启，任务已中断。"
+
+    def _sync_cancel_flag(self, task):
+        """共享模式下，把文件里对方写来的取消请求同步进内存副本。
+
+        对方进程只会改本任务的 cancel_requested（状态只由任务
+        所在进程改），所以只同步这一个字段。调用时已持有 _lock。
+        """
+        if not self.tasks_file:
+            return
+        record = task_store.get_record(self.tasks_file, task["id"])
+        if record is not None:
+            task["cancel_requested"] = record.get("cancel_requested",
+                                                  False)
+
+    @staticmethod
+    def _record_to_task(record):
+        """共享文件记录转机器人任务字典（补 started_at，stop_event 为 None）。"""
+        task = dict(record)
+        task["started_at"] = record.get("created_at", time.time())
+        task["stop_event"] = None
+        return task
 
     def register(self, kind, detail="", label=None):
-        """注册一个任务，返回短 ID（如 "g1"）。
+        """注册一个任务，返回短 ID（如共享模式 "bot-g1"，内存模式 "g1"）。
 
         label 是显示用的任务说明（如 "E2.1.Micro（新加坡）·
         AMD_2026-11-24"），菜单 21 与取消按钮用它，不再直接
         暴露 g1 / grab 这类内部编号与类型。
         """
         with self._lock:
-            self._counter += 1
-            task_id = f"{kind[0]}{self._counter}"
-            self._tasks[task_id] = {
-                "id": task_id,
-                "kind": kind,
-                "status": "running",
-                "detail": detail,
-                "label": label,
-                "started_at": time.time(),
-                "stop_event": threading.Event(),
-            }
+            if self.tasks_file:
+                record = task_store.create_record(
+                    self.tasks_file, self.origin, kind, detail, label,
+                    status="running")
+                task_id = record["id"]
+                task = dict(record)
+                task["started_at"] = record["created_at"]
+            else:
+                self._counter += 1
+                task_id = f"{kind[0]}{self._counter}"
+                task = {
+                    "id": task_id,
+                    "kind": kind,
+                    "status": "running",
+                    "detail": detail,
+                    "label": label,
+                    "started_at": time.time(),
+                }
+            task["stop_event"] = threading.Event()
+            self._tasks[task_id] = task
             return task_id
 
     def update(self, task_id, status=None, detail=None):
-        """更新任务状态与详情。"""
+        """更新任务状态与详情（共享模式下详情同时追加进任务日志）。"""
         with self._lock:
             task = self._tasks.get(task_id)
             if task is None:
@@ -416,35 +479,69 @@ class TaskRegistry:
                 task["status"] = status
             if detail is not None:
                 task["detail"] = detail
+            if self.tasks_file:
+                task_store.update_record(
+                    self.tasks_file, task_id, status=status,
+                    detail=detail, log=detail)
             return True
 
     def get(self, task_id):
-        """取任务字典的浅拷贝；不存在返回 None。"""
+        """取任务字典的浅拷贝；不存在返回 None。
+
+        共享模式下本进程没有的任务去共享文件里找（对方进程的任务）。
+        """
         with self._lock:
             task = self._tasks.get(task_id)
-            return dict(task) if task else None
+            if task is not None:
+                self._sync_cancel_flag(task)
+                return dict(task)
+            if not self.tasks_file:
+                return None
+            record = task_store.get_record(self.tasks_file, task_id)
+            if record is None:
+                return None
+            return self._record_to_task(record)
 
     def list_all(self):
-        """全部任务列表（按注册顺序）。"""
+        """全部任务列表（按注册顺序；共享模式下含对方进程的任务）。"""
         with self._lock:
-            return [dict(t) for t in self._tasks.values()]
+            tasks = []
+            for task in self._tasks.values():
+                self._sync_cancel_flag(task)
+                tasks.append(dict(task))
+            if not self.tasks_file:
+                return tasks
+            seen = {t["id"] for t in tasks}
+            for record in task_store.load_records(self.tasks_file):
+                if record["id"] not in seen:
+                    tasks.append(self._record_to_task(record))
+            return tasks
 
     def running(self):
         """运行中的任务列表。"""
         return [t for t in self.list_all() if t["status"] == "running"]
 
     def cancel(self, task_id):
-        """取消任务：置 stop_event 并把状态标为 cancelled。
+        """取消任务：本进程的任务置 stop_event 并把状态标为 cancelled；
+        对方进程的任务发跨进程取消请求（对方的监听线程执行）。
 
         返回 True 表示任务存在且在运行中；False 表示任务不存在或已结束。
         """
         with self._lock:
             task = self._tasks.get(task_id)
-            if task is None or task["status"] != "running":
+            if task is not None:
+                if task["status"] != "running":
+                    return False
+                task["stop_event"].set()
+                task["status"] = "cancelled"
+                if self.tasks_file:
+                    task_store.update_record(
+                        self.tasks_file, task_id, status="cancelled",
+                        log="任务已取消。")
+                return True
+            if not self.tasks_file:
                 return False
-            task["stop_event"].set()
-            task["status"] = "cancelled"
-            return True
+            return task_store.request_cancel(self.tasks_file, task_id)
 
     def stop_event(self, task_id):
         """取任务的 stop_event（任务循环里检查它）；任务不存在返回 None。"""
@@ -453,8 +550,8 @@ class TaskRegistry:
             return task["stop_event"] if task else None
 
 
-# 全局任务注册表（单机器人进程内共享）。
-TASKS = TaskRegistry()
+# 全局任务注册表（机器人进程内共享；任务记录与网页版共用 tasks.json）。
+TASKS = TaskRegistry(tasks_file=task_store.tasks_path())
 
 
 def fmt_task_list(tasks):

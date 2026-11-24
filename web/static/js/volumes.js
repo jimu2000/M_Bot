@@ -212,13 +212,21 @@
     q.style.color = "";
   }
 
-  // 加载备份列表 + 配额（走前端缓存；force=true 时跳过缓存重新拉取）
+  // 加载备份列表 + 配额（走前端缓存；force=true 时跳过缓存重新拉取）。
+  // 两个请求并行发（配额与列表无关），各自失败时各自降级。
   async function loadBackups(force) {
     var gen = loadGen; // 捕获当前代次，切账号后旧代次不再写回
     var prof = (currentProfile || "DEFAULT") + ":" + (currentRegion || "");
+    var backupsPromise = MBot.cachedApi("bb:list:" + prof,
+      MBot.withProfile("/api/boot-backups", currentProfile, currentRegion), !!force);
+    var quotaPromise = MBot.cachedApi("bb:quota:" + prof,
+      MBot.withProfile("/api/boot-backups/quota", currentProfile, currentRegion), !!force);
+    // 先挂一个空 catch，避免中途切账号提前 return 后未处理的 rejection
+    // 在控制台刷警告（后面 await 原 promise 时错误仍会正常抛出）。
+    backupsPromise.catch(function () {});
+    quotaPromise.catch(function () {});
     try {
-      var data = await MBot.cachedApi("bb:list:" + prof,
-        MBot.withProfile("/api/boot-backups", currentProfile, currentRegion), !!force);
+      var data = await backupsPromise;
       if (gen !== loadGen) return;
       backups = data.backups || [];
     } catch (err) {
@@ -229,8 +237,7 @@
       backups = [];
     }
     try {
-      var quota = await MBot.cachedApi("bb:quota:" + prof,
-        MBot.withProfile("/api/boot-backups/quota", currentProfile, currentRegion), !!force);
+      var quota = await quotaPromise;
       if (gen !== loadGen) return;
       backupPaid = !!quota.paid;
       var el = document.getElementById("backup-quota");
@@ -251,13 +258,26 @@
     renderBackups();
   }
 
-  // 加载卷列表 + 孤儿盘（走前端缓存；force=true 时跳过缓存重新拉取）
+  // 加载卷列表 + 孤儿盘（走前端缓存；force=true 时跳过缓存重新拉取）。
+  // 两个请求并行发，各自失败时各自降级；force 时带 refresh=1 绕过
+  // 服务端 30 秒缓存。
   async function loadAll(force) {
     var gen = ++loadGen; // 新一代次加载开始，旧代次的结果作废
     var prof = (currentProfile || "DEFAULT") + ":" + (currentRegion || "");
+    var volUrl = MBot.withProfile("/api/volumes", currentProfile, currentRegion);
+    var orphUrl = MBot.withProfile("/api/volumes/orphans", currentProfile, currentRegion);
+    if (force) {
+      volUrl += (volUrl.indexOf("?") === -1 ? "?" : "&") + "refresh=1";
+      orphUrl += (orphUrl.indexOf("?") === -1 ? "?" : "&") + "refresh=1";
+    }
+    var volPromise = MBot.cachedApi("vol:list:" + prof, volUrl, !!force);
+    var orphPromise = MBot.cachedApi("vol:orphans:" + prof, orphUrl, !!force);
+    // 先挂空 catch，避免中途切账号提前 return 后未处理的 rejection
+    // 在控制台刷警告（后面 await 原 promise 时错误仍会正常抛出）。
+    volPromise.catch(function () {});
+    orphPromise.catch(function () {});
     try {
-      var data = await MBot.cachedApi("vol:list:" + prof,
-        MBot.withProfile("/api/volumes", currentProfile, currentRegion), !!force);
+      var data = await volPromise;
       if (gen !== loadGen) return;
       volumes = data.volumes || [];
     } catch (err) {
@@ -267,8 +287,7 @@
         MBot.escapeHtml(err.message) + "</td></tr>";
     }
     try {
-      var o = await MBot.cachedApi("vol:orphans:" + prof,
-        MBot.withProfile("/api/volumes/orphans", currentProfile, currentRegion), !!force);
+      var o = await orphPromise;
       if (gen !== loadGen) return;
       // 兼容两种返回键名：orphans 或 volumes
       orphans = o.orphans || o.volumes || [];

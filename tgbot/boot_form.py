@@ -54,6 +54,7 @@ from datetime import datetime, timedelta, timezone
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from oci.grabber import TARGET_CPU
+from tgbot.cpu_policy import get_allowed_cpu_models
 from web.config import IMAGE_IDS
 
 BEIJING_TZ = timezone(timedelta(hours=8))
@@ -554,9 +555,9 @@ def build_preset(form, deploy=None):
         "shape": shape,
         "ocpus": ocpus,
         "memory_gb": memory_gb,
-        # E2 沿用旧 e2 预设的做法：只留 7J13（Grabber 收到 target_cpu 后
-        # 在 cpu_check_hook 注入时筛 CPU；机器人目前未注入 hook，
-        # 该字段暂不生效，见 handlers_extra._run_grabber_thread）。
+        # E2 默认筛 CPU：只留配置里的型号（cpu_policy.json，默认
+        # 7J13/7745）。target_cpu 非空即开筛，实际列表在抢机时从
+        # 配置读，见 handlers_extra._run_grabber_thread。
         "target_cpu": TARGET_CPU if shape == SHAPE_E2_MICRO else None,
         "display_name": generate_display_name(shape, ocpus, memory_gb),
         "image_id": image_id,
@@ -966,8 +967,9 @@ def fmt_boot_form_summary(preset, ok, reason):
                                  if script else "无"))
     if preset.get("shape") == SHAPE_E2_MICRO:
         if preset.get("target_cpu"):
-            lines.append(f"目标 CPU：只留含 {preset['target_cpu']} 的，"
-                         "不符就释放继续抢")
+            lines.append("目标 CPU：只留 " +
+                         "/".join(get_allowed_cpu_models()) +
+                         "，不符就释放继续抢")
         else:
             lines.append("目标 CPU：什么 CPU 都可以，抢到就留")
     if preset.get("note"):
