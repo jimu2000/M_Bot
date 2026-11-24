@@ -1,6 +1,6 @@
 # M_Bot Oracle开源管理面板
 
-> **当前版本：v1.35.3** · 更新记录见 [CHANGELOG.md](CHANGELOG.md)（[英文版 / English](CHANGELOG.en.md)）
+> **当前版本：v1.35.4** · 更新记录见 [CHANGELOG.md](CHANGELOG.md)（[英文版 / English](CHANGELOG.en.md)）
 
 [中文](#中文) | [English](#english)
 
@@ -18,9 +18,41 @@ M_Bot 是一个开源的 Oracle Cloud 管理面板：Telegram 机器人 + Web �
 
 准备工作（缺一不可）：
 1. 一台 Debian / Ubuntu 服务器（root 权限，1 核 1GB 以上即可）。
-2. Telegram 机器人 Token：找 @BotFather 新建机器人拿到。
+2. Telegram 机器人 Token：见下面「拿到 Telegram 机器人 Token（详细步骤）」。
 3. 你的 Telegram 用户 ID：找 @userinfobot 发 `/start` 拿到（纯数字）。
 4. OCI API 密钥：安装后在机器人里用 `/uploadapi` 上传，或手动放到服务器的 `/root/` 下（配置 `~/oci_config`，私钥 `/root/xxx.pem`）。
+
+### 拿到 Telegram 机器人 Token（详细步骤）
+
+Token 是机器人调用 Telegram Bot API 的通行证，格式是一串数字 + 冒号 +
+一串字母数字，例如 `123456789:AAH...`（35 字符左右）。冒号前面那串数字
+是机器人的 ID，不用单独填；安装时整串 Token 一起填。
+
+**新建机器人（还没有机器人时）：**
+
+1. 打开 Telegram，搜索 @BotFather，点 Start。
+2. 发 `/newbot`。
+3. 起个显示名（比如 M-探长）。
+4. 起个用户名，必须以 `bot` 结尾（比如 `vega_oci_bot`），不能跟别人重复。
+5. BotFather 回一条消息，里面就是 Token，整串复制下来。
+
+**已有机器人（想找回 Token 时）：**
+
+1. 打开 @BotFather，发 `/token`。
+2. 选择你的机器人。
+3. BotFather 会把 Token 发给你，整串复制下来。
+
+**你的 Telegram 用户 ID（白名单用，别跟 Token 混了）：**
+
+找 @userinfobot 发 `/start`，它回你的纯数字 ID，安装时填进用户 ID 那一栏；
+只有这个 ID 能操作机器人。
+
+**Token 泄露了怎么办：**
+
+在 @BotFather 里 `/mybots` → 选你的机器人 → API Token → Revoke，
+重新生成一串新的，旧的立即失效。
+
+**注意：** Token 谁拿到谁就能控制你的机器人，不要发到群聊、不要贴到公开地方。
 
 一条命令安装（root 运行，首次运行是安装，再次运行是更新并重启）：
 
@@ -253,11 +285,45 @@ server. All code here is independently written, fully visible and auditable.
 
 Prerequisites (all required):
 1. A Debian / Ubuntu server (root access, 1 vCPU / 1 GB RAM is enough).
-2. A Telegram bot token: create a bot with @BotFather.
+2. A Telegram bot token: see "Getting your Telegram bot token (step by step)" below.
 3. Your Telegram user ID: send `/start` to @userinfobot (digits only).
 4. An OCI API key: upload it in the bot with `/uploadapi` after installing,
    or place it in `/root/` on the server manually (config `~/oci_config`,
    key `/root/xxx.pem`).
+
+### Getting your Telegram bot token (step by step)
+
+The token is the bot's credential for the Telegram Bot API. It looks like
+`123456789:AAH...` (digits, a colon, then letters and digits, about 35
+characters). The digits before the colon are the bot's ID — you don't enter
+it separately; paste the whole token when installing.
+
+**New bot (if you don't have one yet):**
+
+1. Open Telegram, search for @BotFather, press Start.
+2. Send `/newbot`.
+3. Pick a display name (e.g. M-探长).
+4. Pick a username ending in `bot` (e.g. `vega_oci_bot`); it must be unique.
+5. BotFather replies with your token — copy the whole string.
+
+**Existing bot (to retrieve the token):**
+
+1. Open @BotFather, send `/token`.
+2. Pick your bot.
+3. BotFather sends you the token — copy the whole string.
+
+**Your Telegram user ID (for the allowlist — don't confuse it with the token):**
+
+Send `/start` to @userinfobot; it replies with your numeric ID. Enter that as
+the user ID during install; only that ID can operate the bot.
+
+**If your token leaks:**
+
+In @BotFather: `/mybots` → pick your bot → API Token → Revoke to generate a
+new one; the old one stops working immediately.
+
+**Note:** anyone with the token can control your bot — never post it in a
+group chat or anywhere public.
 
 One command to install (run as root; first run installs, later runs update
 and restart):

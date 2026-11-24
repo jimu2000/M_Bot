@@ -13,8 +13,8 @@
 #   bash install.sh start|stop|restart|status|log|upgrade|uninstall
 #
 # 安装前准备（缺一不可，装完机器人才能工作）：
-#   1. Telegram 机器人 Token：找 @BotFather 新建机器人拿到
-#      （格式如 123456789:AAE...，装到一半会问你）。
+#   1. Telegram 机器人 Token：@BotFather 处获得——新建机器人发 /newbot，
+#      已有机器人发 /token 找回（格式如 123456789:AAE...，装到一半会问你）。
 #   2. 你的 Telegram 用户 ID：找 @userinfobot 发 /start 拿到
 #      （纯数字，装到一半会问你；白名单只放这个 ID）。
 #   3. OCI API 密钥：安装后在机器人里用 /uploadapi 上传你的

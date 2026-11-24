@@ -9,6 +9,14 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [1.35.4] - 2026-11-24
+
+### Docs
+- README now has a step-by-step Telegram bot token tutorial (Chinese and English): how the token differs from the bot ID and the user ID; creating a new bot (`/newbot`) vs. retrieving the token of an existing bot (`/token`); revoking a leaked token in @BotFather; install.sh header comment updated to match.
+
+### Verification
+- Full test suite: 2491 tests, all passing (docs and comment changes only, no code behavior changed).
+
 ## [1.35.3] - 2026-11-24
 
 ### Changed

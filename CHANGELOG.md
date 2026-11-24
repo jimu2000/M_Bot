@@ -9,6 +9,14 @@
 
 ## [Unreleased]
 
+## [1.35.4] - 2026-11-24
+
+### 文档
+- README 补上 Telegram 机器人 Token 详细教程（中英双语）：Token 与机器人 ID、用户 ID 的区别；新建机器人（/newbot）与已有机器人找回 Token（/token）两条路；Token 泄露后在 @BotFather 里 Revoke 重生；install.sh 头注释同步
+
+### 验证
+- 全量测试 2491 个全过（仅文档与注释改动，无代码行为变化）
+
 ## [1.35.3] - 2026-11-24
 
 ### 变更
