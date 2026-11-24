@@ -388,6 +388,60 @@ class TestInstallScript(unittest.TestCase):
         self.assertIn("acme_on_80", self.text)
         self.assertIn('if [ "$acme_on_80" = "1" ]', self.text)
 
+    def test_load_cf_credentials(self):
+        # CF 凭据统一加载：环境变量 > OCI 配置 [cloudflare] 段；
+        # Token 或 Key+邮箱齐全才算可用；绝不交互提问。
+        self.assertIn("load_cf_credentials()", self.text)
+        loader = self.text.split("load_cf_credentials()")[1].split(
+            "cf_api()")[0]
+        self.assertIn("MBOT_INSTALL_CF_API_TOKEN", loader)
+        self.assertIn("read_cf_from_oci_config", loader)
+        self.assertIn('return 1', loader)
+        self.assertNotIn("printf ", loader)
+
+    def test_dns_auto_bind(self):
+        # 域名自动绑定：发证前校验解析，没解析到本机就用 CF API
+        # 建/改 A 记录（DNS-only，不开代理），等解析生效；没凭据
+        # 只警告不中断；setup_nginx 里发证前必须先调它。
+        self.assertIn("ensure_dns_points_here()", self.text)
+        self.assertIn("dns_points_here()", self.text)
+        self.assertIn("cf_api()", self.text)
+        self.assertIn('/zones?name=', self.text)
+        self.assertIn("/dns_records", self.text)
+        self.assertIn('\\"proxied\\":false', self.text)
+        self.assertIn("解析已生效", self.text)
+        nginx_fn = self.text.split("setup_nginx()")[1].split(
+            "detect_ssh_port()")[0]
+        self.assertIn('ensure_dns_points_here "$DOMAIN" || true', nginx_fn)
+        # 绑定必须在发证之前
+        self.assertLess(nginx_fn.find("ensure_dns_points_here"),
+                        nginx_fn.find("request_domain_cert_cfdns"))
+
+    def test_self_test(self):
+        # 安装后自检：证书（颁发者/有效期/域名匹配）、登录页 200、
+        # 真实登录（调登录接口 + 会话 cookie）、http→https 301；
+        # 自签证书时 curl 用 -k，LE 证书严格校验。
+        self.assertIn("self_test()", self.text)
+        st = self.text.split("self_test()")[1].split(
+            "print_access_info()")[0]
+        self.assertIn("openssl s_client", st)
+        self.assertIn("Let's Encrypt", st)
+        self.assertIn("Certificate will not expire", st)
+        self.assertIn("/api/auth/login", st)
+        self.assertIn("mbot_session", st)
+        self.assertIn("301\\ https://*", st)
+        self.assertIn('k="-k"', st)
+        self.assertIn("安装自检", st)
+
+    def test_install_runs_self_test(self):
+        # 首次安装跑完健康检查后必须跑自检（带管理员密码），
+        # 更新模式不跑（密码/域名不在内存里）。
+        install_fn = self.text.split("cmd_install()")[1].split(
+            "cmd_upgrade()")[0]
+        self.assertIn('self_test "$ADMIN_PASSWORD"', install_fn)
+        self.assertLess(install_fn.find("health_check"),
+                        install_fn.find("self_test"))
+
 
 if __name__ == "__main__":
     unittest.main()

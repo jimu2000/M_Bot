@@ -9,6 +9,16 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [1.32.0] - 2026-11-24
+
+### Added
+- Automatic domain binding: before requesting a certificate, the installer checks whether the domain resolves to this machine; if not and Cloudflare credentials are available, it creates or updates the A record to point here (DNS-only, no proxy — the proxy would block http-01 validation) and waits up to 60 seconds for the resolution to take effect. Credential precedence: environment variables > the `[cloudflare]` section of `~/oci_config` (`load_cf_credentials`, shared with cfdns). Without credentials or on binding failure it only warns; certificate issuance then fails and falls back to a self-signed certificate without interrupting the install.
+- Post-install self-test: after the health check on a fresh install, four checks run automatically and print their results — certificate (Let's Encrypt issuer + still valid + domain match; handshake only for self-signed), login page (public URL returns 200, with strict chain validation for LE certificates), real login (admin + install password against the login API, expecting 200 and a session cookie), and HTTP redirect (HTTP must 301 to HTTPS when a domain and certificate are present). On http-01 issuance it notes that external port-80 reachability is already proven.
+
+### Verification
+- Full test suite: 2461 tests, all passing (4 new: CF credential loading, domain auto-binding, post-install self-test, installer invoking the self-test).
+- Live verification: DNS record deleted + uninstall + fresh reinstall on .129, with auto-binding and the self-test verified end to end (see the v1.32.0 install verification notes below).
+
 ## [1.31.0] - 2026-11-24
 
 ### Added

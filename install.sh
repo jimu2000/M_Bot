@@ -38,6 +38,11 @@
 #   - OCI 实例还会经 OCI API 自动放行云端安全列表（80/443/9527）；
 #     没配 API 认证时只警告，安装不中断。
 #   - Telegram Token 可留空：留空则只装面板，不装机器人。
+#   - 域名自动绑定：有域名时发证前先校验解析，没解析到本机且有
+#     Cloudflare 凭据（环境变量或 ~/oci_config 的 [cloudflare] 段）
+#     就自动建/改 A 记录指到本机，等解析生效再发证。
+#   - 装完自动自检：证书（颁发者/有效期/域名匹配）、登录页 200、
+#     真实登录（admin 密码 + 会话 cookie）、http→https 跳转。
 #   - 有域名：自动申请 Let's Encrypt 证书，访问 https://你的域名。
 #     验证方式二选一：http（80 端口验证，默认，certbot）或 cfdns
 #     （Cloudflare DNS 验证，lego，需 CF API Token；验证不占端口，
@@ -309,19 +314,14 @@ prompt_config() {
         http|cfdns) : ;;
         *) die "验证方式只能是 http 或 cfdns。" ;;
     esac
-    # cfdns 时问 Cloudflare API Token（read -s 不回显；Token 要有
-    # Zone:DNS:Edit + Zone:Zone:Read 权限，存在 /etc/lego/env 里，
-    # 600 权限，续期也要用它）。
-    # 凭据优先级：环境变量 > OCI 配置文件 ~/oci_config 的
-    # [cloudflare] 段（cf_token，或 cf_key + cf_email）> 交互输入。
-    CF_API_TOKEN="${MBOT_INSTALL_CF_API_TOKEN:-}"
-    CF_API_KEY="${MBOT_INSTALL_CF_API_KEY:-}"
-    CF_EMAIL="${MBOT_INSTALL_CF_EMAIL:-}"
+    # Cloudflare 凭据：有域名时都先读一份（DNS 自动绑定要用；
+    # cfdns 验证更是必须）。优先级：环境变量 > OCI 配置文件
+    # ~/oci_config 的 [cloudflare] 段 > 交互输入（只在 cfdns 时问）。
+    CF_API_TOKEN=""; CF_API_KEY=""; CF_EMAIL=""
+    if [ -n "$DOMAIN" ]; then
+        load_cf_credentials || true
+    fi
     if [ "$CERT_METHOD" = "cfdns" ]; then
-        if [ -z "$CF_API_TOKEN" ] && [ -z "$CF_API_KEY" ] \
-                && read_cf_from_oci_config; then
-            info "从 OCI 配置文件 [cloudflare] 段读到 Cloudflare 凭据，直接用它。"
-        fi
         if [ -z "$CF_API_TOKEN" ] && [ -z "$CF_API_KEY" ]; then
             printf "Cloudflare API Token（Zone:DNS:Edit + Zone:Zone:Read 权限）："
             read -r -s CF_API_TOKEN || true
@@ -629,6 +629,126 @@ print(email)
     CF_API_KEY="$(printf '%s' "$out" | sed -n '2p')"
     CF_EMAIL="$(printf '%s' "$out" | sed -n '3p')"
     return 0
+}
+
+# 读 Cloudflare 凭据（DNS 自动绑定与 cfdns 共用）：
+# 环境变量 > OCI 配置文件 ~/oci_config 的 [cloudflare] 段。
+# 读到可用的（Token，或 Key + 邮箱）设 CF_API_TOKEN / CF_API_KEY /
+# CF_EMAIL 并返回 0，否则返回 1。绝不交互提问（调用方决定要不要问）。
+load_cf_credentials() {
+    CF_API_TOKEN="${MBOT_INSTALL_CF_API_TOKEN:-${CF_API_TOKEN:-}}"
+    CF_API_KEY="${MBOT_INSTALL_CF_API_KEY:-${CF_API_KEY:-}}"
+    CF_EMAIL="${MBOT_INSTALL_CF_EMAIL:-${CF_EMAIL:-}}"
+    if [ -z "$CF_API_TOKEN" ] && [ -z "$CF_API_KEY" ]; then
+        if read_cf_from_oci_config; then
+            info "从 OCI 配置文件 [cloudflare] 段读到 Cloudflare 凭据，直接用它。"
+        fi
+    fi
+    [ -n "$CF_API_TOKEN" ] && return 0
+    [ -n "$CF_API_KEY" ] && [ -n "$CF_EMAIL" ] && return 0
+    return 1
+}
+
+# ---------- Cloudflare DNS 自动绑定 ----------
+# 域名解析到本机是发证的前提：域名还没解析（或指到别处）时，
+# 有 Cloudflare 凭据就自动建/改 A 记录指到本机，再等解析生效。
+# 凭据走 CF_API_TOKEN（Bearer）或 CF_API_KEY + CF_EMAIL（X-Auth-Key）。
+# 失败只返回 1，调用方警告后继续（发证会失败并回落自签，不中断安装）。
+cf_api() {
+    # $1 方法，$2 路径，$3 JSON body（可空）。成功打印 response body。
+    local method="$1" path="$2" body="${3:-}"
+    local auth=()
+    if [ -n "${CF_API_TOKEN:-}" ]; then
+        auth=(-H "Authorization: Bearer $CF_API_TOKEN")
+    else
+        auth=(-H "X-Auth-Email: $CF_EMAIL" -H "X-Auth-Key: $CF_API_KEY")
+    fi
+    if [ -n "$body" ]; then
+        curl -s -m 20 -X "$method" "https://api.cloudflare.com/client/v4$path" \
+            "${auth[@]}" -H "Content-Type: application/json" -d "$body" 2>/dev/null
+    else
+        curl -s -m 20 -X "$method" "https://api.cloudflare.com/client/v4$path" \
+            "${auth[@]}" 2>/dev/null
+    fi
+}
+
+# 本机公网 IP（api.ipify.org 拿不到时回退 hostname -I 的第一个）。
+public_ip() {
+    local ip
+    ip="$(curl -s -m 5 https://api.ipify.org 2>/dev/null || true)"
+    [ -n "$ip" ] || ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+    echo "$ip"
+}
+
+# 域名是否已解析到本机（任一 A 记录等于本机公网 IP 即算）。
+dns_points_here() {
+    local domain="$1" ip="$2"
+    [ -n "$ip" ] || return 1
+    python3 - "$domain" "$ip" <<'PYEOF' 2>/dev/null
+import socket, sys
+try:
+    sys.exit(0 if sys.argv[2] in socket.gethostbyname_ex(sys.argv[1])[2] else 1)
+except Exception:
+    sys.exit(1)
+PYEOF
+}
+
+# 域名自动绑定到本机：已解析到本机直接返回 0；否则有 CF 凭据就
+# 建/改 A 记录（DNS-only，不开代理——代理会挡 http-01 验证），
+# 然后最多等 60 秒看解析生效。返回 0 表示域名已指到本机。
+ensure_dns_points_here() {
+    local domain="$1"
+    local ip
+    ip="$(public_ip)"
+    if dns_points_here "$domain" "$ip"; then
+        ok "域名 $domain 已解析到本机 $ip。"
+        return 0
+    fi
+    load_cf_credentials || {
+        warn "域名 $domain 未解析到本机 $ip，且没有 Cloudflare 凭据自动绑定。"
+        warn "请手动添加 DNS A 记录：$domain → $ip（不开启 CF 代理），再重跑安装；本次先继续，证书可能申请失败并回落自签。"
+        return 1
+    }
+    info "域名 $domain 未解析到本机，正在用 Cloudflare API 自动绑定…"
+    # 找 zone：逐级去掉最左标签，直到在 CF 里找到该 zone。
+    local zone="" zone_id="" rest="$domain"
+    local resp
+    while [ -n "$rest" ]; do
+        resp="$(cf_api GET "/zones?name=$rest")"
+        zone_id="$(printf '%s' "$resp" | python3 -c "import json,sys; r=json.load(sys.stdin).get('result') or []; print(r[0]['id'] if r else '')" 2>/dev/null || true)"
+        if [ -n "$zone_id" ]; then
+            zone="$rest"
+            break
+        fi
+        rest="${rest#*.}"
+        case "$rest" in
+            *.*) : ;;
+            *) rest="" ;;
+        esac
+    done
+    [ -n "$zone_id" ] || { warn "Cloudflare 里找不到域名 $domain 所属的 zone（凭据权限不足或域名不在此账号下）。"; return 1; }
+    # 查现有 A 记录：有就改（PUT），没有就建（POST）。
+    resp="$(cf_api GET "/zones/$zone_id/dns_records?type=A&name=$domain")"
+    local rec_id
+    rec_id="$(printf '%s' "$resp" | python3 -c "import json,sys; r=json.load(sys.stdin).get('result') or []; print(r[0]['id'] if r else '')" 2>/dev/null || true)"
+    local body="{\"type\":\"A\",\"name\":\"$domain\",\"content\":\"$ip\",\"ttl\":120,\"proxied\":false}"
+    if [ -n "$rec_id" ]; then
+        resp="$(cf_api PUT "/zones/$zone_id/dns_records/$rec_id" "$body")"
+    else
+        resp="$(cf_api POST "/zones/$zone_id/dns_records" "$body")"
+    fi
+    local ok_flag
+    ok_flag="$(printf '%s' "$resp" | python3 -c "import json,sys; print(json.load(sys.stdin).get('success', False))" 2>/dev/null || true)"
+    [ "$ok_flag" = "True" ] || { warn "Cloudflare API 建/改 A 记录失败（见上面返回）。"; return 1; }
+    ok "DNS 记录已更新：$domain → $ip（DNS-only），等解析生效…"
+    # 最多等 60 秒（每 5 秒查一次）。
+    local i
+    for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+        dns_points_here "$domain" "$ip" && { ok "域名 $domain 解析已生效。"; return 0; }
+        sleep 5
+    done
+    warn "DNS 记录已建，但 60 秒后解析仍未生效（可能是 DNS 缓存），证书申请可能失败。"
+    return 1
 }
 
 # Let's Encrypt 从 2026-01-15 起正式给公网 IP 发证，但只发 shortlived
@@ -969,6 +1089,9 @@ setup_nginx() {
         fi
     fi
     if [ -n "${DOMAIN:-}" ]; then
+        # 发证前先保证域名解析到本机：没解析就自动绑（有 CF 凭据时），
+        # 绑不上只警告，发证失败会回落自签。
+        ensure_dns_points_here "$DOMAIN" || true
         if [ "${CERT_METHOD:-http}" = "cfdns" ]; then
             request_domain_cert_cfdns "$DOMAIN" || write_nginx_selfsigned
         else
@@ -1357,6 +1480,102 @@ health_check() {
     return "$fail"
 }
 
+# ---------- 安装后自检 ----------
+# 把人工验证的那几项做到脚本里：证书、登录页、真实登录、跳转。
+# 只在首次安装时跑（更新模式下密码/域名不在内存里，没法验登录）。
+# $1：面板管理员密码（可空，空时跳过真实登录那项）。
+self_test() {
+    local password="${1:-}"
+    local base_url ip host port
+    ip="$(public_ip)"
+    if [ -n "${DOMAIN:-}" ] && [ "${CERT_OK:-0}" = "1" ]; then
+        if [ "${CERT_PORT:-443}" = "443" ]; then
+            base_url="https://${DOMAIN}"
+        else
+            base_url="https://${DOMAIN}:${CERT_PORT}"
+        fi
+    else
+        base_url="https://${ip}:${PANEL_PORT}"
+    fi
+    host="$(printf '%s' "$base_url" | sed -E 's|https?://([^:/]+).*|\1|')"
+    port="$(printf '%s' "$base_url" | sed -E 's|.*:([0-9]+)$|\1|')"
+    [ "$port" = "$base_url" ] && port=443
+    # 自签证书时 curl 要 -k；LE 证书严格校验（链不对就报失败）。
+    local k=""
+    [ "${CERT_KIND:-selfsigned}" = "selfsigned" ] && k="-k"
+
+    echo
+    echo "--- 安装自检 ---"
+
+    # ① 证书：LE 证书时验颁发者 + 有效期 + 域名匹配；自签时只验能握手。
+    local cert_line="跳过"
+    if [ "${CERT_KIND:-selfsigned}" = "domain" ] || [ "${CERT_KIND:-selfsigned}" = "ip" ]; then
+        local cert_text not_after
+        cert_text="$(echo | openssl s_client -connect "$host:$port" -servername "$host" 2>/dev/null | openssl x509 -noout -issuer -subject -dates -checkend 0 2>/dev/null || true)"
+        not_after="$(printf '%s' "$cert_text" | grep "notAfter" | cut -d= -f2)"
+        if printf '%s' "$cert_text" | grep -q "Let's Encrypt" \
+            && printf '%s' "$cert_text" | grep -q "Certificate will not expire" \
+            && printf '%s' "$cert_text" | grep -q "$host"; then
+            cert_line="通过（Let's Encrypt，有效至 $not_after）"
+        else
+            cert_line="失败（证书内容不对）"
+        fi
+    else
+        if echo | openssl s_client -connect "$host:$port" -servername "$host" 2>/dev/null | openssl x509 -noout -subject 2>/dev/null | grep -q "subject="; then
+            cert_line="通过（自签证书，握手正常）"
+        else
+            cert_line="失败（握手失败）"
+        fi
+    fi
+    echo "证书：$cert_line"
+
+    # ② 登录页：公网地址返回 200。
+    local code page_line
+    code="$(curl -s $k -o /dev/null -w "%{http_code}" --max-time 15 "$base_url/login" 2>/dev/null || echo 000)"
+    if [ "$code" = "200" ]; then
+        page_line="通过（$base_url/login 返回 200）"
+    else
+        page_line="失败（返回 $code）"
+    fi
+    echo "登录页：$page_line"
+
+    # ③ 真实登录：admin + 密码调登录接口，要 200 且拿到会话 cookie。
+    local login_line="跳过（无密码）"
+    if [ -n "$password" ]; then
+        local body cookie_file
+        body="$(python3 -c "import json,sys; print(json.dumps({'username': 'admin', 'password': sys.argv[1]}))" "$password")"
+        cookie_file="/tmp/mbot_selftest_cookies.txt"
+        code="$(curl -s $k -o /dev/null -w "%{http_code}" --max-time 15 \
+            -c "$cookie_file" -H "Content-Type: application/json" \
+            -d "$body" "$base_url/api/auth/login" 2>/dev/null || echo 000)"
+        if [ "$code" = "200" ] && grep -q "mbot_session" "$cookie_file" 2>/dev/null; then
+            login_line="通过（admin 登录成功，会话 cookie 已设置）"
+        else
+            login_line="失败（登录接口返回 $code）"
+        fi
+        rm -f "$cookie_file"
+    fi
+    echo "真实登录：$login_line"
+
+    # ④ http 跳转：域名 + 证书成功时，http 应 301 跳 https。
+    local redirect_line="跳过（无域名或证书未成功）"
+    if [ -n "${DOMAIN:-}" ] && [ "${CERT_OK:-0}" = "1" ]; then
+        local loc
+        loc="$(curl -s -o /dev/null -w "%{http_code} %{redirect_url}" --max-time 10 "http://${DOMAIN}/login" 2>/dev/null || echo "000")"
+        case "$loc" in
+            301\ https://*) redirect_line="通过（http 自动跳 https）" ;;
+            *) redirect_line="失败（返回 $loc）" ;;
+        esac
+    fi
+    echo "http 跳转：$redirect_line"
+
+    # 80 端口外网可达不用再测：http-01 发证成功本身就是证明。
+    if { [ "${CERT_KIND:-selfsigned}" = "domain" ] || [ "${CERT_KIND:-selfsigned}" = "ip" ]; } \
+        && [ "${CERT_METHOD:-http}" = "http" ]; then
+        echo "外网 80 端口：可达（http-01 发证成功已证明）"
+    fi
+}
+
 print_access_info() {
     local ip
     ip="$(curl -s -m 5 https://api.ipify.org 2>/dev/null || hostname -I | awk '{print $1}')"
@@ -1442,10 +1661,11 @@ cmd_install() {
     fi
     health_check || warn "健康检查有告警，见上面日志。"
     if [ "$FRESH_INSTALL" = "1" ]; then
+        self_test "$ADMIN_PASSWORD"
         print_access_info
     else
         echo
-        echo "更新完成：代码已更新，两个服务已重启。"
+        echo "更新完成：代码已更新，服务已重启。"
         echo "查看状态：bash install.sh status"
     fi
 }
