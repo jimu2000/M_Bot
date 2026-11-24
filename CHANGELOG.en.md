@@ -9,6 +9,25 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [1.20.0] - 2026-11-24
+
+### Added
+- One-click installer install.sh (user request, 2026-11-24, adapted from the R-Bot template): Debian / Ubuntu, run as root, one command installs the panel + bot + nginx reverse proxy + UFW; first run installs, later runs update and restart; management subcommands start / stop / restart / status / log / upgrade / uninstall
+- Two ways to configure the install: interactive prompts (token, user ID, panel password, domain) or non-interactive MBOT_INSTALL_TOKEN / MBOT_INSTALL_USER_ID / MBOT_INSTALL_PASSWORD / MBOT_INSTALL_DOMAIN; an empty password auto-generates a 16-character random one, shown once and saved to /root/.mbot-admin-password (600)
+- A domain gets a Let's Encrypt certificate automatically (certbot --nginx); on failure it falls back to a self-signed certificate (panel on https://IP:9527), and the printed panel URL uses the IP, not the domain, after a fallback
+- The panel binds only a loopback internal port (127.0.0.1:18001) and nginx proxies to it from outside (443 with a domain, 9527 ssl without); the internal and external ports must differ or uvicorn cannot bind
+- UFW allows the current SSH port before being enabled (live sshd port > sshd_config > 22), so it never locks you out; 9527 is always allowed (the certificate fallback needs it too)
+- Removes the Oracle cloud image's built-in iptables REJECT rule: it sits ahead of the UFW chains and blocks the panel port (No route to host from outside, fine locally); once UFW is active the rule is redundant, so it is removed from the live chain and from /etc/iptables/rules.v4 (backed up first)
+- apt lock waiting + retries: a fresh system runs unattended-upgrades on first boot, holding the apt lock and killing a plain apt-get; waits for the lock (up to 10 minutes) and retries update / install 3 times each
+- README quick start is now the one-click install (Chinese + English); the old manual steps stay as \"Manual install\"
+
+### Fixed
+- Under nohup / non-interactive runs stdin is EOF, so read returned non-zero and set -e killed the script: every read now ends with || true, and empty input counts as \"not provided\" (found on the Seoul test machine)
+- Password hash generation failed because python -c could not import web.auth (the installer's working directory is not necessarily the install directory): PYTHONPATH now points at the install directory, and stderr is shown on failure (found on the Seoul test machine)
+
+### Verified
+- Full verification on a Seoul A1 test machine: fresh install (self-signed) → external login page 200 → login with the auto-generated password → update re-run → uninstall and reinstall → domain certificate failure falling back to self-signed → services auto-start after reboot and the panel stays reachable; the bot with a dummy token correctly reports InvalidToken
+
 ## [1.19.0] - 2026-11-24
 
 ### Added

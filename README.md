@@ -1,6 +1,6 @@
 # M_Bot Oracle开源管理面板
 
-> **当前版本：v1.19.0** · 更新记录见 [CHANGELOG.md](CHANGELOG.md)（[英文版 / English](CHANGELOG.en.md)）
+> **当前版本：v1.20.0** · 更新记录见 [CHANGELOG.md](CHANGELOG.md)（[英文版 / English](CHANGELOG.en.md)）
 
 [中文](#中文) | [English](#english)
 
@@ -13,6 +13,28 @@ M_Bot 是一个开源的 Oracle Cloud 管理面板：Telegram 机器人 + Web �
 
 > ⚠️ 免责：本项目是独立开发的开源项目，与任何同类闭源工具无任何关联，
 > 不共享代码。
+
+### 快速开始
+
+准备工作（缺一不可）：
+1. 一台 Debian / Ubuntu 服务器（root 权限，1 核 1GB 以上即可）。
+2. Telegram 机器人 Token：找 @BotFather 新建机器人拿到。
+3. 你的 Telegram 用户 ID：找 @userinfobot 发 `/start` 拿到（纯数字）。
+4. OCI API 密钥：安装后在机器人里用 `/uploadapi` 上传，或手动放到服务器的 `~/.oci/`。
+
+一条命令安装（root 运行，首次运行是安装，再次运行是更新并重启）：
+
+```bash
+wget -O install.sh https://raw.githubusercontent.com/jimu2000/M_Bot/main/install.sh && chmod +x install.sh && bash install.sh
+```
+
+安装时会问你 Token、用户 ID、面板密码（留空自动生成 16 位随机密码，只显示一次）、域名（留空则用自签证书 + IP 访问）。装完后：
+
+- 有域名：打开 `https://你的域名/login`（Let's Encrypt 证书，自动申请）。
+- 没域名：打开 `https://服务器IP:9527/login`（自签证书，浏览器提示不受信任时点"继续访问"）。
+- 用户名 `admin`，密码是你输入的或自动生成的（存在 `/root/.mbot-admin-password`）。
+
+管理命令：`bash install.sh start|stop|restart|status|log|upgrade|uninstall`。
 
 ### 功能
 
@@ -102,7 +124,9 @@ Atlas 是 RIPE NCC 的正规免费服务，有稳定 REST API。注意：ping �
 不等于百分百被墙（也可能是线路问题），这里的结论是“疑似被墙”；
 实例本身必须回 ping（ICMP 没被安全组禁掉），否则检测永远是“被墙”。
 
-### 快速开始
+### 手动安装
+
+推荐先用上面的一键安装；手动安装适合想自己掌控每一步的情况，步骤如下：
 
 ```bash
 git clone https://github.com/jimu2000/M_Bot.git
@@ -215,6 +239,35 @@ server. All code here is independently written, fully visible and auditable.
 > affiliated with any similar closed-source tool in any way, with no
 > shared code.
 
+### Quick start
+
+Prerequisites (all required):
+1. A Debian / Ubuntu server (root access, 1 vCPU / 1 GB RAM is enough).
+2. A Telegram bot token: create a bot with @BotFather.
+3. Your Telegram user ID: send `/start` to @userinfobot (digits only).
+4. An OCI API key: upload it in the bot with `/uploadapi` after installing,
+   or place it in `~/.oci/` on the server manually.
+
+One command to install (run as root; first run installs, later runs update
+and restart):
+
+```bash
+wget -O install.sh https://raw.githubusercontent.com/jimu2000/M_Bot/main/install.sh && chmod +x install.sh && bash install.sh
+```
+
+The installer asks for your token, user ID, panel password (leave empty to
+auto-generate a 16-character random password, shown once), and domain
+(leave empty for a self-signed certificate + IP access). After installing:
+
+- With a domain: open `https://your-domain/login` (Let's Encrypt
+  certificate, requested automatically).
+- Without a domain: open `https://server-IP:9527/login` (self-signed
+  certificate; click through the browser warning).
+- Username `admin`; the password is the one you entered or the generated one
+  (also saved in `/root/.mbot-admin-password`).
+
+Manage it with: `bash install.sh start|stop|restart|status|log|upgrade|uninstall`.
+
 ### Features
 
 **OCI core (`oci/`, drives the official OCI CLI, no SDK)**
@@ -323,7 +376,10 @@ stable REST API. Note that ping failing is evidence of "suspected"
 blocking, not proof, and the instance itself must answer ICMP (not
 blocked by its security list), otherwise every check reports blocked.
 
-### Quick start
+### Manual install
+
+Prefer the one-click install above; manual install is for those who want
+to control every step:
 
 ```bash
 git clone https://github.com/jimu2000/M_Bot.git

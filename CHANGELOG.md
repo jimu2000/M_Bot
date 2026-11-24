@@ -9,6 +9,25 @@
 
 ## [Unreleased]
 
+## [1.20.0] - 2026-11-24
+
+### 新增
+- 一键安装脚本 install.sh（用户要求 2026-11-24，照 R-Bot 模板改编）：Debian / Ubuntu，root 运行一条命令装好面板 + 机器人 + nginx 反代 + UFW；首次运行是安装，再次运行是更新并重启；管理子命令 start / stop / restart / status / log / upgrade / uninstall
+- 安装配置两种方式：交互提问（Token、用户 ID、面板密码、域名），或非交互环境变量 MBOT_INSTALL_TOKEN / MBOT_INSTALL_USER_ID / MBOT_INSTALL_PASSWORD / MBOT_INSTALL_DOMAIN；密码留空自动生成 16 位随机密码，只显示一次并存 /root/.mbot-admin-password（600）
+- 域名自动申请 Let's Encrypt 证书（certbot --nginx），失败回落自签证书（面板走 https://IP:9527），回落时面板地址给 IP 而不是域名
+- 面板只绑回环内部端口（127.0.0.1:18001），nginx 对外反代（有域名 443，没域名 9527 ssl）；内部与对外端口必须不同，否则 uvicorn 绑不上
+- UFW 开启前先放行当前 SSH 端口（sshd 实际监听端口 > sshd_config > 22），不会把自己锁在外面；9527 始终放行（域名回落时也要用）
+- 清理 Oracle 云镜像自带的 iptables REJECT 规则：它挡在 UFW 链前面，会把面板端口挡住（外网 No route to host，本机正常）；UFW 开启后删掉它，实时链与 /etc/iptables/rules.v4 各删一次，文件先备份
+- apt 锁等待 + 重试：新装系统首次启动 unattended-upgrades 占着 apt 锁，直接 apt-get 会失败退出；等锁释放（最多 10 分钟），update / install 各重试 3 次
+- README 快速开始改成一键安装（中英双语），旧的手动安装步骤改名“手动安装”保留在后
+
+### 修复
+- 安装脚本在 nohup / 非交互运行时 stdin 是 EOF，read 返回非零导致 set -e 直接杀掉脚本：每个 read 后加 || true，空输入按“未提供”处理（首尔测试机实测）
+- 密码哈希生成时 python -c import 不到 web.auth（安装脚本当前目录不一定是安装目录）：加 PYTHONPATH 指到安装目录，出错时打出 stderr（首尔测试机实测）
+
+### 验证
+- 首尔 A1 测试机完整验证：全新安装（自签证书）→ 外网登录页 200 → 自动生成密码登录成功 → 更新重跑 → 卸载重装 → 域名证书失败回落自签 → 重启后服务自启、面板仍可访问；机器人用假 Token 时如实报 InvalidToken
+
 ## [1.19.0] - 2026-11-24
 
 ### 新增
