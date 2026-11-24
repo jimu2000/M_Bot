@@ -9,6 +9,12 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [1.13.0] - 2026-11-24
+
+### Features
+- Auto-fill network fields on the create form (user feedback, 2026-11-24: nobody knows how to fill in the availability domain / subnet — they should be selected automatically): new GET /api/create/defaults endpoint returns the availability domain and subnet for the selected account's region from the deployment config (same get_deploy_defaults as the bot's boot form: RBOT_PLAN_* env vars are the home-region defaults, region_plans.json wins when that region is configured). The form fills them on page load and when switching accounts; they stay editable, and empty when unconfigured — also left empty when the selected account's region differs from the region the deployment defaults belong to, so a home-region subnet is never filled into another account and fails the launch
+- SSH key file is now optional (user feedback, 2026-11-24: fill it in when a key has been uploaded, leave it blank when there is none): the path is prefilled when the key file exists on the panel server, left blank otherwise; POST /api/create no longer requires ssh_keys_file — when blank the grabber omits --ssh-authorized-keys-file and the instance relies on root password login (on by default)
+
 ## [1.12.0] - 2026-11-24
 
 ### Features

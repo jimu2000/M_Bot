@@ -20,7 +20,7 @@
           <label for="profile">账号 / 区域</label>
           {# Profile 下拉：由 create.js 从 GET /api/profiles 动态填充 #}
           <select id="profile"></select>
-          <p class="hint">镜像、子网、可用域须与所选账号的区域一致。</p>
+          <p class="hint">镜像、子网、可用域须与所选账号的区域一致；切换账号后可用域与子网自动重新填充。</p>
         </div>
         <div class="form-group">
           <label for="display-name">实例名称</label>
@@ -106,11 +106,12 @@
         <div class="form-group">
           <label for="subnet-id">子网 OCID</label>
           <input type="text" id="subnet-id" placeholder="ocid1.subnet.oc1..xxxxxxxx" required>
+          <p class="hint">可用域与子网按所选账号自动填充（来自部署配置），也可以手动修改。</p>
         </div>
         <div class="form-group">
-          <label for="ssh-keys-file">SSH 公钥文件路径（面板服务器上的路径）</label>
-          <input type="text" id="ssh-keys-file" placeholder="例如：/root/.ssh/id_ed25519.pub" required>
-          <p class="hint">后端直接把该文件传给 OCI CLI（--ssh-authorized-keys-file），请填服务器上已存在的公钥文件路径，不要粘贴公钥内容。</p>
+          <label for="ssh-keys-file">SSH 公钥文件路径（面板服务器上的路径，可选）</label>
+          <input type="text" id="ssh-keys-file" placeholder="留空表示不用 SSH 公钥">
+          <p class="hint">服务器上已有公钥文件时自动填入；没有时留空即可（root 密码登录已默认开启）。后端直接把该文件传给 OCI CLI（--ssh-authorized-keys-file），不要粘贴公钥内容。</p>
         </div>
         <div class="form-row" style="margin-bottom: 14px;">
           <label class="switch">

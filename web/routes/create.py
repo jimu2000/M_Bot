@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """创建实例路由 + 任务路由。
 
+  - GET /api/create/defaults：创建表单的网络默认值（可用域 / 子网 /
+    SSH 公钥文件），按 profile 的区域从部署配置里取（与机器人开机
+    表单同一套 get_deploy_defaults：环境变量 RBOT_PLAN_* 是主区默认
+    值，region_plans.json 里有该 (profile, region) 配置时用该区域
+    的）。SSH 公钥文件只在服务器上真实存在时才返回路径，没有就不
+    填；可用域/子网未配置时返回空串。
   - POST /api/create：先 can_launch 预检，不通过返回 400；通过则建
     任务、后台线程跑 Grabber 抢机，返回 {task_id}。
   - GET /api/tasks：任务列表。
@@ -11,12 +17,16 @@
 传给 launch（E2.1.Micro 是固定规格，Grabber 不传 shape-config）；
 boot_volume_size_gbs / assign_public_ip / assign_ipv6 / min_delay /
 max_delay / user_data 也全部透传给 Grabber（见 oci/grabber.py）。
+ssh_keys_file 是可选项：为空时 Grabber 不传 --ssh-authorized-keys-file
+（root 密码登录默认开启，建完实例仍能 root 登录）。
 
 镜像解析：前端创建表单下拉传的是架构占位符
 （ocid1.image.oc1..xxxxxxxx-aarch64 / -x86），resolve_image_id()
 按 web/config.py 的 IMAGE_IDS 表解析成真实镜像 OCID；部署时必须
 把 IMAGE_IDS 填成真实值，否则创建会报 400 提示配置镜像。
 """
+
+import os
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
@@ -25,7 +35,14 @@ from oci.client import OCIError
 from oci.quota import can_launch, check_a1_single_instance_cap
 from tgbot import config as bot_config
 from tgbot.bark import load_bark_config
-from tgbot.boot_form import build_user_data, generate_root_password
+from tgbot.boot_form import (
+    AD_PLACEHOLDER,
+    SSH_KEYS_PLACEHOLDER,
+    SUBNET_PLACEHOLDER,
+    build_user_data,
+    generate_root_password,
+    get_deploy_defaults,
+)
 from web import config
 from web.deps import (
     error_response,
@@ -78,6 +95,8 @@ class CreateBody(BaseModel):
         的双通道通知里带上，不写进任务详情。
     user_data: 开机脚本原文；与 root 密码共存时拼进同一份 cloud-init，
         脚本本身是 #cloud-config 时与密码冲突，返回 400。
+    ssh_keys_file: SSH 公钥文件路径（可选项，默认空）：为空时 Grabber
+        不传 --ssh-authorized-keys-file，实例只靠 root 密码登录。
     """
 
     profile: str = None
@@ -88,7 +107,7 @@ class CreateBody(BaseModel):
     subnet_id: str
     availability_domain: str
     display_name: str
-    ssh_keys_file: str
+    ssh_keys_file: str = ""
     target_cpu: str = None
     boot_volume_size_gbs: int = Field(default=47, ge=47, le=200)
     assign_public_ip: bool = True
@@ -106,6 +125,64 @@ def _notify_chat_id():
     if not chat_id and bot_config.ALLOWED_USER_IDS:
         chat_id = next(iter(bot_config.ALLOWED_USER_IDS))
     return chat_id
+
+
+def _ad_region(availability_domain):
+    """从可用域字符串里解析区域代码（如 wgwP:AP-SINGAPORE-1-AD-1 ->
+    ap-singapore-1）；格式不对时返回 None（调用方不过滤）。"""
+    parts = availability_domain.split(":")
+    if len(parts) < 2:
+        return None
+    middle = parts[1]
+    idx = middle.rfind("-AD-")
+    if idx <= 0:
+        return None
+    return middle[:idx].lower()
+
+
+@router.get("/api/create/defaults")
+def create_defaults(profile: str = None,
+                    username: str = Depends(get_current_user)):
+    """创建表单的网络默认值：可用域 / 子网 / SSH 公钥文件。
+
+    与机器人开机表单用同一套部署值（get_deploy_defaults）：环境变量
+    RBOT_PLAN_* 是主区默认值，region_plans.json 里有该 (profile,
+    region) 配置时用该区域的。SSH 公钥文件只在服务器上真实存在时
+    才返回路径（用户要求：有上传的密钥就填，没有就不填）；可用域 /
+    子网未配置时返回空串，前端留空让用户手填。
+    环境变量的默认部署值属于主区：所选账号的区域与之不符且
+    region_plans.json 里又没有该 (profile, region) 配置时，返回的
+    AD 与所选区域对不上——此时可用域/子网留空，避免把主区的子网
+    填到别的账号/区域导致创建失败。
+    """
+    try:
+        profile_name = profile or config.DEFAULT_PROFILE
+        region = config.get_region(profile_name)
+    except ValueError as exc:
+        return error_response(str(exc), status_code=400)
+    deploy = get_deploy_defaults(region=region, profile=profile_name)
+    ad = deploy.get("availability_domain") or ""
+    subnet = deploy.get("subnet_id") or ""
+    if ad == AD_PLACEHOLDER:
+        ad = ""
+    if subnet == SUBNET_PLACEHOLDER:
+        subnet = ""
+    ad_region = _ad_region(ad) if ad else None
+    if ad_region is not None and ad_region != region:
+        ad = ""
+        subnet = ""
+    ssh_file = deploy.get("ssh_keys_file") or ""
+    if ssh_file == SSH_KEYS_PLACEHOLDER or not os.path.isfile(ssh_file):
+        ssh_file = ""
+    return {
+        "ok": True,
+        "profile": profile_name,
+        "region": region,
+        "availability_domain": ad,
+        "subnet_id": subnet,
+        "ssh_keys_file": ssh_file,
+        "ssh_keys_file_exists": bool(ssh_file),
+    }
 
 
 @router.post("/api/create")

@@ -1,8 +1,11 @@
 /* 创建实例逻辑：四卡表单、快捷开机预设、配额预检、提交创建
  *
  * 注意（与后端 API 的对应关系，以后端实际实现为准）：
- * - 后端 POST /api/create 要求 subnet_id / availability_domain /
- *   ssh_keys_file 必填，表单在卡 3 收集这三项；
+ * - 后端 POST /api/create 要求 subnet_id / availability_domain 必填，
+ *   ssh_keys_file 是可选项（为空时不传公钥，只靠 root 密码登录）；
+ * - 可用域 / 子网 / SSH 公钥文件由 GET /api/create/defaults 按当前
+ *   账号自动填充（与机器人开机表单同一套部署配置）；SSH 公钥文件
+ *   只在服务器上真实存在时才填，没有就留空；
  * - ssh_keys_file 必须是面板服务器上的公钥文件路径（后端直传 OCI CLI
  *   --ssh-authorized-keys-file），不支持粘贴公钥内容；
  * - A1 的 ocpus/memory_gb 以 --shape-config 传给 launch（E2 是固定规格，
@@ -98,7 +101,7 @@
       // 自定义镜像 OCID 优先于下拉（跨区域创建时填该区域的镜像 OCID）
       image_id: $("image-id-custom").value.trim() || $("image-id").value,
       display_name: name,
-      // 后端必填三项（卡 3 收集）
+      // 后端必填两项（卡 3 收集）+ 可选 SSH 公钥文件（为空时只靠 root 密码）
       subnet_id: $("subnet-id").value.trim(),
       availability_domain: $("availability-domain").value.trim(),
       ssh_keys_file: $("ssh-keys-file").value.trim(),
@@ -139,8 +142,8 @@
       showError("请填写有效的 OCPU 与内存。");
       return;
     }
-    if (!payload.availability_domain || !payload.subnet_id || !payload.ssh_keys_file) {
-      showError("请填写可用域、子网 OCID 与 SSH 公钥文件路径（卡 3 网络与安全）。");
+    if (!payload.availability_domain || !payload.subnet_id) {
+      showError("请填写可用域与子网 OCID（卡 3 网络与安全）。");
       return;
     }
     var btn = $("btn-create");
@@ -185,12 +188,29 @@
     $("btn-regen-password").disabled = !on;
   }
 
+  // 加载创建默认值（可用域 / 子网 / SSH 公钥文件）：后端按当前账号
+  // 的区域从部署配置里取；SSH 公钥文件只在服务器上真实存在时才
+  // 返回路径，没有就不填。切换账号时重新加载。
+  async function loadDefaults() {
+    try {
+      var profile = $("profile").value || null;
+      var data = await RBot.api(RBot.withProfile("/api/create/defaults", profile));
+      if (data.availability_domain) $("availability-domain").value = data.availability_domain;
+      if (data.subnet_id) $("subnet-id").value = data.subnet_id;
+      if (data.ssh_keys_file) $("ssh-keys-file").value = data.ssh_keys_file;
+    } catch (err) {
+      // 默认值加载失败不阻塞表单（用户手填即可）。
+    }
+  }
+
   document.addEventListener("DOMContentLoaded", function () {
-    // 填 profile 下拉（恢复上次选择）；失败时保持默认账号，不阻塞表单
+    // 填 profile 下拉（恢复上次选择）；填好后加载该账号的网络默认值。
+    // 失败时保持默认账号，仍按默认账号加载默认值，不阻塞表单。
     var profileSelect = $("profile");
-    RBot.fillProfileSelect(profileSelect).catch(function () { /* 保持默认账号 */ });
+    RBot.fillProfileSelect(profileSelect).then(loadDefaults, loadDefaults);
     profileSelect.addEventListener("change", function (e) {
       RBot.setProfile(e.target.value);
+      loadDefaults();
     });
     $("shape").addEventListener("change", onShapeChange);
     onShapeChange();

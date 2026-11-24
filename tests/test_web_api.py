@@ -727,6 +727,30 @@ class TestCreateAndTasksApi(WebApiTestCase):
         self.assertEqual(r.status_code, 400)
         self.assertIn("4 OCPU / 24GB", r.json()["error"])
 
+    @patch("web.tasks.notify_boot_success",
+            return_value={"telegram": True, "bark": False, "errors": []})
+    @patch("web.tasks.get_public_ip", return_value="203.0.113.10")
+    @patch("web.tasks.Grabber")
+    @patch("web.routes.create.can_launch", return_value=(True, "可以创建"))
+    def test_create_without_ssh_keys_file_ok(self, mock_can,
+                                             mock_grabber_cls, mock_ip,
+                                             mock_notify):
+        """不传 ssh_keys_file 也能创建（可选项，Grabber 收到空串后
+        不传 --ssh-authorized-keys-file，只靠 root 密码登录）。"""
+        mock_grabber_cls.return_value.run.return_value = GrabResult(
+            instance_id=FAKE_INSTANCE, attempts=1, releases=0,
+            elapsed_seconds=5.0)
+        body = dict(CREATE_BODY)
+        del body["ssh_keys_file"]
+        r = self.client.post("/api/create", json=body)
+        self.assertEqual(r.status_code, 200)
+        task_id = r.json()["task_id"]
+        self._wait_task_status(task_id, ("done", "failed"))
+        mock_grabber_cls.assert_called_once()
+        # 位置参数第 8 个是 ssh_keys_file（cli/compartment/AD/shape/
+        # image/subnet/display_name/ssh_keys_file）。
+        self.assertEqual(mock_grabber_cls.call_args.args[7], "")
+
     @patch("web.tasks.Grabber", BlockingGrabber)
     @patch("web.routes.create.can_launch", return_value=(True, "可以创建"))
     def test_cancel_running_task(self, mock_can):
@@ -762,6 +786,120 @@ class TestCreateAndTasksApi(WebApiTestCase):
         r = self.client.get("/api/tasks")
         self.assertEqual(len(r.json()["tasks"]), 1)
         self.assertEqual(r.json()["tasks"][0]["kind"], "grab")
+
+
+class TestCreateDefaultsApi(WebApiTestCase):
+    """GET /api/create/defaults：创建表单的网络默认值自动填充。"""
+
+    def setUp(self):
+        super().setUp()
+        self._login()
+        # 真实存在的公钥文件（部署时是 web/data/ssh_keys.pub）。
+        self._key_file = os.path.join(self._tmp.name, "keys.pub")
+        with open(self._key_file, "w", encoding="utf-8") as handle:
+            handle.write("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHRlc3QtdGVzdA== test-key\n")
+
+    def _env(self, **overrides):
+        env = {
+            "RBOT_PLAN_AD": "test:AP-SINGAPORE-1-AD-1",
+            "RBOT_PLAN_SUBNET_ID": FAKE_SUBNET,
+            "RBOT_PLAN_SSH_KEYS_FILE": self._key_file,
+        }
+        env.update(overrides)
+        return env
+
+    @patch("tgbot.config.REGION_PLANS_FILE", "/nonexistent/plans.json")
+    def test_defaults_returns_env_values(self):
+        """环境变量里的部署值原样返回，存在的密钥文件带路径。"""
+        with patch.dict(os.environ, self._env()):
+            r = self.client.get("/api/create/defaults")
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["profile"], "DEFAULT")
+        self.assertEqual(body["region"], "ap-singapore-1")
+        self.assertEqual(body["availability_domain"],
+                         "test:AP-SINGAPORE-1-AD-1")
+        self.assertEqual(body["subnet_id"], FAKE_SUBNET)
+        self.assertEqual(body["ssh_keys_file"], self._key_file)
+        self.assertTrue(body["ssh_keys_file_exists"])
+
+    @patch("tgbot.config.REGION_PLANS_FILE", "/nonexistent/plans.json")
+    def test_defaults_missing_ssh_key_file_empty(self):
+        """密钥文件不存在时 ssh_keys_file 返回空串（不填），其余照常。"""
+        with patch.dict(os.environ, self._env(
+                RBOT_PLAN_SSH_KEYS_FILE="/nonexistent/keys.pub")):
+            r = self.client.get("/api/create/defaults")
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertEqual(body["ssh_keys_file"], "")
+        self.assertFalse(body["ssh_keys_file_exists"])
+        self.assertEqual(body["availability_domain"],
+                         "test:AP-SINGAPORE-1-AD-1")
+        self.assertEqual(body["subnet_id"], FAKE_SUBNET)
+
+    @patch("tgbot.config.REGION_PLANS_FILE", "/nonexistent/plans.json")
+    def test_defaults_unconfigured_empty(self):
+        """未配置部署值时三项都返回空串（占位符不外露）。"""
+        with patch.dict(os.environ, {
+                "RBOT_PLAN_AD": "",
+                "RBOT_PLAN_SUBNET_ID": "",
+                "RBOT_PLAN_SSH_KEYS_FILE": ""}):
+            r = self.client.get("/api/create/defaults")
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertEqual(body["availability_domain"], "")
+        self.assertEqual(body["subnet_id"], "")
+        self.assertEqual(body["ssh_keys_file"], "")
+        self.assertFalse(body["ssh_keys_file_exists"])
+
+    def test_defaults_region_plan_override(self):
+        """region_plans.json 里有该 (profile, region) 时用该区域的
+        可用域/子网（密钥文件仍按环境变量的，不随区域变）。"""
+        plans_path = os.path.join(self._tmp.name, "region_plans.json")
+        with open(plans_path, "w", encoding="utf-8") as handle:
+            json.dump({"DEFAULT": {"ap-singapore-1": {
+                "availability_domain": "plan:AP-SINGAPORE-1-AD-1",
+                "subnet_id": "ocid1.subnet.oc1..planxxxx"}}}, handle)
+        with patch("tgbot.config.REGION_PLANS_FILE", plans_path), \
+                patch.dict(os.environ, self._env()):
+            r = self.client.get("/api/create/defaults")
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertEqual(body["availability_domain"],
+                         "plan:AP-SINGAPORE-1-AD-1")
+        self.assertEqual(body["subnet_id"], "ocid1.subnet.oc1..planxxxx")
+        self.assertEqual(body["ssh_keys_file"], self._key_file)
+
+    def test_defaults_unknown_profile_400(self):
+        r = self.client.get("/api/create/defaults?profile=NOPE")
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("未知 profile", r.json()["error"])
+
+    @patch("tgbot.config.REGION_PLANS_FILE", "/nonexistent/plans.json")
+    def test_defaults_other_region_env_fallback_blank(self):
+        """所选账号的区域不是部署默认值所属的区域时，可用域/子网留空
+        （不把主区的配置填到别的账号），密钥文件照常返回。"""
+        profiles = {
+            "DEFAULT": {"region": "ap-singapore-1",
+                        "compartment_id": "ocid1.tenancy.oc1..testxxxx"},
+            "ACCOUNT2": {"region": "us-sanjose-1",
+                         "compartment_id": "ocid1.tenancy.oc1..testyyyy"},
+        }
+        with patch.dict(config.PROFILES, profiles, clear=True), \
+                patch.dict(os.environ, self._env()):
+            r = self.client.get("/api/create/defaults?profile=ACCOUNT2")
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertEqual(body["region"], "us-sanjose-1")
+        self.assertEqual(body["availability_domain"], "")
+        self.assertEqual(body["subnet_id"], "")
+        self.assertEqual(body["ssh_keys_file"], self._key_file)
+        self.assertTrue(body["ssh_keys_file_exists"])
+
+    def test_defaults_requires_login(self):
+        r = self.anon.get("/api/create/defaults")
+        self.assertEqual(r.status_code, 401)
 
 
 class TestNotifyGrabSuccess(unittest.TestCase):
@@ -1005,6 +1143,19 @@ class TestPages(WebApiTestCase):
             r = self.client.get(path)
             self.assertEqual(r.status_code, 200, path)
             self.assertIn("text/html", r.headers["content-type"])
+
+    def test_create_page_has_defaults_hint(self):
+        """创建页提示可用域/子网自动填充，SSH 公钥文件是可选项。"""
+        self._login()
+        r = self.client.get("/create")
+        self.assertEqual(r.status_code, 200)
+        html = r.text
+        self.assertIn("自动填充", html)
+        self.assertIn("SSH 公钥文件路径（面板服务器上的路径，可选）", html)
+        # SSH 公钥输入框不再是必填项（可用域/子网仍是必填）。
+        self.assertNotIn(
+            'id="ssh-keys-file" placeholder="留空表示不用 SSH 公钥" required',
+            html)
 
 
 if __name__ == "__main__":

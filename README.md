@@ -1,6 +1,6 @@
 # M_Bot Oracle开源管理面板
 
-> **当前版本：v1.12.0** · 更新记录见 [CHANGELOG.md](CHANGELOG.md)（[英文版 / English](CHANGELOG.en.md)）
+> **当前版本：v1.13.0** · 更新记录见 [CHANGELOG.md](CHANGELOG.md)（[英文版 / English](CHANGELOG.en.md)）
 
 [中文](#中文) | [English](#english)
 
@@ -54,6 +54,8 @@ M_Bot 是一个开源的 Oracle Cloud 管理面板：Telegram 机器人 + Web �
   Telegram 验证码登录可选）
 - 页面：总览 / 实例 / 创建实例 / 配额 / 启动盘 / 任务 / GFW 换 IP / Bark 通知 /
   终端 / DNS 管理 / 对象存储 / 邮件服务 / 证书管理 / 巡检计划 / 云报告
+- 创建实例：可用域与子网按所选账号自动填充（来自部署配置），SSH 公钥文件
+  有上传就填、没有就留空（可选项，只靠 root 密码登录也能开机）
 - Web SSH：多标签、断线重连 + 快照回放、会话挂起、空闲清理
 - SFTP 文件面板：列表 / 下载 / 上传（分块上传带进度）/ 新建目录 / 删除 /
   重命名 / 在线编辑，三层路径穿越防护
@@ -260,6 +262,10 @@ fully visible and auditable.
 - Pages: overview / instances / create / quota / boot volumes / tasks /
   GFW IP change / Bark notifications / terminal / DNS / object storage /
   email / certificates / inspection plans / cloud report
+- Create instance: the availability domain and subnet auto-fill from the
+  deployment config for the selected account, and the SSH key file is
+  prefilled when one exists on the server (optional — root password login
+  alone is enough to boot)
 - Web SSH: multi-tab, reconnect with snapshot replay, session suspend, idle cleanup
 - SFTP file panel: list / download / chunked upload with progress / mkdir /
   delete / rename / online edit, three-layer path traversal protection
