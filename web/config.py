@@ -53,10 +53,10 @@ LOCKOUT_MAX_MINUTES = 30
 # POST /api/auth/login 需带 captchaId + captchaAnswer。
 CAPTCHA_ENABLED = os.environ.get("MBOT_CAPTCHA_ENABLED", "") == "1"
 
-# Microsoft Clarity 项目 ID：登录页统计用。空字符串 = 不加载 Clarity。
-# 在 clarity.microsoft.com 建项目后把 ID 填进环境变量 MBOT_CLARITY_ID；
-# 公开仓库里不硬编码任何项目 ID。
-CLARITY_ID = os.environ.get("MBOT_CLARITY_ID", "")
+# Clicky 站点 ID：登录页统计用。空字符串 = 不加载 Clicky。
+# 在 clicky.com 建站点后把 ID 填进环境变量 MBOT_CLICKY_ID；
+# 公开仓库里不硬编码任何站点 ID。
+CLICKY_ID = os.environ.get("MBOT_CLICKY_ID", "")
 
 # 面板公网地址（如 https://panel.example.com）：Telegram 一键登录链接
 # 用它拼地址。为空时用请求自身的 Host 拼（反代需正确透传 Host 与

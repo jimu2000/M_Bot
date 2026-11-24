@@ -9,6 +9,15 @@
 
 ## [Unreleased]
 
+## [1.33.0] - 2026-11-24
+
+### 变更
+- 登录页统计从 Microsoft Clarity 换成 Clicky（用户要求 2026-11-24）：配置了 `MBOT_CLICKY_ID` 时加载 Clicky 跟踪脚本（`static.getclicky.com/js`，带站点 ID）与页脚徽章链接；未配置时不加载，公开仓库不硬编码任何站点 ID；Clarity 代码与 `MBOT_CLARITY_ID` 已全部移除（仍只加登录页，未扩到全站）
+
+### 验证
+- 全量测试 2461 个全过（登录页统计两项测试改成 Clicky：已配置时脚本 + 徽章在位且无 Clarity，未配置时两者都不加载）
+- 真机验证：部署到 .160 后登录页 HTML 含 Clicky 脚本与徽章、无 Clarity；浏览器端到端未能完成——Clicky 的静态域名在 Cloudflare 后面，对机房 IP 返回 403 拦截页（我方所有出口都是 Oracle 机房 IP），真实访客（住宅/手机 IP）不受影响，用户可在手机浏览器打开登录页后在 Clicky 后台看到访问记录
+
 ## [1.32.0] - 2026-11-24
 
 ### 新增

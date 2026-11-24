@@ -9,6 +9,15 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [1.33.0] - 2026-11-24
+
+### Changed
+- Login-page analytics switched from Microsoft Clarity to Clicky (user request, 2026-11-24): when `MBOT_CLICKY_ID` is set, the login page loads the Clicky tracking script (`static.getclicky.com/js`, with the site ID) plus the footer badge link; nothing loads when unset, and no site ID is hard-coded in the public repo. All Clarity code and `MBOT_CLARITY_ID` have been removed (still login page only, not site-wide).
+
+### Verification
+- Full test suite: 2461 tests, all passing (the two login-page analytics tests now cover Clicky: script + badge present and no Clarity when configured, neither loaded when unset).
+- Live verification: after deploying to .160, the login page HTML contains the Clicky script and badge with no Clarity; the browser end-to-end check could not complete — Clicky's static domain sits behind Cloudflare, which returns a 403 challenge page to datacenter IPs (all of our egress IPs are Oracle datacenter IPs). Real visitors on residential/mobile IPs are unaffected; the visit will show up in the Clicky dashboard when opening the login page from a phone browser.
+
 ## [1.32.0] - 2026-11-24
 
 ### Added

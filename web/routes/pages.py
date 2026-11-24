@@ -84,9 +84,9 @@ def index(request: Request):
 
 @router.get("/login")
 def login_page(request: Request):
-    """登录页（不需要登录）。Clarity 只在配置了项目 ID 时加载。"""
+    """登录页（不需要登录）。Clicky 只在配置了站点 ID 时加载。"""
     return _render(request, "login.html", "登录",
-                   {"clarity_id": config.CLARITY_ID})
+                   {"clicky_id": config.CLICKY_ID})
 
 
 @router.get("/overview")
