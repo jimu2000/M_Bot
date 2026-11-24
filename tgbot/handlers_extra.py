@@ -83,6 +83,7 @@ from tgbot.boot_form import (
     build_preset,
     build_user_data,
     default_amd_form,
+    deploy_region_mismatch,
     fmt_boot_form_summary,
     fmt_form_text,
     generate_root_password,
@@ -385,11 +386,11 @@ _SEVERITY_MARK = {
 # 云面板端口（开放云面板端口功能放行的端口，与 web/config.py 的 PORT 一致）。
 PANEL_PORT = 9527
 # 面板服务器所在子网的安全组 OCID（部署时用环境变量
-# RBOT_PANEL_SECURITY_LIST_ID 填真实值；查法：OCI 控制台 → 网络 →
+# MBOT_PANEL_SECURITY_LIST_ID 填真实值；查法：OCI 控制台 → 网络 →
 # 安全列表，或 oci network security-list list --compartment-id <compartment OCID>）。
 # 未配置（仍是占位符）时“开放云面板端口”菜单会提示先配置，不执行。
 PANEL_SECURITY_LIST_ID = os.environ.get(
-    "RBOT_PANEL_SECURITY_LIST_ID", "ocid1.securitylist.oc1..xxxxxxxx")
+    "MBOT_PANEL_SECURITY_LIST_ID", "ocid1.securitylist.oc1..xxxxxxxx")
 # 面板服务器 SSH 地址（UFW 放行用）：空字符串 = 面板就在本机
 # （机器人与面板跑在同一台服务器上，部署现状如此），直接执行 ufw；
 # 否则 ssh 到该主机执行（端口 14422，root 密钥登录，见 client_ops）。
@@ -995,7 +996,7 @@ def _fmt_backup_time(value):
 
 
 def fmt_boot_backup_list(backups, count, limit, full, paid=False):
-    """启动卷备份列表全文（R-Bot 没有备份功能，这是 M_Bot 独有的）。
+    """启动卷备份列表全文（M_Bot 独有功能）。
 
     paid=True 时是付费账号：备份不限 5 个，标题不再提免费额度。
     """
@@ -1224,7 +1225,7 @@ def fmt_boot_preset(preset, ok, reason):
 
 @require_allowed
 async def handle_boot(update, context):
-    """菜单 1：R-Bot 风格按钮矩阵创建表单（见 tgbot/boot_form.py）。
+    """菜单 1：M_Bot 风格按钮矩阵创建表单（见 tgbot/boot_form.py）。
 
     旧的预设选择键盘（boot_preset_keyboard / b:boot:）仍保留注册，
     仅供旧消息上的按钮回退使用；菜单 1 入口已改成表单。
@@ -1287,7 +1288,9 @@ async def _boot_form_confirm(update, context, form):
     """
     deploy = get_deploy_defaults(region=get_current_region(context),
                                  profile=get_current_profile(context))
-    errors = validate_form(form, deploy)
+    errors = validate_form(form, deploy,
+                           region=get_current_region(context),
+                           profile=get_current_profile(context))
     if errors:
         await _reply(update,
                      "❌ 配置还没填完：\n"
@@ -1318,8 +1321,16 @@ async def _boot_form_confirm(update, context, form):
 
 
 async def _boot_form_save(update, context, form):
-    """表单"保存为快捷开机"：校验通过后存进 presets.json，菜单 17 可用。"""
-    errors = validate_form(form)
+    """表单"保存为快捷开机"：校验通过后存进 presets.json，菜单 17 可用。
+
+    保存时按当前工作区域取部署值（与确认开机一致）：以前这里不传
+    区域，存的永远是主区部署值，在别的区用快捷开机就会跨区报错。
+    """
+    deploy = get_deploy_defaults(region=get_current_region(context),
+                                 profile=get_current_profile(context))
+    errors = validate_form(form, deploy,
+                           region=get_current_region(context),
+                           profile=get_current_profile(context))
     if errors:
         await _reply(update,
                      "❌ 配置还没填完：\n"
@@ -1328,7 +1339,7 @@ async def _boot_form_save(update, context, form):
                      reply_markup=boot_form_keyboard(form))
         return
     try:
-        preset = build_preset(form)
+        preset = build_preset(form, deploy)
     except ValueError as exc:
         await _reply(update, f"❌ {exc}", reply_markup=boot_form_keyboard(form))
         return
@@ -1442,6 +1453,16 @@ async def boot_preset_load_callback(update, context):
     preset.setdefault("assign_public_ip", True)
     preset.setdefault("assign_ipv6", False)
     preset.setdefault("root_login", False)
+    # 已保存的配置可能是在别的区存的（旧版保存时不带区域），部署值
+    # 与当前工作区域对不上时直接开机 Oracle 会报 CannotParseRequest，
+    # 这里先拦住（2026-11-24 一键开机报错的同类问题）。
+    mismatch = deploy_region_mismatch(
+        {"availability_domain": preset.get("availability_domain")},
+        get_current_region(context), get_current_profile(context))
+    if mismatch is not None:
+        await _reply(update, f"❌ {mismatch}",
+                     reply_markup=back_to_oracle_keyboard())
+        return
     # root 密码在确认页就生成（与 _boot_form_confirm 同逻辑）：
     # 确认页显示，点"开始抢机"后复用同一份（仅内存）。
     if preset.get("root_login"):
@@ -1721,6 +1742,15 @@ async def boot_go_callback(update, context):
     preset = context.user_data.get("pending_boot")
     if not preset:
         await _reply(update, "请先在菜单 1 里配好开机表单。")
+        return
+    # 最后一道防线：确认页出来后用户可能切了账号/区域，pending_boot
+    # 里还是旧区的部署值，直接开机会报 CannotParseRequest，这里拦住。
+    mismatch = deploy_region_mismatch(
+        {"availability_domain": preset.get("availability_domain")},
+        get_current_region(context), get_current_profile(context))
+    if mismatch is not None:
+        await _reply(update, f"❌ {mismatch}",
+                     reply_markup=back_to_oracle_keyboard())
         return
     root_password = None
     if preset.get("root_login"):
@@ -2653,7 +2683,7 @@ async def volume_delete_callback(update, context):
         reply_markup=confirm_keyboard("delvol", idx, "🗑️ 确认删除"))
 
 
-# ---- 7b. 启动卷备份与恢复（R-Bot 没有，M_Bot 独有） ----
+# ---- 7b. 启动卷备份与恢复（M_Bot 独有） ----
 
 @require_allowed
 async def boot_backups_callback(update, context):
@@ -3304,7 +3334,7 @@ async def handle_workflows(update, context):
 async def handle_regions(update, context):
     """菜单 33：列出已订阅区域。
 
-    注：R-Bot 的“自动拓展子区域”是订阅新区域；订阅区域是租户级
+    注：“自动拓展子区域”是订阅新区域；订阅区域是租户级
     操作且不可逆，本版本只做只读列表，不提供一键订阅。
     """
     try:
@@ -3509,7 +3539,7 @@ def fmt_traffic_guard(cfg, used_gb=None, used_note=None):
 def _guard_host_for_instance(public_ip):
     """流量守护的 SSH 主机记录（实例公网 IP + 专用密钥）。
 
-    未配置 RBOT_GUARD_SSH_KEY 或无公网 IP 时返回 None。
+    未配置 MBOT_GUARD_SSH_KEY 或无公网 IP 时返回 None。
     """
     if not public_ip or not bot_config.GUARD_SSH_KEY:
         return None
@@ -5009,12 +5039,12 @@ async def _handle_confirm_inner(action, idx, update, context):
         ssh_keys_file = PLAN_DEFAULTS["ssh_keys_file"]
         if availability_domain in (None, "", "xxxx:AP-SINGAPORE-1-AD-1"):
             await _reply(update,
-                         "❌ 未配置可用域：请在部署环境变量 RBOT_PLAN_AD 里配置。")
+                         "❌ 未配置可用域：请在部署环境变量 MBOT_PLAN_AD 里配置。")
             return True
         if subnet_id in (None, "", "ocid1.subnet.oc1..xxxxxxxx"):
             await _reply(update,
                          "❌ 未配置子网：请在部署环境变量 "
-                         "RBOT_PLAN_SUBNET_ID 里配置。")
+                         "MBOT_PLAN_SUBNET_ID 里配置。")
             return True
         if ssh_keys_file in (None, "", "/path/to/keys.pub"):
             # 恢复出来的系统保留原机的 authorized_keys，原密钥照样能登录，

@@ -517,6 +517,22 @@ class TestBootPresetLoad(BootFormHandlersTestCase):
         self.assertIn("已不存在", reply_text_of(update))
         self.assertNotIn("pending_boot", context.user_data)
 
+    async def test_load_region_mismatch_blocked(self):
+        """已保存的新加坡配置，在圣何塞工作区域下不给进确认页。"""
+        presets_file = self.tmp_path("presets.json")
+        preset = bf.build_preset(filled_form(), FAKE_DEPLOY)
+        self._write_presets(presets_file, [preset])
+        with patch.object(bot_config, "PRESETS_FILE", presets_file), \
+             patch.object(he, "can_launch_batch",
+                          return_value=(True, "可以创建")) as mock_pre:
+            update = make_update(callback_data="b:load:0")
+            context = make_context()
+            context.user_data["region"] = "us-sanjose-1"
+            await he.boot_preset_load_callback(update, context)
+        self.assertNotIn("pending_boot", context.user_data)
+        mock_pre.assert_not_called()
+        self.assertIn("不一致", reply_text_of(update))
+
     async def test_presets_menu_has_launch_buttons(self):
         presets_file = self.tmp_path("presets.json")
         preset = bf.build_preset(filled_form(), FAKE_DEPLOY)
@@ -579,6 +595,17 @@ class TestBootGoWithRoot(BootFormHandlersTestCase):
         self.assertNotIn("user_data", saved[0])
         self.assertNotIn("root_password", saved[0])
         self.assertTrue(saved[0]["root_login"])
+
+    async def test_boot_go_region_mismatch_blocked(self):
+        """确认页出来后切了区域，旧区部署值不给启动抢机。"""
+        preset = bf.build_preset(filled_form(), FAKE_DEPLOY)
+        update = make_update(callback_data="b:go")
+        context = make_context()
+        context.user_data["pending_boot"] = dict(preset)
+        context.user_data["region"] = "us-sanjose-1"
+        await he.boot_go_callback(update, context)
+        self.assertEqual(self.tasks.list_all(), [])
+        self.assertIn("不一致", reply_text_of(update))
 
     async def test_boot_go_uniquifies_taken_display_name(self):
         # 已有同名实例时启动前加 -2 后缀（日期名同日再开机）

@@ -220,7 +220,7 @@ class TestInstancesApi(WebApiTestCase):
     @patch("web.routes.instances.get_public_ip", return_value=FAKE_IP)
     @patch("web.routes.instances.list_instances", return_value=FAKE_INSTANCES)
     def test_list_instances(self, mock_list, mock_ip):
-        """R-Bot 形状：只含 RUNNING 实例，新字段齐全，旧字段双写。"""
+        """面板形状：只含 RUNNING 实例，新字段齐全，旧字段双写。"""
         r = self.client.get("/api/instances")
         self.assertEqual(r.status_code, 200)
         body = r.json()
@@ -418,7 +418,7 @@ class TestVolumesApi(WebApiTestCase):
     @patch("web.routes.volumes.list_boot_volume_attachments", return_value=[])
     @patch("web.routes.volumes.list_boot_volumes", return_value=FAKE_VOLUMES)
     def test_list_volumes(self, mock_list, mock_atts, mock_insts):
-        """R-Bot 形状：新字段齐全，旧字段双写；无挂载时 attached=false。"""
+        """面板形状：新字段齐全，旧字段双写；无挂载时 attached=false。"""
         r = self.client.get("/api/volumes")
         self.assertEqual(r.status_code, 200)
         self.assertEqual(len(r.json()["volumes"]), 1)
@@ -450,7 +450,7 @@ class TestVolumesApi(WebApiTestCase):
         r = self.client.get("/api/volumes/orphans")
         self.assertEqual(r.status_code, 200)
         self.assertEqual(len(r.json()["volumes"]), 1)
-        # 孤儿盘同样返回 R-Bot 形状。
+        # 孤儿盘同样返回 面板形状。
         self.assertEqual(r.json()["volumes"][0]["volumeId"], FAKE_VOLUME)
         self.assertFalse(r.json()["volumes"][0]["attached"])
 
@@ -712,8 +712,11 @@ class TestCreateAndTasksApi(WebApiTestCase):
         self.assertIn("cloud-config", r.json()["error"])
 
     def test_create_boot_volume_out_of_range_422(self):
-        """引导卷 <47 或 >200 返回 422（pydantic 范围校验）。"""
-        for bad_size in (46, 201):
+        """引导卷 <50 或 >200 返回 422（pydantic 范围校验）。
+
+        47 是镜像默认大小，不显式传（前端发 null）；48/49 同样非法。
+        """
+        for bad_size in (46, 47, 48, 49, 201):
             body = dict(CREATE_BODY)
             body["boot_volume_size_gbs"] = bad_size
             r = self.client.post("/api/create", json=body)
@@ -721,15 +724,31 @@ class TestCreateAndTasksApi(WebApiTestCase):
             self.assertFalse(r.json()["ok"])
 
     def test_create_boot_volume_boundary_ok(self):
-        """引导卷 47 / 200 边界值可通过校验（进预检流程，不被 422 挡）。"""
+        """引导卷 50 / 200 边界值与 null 可通过校验（进预检流程，不被 422 挡）。"""
         with patch("web.routes.create.can_launch",
                    return_value=(False, "E2 已满（2/2）")):
-            for size in (47, 200):
+            for size in (50, 200, None):
                 body = dict(CREATE_BODY)
                 body["boot_volume_size_gbs"] = size
                 r = self.client.post("/api/create", json=body)
                 # 校验通过后走到配额预检（mock 不通过）返回 400，而不是 422。
                 self.assertEqual(r.status_code, 400, f"size={size}")
+
+    def test_create_region_mismatch_400(self):
+        """可用域与所选区域不一致时返回 400（不把主区 AD 提交到别的区）。"""
+        profiles = {
+            "DEFAULT": {"region": "ap-singapore-1",
+                        "compartment_id": "ocid1.tenancy.oc1..testxxxx"},
+            "ACCOUNT2": {"region": "us-sanjose-1",
+                         "compartment_id": "ocid1.tenancy.oc1..testyyyy"},
+        }
+        body = dict(CREATE_BODY)
+        body["profile"] = "ACCOUNT2"
+        body["availability_domain"] = "wgwP:AP-SINGAPORE-1-AD-1"
+        with patch.dict(config.PROFILES, profiles, clear=True):
+            r = self.client.post("/api/create", json=body)
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("不一致", r.json()["error"])
 
     def test_create_max_delay_less_than_min_400(self):
         """max_delay < min_delay 返回 400。"""
@@ -863,9 +882,9 @@ class TestCreateDefaultsApi(WebApiTestCase):
 
     def _env(self, **overrides):
         env = {
-            "RBOT_PLAN_AD": "test:AP-SINGAPORE-1-AD-1",
-            "RBOT_PLAN_SUBNET_ID": FAKE_SUBNET,
-            "RBOT_PLAN_SSH_KEYS_FILE": self._key_file,
+            "MBOT_PLAN_AD": "test:AP-SINGAPORE-1-AD-1",
+            "MBOT_PLAN_SUBNET_ID": FAKE_SUBNET,
+            "MBOT_PLAN_SSH_KEYS_FILE": self._key_file,
         }
         env.update(overrides)
         return env
@@ -890,7 +909,7 @@ class TestCreateDefaultsApi(WebApiTestCase):
     def test_defaults_missing_ssh_key_file_empty(self):
         """密钥文件不存在时 ssh_keys_file 返回空串（不填），其余照常。"""
         with patch.dict(os.environ, self._env(
-                RBOT_PLAN_SSH_KEYS_FILE="/nonexistent/keys.pub")):
+                MBOT_PLAN_SSH_KEYS_FILE="/nonexistent/keys.pub")):
             r = self.client.get("/api/create/defaults")
         self.assertEqual(r.status_code, 200)
         body = r.json()
@@ -904,9 +923,9 @@ class TestCreateDefaultsApi(WebApiTestCase):
     def test_defaults_unconfigured_empty(self):
         """未配置部署值时三项都返回空串（占位符不外露）。"""
         with patch.dict(os.environ, {
-                "RBOT_PLAN_AD": "",
-                "RBOT_PLAN_SUBNET_ID": "",
-                "RBOT_PLAN_SSH_KEYS_FILE": ""}):
+                "MBOT_PLAN_AD": "",
+                "MBOT_PLAN_SUBNET_ID": "",
+                "MBOT_PLAN_SSH_KEYS_FILE": ""}):
             r = self.client.get("/api/create/defaults")
         self.assertEqual(r.status_code, 200)
         body = r.json()

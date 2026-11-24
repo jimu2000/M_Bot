@@ -9,6 +9,12 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [1.17.1] - 2026-11-24
+
+### Fixed
+- One-click boot failed with CannotParseRequest on the San Jose / Chicago accounts (user report, 2026-11-24): those accounts had no region plan, so `get_deploy_defaults` silently fell back to the Singapore deploy values (Singapore availability domain / subnet / image) while the CLI pointed at the account's own region, and OCI rejected the cross-region request; the boot form now validates region consistency (the availability domain's region must match the working region, otherwise it errors and asks to configure the region or switch to a configured account/region), enforced at one-click boot, preset save, preset load and post-confirm launch; the web create endpoint got the same check. Region plans for San Jose (ACCOUNT2) and Chicago (ACCOUNT3) were also added (availability domain / subnet / Ubuntu 24.04 and OL 9.8 images for both architectures; the plans live only on the deploy host, never in the repo) and probe-verified: San Jose actually launched an E2 (deleted right away), Chicago returned LimitExceeded — both requests parsed fine
+- Web create always failed with the default 47 GB disk: OCI requires at least 50 GB when the boot volume size is specified explicitly, 47 is only the image default; the create form now sends null for 47 or empty (image default 47 GB), rejects 48/49 with a clear error, and accepts 50–200 for explicit sizes; a note was added under the field
+
 ## [1.17.0] - 2026-11-24
 
 ### Features

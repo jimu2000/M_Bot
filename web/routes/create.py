@@ -3,7 +3,7 @@
 
   - GET /api/create/defaults：创建表单的网络默认值（可用域 / 子网 /
     SSH 公钥文件），按 profile + region 从部署配置里取（与机器人开机
-    表单同一套 get_deploy_defaults：环境变量 RBOT_PLAN_* 是主区默认
+    表单同一套 get_deploy_defaults：环境变量 MBOT_PLAN_* 是主区默认
     值，region_plans.json 里有该 (profile, region) 配置时用该区域
     的；region 不传时用该 profile 的主区）。SSH 公钥文件只在服务器
     上真实存在时才返回路径，没有就不填；可用域/子网未配置时返回空串。
@@ -27,6 +27,7 @@ ssh_keys_file 是可选项：为空时 Grabber 不传 --ssh-authorized-keys-file
 """
 
 import os
+from typing import Optional
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
@@ -113,7 +114,11 @@ class CreateBody(BaseModel):
     display_name: str
     ssh_keys_file: str = ""
     target_cpu: str = None
-    boot_volume_size_gbs: int = Field(default=47, ge=47, le=200)
+    # 硬盘：None 表示用镜像默认（47GB）；显式指定最少 50GB——显式
+    # 传 47 会被 OCI 拒绝（InvalidParameter，2026-11-24 实测）。
+    # 前端表单 47 即默认，发请求时转成 null（见 create.js）。
+    boot_volume_size_gbs: Optional[int] = Field(default=None, ge=50,
+                                                le=200)
     assign_public_ip: bool = True
     assign_ipv6: bool = False
     min_delay: int = Field(default=0, ge=0)
@@ -150,7 +155,7 @@ def create_defaults(profile: str = None, region: str = None,
     """创建表单的网络默认值：可用域 / 子网 / SSH 公钥文件。
 
     与机器人开机表单用同一套部署值（get_deploy_defaults）：环境变量
-    RBOT_PLAN_* 是主区默认值，region_plans.json 里有该 (profile,
+    MBOT_PLAN_* 是主区默认值，region_plans.json 里有该 (profile,
     region) 配置时用该区域的。region 不传时用该 profile 的主区。
     SSH 公钥文件只在服务器上真实存在时才返回路径（用户要求：有上传
     的密钥就填，没有就不填）；可用域 / 子网未配置时返回空串，前端
@@ -205,6 +210,18 @@ def create_instance(body: CreateBody,
             return error_response(cap_error, status_code=400)
     try:
         cli, compartment_id = resolve_profile(body.profile, body.region)
+        # 可用域与所选区域一致性校验：部署值是主区的，别的区没配
+        # region plan 时表单可能填进主区的 AD，提交后任务里 Oracle
+        # 会报 CannotParseRequest（机器人端同类问题，见
+        # tgbot/boot_form.py 的 deploy_region_mismatch）。
+        profile_name = body.profile or config.DEFAULT_PROFILE
+        region = effective_region(profile_name, body.region)
+        ad_region = _ad_region(body.availability_domain)
+        if ad_region is not None and ad_region != region:
+            raise ValueError(
+                f"可用域是 {ad_region} 区的，与所选区域 {region} 不一致："
+                f"{profile_name}/{region} 还没有配置开机网络，请先在 "
+                "region_plans.json 里配好，或切到已配置的账号/区域再创建。")
         ok, reason = can_launch(cli, compartment_id, body.shape,
                                 ocpus=body.ocpus, memory_gb=body.memory_gb)
         if not ok:
@@ -246,8 +263,6 @@ def create_instance(body: CreateBody,
             "user_data": user_data,
         }
         # 双通道通知信息（只在内存里传给线程：密码不落盘，通知完即丢）。
-        profile_name = body.profile or config.DEFAULT_PROFILE
-        region = effective_region(profile_name, body.region)
         notify = {
             "token": bot_config.TELEGRAM_BOT_TOKEN,
             "chat_id": _notify_chat_id(),

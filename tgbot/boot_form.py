@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Telegram 机器人菜单 1（开机）的 R-Bot 风格按钮矩阵创建表单。
+"""Telegram 机器人菜单 1（开机）的 M_Bot 风格按钮矩阵创建表单。
 
-来源：docs/rbot-survey-20261124.md「1. 开机」一节的实测记录。
+来源：实测记录「1. 开机」一节的实测记录。
 表单每行给预设值 + 自定义，点一下打 ✅ 选中，再点取消；
 延迟选一个 = 固定间隔，选两个 = 区间随机延迟；批量 vps 数；
 root 密码随机选项。保留我方快捷开机预设（菜单 17 不动）。
@@ -33,8 +33,8 @@ A1（ARM）-> ARM_YYYY-MM-DD（北京时间日期）；其他形状沿用旧格�
     （E2 是 AMD 芯片，免费层没有 Intel 机型，选 INTEL 时提示并按 E2 创建）。
   - 系统：Ubuntu → Canonical Ubuntu 24.04（按架构选 IMAGE_IDS）；
     CentOS → Oracle Linux（OCI 已无 CentOS 平台镜像，界面上注明，
-    镜像 OCID 走环境变量 RBOT_IMAGE_OL_AARCH64 / RBOT_IMAGE_OL_X86_64）。
-  - 不做"传输加密"和"强开ARM"（R-Bot 客户端专属功能，克隆无对应实现，
+    镜像 OCID 走环境变量 MBOT_IMAGE_OL_AARCH64 / MBOT_IMAGE_OL_X86_64）。
+  - 不做"传输加密"和"强开ARM"（客户端专属功能，本项目无对应实现，
     不加假开关）。
 
 安全说明：
@@ -99,9 +99,9 @@ SCRIPT_MAX_CHARS = 65536
 # --operating-system "Oracle Linux" --shape <形状>。
 OL_IMAGE_IDS = {
     "aarch64": os.environ.get(
-        "RBOT_IMAGE_OL_AARCH64", "ocid1.image.oc1..xxxxxxxx"),
+        "MBOT_IMAGE_OL_AARCH64", "ocid1.image.oc1..xxxxxxxx"),
     "x86_64": os.environ.get(
-        "RBOT_IMAGE_OL_X86_64", "ocid1.image.oc1..xxxxxxxx"),
+        "MBOT_IMAGE_OL_X86_64", "ocid1.image.oc1..xxxxxxxx"),
 }
 # 各类占位符（未配置部署值时校验报错用，与 web/tasks.py 的
 # PLAN_DEFAULTS / web/config.py 的 IMAGE_IDS 保持一致）。
@@ -111,7 +111,7 @@ AD_PLACEHOLDER = "xxxx:AP-SINGAPORE-1-AD-1"
 SSH_KEYS_PLACEHOLDER = "/path/to/keys.pub"
 # 开机脚本在实例里的落盘路径（root 密码 + 脚本同时存在时，
 # 脚本经 cloud-init write_files 写到这里再执行）。
-STARTUP_SCRIPT_PATH = "/root/rbot-startup.sh"
+STARTUP_SCRIPT_PATH = "/root/mbot-startup.sh"
 # =====================================================
 
 # callback 行名 -> 表单键名（行名是 callback_data 里的短名）。
@@ -146,18 +146,18 @@ def get_deploy_defaults(region=None, profile=None):
     """部署值（可用域 / 子网 / SSH 公钥文件 + 各架构镜像 OCID）。
 
     与 web/tasks.py 的 PLAN_DEFAULTS 用同一批环境变量，部署时只用配一次：
-      RBOT_PLAN_AD / RBOT_PLAN_SUBNET_ID / RBOT_PLAN_SSH_KEYS_FILE。
+      MBOT_PLAN_AD / MBOT_PLAN_SUBNET_ID / MBOT_PLAN_SSH_KEYS_FILE。
     传了 region + profile 且 region_plans.json 里有该 (profile, region)
     配置时，可用域 / 子网 / 镜像用该区域的；否则用环境变量的默认部署值
     （主区）。profile 未传时不查区域配置（子网是按租户的，不能跨账号用）。
     """
     defaults = {
         "availability_domain": os.environ.get(
-            "RBOT_PLAN_AD", AD_PLACEHOLDER),
+            "MBOT_PLAN_AD", AD_PLACEHOLDER),
         "subnet_id": os.environ.get(
-            "RBOT_PLAN_SUBNET_ID", SUBNET_PLACEHOLDER),
+            "MBOT_PLAN_SUBNET_ID", SUBNET_PLACEHOLDER),
         "ssh_keys_file": os.environ.get(
-            "RBOT_PLAN_SSH_KEYS_FILE", SSH_KEYS_PLACEHOLDER),
+            "MBOT_PLAN_SSH_KEYS_FILE", SSH_KEYS_PLACEHOLDER),
         "image_aarch64": IMAGE_IDS.get("aarch64") or IMAGE_PLACEHOLDER,
         "image_x86_64": IMAGE_IDS.get("x86_64") or IMAGE_PLACEHOLDER,
         "ol_aarch64": OL_IMAGE_IDS.get("aarch64") or IMAGE_PLACEHOLDER,
@@ -176,7 +176,7 @@ def get_deploy_defaults(region=None, profile=None):
 # ---------------- 表单状态 ----------------
 
 def new_form():
-    """新建一个空表单（带 R-Bot 风格的默认值：公网 IP 有、IPv6 无、
+    """新建一个空表单（带 M_Bot 风格的默认值：公网 IP 有、IPv6 无、
 
     脚本无、公钥用机器人公钥、root 默认开启（用户要求建完实例一定能
     root 登录）、数量 1 台）。"""
@@ -369,16 +369,16 @@ def resolve_image_id(form, deploy=None):
     if os_value == "ubuntu":
         image_id = deploy.get(f"image_{arch}") or IMAGE_PLACEHOLDER
         if image_id == IMAGE_PLACEHOLDER:
-            env = ("RBOT_IMAGE_AARCH64" if arch == "aarch64"
-                   else "RBOT_IMAGE_X86_64")
+            env = ("MBOT_IMAGE_AARCH64" if arch == "aarch64"
+                   else "MBOT_IMAGE_X86_64")
             return None, (f"未配置 {arch} 的 Ubuntu 镜像"
                           f"（环境变量 {env} 或 region_plans.json）")
         return image_id, None
     if os_value == "centos":
         image_id = deploy.get(f"ol_{arch}") or IMAGE_PLACEHOLDER
         if image_id == IMAGE_PLACEHOLDER:
-            env = ("RBOT_IMAGE_OL_AARCH64" if arch == "aarch64"
-                   else "RBOT_IMAGE_OL_X86_64")
+            env = ("MBOT_IMAGE_OL_AARCH64" if arch == "aarch64"
+                   else "MBOT_IMAGE_OL_X86_64")
             return None, (f"未配置 {arch} 的 Oracle Linux 镜像"
                           f"（环境变量 {env} 或 region_plans.json）")
         return image_id, None
@@ -410,10 +410,53 @@ def resolve_spec(form):
 
 # ---------------- 校验与预设生成 ----------------
 
-def validate_form(form, deploy=None):
+def region_of_availability_domain(availability_domain):
+    """从可用域字符串里解析区域代码。
+
+    如 wgwP:AP-SINGAPORE-1-AD-1 -> ap-singapore-1；格式不对或为空
+    时返回 None（调用方不做区域一致性判断）。
+    与 web/routes/create.py 的 _ad_region 同逻辑（两边各一份，
+    避免 web 与 tgbot 互相 import）。
+    """
+    if not availability_domain:
+        return None
+    parts = availability_domain.split(":")
+    if len(parts) < 2:
+        return None
+    middle = parts[1]
+    idx = middle.rfind("-AD-")
+    if idx <= 0:
+        return None
+    return middle[:idx].lower()
+
+
+def deploy_region_mismatch(deploy, region, profile=None):
+    """部署值与工作区域不一致时返回错误文案，否则返回 None。
+
+    get_deploy_defaults 对没有 region plan 的账号+区域会回落到主区
+    （新加坡）默认值；直接拿它去别的区开机，OCI 会报
+    CannotParseRequest（2026-11-24 用户在 ACCOUNT2/ACCOUNT3 上
+    一键开机实测复现）。开机入口必须先调这个拦住。
+    """
+    if not region:
+        return None
+    ad_region = region_of_availability_domain(
+        (deploy or {}).get("availability_domain"))
+    if ad_region is None or ad_region == region:
+        return None
+    where = f"{profile}/{region}" if profile else region
+    return (f"部署值是 {ad_region} 区的，与当前工作区域 {region} 不一致："
+            f"{where} 还没有配置开机网络（可用域/子网/镜像），直接开机 "
+            "Oracle 会报 CannotParseRequest。请先在 region_plans.json "
+            "里给该账号+区域配好，或切到已配置的账号/区域再开机。")
+
+
+def validate_form(form, deploy=None, region=None, profile=None):
     """校验表单完整性与部署配置，返回错误文案列表（空列表 = 通过）。
 
     deploy 是 get_deploy_defaults() 的返回值；不传时现读环境变量。
+    region/profile 传了时额外校验部署值与工作区域是否一致（见
+    deploy_region_mismatch）。
     """
     deploy = deploy or get_deploy_defaults()
     errors = []
@@ -460,12 +503,16 @@ def validate_form(form, deploy=None):
         errors.append("开机脚本已是 #cloud-config 格式时不能同时开 root "
                       "密码登录，请二选一。")
     if deploy.get("availability_domain") in (None, "", AD_PLACEHOLDER):
-        errors.append("未配置可用域（环境变量 RBOT_PLAN_AD）")
+        errors.append("未配置可用域（环境变量 MBOT_PLAN_AD）")
     if deploy.get("subnet_id") in (None, "", SUBNET_PLACEHOLDER):
-        errors.append("未配置子网（环境变量 RBOT_PLAN_SUBNET_ID）")
+        errors.append("未配置子网（环境变量 MBOT_PLAN_SUBNET_ID）")
     if form.get("ssh_key") == "use" and deploy.get("ssh_keys_file") in (
             None, "", SSH_KEYS_PLACEHOLDER):
-        errors.append("未配置 SSH 公钥文件（环境变量 RBOT_PLAN_SSH_KEYS_FILE）")
+        errors.append("未配置 SSH 公钥文件（环境变量 MBOT_PLAN_SSH_KEYS_FILE）")
+    if deploy.get("availability_domain") not in (None, "", AD_PLACEHOLDER):
+        mismatch = deploy_region_mismatch(deploy, region, profile)
+        if mismatch is not None:
+            errors.append(mismatch)
     return errors
 
 
@@ -696,7 +743,7 @@ def _is_custom_selected(form, key, presets):
 
 
 def boot_form_keyboard(form):
-    """按钮矩阵键盘（R-Bot 开机表单同款布局：每行标签 + 预设 + 自定义）。
+    """按钮矩阵键盘（开机表单布局：每行标签 + 预设 + 自定义）。
 
     callback_data 规范（见 tgbot/keyboards.py 模块 docstring 的 bf: 一节）：
       bf:<row>:<value> 点选（row 见 ROW_FORM_KEY；value 是预设值或 custom）

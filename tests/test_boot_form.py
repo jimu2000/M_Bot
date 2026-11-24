@@ -305,13 +305,13 @@ class TestResolve(unittest.TestCase):
                                                  "x86_64": bf.IMAGE_PLACEHOLDER}):
             _, error = bf.resolve_image_id(_filled_form(cpu="arm",
                                                          os="ubuntu"))
-            self.assertIn("RBOT_IMAGE_AARCH64", error)
+            self.assertIn("MBOT_IMAGE_AARCH64", error)
         with patch("tgbot.boot_form.OL_IMAGE_IDS",
                    {"aarch64": bf.IMAGE_PLACEHOLDER,
                     "x86_64": bf.IMAGE_PLACEHOLDER}):
             _, error = bf.resolve_image_id(_filled_form(cpu="amd",
                                                          os="centos"))
-            self.assertIn("RBOT_IMAGE_OL_X86_64", error)
+            self.assertIn("MBOT_IMAGE_OL_X86_64", error)
 
     def test_image_custom_ocid(self):
         ocid = "ocid1.image.oc1.ap-singapore-1.custom1234567890"
@@ -384,14 +384,67 @@ class TestValidateForm(unittest.TestCase):
                  "subnet_id": bf.SUBNET_PLACEHOLDER,
                  "ssh_keys_file": bf.SSH_KEYS_PLACEHOLDER}
         errors = bf.validate_form(_filled_form(), empty)
-        self.assertIn("未配置可用域（环境变量 RBOT_PLAN_AD）", errors)
-        self.assertIn("未配置子网（环境变量 RBOT_PLAN_SUBNET_ID）", errors)
-        self.assertIn("未配置 SSH 公钥文件（环境变量 RBOT_PLAN_SSH_KEYS_FILE）",
+        self.assertIn("未配置可用域（环境变量 MBOT_PLAN_AD）", errors)
+        self.assertIn("未配置子网（环境变量 MBOT_PLAN_SUBNET_ID）", errors)
+        self.assertIn("未配置 SSH 公钥文件（环境变量 MBOT_PLAN_SSH_KEYS_FILE）",
                       errors)
         # 不用公钥时不检查公钥文件。
         form = _filled_form(ssh_key="none", root_login=True)
         errors = bf.validate_form(form, empty)
         self.assertFalse(any("公钥文件" in e for e in errors))
+
+    def test_deploy_region_mismatch(self):
+        """部署值与工作区域不一致时报错（跨区开机会报 CannotParseRequest）。"""
+        errors = bf.validate_form(_filled_form(), FAKE_DEPLOY,
+                                  region="us-sanjose-1",
+                                  profile="ACCOUNT2")
+        self.assertTrue(any("不一致" in e for e in errors))
+        self.assertEqual(bf.validate_form(_filled_form(), FAKE_DEPLOY,
+                                          region="ap-singapore-1",
+                                          profile="DEFAULT"), [])
+
+    def test_deploy_region_mismatch_skipped_without_region(self):
+        """不传 region 时不做一致性校验（旧调用照常通过）。"""
+        self.assertEqual(bf.validate_form(_filled_form(), FAKE_DEPLOY), [])
+
+
+class TestRegionOfAvailabilityDomain(unittest.TestCase):
+    def test_parses_region(self):
+        cases = {
+            "wgwP:AP-SINGAPORE-1-AD-1": "ap-singapore-1",
+            "wgwP:AP-SEOUL-1-AD-1": "ap-seoul-1",
+            "wgwP:US-SANJOSE-1-AD-1": "us-sanjose-1",
+            "wgwP:US-CHICAGO-1-AD-1": "us-chicago-1",
+            "xxxx:AP-SINGAPORE-1-AD-1": "ap-singapore-1",
+        }
+        for ad, region in cases.items():
+            self.assertEqual(bf.region_of_availability_domain(ad), region)
+
+    def test_bad_format_returns_none(self):
+        for bad in (None, "", "AD-1", "wgwP:", "wgwP:AP-SINGAPORE-1"):
+            self.assertIsNone(bf.region_of_availability_domain(bad))
+
+
+class TestDeployRegionMismatch(unittest.TestCase):
+    def test_matching_region_ok(self):
+        self.assertIsNone(bf.deploy_region_mismatch(
+            FAKE_DEPLOY, "ap-singapore-1", "DEFAULT"))
+
+    def test_mismatch_message(self):
+        msg = bf.deploy_region_mismatch(FAKE_DEPLOY, "us-sanjose-1",
+                                        "ACCOUNT2")
+        self.assertIn("ap-singapore-1", msg)
+        self.assertIn("us-sanjose-1", msg)
+        self.assertIn("ACCOUNT2/us-sanjose-1", msg)
+        self.assertIn("CannotParseRequest", msg)
+
+    def test_no_region_or_ad_skips(self):
+        self.assertIsNone(bf.deploy_region_mismatch(FAKE_DEPLOY, None,
+                                                    "DEFAULT"))
+        self.assertIsNone(bf.deploy_region_mismatch(
+            {}, "us-sanjose-1", "ACCOUNT2"))
+        self.assertIsNone(bf.deploy_region_mismatch(
+            {"availability_domain": "AD-1"}, "us-sanjose-1"))
 
     def test_count_none_is_error(self):
         form = _filled_form(count=None)
@@ -668,9 +721,9 @@ class TestRegionDeployDefaults(unittest.TestCase):
         _patched_images(self)
         with patch("tgbot.config.get_region_plan", return_value={}), \
                 patch.dict("os.environ", {
-                    "RBOT_PLAN_AD": "wgwP:AP-SINGAPORE-1-AD-1",
-                    "RBOT_PLAN_SUBNET_ID": "ocid1.subnet.oc1.ap-singapore-1.s",
-                    "RBOT_PLAN_SSH_KEYS_FILE": "/opt/x/keys.pub"}):
+                    "MBOT_PLAN_AD": "wgwP:AP-SINGAPORE-1-AD-1",
+                    "MBOT_PLAN_SUBNET_ID": "ocid1.subnet.oc1.ap-singapore-1.s",
+                    "MBOT_PLAN_SSH_KEYS_FILE": "/opt/x/keys.pub"}):
             deploy = bf.get_deploy_defaults(region="ap-seoul-1",
                                             profile="DEFAULT")
         self.assertEqual(deploy["availability_domain"],
@@ -683,7 +736,7 @@ class TestRegionDeployDefaults(unittest.TestCase):
         with patch("tgbot.config.get_region_plan",
                    return_value=plan) as mock_plan, \
                 patch.dict("os.environ",
-                           {"RBOT_PLAN_AD": "wgwP:AP-SINGAPORE-1-AD-1"}):
+                           {"MBOT_PLAN_AD": "wgwP:AP-SINGAPORE-1-AD-1"}):
             deploy = bf.get_deploy_defaults(region="ap-seoul-1")
         mock_plan.assert_not_called()
         self.assertEqual(deploy["availability_domain"],

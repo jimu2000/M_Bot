@@ -1,6 +1,6 @@
 # M_Bot Oracle开源管理面板
 
-> **当前版本：v1.17.0** · 更新记录见 [CHANGELOG.md](CHANGELOG.md)（[英文版 / English](CHANGELOG.en.md)）
+> **当前版本：v1.17.1** · 更新记录见 [CHANGELOG.md](CHANGELOG.md)（[英文版 / English](CHANGELOG.en.md)）
 
 [中文](#中文) | [English](#english)
 
@@ -9,12 +9,10 @@
 ## 中文
 
 M_Bot 是一个开源的 Oracle Cloud 管理面板：Telegram 机器人 + Web 面板 + Web SSH +
-抢机 + Cloudflare DNS + MCP 服务器。功能设计参考了 R-Bot（R 探长）的公开功能
-说明，代码全部独立编写、全部可见、可审计。
+抢机 + Cloudflare DNS + MCP 服务器。代码全部独立编写、全部可见、可审计。
 
-> ⚠️ 免责：本项目与 R-Bot / semicons 无任何关联。R-Bot 是其作者的产品，
-> 而且相对成熟；本项目是按公开功能说明独立实现的开源项目，代码全部
-> 独立编写，与 R-Bot 不共享代码。
+> ⚠️ 免责：本项目是独立开发的开源项目，与任何同类闭源工具无任何关联，
+> 不共享代码。
 
 ### 功能
 
@@ -132,22 +130,22 @@ Add API Key → Generate API Key Pair → 下载私钥与配置文件片段。
 
 ```bash
 # 必填：根 compartment（即 tenancy OCID），多账号时各填一个
-export RBOT_COMPARTMENT_DEFAULT="ocid1.tenancy.oc1..xxxxxxxx"
-export RBOT_COMPARTMENT_ACCOUNT2="ocid1.tenancy.oc1..xxxxxxxx"   # 可选
-export RBOT_COMPARTMENT_ACCOUNT3="ocid1.tenancy.oc1..xxxxxxxx"   # 可选
+export MBOT_COMPARTMENT_DEFAULT="ocid1.tenancy.oc1..xxxxxxxx"
+export MBOT_COMPARTMENT_ACCOUNT2="ocid1.tenancy.oc1..xxxxxxxx"   # 可选
+export MBOT_COMPARTMENT_ACCOUNT3="ocid1.tenancy.oc1..xxxxxxxx"   # 可选
 # 镜像 OCID（创建实例用，各区域不同，用 oci compute image list 查）
-export RBOT_IMAGE_AARCH64="ocid1.image.oc1..xxxxxxxx"
-export RBOT_IMAGE_X86_64="ocid1.image.oc1..xxxxxxxx"
+export MBOT_IMAGE_AARCH64="ocid1.image.oc1..xxxxxxxx"
+export MBOT_IMAGE_X86_64="ocid1.image.oc1..xxxxxxxx"
 # Telegram 机器人（用机器人时填）
-export RBOT_TELEGRAM_TOKEN="123456789:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-export RBOT_ALLOWED_USERS="123456789"   # 你的 Telegram 用户 ID，逗号分隔多个
+export MBOT_TELEGRAM_TOKEN="123456789:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+export MBOT_ALLOWED_USERS="123456789"   # 你的 Telegram 用户 ID，逗号分隔多个
 # Web 面板（用面板时填）
-export RBOT_WEB_PASSWORD_HASH="$(python3 -c "import hashlib,os;print(hashlib.pbkdf2_hmac('sha256',b'你的密码',os.urandom(16),100000).hex())")"
-export RBOT_WEB_SECRET="$(openssl rand -hex 32)"
+export MBOT_WEB_PASSWORD_HASH="$(python3 -c "import hashlib,os;print(hashlib.pbkdf2_hmac('sha256',b'你的密码',os.urandom(16),100000).hex())")"
+export MBOT_WEB_SECRET="$(openssl rand -hex 32)"
 # 可选：OCI CLI 路径、Cloudflare 凭据、串行控制台 SSH 公钥
-export RBOT_OCI_CLI="/opt/rbot-clone/venv/bin/oci"
+export MBOT_OCI_CLI="/opt/rbot-clone/venv/bin/oci"
 export CF_API_TOKEN="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-export RBOT_CONSOLE_SSH_KEY_FILE="/opt/rbot-clone/web/data/console_rsa.pub"
+export MBOT_CONSOLE_SSH_KEY_FILE="/opt/rbot-clone/web/data/console_rsa.pub"
 ```
 
 **3. 启动**：
@@ -211,14 +209,11 @@ M_Bot/
 
 M_Bot is an open-source Oracle Cloud management panel written in Python:
 Telegram bot + web panel + web SSH + instance grabber + Cloudflare DNS + MCP
-server. Its feature design references [R-Bot](https://github.com/semicons/java_oci_manage)'s
-(R 探长) public feature documentation; all code here is independently written,
-fully visible and auditable.
+server. All code here is independently written, fully visible and auditable.
 
-> ⚠️ Disclaimer: This project is not affiliated with R-Bot / semicons
-> in any way. R-Bot is its author's product, and a relatively mature one;
-> this project is an independent open-source implementation based on its
-> public feature documentation, written from scratch with no shared code.
+> ⚠️ Disclaimer: This project is an independent open-source project, not
+> affiliated with any similar closed-source tool in any way, with no
+> shared code.
 
 ### Features
 
@@ -357,22 +352,22 @@ public key into the console.
 
 ```bash
 # Required: root compartment (i.e. tenancy OCID); one per account
-export RBOT_COMPARTMENT_DEFAULT="ocid1.tenancy.oc1..xxxxxxxx"
-export RBOT_COMPARTMENT_ACCOUNT2="ocid1.tenancy.oc1..xxxxxxxx"   # optional
-export RBOT_COMPARTMENT_ACCOUNT3="ocid1.tenancy.oc1..xxxxxxxx"   # optional
+export MBOT_COMPARTMENT_DEFAULT="ocid1.tenancy.oc1..xxxxxxxx"
+export MBOT_COMPARTMENT_ACCOUNT2="ocid1.tenancy.oc1..xxxxxxxx"   # optional
+export MBOT_COMPARTMENT_ACCOUNT3="ocid1.tenancy.oc1..xxxxxxxx"   # optional
 # Image OCIDs (for instance creation; differ per region, see oci compute image list)
-export RBOT_IMAGE_AARCH64="ocid1.image.oc1..xxxxxxxx"
-export RBOT_IMAGE_X86_64="ocid1.image.oc1..xxxxxxxx"
+export MBOT_IMAGE_AARCH64="ocid1.image.oc1..xxxxxxxx"
+export MBOT_IMAGE_X86_64="ocid1.image.oc1..xxxxxxxx"
 # Telegram bot (if you use it)
-export RBOT_TELEGRAM_TOKEN="123456789:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-export RBOT_ALLOWED_USERS="123456789"   # your Telegram user ID, comma-separated
+export MBOT_TELEGRAM_TOKEN="123456789:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+export MBOT_ALLOWED_USERS="123456789"   # your Telegram user ID, comma-separated
 # Web panel (if you use it)
-export RBOT_WEB_PASSWORD_HASH="$(python3 -c "import hashlib,os;print(hashlib.pbkdf2_hmac('sha256',b'your-password',os.urandom(16),100000).hex())")"
-export RBOT_WEB_SECRET="$(openssl rand -hex 32)"
+export MBOT_WEB_PASSWORD_HASH="$(python3 -c "import hashlib,os;print(hashlib.pbkdf2_hmac('sha256',b'your-password',os.urandom(16),100000).hex())")"
+export MBOT_WEB_SECRET="$(openssl rand -hex 32)"
 # Optional: OCI CLI path, Cloudflare credentials, serial console SSH public key
-export RBOT_OCI_CLI="/opt/rbot-clone/venv/bin/oci"
+export MBOT_OCI_CLI="/opt/rbot-clone/venv/bin/oci"
 export CF_API_TOKEN="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-export RBOT_CONSOLE_SSH_KEY_FILE="/opt/rbot-clone/web/data/console_rsa.pub"
+export MBOT_CONSOLE_SSH_KEY_FILE="/opt/rbot-clone/web/data/console_rsa.pub"
 ```
 
 **3. Run**:

@@ -15,7 +15,7 @@
  *   由 Grabber 传给 OCI CLI（见 oci/grabber.py）。 */
 (function () {
   "use strict";
-  var RBot = window.RBot;
+  var MBot = window.MBot;
 
   var SHAPE_E2 = "VM.Standard.E2.1.Micro";
   var SHAPE_A1 = "VM.Standard.A1.Flex";
@@ -73,7 +73,7 @@
     });
     card.style.borderColor = "var(--accent)";
     card.style.boxShadow = "var(--shadow)";
-    RBot.toast("已应用预设：" + card.querySelector("b").textContent, "success");
+    MBot.toast("已应用预设：" + card.querySelector("b").textContent, "success");
   }
 
   function collectPayload() {
@@ -90,7 +90,7 @@
                String(d.getMonth() + 1).padStart(2, "0") + "-" +
                String(d.getDate()).padStart(2, "0");
       } else {
-        name = "rbot-" + String(d.getMonth() + 1).padStart(2, "0") + String(d.getDate()).padStart(2, "0") +
+        name = "mbot-" + String(d.getMonth() + 1).padStart(2, "0") + String(d.getDate()).padStart(2, "0") +
                "-" + String(d.getHours()).padStart(2, "0") + String(d.getMinutes()).padStart(2, "0");
       }
     }
@@ -108,7 +108,12 @@
       availability_domain: $("availability-domain").value.trim(),
       ssh_keys_file: $("ssh-keys-file").value.trim(),
       // 已接入后端的扩展字段（Grabber 传给 OCI CLI）
-      boot_volume_size_gbs: parseInt($("disk-gb").value, 10),
+      // 硬盘：47 或留空 = 镜像默认（发 null，后端不传该参数）；
+      // 显式指定最少 50GB（显式传 47 会被 OCI 拒绝）。
+      boot_volume_size_gbs: (function () {
+        var disk = parseInt($("disk-gb").value, 10);
+        return (isNaN(disk) || disk <= 47) ? null : disk;
+      })(),
       assign_public_ip: $("public-ip").checked,
       assign_ipv6: $("ipv6").checked,
       min_delay: parseInt($("min-delay").value, 10) || 0,
@@ -140,6 +145,11 @@
     e.preventDefault();
     hideError();
     var payload = collectPayload();
+    var diskRaw = parseInt($("disk-gb").value, 10);
+    if (!isNaN(diskRaw) && diskRaw > 47 && diskRaw < 50) {
+      showError("硬盘显式指定最少 50GB：47 表示用镜像默认大小，48/49 不可用。");
+      return;
+    }
     if (!payload.ocpus || payload.ocpus < 1 || !payload.memory_gb || payload.memory_gb < 1) {
       showError("请填写有效的 OCPU 与内存。");
       return;
@@ -153,7 +163,7 @@
     btn.textContent = "配额预检中…";
     try {
       // 先调配额预检（带当前账号与区域，预检该区域的免费额度）
-      var check = await RBot.api(RBot.withProfile("/api/quota/can-launch", payload.profile, payload.region), {
+      var check = await MBot.api(MBot.withProfile("/api/quota/can-launch", payload.profile, payload.region), {
         method: "POST",
         body: { shape: payload.shape, ocpus: payload.ocpus, memory_gb: payload.memory_gb },
       });
@@ -163,15 +173,15 @@
       }
       // 预检通过，提交创建
       btn.textContent = "创建中…";
-      var result = await RBot.api("/api/create", { method: "POST", body: payload });
-      RBot.toast("创建任务已提交", "success");
+      var result = await MBot.api("/api/create", { method: "POST", body: payload });
+      MBot.toast("创建任务已提交", "success");
       if (result.root_password) {
         // root 密码只显示这一次（后端不保存、不再可查；抢机成功后
         // 还会在 Telegram / Bark 通知里带上）。
-        await RBot.confirmDialog(
+        await MBot.confirmDialog(
           "🔑 root 登录密码（只显示这一次）",
           "<p>请立即记下，面板不会再显示它：</p>" +
-          "<p><code>" + RBot.escapeHtml(result.root_password) + "</code></p>" +
+          "<p><code>" + MBot.escapeHtml(result.root_password) + "</code></p>" +
           "<p>实例创建完成后用 root + 该密码登录。抢机成功后，密码也会随 Telegram / Bark 通知推送。</p>",
           "已记下");
       }
@@ -197,7 +207,7 @@
     try {
       var profile = $("profile").value || null;
       var region = $("region-select").value || null;
-      var data = await RBot.api(RBot.withProfile("/api/create/defaults", profile, region));
+      var data = await MBot.api(MBot.withProfile("/api/create/defaults", profile, region));
       if (data.availability_domain) $("availability-domain").value = data.availability_domain;
       if (data.subnet_id) $("subnet-id").value = data.subnet_id;
       if (data.ssh_keys_file) $("ssh-keys-file").value = data.ssh_keys_file;
@@ -212,19 +222,19 @@
     // 账号加载默认值，不阻塞表单。
     var profileSelect = $("profile");
     var regionSelect = $("region-select");
-    RBot.fillProfileSelect(profileSelect).then(function (profile) {
-      RBot.fillRegionSelect(regionSelect, profile);
+    MBot.fillProfileSelect(profileSelect).then(function (profile) {
+      MBot.fillRegionSelect(regionSelect, profile);
       loadDefaults();
     }, loadDefaults);
     profileSelect.addEventListener("change", function (e) {
-      RBot.setProfile(e.target.value);
+      MBot.setProfile(e.target.value);
       // 切账号时区域重置为新账号的主区（与机器人端一致）。
-      RBot.setRegion(null);
-      RBot.fillRegionSelect(regionSelect, e.target.value);
+      MBot.setRegion(null);
+      MBot.fillRegionSelect(regionSelect, e.target.value);
       loadDefaults();
     });
     regionSelect.addEventListener("change", function (e) {
-      RBot.setRegion(e.target.value);
+      MBot.setRegion(e.target.value);
       loadDefaults();
     });
     $("shape").addEventListener("change", onShapeChange);
