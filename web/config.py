@@ -134,6 +134,16 @@ def _build_profiles():
 
 PROFILES = _build_profiles()
 
+
+def reload_profiles():
+    """重新读取账号表（删除账号后让面板列表立即更新，不用重启）。
+
+    只重读当前进程的环境变量与配置文件；机器人是独立进程，
+    仍需重启才生效。
+    """
+    PROFILES.clear()
+    PROFILES.update(_build_profiles())
+
 # 区域中文名（前端 profile 下拉显示"名字 · 区域中文名"用；未列出的区域
 # 显示原始区域代码）。模型：区域只是每个 profile 自带的一个显示字段，
 # 账号/区域切换就是切换 profile，没有独立的区域选择器。

@@ -9,6 +9,13 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [1.38.0] - 2026-11-24
+- Configured accounts on the cloud accounts page can now be deleted: each row gains a delete button (with a confirmation prompt), removing the config section and the compartment variable; the private key file is only removed when no other account shares it
+- Deletion guards: DEFAULT is the default account and cannot be deleted; at least one account must remain; the panel list updates immediately after deletion, and the bot needs a restart to pick it up
+- New endpoint DELETE /api/profiles/{profile}; new helpers remove_oci_profile in tgbot/handlers_client.py (text-level section removal, everything else preserved byte-for-byte) and remove_env_file_vars in tgbot/config.py
+
+**Verification**: full test suite passes, 2543 tests (7 new in tests/test_web_oci_profiles.py covering successful deletion with config/env/key cleanup, keeping a shared key, and rejection of deleting DEFAULT/the last profile/an unknown profile/unauthenticated requests, plus section removal leaving other sections and the [cloudflare] section intact). Live verification on the main host: a fake account FAKEDEL01 was created and then deleted through the API; its config section, env variable, and key file were all cleaned up, and the three real accounts were verified unchanged item by item.
+
 ## [1.37.2] - 2026-11-24
 - Configured accounts on the cloud accounts page can now upload their private key directly: the account list gains a key status column (ready/missing) and a private key upload control, writing the file to the account's key_file path (mode 600); accounts sharing one key are all fixed by a single upload; a key that is already in place can be replaced (with a confirmation prompt)
 - New endpoint POST /api/profiles/{profile}/key: the upload must be a private key file (rejected above 16KB) and the target path must be under home; GET /api/profiles now also returns key_file and key_ready per profile

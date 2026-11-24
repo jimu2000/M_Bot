@@ -941,6 +941,48 @@ def profile_exists_in_config(profile, path=None):
     return False
 
 
+def remove_oci_profile(profile, path=None):
+    """从 OCI 配置文件里删掉一个 [PROFILE] 段（文本级删除）。
+
+    其余内容逐字节保留，包括注释与 [cloudflare] 段。path 未指定时
+    只删新文件（~/oci_config），不碰旧文件备份。删掉了返回 True，
+    段不存在返回 False。
+    """
+    target = path or OCI_CONFIG_PATH
+    if not target or not os.path.exists(target):
+        return False
+    with open(target, encoding="utf-8") as handle:
+        lines = handle.readlines()
+    header = re.compile(r"^\s*\[%s\]\s*$" % re.escape(profile))
+    section = re.compile(r"^\s*\[")
+    output = []
+    skipping = False
+    removed = False
+    for line in lines:
+        if header.match(line):
+            skipping = True
+            removed = True
+            continue
+        if skipping and section.match(line):
+            skipping = False
+        if not skipping:
+            output.append(line)
+    if not removed:
+        return False
+    # 删段后文件尾部可能留下多余空行，收掉（只动尾部）。
+    while output and not output[-1].strip():
+        output.pop()
+    if output:
+        output.append("\n")
+    with open(target, "w", encoding="utf-8") as handle:
+        handle.writelines(output)
+    try:
+        os.chmod(target, 0o600)
+    except OSError:
+        pass
+    return True
+
+
 def _has_section_ci(path, name):
     """配置文件里有没有某段（段名大小写不敏感）。
 

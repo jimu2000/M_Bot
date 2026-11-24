@@ -9,6 +9,13 @@
 
 ## [Unreleased]
 
+## [1.38.0] - 2026-11-24
+- 云账户页已配置账号可删除：每行新增删除按钮（点按前二次确认），删除配置段 + compartment 环境变量；私钥文件只有在没有其他账号共用时才一并删除
+- 删除保护：DEFAULT 是默认账号不能删；至少保留一个账号；面板列表删除后立即更新，机器人需重启后生效
+- 新增接口 DELETE /api/profiles/{profile}；新增 tgbot/handlers_client.py 的 remove_oci_profile（文本级删段，其余内容逐字节保留）与 tgbot/config.py 的 remove_env_file_vars
+
+**验证**：全量测试 2543 个全过（新增 tests/test_web_oci_profiles.py 7 个，覆盖删除成功与配置/env/私钥的清理、共用私钥保留、删 DEFAULT/删最后一个/未知账号/未登录的拒绝、删段不影响其他段与 [cloudflare] 段）。.160 真机验证：新建假账号 FAKEDEL01 后经接口删除，配置段、env 变量、私钥文件均已清理，三个真实账号逐项核对无变化。
+
 ## [1.37.2] - 2026-11-24
 - 云账户页已配置账号可直接补传私钥：已配置账号列表新增私钥状态列（已就位/缺失，需上传）与上传私钥控件，文件写到该账号配置里的 key_file 路径（600 权限），多账号共用同一私钥时传一次就全好了；私钥已就位时可替换（替换前会确认）
 - 新增接口 POST /api/profiles/{profile}/key：内容必须是私钥文件（超 16KB 拒绝），路径必须在 home 下；GET /api/profiles 列表新增 key_file 与 key_ready 字段

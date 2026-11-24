@@ -444,6 +444,140 @@ class WebOciProfilesTestCase(unittest.TestCase):
                               files={"key_file": ("key.pem", FAKE_PEM)})
         self.assertEqual(resp.status_code, 401)
 
+    # ---------- 删除已配置账号（v1.38.0） ----------
+
+    def _setup_profiles_for_delete(self, specs):
+        """写临时配置 + env 文件 + patch PROFILES 与 os.environ。
+
+        specs: [(profile 名, key_file 路径, region)]。
+        """
+        sections = []
+        profiles = {}
+        env_vars = {}
+        for name, key_file, region in specs:
+            sections.append(
+                "[%s]\nuser=%s\nfingerprint=%s\nkey_file=%s\n"
+                "tenancy=%s\nregion=%s\n"
+                % (name, FAKE_USER, FAKE_FINGERPRINT, key_file,
+                   FAKE_TENANCY, region))
+            profiles[name] = {"region": region,
+                              "compartment_id": FAKE_TENANCY}
+            env_vars["MBOT_COMPARTMENT_%s" % name] = FAKE_TENANCY
+        with open(self._config_path, "w", encoding="utf-8") as handle:
+            handle.write("\n".join(sections))
+        with open(self._env_path, "w", encoding="utf-8") as handle:
+            for key, value in sorted(env_vars.items()):
+                handle.write("%s=%s\n" % (key, value))
+        patcher = patch.object(web_config, "PROFILES", profiles)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        env_patcher = patch.dict(os.environ, env_vars)
+        env_patcher.start()
+        self.addCleanup(env_patcher.stop)
+        for name in ("get_region_counts", "get_profile_regions"):
+            region_patcher = patch("web.routes.profiles.%s" % name,
+                                   return_value={})
+            region_patcher.start()
+            self.addCleanup(region_patcher.stop)
+
+    def test_delete_profile_success(self):
+        key_a = os.path.join(self._home, "a.pem")
+        key_b = os.path.join(self._home, "b.pem")
+        for key_path in (key_a, key_b):
+            with open(key_path, "wb") as handle:
+                handle.write(FAKE_PEM)
+        self._setup_profiles_for_delete([
+            ("DEFAULT", key_a, "ap-singapore-1"),
+            ("SECOND", key_b, "us-chicago-1")])
+        resp = self.client.delete("/api/profiles/SECOND")
+        data = resp.json()
+        self.assertEqual(resp.status_code, 200, data)
+        self.assertTrue(data["ok"])
+        self.assertTrue(data["config_removed"])
+        self.assertTrue(data["env_removed"])
+        self.assertTrue(data["key_removed"])
+        self.assertTrue(data["bot_restart_needed"])
+        content = self._read_config()
+        self.assertNotIn("[SECOND]", content)
+        self.assertIn("[DEFAULT]", content)
+        with open(self._env_path, encoding="utf-8") as handle:
+            env_text = handle.read()
+        self.assertNotIn("MBOT_COMPARTMENT_SECOND=", env_text)
+        self.assertIn("MBOT_COMPARTMENT_DEFAULT=", env_text)
+        self.assertFalse(os.path.exists(key_b))
+        self.assertTrue(os.path.exists(key_a))
+        listed = self.client.get("/api/profiles").json()
+        names = [p["name"] for p in listed["profiles"]]
+        self.assertNotIn("SECOND", names)
+        self.assertIn("DEFAULT", names)
+
+    def test_delete_profile_shared_key_kept(self):
+        shared = os.path.join(self._home, "shared.pem")
+        with open(shared, "wb") as handle:
+            handle.write(FAKE_PEM)
+        self._setup_profiles_for_delete([
+            ("DEFAULT", shared, "ap-singapore-1"),
+            ("SECOND", shared, "us-chicago-1")])
+        resp = self.client.delete("/api/profiles/SECOND")
+        data = resp.json()
+        self.assertEqual(resp.status_code, 200, data)
+        self.assertFalse(data["key_removed"])
+        self.assertTrue(os.path.exists(shared))
+
+    def test_delete_default_blocked(self):
+        self._setup_profiles_for_delete([
+            ("DEFAULT", os.path.join(self._home, "a.pem"),
+             "ap-singapore-1"),
+            ("SECOND", os.path.join(self._home, "b.pem"),
+             "us-chicago-1")])
+        resp = self.client.delete("/api/profiles/DEFAULT")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("默认账号", resp.json()["error"])
+        self.assertIn("[DEFAULT]", self._read_config())
+
+    def test_delete_last_profile_blocked(self):
+        self._setup_profiles_for_delete([
+            ("ONLYONE", os.path.join(self._home, "a.pem"),
+             "ap-singapore-1")])
+        resp = self.client.delete("/api/profiles/ONLYONE")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("至少保留一个账号", resp.json()["error"])
+        self.assertIn("[ONLYONE]", self._read_config())
+
+    def test_delete_unknown_profile(self):
+        self._setup_profiles_for_delete([
+            ("DEFAULT", os.path.join(self._home, "a.pem"),
+             "ap-singapore-1"),
+            ("SECOND", os.path.join(self._home, "b.pem"),
+             "us-chicago-1")])
+        resp = self.client.delete("/api/profiles/NOPE")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_delete_requires_login(self):
+        self._setup_profiles_for_delete([
+            ("DEFAULT", os.path.join(self._home, "a.pem"),
+             "ap-singapore-1"),
+            ("SECOND", os.path.join(self._home, "b.pem"),
+             "us-chicago-1")])
+        resp = self.anon.delete("/api/profiles/SECOND")
+        self.assertEqual(resp.status_code, 401)
+
+    def test_remove_oci_profile_keeps_other_sections(self):
+        from tgbot.handlers_client import remove_oci_profile
+        text = ("[KEEP]\nuser=%s\nregion=ap-singapore-1\n\n"
+                "[cloudflare]\ncf_email=a@example.com\n\n"
+                "[DROP]\nuser=%s\nregion=us-chicago-1\n"
+                % (FAKE_USER, FAKE_USER))
+        with open(self._config_path, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        self.assertTrue(remove_oci_profile("DROP"))
+        content = self._read_config()
+        self.assertNotIn("[DROP]", content)
+        self.assertIn("[KEEP]", content)
+        self.assertIn("[cloudflare]", content)
+        self.assertIn("cf_email=a@example.com", content)
+        self.assertFalse(remove_oci_profile("DROP"))
+
 
 if __name__ == "__main__":
     unittest.main()

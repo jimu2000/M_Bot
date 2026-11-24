@@ -9,6 +9,10 @@
   - POST /api/profiles/{profile}/key：给已配置的账号补传/替换私钥
     （multipart：key_file 字段）。内容必须是私钥，路径必须在 home 下，
     写盘权限 600；响应不回显私钥内容。
+  - DELETE /api/profiles/{profile}：删除一个已配置的账号：删配置
+    文件里的段 + env 里的 compartment 变量；私钥文件只有在没有
+    其他账号共用时才一并删除。DEFAULT 是默认账号不能删；至少保留
+    一个账号。面板列表立即更新，机器人需重启后生效。
 
 返回形状：{"ok": true, "default": "DEFAULT",
           "profiles": [{name, region, regionLabel, regionCount, regions,
@@ -41,12 +45,14 @@ from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from oci.client import read_oci_config_profiles
 from tgbot import handlers_client
 from tgbot.cf_config import mask_cf_email
+from tgbot.config import remove_env_file_vars
 from tgbot.handlers_client import (
     add_profile_compartments,
     commit_cf_section,
     commit_oci_profiles,
     parse_oci_config_text,
     prepare_oci_profiles,
+    remove_oci_profile,
 )
 from web import config
 from web.deps import (
@@ -217,6 +223,46 @@ async def upload_profile_key(profile: str,
         return error_response(f"写入私钥失败：{exc}", status_code=500)
     return {"ok": True, "profile": profile, "key_file": target,
             "key_ready": True}
+
+
+@router.delete("/api/profiles/{profile}")
+def delete_profile(profile: str,
+                   username: str = Depends(get_current_user)):
+    """删除一个已配置的账号：删配置文件里的段 + env 里的 compartment
+    变量；私钥文件只有在没有其他账号共用时才一并删除。
+
+    DEFAULT 是默认账号不能删；至少保留一个账号。面板列表立即更新
+    （本进程重读账号表），机器人是独立进程、需重启后生效。
+    """
+    if profile not in config.PROFILES:
+        return error_response(f"没有这个账号：{profile}", status_code=404)
+    if profile == config.DEFAULT_PROFILE:
+        return error_response("DEFAULT 是默认账号，不能删除",
+                              status_code=400)
+    if len(config.PROFILES) <= 1:
+        return error_response("至少保留一个账号", status_code=400)
+    doomed_key = _configured_key_files().get(profile, "")
+    config_removed = remove_oci_profile(profile)
+    env_removed = remove_env_file_vars(
+        [f"MBOT_COMPARTMENT_{profile}"])
+    remaining = _configured_key_files()
+    key_removed = False
+    if (doomed_key and _key_path_under_home(doomed_key)
+            and all(path != doomed_key
+                    for path in remaining.values())
+            and os.path.exists(doomed_key)):
+        try:
+            os.unlink(doomed_key)
+            key_removed = True
+        except OSError:
+            key_removed = False
+    os.environ.pop(f"MBOT_COMPARTMENT_{profile}", None)
+    config.reload_profiles()
+    return {"ok": True, "profile": profile,
+            "config_removed": config_removed,
+            "env_removed": bool(env_removed),
+            "key_removed": key_removed,
+            "bot_restart_needed": True}
 
 
 @router.post("/api/profiles/parse")

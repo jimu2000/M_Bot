@@ -144,6 +144,54 @@ def update_env_file_vars(updates, env_file=None):
     return path
 
 
+def remove_env_file_vars(keys, env_file=None):
+    """从 env 文件里删掉一批 KEY= 行（原子替换，权限 600）。
+
+    与 update_env_file_vars 同构：其余行原样保留；文件不存在或
+    没有命中时什么都不做。返回实际删掉的键列表。
+    """
+    if env_file is None:
+        try:
+            from web import config as web_config
+            env_file = web_config.ENV_FILE
+        except Exception:  # noqa: BLE001 - web.config 不可用时回退默认路径
+            env_file = os.path.expanduser("~/.rbot-clone.env")
+    path = env_file
+    if not os.path.exists(path):
+        return []
+    with open(path, encoding="utf-8") as f:
+        lines = f.readlines()
+    wanted = set(keys)
+    removed = []
+    output = []
+    for line in lines:
+        hit = None
+        for key in wanted:
+            if line.startswith(f"{key}="):
+                hit = key
+                break
+        if hit is not None:
+            removed.append(hit)
+        else:
+            output.append(line)
+    if not removed:
+        return []
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=parent or ".", prefix=".mbot-env-")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.writelines(output)
+        os.replace(tmp_path, path)
+    except BaseException:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        raise
+    os.chmod(path, 0o600)
+    return removed
+
+
 # 区域中文名（与 web/config.py 的 REGION_LABELS 保持同步；未知区域显示原代码）。
 # 账号切换（/oracle 菜单顶行“切换账号”按钮）按主区中文名显示账号，不再显示 DEFAULT/ACCOUNT2
 # 这类 profile 名（用户反馈 2026-11-24：看着乱，分不清是哪个账号）。

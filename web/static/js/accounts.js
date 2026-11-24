@@ -35,7 +35,7 @@
       var table = el("table", null, "table");
       var head = document.createElement("thead");
       var headRow = document.createElement("tr");
-      ["账号", "主区域", "订阅区域数", "显示名", "私钥状态", "上传私钥"].forEach(function (h) {
+      ["账号", "主区域", "订阅区域数", "显示名", "私钥状态", "上传私钥", "操作"].forEach(function (h) {
         headRow.appendChild(el("th", h, null));
       });
       head.appendChild(headRow);
@@ -66,6 +66,18 @@
           uploadCell.textContent = "—";
         }
         row.appendChild(uploadCell);
+        var opCell = document.createElement("td");
+        if (data.profiles.length > 1 && p.name !== data.default) {
+          var delBtn = el("button", "删除", "btn");
+          delBtn.type = "button";
+          delBtn.addEventListener("click", function () {
+            deleteProfile(p.name);
+          });
+          opCell.appendChild(delBtn);
+        } else {
+          opCell.textContent = "—";
+        }
+        row.appendChild(opCell);
         body.appendChild(row);
       });
       table.appendChild(body);
@@ -96,6 +108,24 @@
       loadAccounts();
     } catch (err) {
       MBot.toast("上传失败：" + (err.message || err));
+    }
+  }
+
+  /* 删除已配置的账号：删配置段 + compartment 变量；私钥无共用时一并删除。 */
+  async function deleteProfile(profile) {
+    if (!window.confirm("确定要删除账号 " + profile + " 吗？\n该账号的配置将从服务器上删除，此操作不可撤销。")) {
+      return;
+    }
+    try {
+      var res = await fetch("/api/profiles/" + encodeURIComponent(profile),
+        { method: "DELETE", credentials: "same-origin" });
+      var data = await res.json();
+      if (!data.ok) throw new Error(apiError(data, "删除失败"));
+      MBot.toast("已删除账号 " + profile + "（机器人需重启后生效）"
+        + (data.key_removed ? "，私钥文件已一并删除。" : "。"));
+      loadAccounts();
+    } catch (err) {
+      MBot.toast("删除失败：" + (err.message || err));
     }
   }
 
