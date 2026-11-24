@@ -24,6 +24,12 @@
 <body>
 {# ---------- 顶栏 ---------- #}
 <header class="topbar">
+  {# 手机端导航按钮：≤900px 时侧边栏收进抽屉，点这里打开
+     （桌面端侧边栏常驻，此按钮隐藏，见 base.css 的 .nav-toggle） #}
+  <button type="button" class="icon-btn nav-toggle" id="nav-toggle"
+          title="打开导航" aria-label="打开导航" aria-expanded="false">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+  </button>
   <div class="logo">
     <span class="logo-mark">M</span>
     <span class="logo-text">M_Bot</span>
@@ -137,6 +143,8 @@
       </a>
     </nav>
   </aside>
+  {# 手机端抽屉遮罩：侧边栏打开时点遮罩关闭（桌面端不用） #}
+  <div class="sidebar-backdrop" id="sidebar-backdrop" hidden></div>
 
   {# ---------- 主内容区 ---------- #}
   <main class="content">

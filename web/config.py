@@ -11,7 +11,7 @@
 
 安全说明：
   - 本模块不读取、不打印、不外传 OCI API 私钥。认证全部由 OCI CLI
-    自己读 ~/.oci/config 与 key_file 完成。
+    自己读配置文件（~/oci_config，旧部署回退 ~/.oci/config）与 key_file 完成。
   - 面板默认只监听 127.0.0.1（本机访问）；要从外网访问请自行在前面
     加反向代理 + HTTPS，不要直接把 9527 暴露到公网。
 """
@@ -87,7 +87,7 @@ ENV_FILE = os.environ.get(
 ENABLE_PLAN_SCHEDULER = os.environ.get(
     "MBOT_ENABLE_PLAN_SCHEDULER", "") == "1"
 
-# 默认 OCI profile（~/.oci/config 里的 profile 名）。
+# 默认 OCI profile（OCI 配置文件里的 profile 名）。
 DEFAULT_PROFILE = "DEFAULT"
 # 默认区域。
 DEFAULT_REGION = "ap-singapore-1"
@@ -96,29 +96,38 @@ DEFAULT_COMPARTMENT_ID = os.environ.get(
     "MBOT_COMPARTMENT_DEFAULT", "ocid1.tenancy.oc1..xxxxxxxx")
 
 # 多账号配置：profile 名 -> {region, compartment_id}。
-# 每个账号在 ~/.oci/config 里对应一个 profile。
-# 部署时用环境变量填真实 compartment OCID：
-#   MBOT_COMPARTMENT_DEFAULT / MBOT_COMPARTMENT_ACCOUNT2 /
-#   MBOT_COMPARTMENT_ACCOUNT3（根 compartment 即 tenancy OCID）。
-# 未设环境变量的账号不加入 PROFILES。
+# 与 tgbot/config.py 的 _build_profiles 保持同步：注册方式是环境变量
+# MBOT_COMPARTMENT_<PROFILE>（值是 compartment OCID，根 compartment
+# 即 tenancy OCID）；region 从配置文件里该 profile 的 region 字段读，
+# 读不到时用回退表（旧账号）或 DEFAULT_REGION（新账号）。
+# 未设 MBOT_COMPARTMENT_* 的 profile 不加入 PROFILES。
+LEGACY_PROFILE_REGIONS = {
+    "DEFAULT": "ap-singapore-1",
+    "ACCOUNT2": "us-sanjose-1",
+    "ACCOUNT3": "us-chicago-1",
+}
+
+
 def _build_profiles():
+    from oci.client import read_oci_config_profiles
+    file_profiles = read_oci_config_profiles()
     profiles = {
         "DEFAULT": {
-            "region": "ap-singapore-1",
+            "region": file_profiles.get("DEFAULT", {}).get("region")
+                      or LEGACY_PROFILE_REGIONS["DEFAULT"],
             "compartment_id": DEFAULT_COMPARTMENT_ID,
         },
     }
-    account2 = os.environ.get("MBOT_COMPARTMENT_ACCOUNT2")
-    if account2:
-        profiles["ACCOUNT2"] = {
-            "region": "us-sanjose-1",
-            "compartment_id": account2,
-        }
-    account3 = os.environ.get("MBOT_COMPARTMENT_ACCOUNT3")
-    if account3:
-        profiles["ACCOUNT3"] = {
-            "region": "us-chicago-1",
-            "compartment_id": account3,
+    for key, value in sorted(os.environ.items()):
+        if not key.startswith("MBOT_COMPARTMENT_") or not value:
+            continue
+        name = key[len("MBOT_COMPARTMENT_"):]
+        if name == "DEFAULT":
+            continue
+        profiles[name] = {
+            "region": file_profiles.get(name, {}).get("region")
+                      or LEGACY_PROFILE_REGIONS.get(name, DEFAULT_REGION),
+            "compartment_id": value,
         }
     return profiles
 
@@ -184,15 +193,31 @@ def get_region_label(region):
     return REGION_LABELS.get(region, region)
 
 
+def _needs_profile_suffix(name):
+    """同主区的已注册账号里，自己是不是第一个（按 PROFILES 顺序）。
+
+    不是第一个时显示名要加“·profile”区分（与 tgbot/config.py 的
+    同名函数保持一致）。
+    """
+    region = get_profile_config(name)["region"]
+    for other, cfg in PROFILES.items():
+        if cfg.get("region") == region:
+            return other != name
+    return False
+
+
 def profile_display_name(name, region_count=None):
     """账号（profile）的显示名：主区中文名；订阅了多个区域时后缀（N 个区）。
 
     与 tgbot/config.py 的同名函数保持一致（机器人切换菜单与面板
     下拉用同一套显示名；用户要求 2026-11-24：bot 改完的网页版也要
     相应调整）。region_count 为 None 或 <=1 时不加后缀。
+    同主区有多个账号时，非第一个加“·profile”后缀区分（如“新加坡·sg1”）。
     """
     region = get_profile_config(name)["region"]
     label = get_region_label(region)
+    if _needs_profile_suffix(name):
+        label += f"·{name}"
     if region_count and region_count > 1:
         label += f"（{region_count} 个区）"
     return label

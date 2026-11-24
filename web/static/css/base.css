@@ -145,6 +145,10 @@ code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monosp
 }
 .sidebar a svg { width: 17px; height: 17px; flex-shrink: 0; }
 
+/* 手机端导航按钮与抽屉遮罩：桌面端侧边栏常驻，两者都不显示。 */
+.nav-toggle { display: none; }
+.sidebar-backdrop { display: none; }
+
 .content { flex: 1; min-width: 0; padding: 20px 24px 40px; }
 
 /* ================= 页头 / 通用组件 ================= */
@@ -616,7 +620,34 @@ tr.task-row.expanded { background: var(--surface-hover); }
 
 /* ================= 响应式 ================= */
 @media (max-width: 900px) {
-  .sidebar { display: none; }
+  /* 手机端：侧边栏收进左侧抽屉（默认滑出屏幕外），
+     点顶栏汉堡按钮（.nav-toggle）打开，点遮罩或导航链接关闭。
+     注意：不要再用 display: none 藏侧边栏——那样手机上
+     DNS 管理、配额、任务管理等页面完全没有入口。 */
+  .nav-toggle { display: inline-flex; }
+  .sidebar {
+    display: block;
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: 240px;
+    max-width: 80vw;
+    height: 100dvh;
+    z-index: 150;
+    transform: translateX(-105%);
+    transition: transform 0.25s ease;
+    box-shadow: 4px 0 16px rgba(0, 0, 0, 0.25);
+  }
+  .sidebar.open { transform: translateX(0); }
+  .sidebar-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.45);
+    z-index: 140;
+  }
+  .sidebar-backdrop[hidden] { display: none; }
   .create-grid { grid-template-columns: 1fr; }
   .res-stats { gap: 12px; }
   .res-label { display: none; }

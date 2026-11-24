@@ -6,7 +6,8 @@
 
 安全说明（重要）：
   - 本模块不读取、不打印、不外传 API 私钥。认证全部由 OCI CLI 自己读
-    ~/.oci/config 与 key_file 完成，私钥只在本地用于请求签名。
+    配置文件（~/oci_config，旧部署回退 ~/.oci/config）与 key_file
+    完成，私钥只在本地用于请求签名。
   - 配置区在文件顶端，真实 OCID / IP 一律用占位符，绝不写进代码。
   - 写操作（create / assign / delete / change）会改动真实资源：换 IP 会
     断掉正在跑的服务，删 IP 会让实例失联。不要对生产实例随手执行，

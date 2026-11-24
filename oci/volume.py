@@ -6,7 +6,8 @@
 
 安全说明（重要）：
   - 本模块不读取、不打印、不外传 API 私钥。认证全部由 OCI CLI 自己读
-    ~/.oci/config 与 key_file 完成，私钥只在本地用于请求签名。
+    配置文件（~/oci_config，旧部署回退 ~/.oci/config）与 key_file
+    完成，私钥只在本地用于请求签名。
   - 配置区在文件顶端，真实 OCID / fingerprint 一律用占位符，绝不写进代码。
   - 写操作（resize_boot_volume / delete_boot_volume）只在用户明确要求时调用；
     本模块不做任何自动删除或扩容。

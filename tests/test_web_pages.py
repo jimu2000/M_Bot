@@ -344,5 +344,51 @@ class TestRealBackendIntegration(unittest.TestCase):
         self.assertEqual(resp.json().get("tasks"), [])
 
 
+class TestMobileNav(unittest.TestCase):
+    """手机端导航抽屉（v1.27.0）：≤900px 时侧边栏不再 display: none，
+    而是收进抽屉，汉堡按钮可打开——否则手机上 DNS 管理等页面
+    完全没有入口。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = TestClient(build_test_app())
+        with open(os.path.join(WEB_DIR, "static", "css", "base.css"),
+                  encoding="utf-8") as f:
+            cls.css = f.read()
+        with open(os.path.join(WEB_DIR, "static", "js", "app.js"),
+                  encoding="utf-8") as f:
+            cls.js = f.read()
+
+    def test_rendered_page_has_nav_toggle(self):
+        resp = self.client.get("/overview")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn('id="nav-toggle"', resp.text)
+        self.assertIn('id="sidebar-backdrop"', resp.text)
+        # 侧边栏里有 DNS 管理入口。
+        self.assertIn('href="/dns"', resp.text)
+        self.assertIn("DNS 管理", resp.text)
+
+    def test_login_page_has_no_nav_toggle(self):
+        """登录页是独立页面，不继承 base.html，没有汉堡按钮。"""
+        resp = self.client.get("/login")
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotIn('id="nav-toggle"', resp.text)
+
+    def test_sidebar_not_display_none_on_mobile(self):
+        """≤900px 的媒体查询里不再有 .sidebar { display: none; }。"""
+        self.assertNotIn(".sidebar { display: none; }", self.css)
+
+    def test_drawer_css_rules(self):
+        self.assertIn(".sidebar.open", self.css)
+        self.assertIn("translateX(-105%)", self.css)
+        self.assertIn(".sidebar-backdrop", self.css)
+        self.assertIn(".nav-toggle", self.css)
+
+    def test_app_js_wires_drawer(self):
+        self.assertIn('getElementById("nav-toggle")', self.js)
+        self.assertIn('getElementById("sidebar-backdrop")', self.js)
+        self.assertIn("closeNavDrawer", self.js)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -292,19 +292,44 @@ class TestOciCommand(AllowedUserTestCase):
         context = make_context()
         context.user_data["oci_awaiting"] = True
         update = make_message_update(text=FAKE_OCI_CONFIG_TEXT)
-        with patch("tgbot.handlers_menu.profile_exists_in_config",
+        with patch("tgbot.handlers_client.profile_exists_in_config",
                    return_value=False):
             await hm.handle_oci_text_input(update, context)
         pending = context.user_data.get("oci_pending")
         self.assertIsNotNone(pending)
         self.assertEqual(pending["kind"], "oci")
-        self.assertEqual(pending["profile"], "NEWACC")
+        self.assertEqual(pending["profiles"][0]["profile"], "NEWACC")
         keyboard = (update.effective_message.reply_text.call_args.kwargs
                     .get("reply_markup"))
         self.assertIsNotNone(keyboard)
         callbacks = [btn.callback_data for row in keyboard.inline_keyboard
                      for btn in row]
         self.assertIn("oci:confirm", callbacks)
+
+    async def test_text_rbot_format_shows_multi_confirm(self):
+        """粘贴 R-Bot 整份配置：oci 块里两个 profile 一次确认。"""
+        context = make_context()
+        context.user_data["oci_awaiting"] = True
+        text = ("oci=begin\n[sg1]\nuser = ocid1.user.oc1..fake\n"
+                "fingerprint = aa:bb\ntenancy = ocid1.tenancy.oc1..fake\n"
+                "region = ap-singapore-1\nkey_file = /root/1.pem\n"
+                "[sg2]\nuser = ocid1.user.oc1..fake\n"
+                "fingerprint = cc:dd\ntenancy = ocid1.tenancy.oc1..fake\n"
+                "region = ap-singapore-1\nkey_file = /root/2.pem\n"
+                "oci=end\nusername=fakeuser\n")
+        update = make_message_update(text=text)
+        with patch("tgbot.handlers_client.profile_exists_in_config",
+                   return_value=False), \
+                patch.dict(os.environ, {"HOME": "/root"}):
+            await hm.handle_oci_text_input(update, context)
+        pending = context.user_data.get("oci_pending")
+        self.assertIsNotNone(pending)
+        self.assertEqual([p["profile"] for p in pending["profiles"]],
+                         ["sg1", "sg2"])
+        text = reply_texts(update)[0]
+        self.assertIn("2 个账号", text)
+        self.assertIn("/root/1.pem", text)
+        self.assertIn("/root/2.pem", text)
 
     async def test_text_invalid_config_shows_error(self):
         """粘贴非法 config：报错，不记 pending。"""
@@ -330,7 +355,7 @@ class TestOciCommand(AllowedUserTestCase):
         context = make_context()
         context.user_data["oci_awaiting"] = True
         update = make_message_update(text=FAKE_OCI_CONFIG_TEXT)
-        with patch("tgbot.handlers_menu.profile_exists_in_config",
+        with patch("tgbot.handlers_client.profile_exists_in_config",
                    return_value=True):
             await hm.handle_oci_text_input(update, context)
         self.assertIn("已存在", reply_texts(update)[0])
@@ -365,17 +390,27 @@ class TestOciCommand(AllowedUserTestCase):
         """确认后把 OCI profile 写进 config，并提示重启。"""
         context = make_context()
         fields = {"user": "ocid1.user.oc1..fake", "region": "ap-singapore-1",
-                  "key_file": "/home/user/.oci/fake-key.pem"}
-        context.user_data["oci_pending"] = {
-            "kind": "oci", "profile": "NEWACC", "fields": fields}
+                  "tenancy": "ocid1.tenancy.oc1..fake",
+                  "key_file": "/root/NEWACC.pem"}
+        profiles = [{"profile": "NEWACC", "fields": fields,
+                     "original_key_file": "/home/user/.oci/fake-key.pem"}]
+        context.user_data["oci_pending"] = {"kind": "oci",
+                                            "profiles": profiles}
         update = make_callback_update("oci:confirm")
-        with patch("tgbot.handlers_menu.append_oci_profile") as mock_append:
+        results = [{"profile": "NEWACC", "key_file": "/root/NEWACC.pem",
+                    "key_ready": False}]
+        with patch("tgbot.handlers_menu.commit_oci_profiles",
+                   return_value=results) as mock_commit, \
+                patch("tgbot.handlers_menu.add_profile_compartments",
+                      return_value={"MBOT_COMPARTMENT_NEWACC":
+                                    "ocid1.tenancy.oc1..fake"}):
             await hm.oci_callback(update, context)
-        mock_append.assert_called_once_with("NEWACC", fields)
+        mock_commit.assert_called_once_with(profiles)
         self.assertNotIn("oci_pending", context.user_data)
         text = reply_texts(update)[0]
         self.assertIn("NEWACC", text)
         self.assertIn("重启机器人", text)
+        self.assertIn("MBOT_COMPARTMENT_NEWACC", text)
 
     async def test_callback_confirm_azure_writes_env(self):
         """确认后把 Azure 4 项写进 env 文件。"""
@@ -417,11 +452,11 @@ class TestOciCommand(AllowedUserTestCase):
         document = MagicMock()
         document.get_file = AsyncMock(return_value=tg_file)
         update.effective_message.document = document
-        with patch("tgbot.handlers_menu.profile_exists_in_config",
+        with patch("tgbot.handlers_client.profile_exists_in_config",
                    return_value=False):
             await hm.handle_oci_document(update, context)
-        self.assertEqual(context.user_data["oci_pending"]["profile"],
-                         "NEWACC")
+        self.assertEqual(context.user_data["oci_pending"]["profiles"][0]
+                         ["profile"], "NEWACC")
 
     async def test_document_ignored_without_awaiting(self):
         """不在 oci 等待时发文件：静默忽略。"""

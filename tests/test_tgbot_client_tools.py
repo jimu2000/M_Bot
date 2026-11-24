@@ -16,6 +16,7 @@ import base64
 import json
 import os
 import socket
+import stat
 import struct
 import subprocess
 import sys
@@ -405,11 +406,16 @@ class TestParseOciConfig(unittest.TestCase):
         self.assertIn("不合法", parsed["error"])
 
     def test_extra_profiles_noted(self):
+        """多个 section 时全部导入（v1.28.0 起不再只取第一个）。"""
         parsed = hc.parse_oci_config_text(
-            FAKE_CONFIG_TEXT + "\n[SECOND]\nuser = ocid1.user.oc1..fake\n")
+            FAKE_CONFIG_TEXT + "\n[SECOND]\nuser = ocid1.user.oc1..fake\n"
+            "fingerprint = aa:bb\ntenancy = ocid1.tenancy.oc1..fake\n"
+            "region = us-sanjose-1\nkey_file = /root/2.pem\n")
         self.assertIsNone(parsed["error"])
         self.assertEqual(parsed["profile"], "NEWACC")
-        self.assertEqual(parsed["extra_profiles"], ["SECOND"])
+        self.assertEqual([p["profile"] for p in parsed["profiles"]],
+                         ["NEWACC", "SECOND"])
+        self.assertEqual(parsed["extra_profiles"], [])
 
 
 class TestAppendOciProfile(unittest.TestCase):
@@ -459,6 +465,300 @@ class TestAppendOciProfile(unittest.TestCase):
     def test_profile_exists_missing_file(self):
         self.assertFalse(
             hc.profile_exists_in_config("NOPE", self.path))
+
+    def test_default_profile_detected(self):
+        """[DEFAULT] 段能被 has_section 认出（旧版 configparser 默认
+        把 DEFAULT 当特殊段，has_section 永远 False）。"""
+        with open(self.path, "w", encoding="utf-8") as f:
+            f.write("[DEFAULT]\nuser = ocid1.user.oc1..fake\n")
+        self.assertTrue(hc.profile_exists_in_config("DEFAULT", self.path))
+
+
+# ================= v1.28.0：R-Bot 格式 / 根目录配置 =================
+
+FAKE_RBOT_CONFIG_TEXT = """#在oci=begin和oci=end之间放入你的API配置信息 支持多个配置文件
+oci=begin
+[sg1]
+user=ocid1.user.oc1..fake1
+fingerprint=aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99
+tenancy=ocid1.tenancy.oc1..fake1
+region=ap-singapore-1
+key_file=/root/1.pem
+
+[sg2]
+user=ocid1.user.oc1..fake2
+fingerprint=11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00
+tenancy=ocid1.tenancy.oc1..fake2
+region=ap-singapore-1
+key_file=/root/2.pem
+oci=end
+
+#用户信息
+username=fakeuser
+password=fakepassword
+
+azure=begin
+
+azure=end
+"""
+
+
+class TestExtractOciBlock(unittest.TestCase):
+
+    def test_no_markers_returns_original(self):
+        self.assertEqual(hc._extract_oci_block(FAKE_CONFIG_TEXT),
+                         FAKE_CONFIG_TEXT)
+
+    def test_markers_extract_inner_only(self):
+        block = hc._extract_oci_block(FAKE_RBOT_CONFIG_TEXT)
+        self.assertIn("[sg1]", block)
+        self.assertIn("[sg2]", block)
+        self.assertNotIn("username=", block)
+        self.assertNotIn("azure=begin", block)
+        self.assertNotIn("oci=begin", block)
+
+    def test_begin_without_end_returns_none(self):
+        self.assertIsNone(hc._extract_oci_block("oci=begin\n[sg1]\n"))
+
+    def test_comment_mentioning_markers_not_matched(self):
+        """注释行里提到 oci=begin 不算标记（必须整行精确匹配）。"""
+        text = "#在oci=begin和oci=end之间放入配置\n" + FAKE_CONFIG_TEXT
+        self.assertEqual(hc._extract_oci_block(text), text)
+
+
+class TestParseRbotConfig(unittest.TestCase):
+
+    def test_rbot_full_paste_parses_two_profiles(self):
+        parsed = hc.parse_oci_config_text(FAKE_RBOT_CONFIG_TEXT)
+        self.assertIsNone(parsed["error"])
+        self.assertEqual([p["profile"] for p in parsed["profiles"]],
+                         ["sg1", "sg2"])
+        self.assertEqual(parsed["profiles"][0]["fields"]["key_file"],
+                         "/root/1.pem")
+        self.assertEqual(parsed["profiles"][1]["missing"], [])
+
+    def test_rbot_second_profile_missing_keys(self):
+        text = ("oci=begin\n[sg1]\nuser = ocid1.user.oc1..fake\n"
+                "fingerprint = aa:bb\ntenancy = ocid1.tenancy.oc1..fake\n"
+                "region = ap-singapore-1\nkey_file = /root/1.pem\n"
+                "[sg2]\nuser = ocid1.user.oc1..fake\noci=end\n")
+        parsed = hc.parse_oci_config_text(text)
+        self.assertIsNone(parsed["error"])
+        self.assertEqual(parsed["profiles"][1]["missing"],
+                         ["fingerprint", "tenancy", "region", "key_file"])
+
+    def test_rbot_bad_name_in_second_profile(self):
+        text = ("oci=begin\n[sg1]\nuser = ocid1.user.oc1..fake\n"
+                "[bad name]\nuser = ocid1.user.oc1..fake\noci=end\n")
+        parsed = hc.parse_oci_config_text(text)
+        self.assertIsNotNone(parsed["error"])
+        self.assertIn("bad name", parsed["error"])
+
+    def test_begin_without_end_errors(self):
+        parsed = hc.parse_oci_config_text("oci=begin\n[sg1]\n")
+        self.assertIsNotNone(parsed["error"])
+        self.assertIn("oci=end", parsed["error"])
+
+    def test_empty_block_errors(self):
+        parsed = hc.parse_oci_config_text("oci=begin\noci=end\n")
+        self.assertIsNotNone(parsed["error"])
+
+
+class TestNormalizeOciKeyFile(unittest.TestCase):
+
+    def test_root_path_kept(self):
+        with patch.dict(os.environ, {"HOME": "/root"}):
+            fields, original = hc.normalize_oci_key_file(
+                "sg1", {"key_file": "/root/1.pem"})
+        self.assertEqual(fields["key_file"], "/root/1.pem")
+        self.assertEqual(original, "/root/1.pem")
+
+    def test_home_subdir_kept(self):
+        """~/ 下的子目录路径也保留（如旧版的 ~/.oci/xxx.pem）。"""
+        with patch.dict(os.environ, {"HOME": "/root"}):
+            fields, _ = hc.normalize_oci_key_file(
+                "sg1", {"key_file": "/root/.oci/old-key.pem"})
+        self.assertEqual(fields["key_file"], "/root/.oci/old-key.pem")
+
+    def test_other_absolute_path_normalized(self):
+        with patch.dict(os.environ, {"HOME": "/root"}):
+            fields, original = hc.normalize_oci_key_file(
+                "NEWACC", {"key_file": "/home/user/.oci/fake-key.pem"})
+        self.assertEqual(fields["key_file"], "/root/NEWACC.pem")
+        self.assertEqual(original, "/home/user/.oci/fake-key.pem")
+
+    def test_relative_path_normalized(self):
+        with patch.dict(os.environ, {"HOME": "/root"}):
+            fields, _ = hc.normalize_oci_key_file(
+                "NEWACC", {"key_file": "my-key.pem"})
+        self.assertEqual(fields["key_file"], "/root/NEWACC.pem")
+
+
+class TestMaybeCopyKeyFile(unittest.TestCase):
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+
+    def test_target_exists_returns_true(self):
+        target = os.path.join(self._tmp.name, "new.pem")
+        with open(target, "w") as f:
+            f.write("already here")
+        self.assertTrue(hc.maybe_copy_key_file("/nonexistent/old.pem",
+                                               target))
+
+    def test_original_copied_with_600(self):
+        original = os.path.join(self._tmp.name, "old.pem")
+        with open(original, "w") as f:
+            f.write("fake key content")
+        target = os.path.join(self._tmp.name, "new.pem")
+        self.assertTrue(hc.maybe_copy_key_file(original, target))
+        with open(target) as f:
+            self.assertEqual(f.read(), "fake key content")
+        self.assertEqual(stat.S_IMODE(os.stat(target).st_mode), 0o600)
+
+    def test_neither_exists_returns_false(self):
+        target = os.path.join(self._tmp.name, "new.pem")
+        self.assertFalse(hc.maybe_copy_key_file(
+            os.path.join(self._tmp.name, "missing.pem"), target))
+
+
+class TestPrepareAndCommitProfiles(unittest.TestCase):
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.target = os.path.join(self._tmp.name, "oci_config")
+        self.legacy = os.path.join(self._tmp.name, "legacy_config")
+        for attr, path in (("OCI_CONFIG_PATH", self.target),
+                           ("OCI_CONFIG_LEGACY_PATH", self.legacy)):
+            p = patch.object(hc, attr, path)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_prepare_skips_existing_and_normalizes(self):
+        with open(self.target, "w", encoding="utf-8") as f:
+            f.write("[sg1]\nuser = ocid1.user.oc1..fake\n")
+        with patch.dict(os.environ, {"HOME": "/root"}):
+            parsed = hc.parse_oci_config_text(FAKE_RBOT_CONFIG_TEXT)
+            new, skipped, error = hc.prepare_oci_profiles(parsed)
+        self.assertEqual(error, "")
+        self.assertEqual(skipped, ["sg1"])
+        self.assertEqual([p["profile"] for p in new], ["sg2"])
+        self.assertEqual(new[0]["fields"]["key_file"], "/root/2.pem")
+
+    def test_prepare_missing_keys_error_names_profile(self):
+        text = ("[GOOD]\nuser = ocid1.user.oc1..fake\n"
+                "fingerprint = aa:bb\ntenancy = ocid1.tenancy.oc1..fake\n"
+                "region = ap-singapore-1\nkey_file = /root/1.pem\n"
+                "[BAD]\nuser = ocid1.user.oc1..fake\n")
+        parsed = hc.parse_oci_config_text(text)
+        new, skipped, error = hc.prepare_oci_profiles(parsed)
+        self.assertEqual(new, [])
+        self.assertIn("BAD", error)
+        self.assertIn("缺少必填键", error)
+
+    def test_append_migrates_legacy_on_first_write(self):
+        """目标不存在、旧文件存在时，先迁移旧内容再追加。"""
+        with open(self.legacy, "w", encoding="utf-8") as f:
+            f.write("[DEFAULT]\nuser = ocid1.user.oc1..fake\n")
+        parsed = hc.parse_oci_config_text(FAKE_CONFIG_TEXT)
+        hc.append_oci_profile("NEWACC", parsed["fields"])
+        with open(self.target, encoding="utf-8") as f:
+            content = f.read()
+        self.assertIn("[DEFAULT]", content)
+        self.assertIn("[NEWACC]", content)
+        with open(self.legacy, encoding="utf-8") as f:
+            self.assertIn("[DEFAULT]", f.read())
+        self.assertEqual(stat.S_IMODE(os.stat(self.target).st_mode),
+                         0o600)
+
+    def test_append_no_migration_when_target_exists(self):
+        with open(self.target, "w", encoding="utf-8") as f:
+            f.write("[DEFAULT]\nuser = ocid1.user.oc1..fake\n")
+        with open(self.legacy, "w", encoding="utf-8") as f:
+            f.write("[LEGACYONLY]\nuser = ocid1.user.oc1..fake\n")
+        parsed = hc.parse_oci_config_text(FAKE_CONFIG_TEXT)
+        hc.append_oci_profile("NEWACC", parsed["fields"])
+        with open(self.target, encoding="utf-8") as f:
+            content = f.read()
+        self.assertNotIn("[LEGACYONLY]", content)
+
+    def test_commit_writes_and_copies_key(self):
+        original = os.path.join(self._tmp.name, "old-key.pem")
+        with open(original, "w") as f:
+            f.write("fake key")
+        new_key = os.path.join(self._tmp.name, "ZZ1.pem")
+        profiles = [{"profile": "ZZ1",
+                     "fields": {"user": "ocid1.user.oc1..fake",
+                                "fingerprint": "aa:bb",
+                                "tenancy": "ocid1.tenancy.oc1..fake",
+                                "region": "ap-singapore-1",
+                                "key_file": new_key},
+                     "original_key_file": original}]
+        results = hc.commit_oci_profiles(profiles)
+        self.assertEqual(results[0]["key_ready"], True)
+        self.assertTrue(os.path.exists(new_key))
+        self.assertTrue(hc.profile_exists_in_config("ZZ1", self.target))
+
+    def test_commit_key_missing_reports_not_ready(self):
+        profiles = [{"profile": "ZZ2",
+                     "fields": {"user": "ocid1.user.oc1..fake",
+                                "fingerprint": "aa:bb",
+                                "tenancy": "ocid1.tenancy.oc1..fake",
+                                "region": "ap-singapore-1",
+                                "key_file": "/root/ZZ2.pem"},
+                     "original_key_file": "/nonexistent/old.pem"}]
+        results = hc.commit_oci_profiles(profiles)
+        self.assertEqual(results[0]["key_ready"], False)
+
+
+class TestAddProfileCompartments(unittest.TestCase):
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.env_file = os.path.join(self._tmp.name, ".env")
+        self._env_patch = patch("web.config.ENV_FILE", self.env_file)
+        self._env_patch.start()
+        self.addCleanup(self._env_patch.stop)
+
+    def _profiles(self):
+        return [{"profile": "SG1",
+                 "fields": {"tenancy": "ocid1.tenancy.oc1..fake1"}},
+                {"profile": "SG2",
+                 "fields": {"tenancy": "ocid1.tenancy.oc1..fake2"}}]
+
+    def test_writes_compartment_vars(self):
+        with patch.object(hc, "update_env_file_vars") as mock_write:
+            added = hc.add_profile_compartments(self._profiles())
+        self.assertEqual(added, {
+            "MBOT_COMPARTMENT_SG1": "ocid1.tenancy.oc1..fake1",
+            "MBOT_COMPARTMENT_SG2": "ocid1.tenancy.oc1..fake2"})
+        mock_write.assert_called_once_with(added)
+
+    def test_skips_var_already_in_env(self):
+        with patch.dict(os.environ,
+                        {"MBOT_COMPARTMENT_SG1": "ocid1.tenancy.oc1..x"}):
+            with patch.object(hc, "update_env_file_vars") as mock_write:
+                added = hc.add_profile_compartments(self._profiles())
+        self.assertEqual(added, {
+            "MBOT_COMPARTMENT_SG2": "ocid1.tenancy.oc1..fake2"})
+
+    def test_skips_var_already_in_env_file(self):
+        with open(self.env_file, "w", encoding="utf-8") as f:
+            f.write("MBOT_COMPARTMENT_SG1=ocid1.tenancy.oc1..custom\n")
+        with patch.object(hc, "update_env_file_vars") as mock_write:
+            added = hc.add_profile_compartments(self._profiles())
+        self.assertEqual(added, {
+            "MBOT_COMPARTMENT_SG2": "ocid1.tenancy.oc1..fake2"})
+
+    def test_missing_tenancy_skipped(self):
+        profiles = [{"profile": "NOTEN", "fields": {}}]
+        with patch.object(hc, "update_env_file_vars") as mock_write:
+            added = hc.add_profile_compartments(profiles)
+        self.assertEqual(added, {})
+        mock_write.assert_not_called()
 
 
 # ================= Paramiko 远程执行 =================
@@ -1231,8 +1531,8 @@ class TestUploadapiHandlers(ClientHandlersTestCase):
         self.assertNotIn("ocid1.user.oc1..fake", text)
         self.assertIn("ua:confirm",
                       all_callback_data(reply_markup_of(update)))
-        self.assertEqual(context.user_data["ua_pending"]["profile"],
-                         "NEWACC")
+        self.assertEqual(context.user_data["ua_pending"]["profiles"][0]
+                         ["profile"], "NEWACC")
 
     async def test_uploadapi_text_missing_keys(self):
         context = make_context()
@@ -1258,11 +1558,18 @@ class TestUploadapiHandlers(ClientHandlersTestCase):
     async def test_uploadapi_confirm_writes_file(self):
         context = make_context()
         parsed = hc.parse_oci_config_text(FAKE_CONFIG_TEXT)
-        context.user_data["ua_pending"] = {"profile": "NEWACC",
-                                           "fields": parsed["fields"]}
+        fields, original = hc.normalize_oci_key_file(
+            "NEWACC", parsed["fields"])
+        context.user_data["ua_pending"] = {
+            "profiles": [{"profile": "NEWACC", "fields": fields,
+                          "original_key_file": original}]}
         context.user_data["ua_awaiting"] = True
         update = make_callback_update("ua:confirm")
-        await hc.uploadapi_callback(update, context)
+        with patch.object(hc, "update_env_file_vars") as mock_env:
+            await hc.uploadapi_callback(update, context)
+        mock_env.assert_called_once()
+        self.assertIn("MBOT_COMPARTMENT_NEWACC",
+                      mock_env.call_args.args[0])
         self.assertIn("已添加", last_reply_text(update))
         self.assertIn("scp", last_reply_text(update))
         self.assertTrue(hc.profile_exists_in_config("NEWACC", self.tmp_oci))
@@ -1286,8 +1593,8 @@ class TestUploadapiHandlers(ClientHandlersTestCase):
         update.effective_message.document = document
         await hc.handle_client_document(update, context)
         self.assertIn("确认添加", last_reply_text(update))
-        self.assertEqual(context.user_data["ua_pending"]["profile"],
-                         "NEWACC")
+        self.assertEqual(context.user_data["ua_pending"]["profiles"][0]
+                         ["profile"], "NEWACC")
 
     async def test_document_ignored_without_state(self):
         update = make_message_update()

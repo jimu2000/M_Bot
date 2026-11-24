@@ -19,13 +19,14 @@ import configparser
 import logging
 import os
 
+from oci.client import resolve_oci_config_path
+
 logger = logging.getLogger(__name__)
 
 # ================= 配置区（改这里） =================
-# OCI CLI 配置文件路径：默认 ~/.oci/config；OCI CLI 官方环境变量
-# OCI_CLI_CONFIG_FILE 优先（与 OCI CLI 行为一致）。
-OCI_CONFIG_ENV_VAR = "OCI_CLI_CONFIG_FILE"
-DEFAULT_OCI_CONFIG_PATH = os.path.expanduser("~/.oci/config")
+# OCI CLI 配置文件路径：用 oci/client.py 的统一解析
+# （MBOT_OCI_CONFIG_FILE > OCI_CLI_CONFIG_FILE > ~/oci_config >
+# ~/.oci/config）。旧版的 DEFAULT_OCI_CONFIG_PATH 常量已删除。
 # 用户描述最大长度（OCI 限制 255 字符）。
 MAX_DESCRIPTION_LEN = 255
 # =====================================================
@@ -191,9 +192,7 @@ def get_profile_user_id(profile="DEFAULT", config_path=None):
     configparser 默认把 DEFAULT 当特殊段处理，必须用
     default_section="__oci_no_defaults__" 才能正常读。
     """
-    path = (config_path
-            or os.environ.get(OCI_CONFIG_ENV_VAR)
-            or DEFAULT_OCI_CONFIG_PATH)
+    path = config_path or resolve_oci_config_path()
     parser = configparser.ConfigParser(
         default_section="__oci_no_defaults__", interpolation=None)
     try:

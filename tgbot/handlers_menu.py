@@ -43,9 +43,11 @@ from oci.instance import list_instances
 from tgbot import config as bot_config
 from tgbot.client_ops import (BOT_SERVICE, WEB_SERVICE, restart_service,
                               service_status)
-from tgbot.handlers_client import (OCI_CONFIG_PATH, append_oci_profile,
-                                   parse_oci_config_text,
-                                   profile_exists_in_config)
+from tgbot.config import update_env_file_vars
+from tgbot.handlers_client import (
+    OCI_CONFIG_PATH, add_profile_compartments,
+    build_oci_profiles_confirm_text, build_oci_profiles_result_text,
+    commit_oci_profiles, parse_oci_config_text, prepare_oci_profiles)
 from tgbot.services import fmt_error, require_allowed, run_sync
 from web import config as web_config
 
@@ -255,59 +257,6 @@ AZURE_ENV_VARS = {
 }
 
 
-def update_env_file_vars(updates, env_file=None):
-    """把一批 KEY=VALUE 写进 env 文件（原子替换，权限 600）。
-
-    已有的键原地替换，没有的键追加；其余行原样保留。
-    值含空格或特殊字符时用单引号包起来（单引号本身转义为 '"'"'）。
-    env_file 默认取 web/config.py 的 ENV_FILE（不要写死路径）。
-    """
-    path = env_file or web_config.ENV_FILE
-    lines = []
-    if os.path.exists(path):
-        with open(path, encoding="utf-8") as f:
-            lines = f.readlines()
-    remaining = dict(updates)
-    output = []
-    for line in lines:
-        replaced = False
-        for key, value in updates.items():
-            if line.startswith(f"{key}="):
-                output.append(f"{key}={_quote_env_value(value)}\n")
-                remaining.pop(key, None)
-                replaced = True
-                break
-        if not replaced:
-            output.append(line)
-    for key, value in remaining.items():
-        output.append(f"{key}={_quote_env_value(value)}\n")
-    parent = os.path.dirname(path)
-    if parent:
-        os.makedirs(parent, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(dir=parent or ".", prefix=".mbot-env-")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.writelines(output)
-        os.replace(tmp_path, path)
-    except BaseException:
-        if os.path.exists(tmp_path):
-            os.unlink(tmp_path)
-        raise
-    os.chmod(path, 0o600)
-    return path
-
-
-def _quote_env_value(value):
-    """env 文件里的值：含空格或 shell 特殊字符时用单引号包起来。"""
-    text = str(value)
-    if not text:
-        return "''"
-    import re
-    if re.fullmatch(r"[A-Za-z0-9_@%+=:,./-]+", text):
-        return text
-    return "'" + text.replace("'", "'\"'\"'") + "'"
-
-
 def _clear_oci_pending(context):
     """清 /oci 的等待状态（与 /uploadapi 的状态互斥，避免双重消费）。"""
     context.user_data.pop("oci_awaiting", None)
@@ -325,14 +274,19 @@ async def oci_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _reply(
         update,
         "📤 上传甲骨文或 Azure 配置：\n\n"
-        "请发送 config 文件（.ini / .txt / .conf），或直接粘贴 config 文本。\n\n"
-        "Oracle 配置格式：含 [PROFILE] 段 + user / fingerprint / "
+        "请发送 config 文件（.ini / .txt / .conf），或直接粘贴 config 文本。\n"
+        "支持 R-Bot 格式：oci=begin … oci=end 块里可一次放多个 [PROFILE]，"
+        "一次全部导入。\n\n"
+        "Oracle 配置格式：每个 [PROFILE] 段含 user / fingerprint / "
         "tenancy / region / key_file 五个键，校验后追加到 "
-        f"{OCI_CONFIG_PATH}。\n\n"
+        f"{OCI_CONFIG_PATH}（root 家目录）。\n\n"
         "Azure 配置格式：含 [azure] 段 + subscription_id / tenant_id / "
         "client_id / client_secret 四个键，校验后写进机器人 env 文件。\n\n"
-        "⚠️ 只传 config 文本；私钥文件（key_file 指向的 .pem）"
-        "不经过 Telegram，请自行 scp 到服务器对应路径。\n\n"
+        "key_file 已在 /root 下的保留原路径（如 /root/1.pem），其余自动"
+        "改成 /root/<PROFILE>.pem。\n\n"
+        "⚠️ 只传 config 文本；私钥文件（.pem）不经过 Telegram，请自行 "
+        "scp 到服务器对应路径（原 key_file 已在服务器上的，写入后自动"
+        "复制）。\n\n"
         "只加 OCI API 密钥也可以用 /uploadapi（同样的流程）。")
 
 
@@ -347,32 +301,20 @@ async def _handle_oci_config_text(update, context, text):
     if profile.lower() == AZURE_SECTION_NAME:
         await _handle_oci_azure(update, context, fields)
         return
-    if parsed["missing"]:
-        missing = "、".join(parsed["missing"])
-        await _reply(update, f"❌ 配置缺少必填键：{missing}\n请补全后重新发送。")
+    new_profiles, skipped, error_text = prepare_oci_profiles(parsed)
+    if error_text:
+        await _reply(update, f"❌ {error_text}")
         return
-    if profile_exists_in_config(profile):
+    if not new_profiles:
         _clear_oci_pending(context)
         await _reply(update,
-                     f"⚠️ profile「{profile}」已存在，不会覆盖。\n"
+                     f"⚠️ profile「{'、'.join(skipped)}」已存在，不会覆盖。\n"
                      "请改名后重传（改 [PROFILE] 段名）。")
         return
-    context.user_data["oci_pending"] = {"kind": "oci", "profile": profile,
-                                        "fields": fields}
-    user_tail = (fields.get("user") or "")[-4:]
-    lines = ["📤 确认添加 OCI 配置？", "",
-             f"profile：{profile}",
-             f"区域：{fields.get('region')}",
-             f"用户：…{user_tail}",
-             f"key_file：{fields.get('key_file')}"]
-    if parsed["extra_profiles"]:
-        lines.append("")
-        lines.append(f"注意：文件里还有其他 profile"
-                     f"（{', '.join(parsed['extra_profiles'])}），"
-                     "本次只添加第一个。")
-    lines.append("")
-    lines.append("⚠️ 私钥文件请自行 scp 到服务器 key_file 指向的路径。")
-    await _reply(update, "\n".join(lines),
+    context.user_data["oci_pending"] = {"kind": "oci",
+                                        "profiles": new_profiles}
+    await _reply(update, build_oci_profiles_confirm_text(new_profiles,
+                                                         skipped),
                  reply_markup=InlineKeyboardMarkup([
                      [InlineKeyboardButton("✅ 确认添加",
                                            callback_data="oci:confirm")],
@@ -420,24 +362,29 @@ async def oci_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if pending["kind"] == "azure":
         await _confirm_oci_azure(update, context, pending)
         return
-    profile = pending["profile"]
-    try:
-        await run_sync(append_oci_profile, profile, pending["fields"])
-    except ValueError as exc:
-        await _reply(update, f"❌ {exc}")
+    profiles = pending.get("profiles") or []
+    if not profiles:
+        await _reply(update, "待添加的配置已过期，请重新发送 /oci。")
         return
-    except OSError as exc:
+    try:
+        results = await run_sync(commit_oci_profiles, profiles)
+    except (ValueError, OSError) as exc:
         await _reply(update, f"❌ 写入失败：{exc}")
         return
+    try:
+        added_vars = await run_sync(add_profile_compartments, profiles)
+    except OSError as exc:
+        await _reply(update,
+                     f"✅ 配置已写入，但账号切换变量添加失败：{exc}\n"
+                     "请手动在 env 文件里加 MBOT_COMPARTMENT_<PROFILE> "
+                     "后重启机器人。")
+        _clear_oci_pending(context)
+        return
     _clear_oci_pending(context)
-    await _reply(
-        update,
-        f"✅ 已添加 profile「{profile}」到 {OCI_CONFIG_PATH}。\n"
-        "⚠️ 别忘了把私钥文件 scp 到服务器："
-        f"{pending['fields'].get('key_file')}\n\n"
-        "生效方法：重启机器人服务（/admin 里可重启）；"
-        "如需在菜单里切换到该账号，还需在 env 文件里加对应 compartment "
-        "变量（MBOT_COMPARTMENT_XXX）后重启。")
+    text = build_oci_profiles_result_text(results, added_vars,
+                                          OCI_CONFIG_PATH)
+    await _reply(update, text + "\n\n生效方法：重启机器人服务"
+                 "（/admin 里可重启），之后可在菜单里切换到新账号。")
 
 
 async def _confirm_oci_azure(update, context, pending):

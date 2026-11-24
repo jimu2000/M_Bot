@@ -67,6 +67,13 @@ callback_data 规范（Telegram 限制 64 字节，OCID 约 100 字节放不下�
     （Cloudflare zone id 是 32 位十六进制，"domain:zone:" + 32 字符
     共 44 字节，未超 64 字节限制，可以直接放 id，不用下标）
   - "domain:back"  /domain：返回 Zone 列表
+  - "domain:add:<zone_id>"  /domain：添加记录（选类型）
+  - "domain:addtype:<zone_id>:<TYPE>"  /domain：已选类型，开始输名称
+  - "domain:add:confirm:<zone_id>"  /domain：确认添加记录
+  - "domain:delpick:<zone_id>"  /domain：删除记录（选一条）
+  - "domain:del:<zone_id>:<idx>"  /domain：删除某条记录的确认页
+    （idx 是 user_data["domain_records"][zone_id] 的下标）
+  - "domain:del:yes:<zone_id>:<idx>"  /domain：确认删除某条记录
 """
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -556,15 +563,87 @@ def cf_cancel_keyboard():
 
 
 def domain_records_keyboard(zone_id, records):
-    """`/domain` 记录列表键盘：刷新 + 返回 Zone 列表。
+    """`/domain` 记录列表键盘：添加 / 删除 / 刷新 / 返回 Zone 列表。
 
-    records 是当前 Zone 的记录列表（保留在签名里，供后续按记录
-    操作时扩展；当前版本记录只做只读列表展示，不挂单条按钮）。
+    records 是当前 Zone 的记录列表（保留在签名里，供后续扩展）。
     """
     return InlineKeyboardMarkup([
+        [InlineKeyboardButton("➕ 添加记录",
+                              callback_data=f"domain:add:{zone_id}")],
+        [InlineKeyboardButton("🗑️ 删除记录",
+                              callback_data=f"domain:delpick:{zone_id}")],
         [InlineKeyboardButton("🔄 刷新",
                               callback_data=f"domain:zone:{zone_id}"),
          InlineKeyboardButton("◀ Zone 列表", callback_data="domain:back")],
+    ])
+
+
+# /domain 命令：单条消息最多显示的 DNS 记录数，超出时截断并提示总数。
+# 机器人与网页端共用同一上限；删除选记录时也只列前这么多条。
+DOMAIN_RECORDS_LIMIT = 20
+
+
+# /domain 添加记录时可选的类型（Cloudflare 允许的常用五种；
+# NS/SRV/CAA 不常用，机器人端不提供，网页端表单里有）。
+DNS_ADD_TYPES = ("A", "AAAA", "CNAME", "TXT", "MX")
+
+
+def domain_add_type_keyboard(zone_id):
+    """`/domain` 添加记录：选记录类型（两列），取消回记录列表。"""
+    rows = []
+    for i in range(0, len(DNS_ADD_TYPES), 2):
+        row = []
+        for rtype in DNS_ADD_TYPES[i:i + 2]:
+            row.append(InlineKeyboardButton(
+                rtype, callback_data=f"domain:addtype:{zone_id}:{rtype}"))
+        rows.append(row)
+    rows.append([InlineKeyboardButton(
+        "❌ 取消", callback_data=f"domain:zone:{zone_id}")])
+    return InlineKeyboardMarkup(rows)
+
+
+def domain_add_confirm_keyboard(zone_id):
+    """`/domain` 添加记录：确认页键盘（确认添加 / 取消回记录列表）。"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ 确认添加",
+                              callback_data=f"domain:add:confirm:{zone_id}")],
+        [InlineKeyboardButton("❌ 取消",
+                              callback_data=f"domain:zone:{zone_id}")],
+    ])
+
+
+def domain_add_cancel_keyboard(zone_id):
+    """`/domain` 添加记录：输入名称/内容时的取消按钮。"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("❌ 取消添加",
+                              callback_data=f"domain:zone:{zone_id}")],
+    ])
+
+
+def domain_delete_pick_keyboard(zone_id, records):
+    """`/domain` 删除记录：每条记录一个按钮（只列前 20 条，与展示一致）。
+
+    records 是 user_data 里存的当前 Zone 记录列表；idx 是下标。
+    """
+    rows = []
+    for idx, record in enumerate(records[:DOMAIN_RECORDS_LIMIT]):
+        label = (f"🗑️ {record.get('type', '?')} "
+                 f"{record.get('name', '?')}")
+        rows.append([InlineKeyboardButton(
+            label, callback_data=f"domain:del:{zone_id}:{idx}")])
+    rows.append([InlineKeyboardButton(
+        "◀ 返回记录列表", callback_data=f"domain:zone:{zone_id}")])
+    return InlineKeyboardMarkup(rows)
+
+
+def domain_delete_confirm_keyboard(zone_id, idx):
+    """`/domain` 删除记录：二次确认键盘（确认删除 / 取消回选记录）。"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(
+            "🗑️ 确认删除",
+            callback_data=f"domain:del:yes:{zone_id}:{idx}")],
+        [InlineKeyboardButton(
+            "❌ 取消", callback_data=f"domain:delpick:{zone_id}")],
     ])
 
 

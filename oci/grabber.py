@@ -30,7 +30,8 @@ OCI CLI 参数探查结论（CLI 3.96.3，`oci compute instance launch --help`�
 
 安全说明（重要）：
   - 本模块不读取、不打印、不外传 API 私钥。认证全部由 OCI CLI 自己读
-    ~/.oci/config 与 key_file 完成，私钥只在本地用于请求签名。
+    配置文件（~/oci_config，旧部署回退 ~/.oci/config）与 key_file
+    完成，私钥只在本地用于请求签名。
   - 配置区在文件顶端，真实 OCID 一律用占位符，绝不写进代码。
   - 通知通过 on_event 回调交给调用方（Bark / Telegram 等），模块本身不依赖
     任何通知渠道；SSH 查 CPU 通过 cpu_check_hook 注入，模块本身不依赖 SSH。

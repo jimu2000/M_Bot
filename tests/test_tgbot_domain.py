@@ -660,12 +660,282 @@ class TestCfTextInput(DomainTestCase):
         self.assertNotIn("fake-key-123", text)
         self.assertNotIn("cf_draft", context.user_data)
 
-    async def test_cf_email_without_draft_expired(self):
-        update = self._text_update("user@example.com")
+class TestDnsRecordValidation(unittest.TestCase):
+    """DNS 记录名/内容校验（纯函数，不碰 API）。"""
+
+    def test_name_root_ok(self):
+        self.assertTrue(he._validate_dns_record_name("@"))
+
+    def test_name_hostname_ok(self):
+        self.assertTrue(he._validate_dns_record_name("www"))
+        self.assertTrue(he._validate_dns_record_name("sub.www"))
+        self.assertTrue(he._validate_dns_record_name("a-b_c"))
+
+    def test_name_invalid(self):
+        self.assertFalse(he._validate_dns_record_name(""))
+        self.assertFalse(he._validate_dns_record_name("-bad"))
+        self.assertFalse(he._validate_dns_record_name(".bad"))
+        self.assertFalse(he._validate_dns_record_name("bad."))
+        self.assertFalse(he._validate_dns_record_name("bad name"))
+        self.assertFalse(he._validate_dns_record_name("bad/name"))
+
+    def test_content_a_valid(self):
+        self.assertIsNone(he._validate_dns_record_content(
+            "A", "203.0.113.10"))
+
+    def test_content_a_invalid(self):
+        err = he._validate_dns_record_content("A", "not-an-ip")
+        self.assertIn("IPv4", err)
+
+    def test_content_aaaa_valid(self):
+        self.assertIsNone(he._validate_dns_record_content(
+            "AAAA", "2001:db8::1"))
+
+    def test_content_aaaa_invalid(self):
+        err = he._validate_dns_record_content("AAAA", "203.0.113.10")
+        self.assertIn("IPv6", err)
+
+    def test_content_cname_valid(self):
+        self.assertIsNone(he._validate_dns_record_content(
+            "CNAME", "example.com"))
+
+    def test_content_cname_invalid(self):
+        err = he._validate_dns_record_content("CNAME", "not a domain")
+        self.assertIn("域名", err)
+
+    def test_content_txt_any_text(self):
+        self.assertIsNone(he._validate_dns_record_content(
+            "TXT", "v=spf1 -all"))
+
+    def test_content_empty(self):
+        self.assertIn("不能为空",
+                      he._validate_dns_record_content("TXT", ""))
+
+    def test_fmt_add_summary(self):
+        draft = {"type": "A", "name": "www",
+                 "content": "203.0.113.10"}
+        text = he.fmt_dns_add_summary("example.com", draft)
+        self.assertIn("example.com", text)
+        self.assertIn("类型：A", text)
+        self.assertIn("名称：www", text)
+        self.assertIn("203.0.113.10", text)
+
+    def test_fmt_add_summary_root(self):
+        draft = {"type": "A", "name": "@", "content": "203.0.113.10"}
+        self.assertIn("根域名（@）",
+                      he.fmt_dns_add_summary("example.com", draft))
+
+
+class TestDnsAddFlow(DomainTestCase):
+    """`domain:add/addtype/add:confirm`：添加记录全流程。"""
+
+    def _text_update(self, text):
+        update = make_update()
+        update.effective_message.text = text
+        update.effective_message.chat_id = TEST_CHAT_ID
+        update.effective_message.message_id = 777
+        return update
+
+    async def test_records_keyboard_has_add_delete(self):
+        """记录列表键盘挂上添加/删除按钮（v1.27.0 的入口）。"""
+        update = make_update(callback_data=f"domain:zone:{FAKE_ZONE_ID}")
         context = make_context()
-        context.user_data["pending_input"] = {"kind": "cf_email"}
+        context.user_data["domain_zones"] = FAKE_ZONES
+        await he.domain_callback(update, context)
+        callbacks = button_callback_data(reply_markup_of(update))
+        self.assertIn(f"domain:add:{FAKE_ZONE_ID}", callbacks)
+        self.assertIn(f"domain:delpick:{FAKE_ZONE_ID}", callbacks)
+        # 记录存进 user_data，供删除按下标取用。
+        self.assertEqual(
+            context.user_data["domain_records"][FAKE_ZONE_ID],
+            FAKE_RECORDS)
+
+    async def test_add_shows_type_picker(self):
+        update = make_update(callback_data=f"domain:add:{FAKE_ZONE_ID}")
+        context = make_context()
+        context.user_data["domain_zones"] = FAKE_ZONES
+        await he.domain_callback(update, context)
+        self.assertIn("先选记录类型", reply_text_of(update))
+        callbacks = button_callback_data(reply_markup_of(update))
+        for rtype in ("A", "AAAA", "CNAME", "TXT", "MX"):
+            self.assertIn(f"domain:addtype:{FAKE_ZONE_ID}:{rtype}",
+                          callbacks)
+
+    async def test_addtype_asks_name(self):
+        update = make_update(
+            callback_data=f"domain:addtype:{FAKE_ZONE_ID}:A")
+        context = make_context()
+        context.user_data["domain_zones"] = FAKE_ZONES
+        await he.domain_callback(update, context)
+        self.assertIn("新建 A 记录", reply_text_of(update))
+        self.assertEqual(context.user_data["pending_input"]["kind"],
+                         "dns_add_name")
+        self.assertEqual(context.user_data["dns_add_draft"],
+                         {"zone_id": FAKE_ZONE_ID, "type": "A"})
+
+    async def test_addtype_bad_type_rejected(self):
+        update = make_update(
+            callback_data=f"domain:addtype:{FAKE_ZONE_ID}:NS")
+        context = make_context()
+        await he.domain_callback(update, context)
+        self.assertIn("不支持的记录类型", reply_text_of(update))
+
+    async def test_name_input_valid_asks_content(self):
+        update = self._text_update("www")
+        context = make_context()
+        context.user_data["pending_input"] = {"kind": "dns_add_name"}
+        context.user_data["dns_add_draft"] = {"zone_id": FAKE_ZONE_ID,
+                                              "type": "A"}
         await he.text_input_callback(update, context)
-        self.assertIn("会话已过期", reply_text_of(update))
+        self.assertEqual(context.user_data["dns_add_draft"]["name"], "www")
+        self.assertEqual(context.user_data["pending_input"]["kind"],
+                         "dns_add_content")
+        self.assertIn("IPv4", reply_text_of(update))
+
+    async def test_name_input_invalid_retries(self):
+        update = self._text_update("bad name")
+        context = make_context()
+        context.user_data["pending_input"] = {"kind": "dns_add_name"}
+        context.user_data["dns_add_draft"] = {"zone_id": FAKE_ZONE_ID,
+                                              "type": "A"}
+        await he.text_input_callback(update, context)
+        self.assertIn("格式不对", reply_text_of(update))
+        # 格式不对可重发：pending_input 仍在 dns_add_name。
+        self.assertEqual(context.user_data["pending_input"]["kind"],
+                         "dns_add_name")
+
+    async def test_content_input_invalid_retries(self):
+        update = self._text_update("not-an-ip")
+        context = make_context()
+        context.user_data["pending_input"] = {"kind": "dns_add_content"}
+        context.user_data["dns_add_draft"] = {"zone_id": FAKE_ZONE_ID,
+                                              "type": "A", "name": "www"}
+        await he.text_input_callback(update, context)
+        self.assertIn("IPv4", reply_text_of(update))
+        self.assertEqual(context.user_data["pending_input"]["kind"],
+                         "dns_add_content")
+
+    async def test_content_input_valid_shows_confirm(self):
+        update = self._text_update("203.0.113.10")
+        context = make_context()
+        context.user_data["pending_input"] = {"kind": "dns_add_content"}
+        context.user_data["dns_add_draft"] = {"zone_id": FAKE_ZONE_ID,
+                                              "type": "A", "name": "www"}
+        context.user_data["domain_zones"] = FAKE_ZONES
+        await he.text_input_callback(update, context)
+        text = reply_text_of(update)
+        self.assertIn("确认添加", text)
+        self.assertIn("203.0.113.10", text)
+        callbacks = button_callback_data(reply_markup_of(update))
+        self.assertIn(f"domain:add:confirm:{FAKE_ZONE_ID}", callbacks)
+        self.assertNotIn("pending_input", context.user_data)
+
+    async def test_confirm_creates_record(self):
+        update = make_update(
+            callback_data=f"domain:add:confirm:{FAKE_ZONE_ID}")
+        context = make_context()
+        context.user_data["domain_zones"] = FAKE_ZONES
+        context.user_data["dns_add_draft"] = {
+            "zone_id": FAKE_ZONE_ID, "type": "A", "name": "www",
+            "content": "203.0.113.10"}
+        await he.domain_callback(update, context)
+        self.cf.create_dns_record.assert_called_once_with(
+            FAKE_ZONE_ID, "A", "www", "203.0.113.10")
+        self.assertNotIn("dns_add_draft", context.user_data)
+        # 成功后刷新记录列表（最后一条消息是记录列表）。
+        self.assertIn("共 3 条", reply_text_of(update))
+
+    async def test_confirm_without_draft_expired(self):
+        update = make_update(
+            callback_data=f"domain:add:confirm:{FAKE_ZONE_ID}")
+        context = make_context()
+        await he.domain_callback(update, context)
+        self.assertIn("已过期", reply_text_of(update))
+        self.cf.create_dns_record.assert_not_called()
+
+    async def test_confirm_api_error_reported(self):
+        self.cf.create_dns_record.side_effect = _cf_error("api")
+        update = make_update(
+            callback_data=f"domain:add:confirm:{FAKE_ZONE_ID}")
+        context = make_context()
+        context.user_data["dns_add_draft"] = {
+            "zone_id": FAKE_ZONE_ID, "type": "TXT", "name": "test",
+            "content": "hello"}
+        await he.domain_callback(update, context)
+        self.assertIn("调用失败", reply_text_of(update))
+
+
+class TestDnsDeleteFlow(DomainTestCase):
+    """`domain:delpick/del/del:yes`：删除记录全流程。"""
+
+    def _stored_context(self):
+        context = make_context()
+        context.user_data["domain_zones"] = FAKE_ZONES
+        context.user_data["domain_records"] = {
+            FAKE_ZONE_ID: list(FAKE_RECORDS)}
+        return context
+
+    async def test_delpick_lists_records(self):
+        update = make_update(callback_data=f"domain:delpick:{FAKE_ZONE_ID}")
+        context = self._stored_context()
+        await he.domain_callback(update, context)
+        self.assertIn("删除 example.com 的 DNS 记录", reply_text_of(update))
+        callbacks = button_callback_data(reply_markup_of(update))
+        self.assertIn(f"domain:del:{FAKE_ZONE_ID}:0", callbacks)
+        self.assertIn(f"domain:del:{FAKE_ZONE_ID}:2", callbacks)
+        # 有缓存时不再调 API。
+        self.cf.list_dns_records.assert_not_called()
+
+    async def test_delpick_refetches_when_no_cache(self):
+        update = make_update(callback_data=f"domain:delpick:{FAKE_ZONE_ID}")
+        context = make_context()
+        context.user_data["domain_zones"] = FAKE_ZONES
+        await he.domain_callback(update, context)
+        self.cf.list_dns_records.assert_called_once_with(FAKE_ZONE_ID)
+        callbacks = button_callback_data(reply_markup_of(update))
+        self.assertIn(f"domain:del:{FAKE_ZONE_ID}:0", callbacks)
+
+    async def test_delpick_no_records(self):
+        self.cf.list_dns_records.return_value = []
+        update = make_update(callback_data=f"domain:delpick:{FAKE_ZONE_ID}")
+        context = make_context()
+        context.user_data["domain_zones"] = FAKE_ZONES
+        await he.domain_callback(update, context)
+        self.assertIn("没有 DNS 记录", reply_text_of(update))
+
+    async def test_del_shows_confirm(self):
+        update = make_update(callback_data=f"domain:del:{FAKE_ZONE_ID}:0")
+        context = self._stored_context()
+        await he.domain_callback(update, context)
+        text = reply_text_of(update)
+        self.assertIn("确认删除", text)
+        self.assertIn("A www.example.com -> 203.0.113.10", text)
+        callbacks = button_callback_data(reply_markup_of(update))
+        self.assertIn(f"domain:del:yes:{FAKE_ZONE_ID}:0", callbacks)
+
+    async def test_del_bad_index(self):
+        update = make_update(callback_data=f"domain:del:{FAKE_ZONE_ID}:9")
+        context = self._stored_context()
+        await he.domain_callback(update, context)
+        self.assertIn("不存在或已过期", reply_text_of(update))
+
+    async def test_del_yes_deletes_record(self):
+        update = make_update(
+            callback_data=f"domain:del:yes:{FAKE_ZONE_ID}:1")
+        context = self._stored_context()
+        await he.domain_callback(update, context)
+        self.cf.delete_dns_record.assert_called_once_with(
+            FAKE_ZONE_ID, "recid000000000000000000000002")
+        # 成功后刷新记录列表。
+        self.assertIn("共 3 条", reply_text_of(update))
+
+    async def test_del_yes_api_error_reported(self):
+        self.cf.delete_dns_record.side_effect = _cf_error("not_found")
+        update = make_update(
+            callback_data=f"domain:del:yes:{FAKE_ZONE_ID}:0")
+        context = self._stored_context()
+        await he.domain_callback(update, context)
+        self.assertIn("不存在", reply_text_of(update))
 
 
 if __name__ == "__main__":

@@ -500,6 +500,33 @@
     var logoutBtn = document.getElementById("logout-btn");
     if (logoutBtn) logoutBtn.addEventListener("click", logout);
 
+    // 手机端导航抽屉：汉堡按钮开关侧边栏，点遮罩或导航链接关闭
+    // （桌面端 .nav-toggle 是 display: none，点不到，这段不生效）。
+    var navToggle = document.getElementById("nav-toggle");
+    var navSidebar = document.querySelector(".sidebar");
+    var navBackdrop = document.getElementById("sidebar-backdrop");
+    function closeNavDrawer() {
+      if (navSidebar) navSidebar.classList.remove("open");
+      if (navBackdrop) navBackdrop.hidden = true;
+      if (navToggle) navToggle.setAttribute("aria-expanded", "false");
+    }
+    if (navToggle && navSidebar) {
+      navToggle.addEventListener("click", function () {
+        var open = navSidebar.classList.toggle("open");
+        if (navBackdrop) navBackdrop.hidden = !open;
+        navToggle.setAttribute("aria-expanded", open ? "true" : "false");
+      });
+    }
+    if (navBackdrop) navBackdrop.addEventListener("click", closeNavDrawer);
+    if (navSidebar) {
+      navSidebar.querySelectorAll("a").forEach(function (a) {
+        a.addEventListener("click", closeNavDrawer);
+      });
+    }
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape") closeNavDrawer();
+    });
+
     // 弹窗关闭：data-close-modal 属性 + 点遮罩关闭
     document.querySelectorAll("[data-close-modal]").forEach(function (btn) {
       btn.addEventListener("click", function () { closeModal(btn.getAttribute("data-close-modal")); });

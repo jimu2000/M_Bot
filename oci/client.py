@@ -3,7 +3,8 @@
 
 安全说明（重要）：
   - 本模块不读取、不打印、不外传 API 私钥。认证全部由 OCI CLI 自己读
-    ~/.oci/config 与 key_file 完成，私钥只在本地用于请求签名。
+    配置文件（resolve_oci_config_path() 解析出的路径，见下方）与
+    key_file 完成，私钥只在本地用于请求签名。
   - 配置区在文件顶端，真实 OCID / fingerprint 一律用占位符，绝不写进代码。
 
 API 私钥（key_file）说明：
@@ -35,7 +36,19 @@ import subprocess
 OCI_CLI = (os.environ.get("MBOT_OCI_CLI")
            or shutil.which("oci")
            or os.path.expanduser("~/oci-venv/bin/oci"))
-# ~/.oci/config 里的 profile 名（多账号时建多个 profile，如 DEFAULT / ACCOUNT2）。
+# OCI 配置文件路径：M_Bot 管理的 OCI 配置放 root 家目录（~/oci_config），
+# 与 R-Bot 的放置习惯一致——配置与私钥都在 /root，不用 ~/.oci/ 子目录。
+# 解析优先级（resolve_oci_config_path）：
+#   1. 环境变量 MBOT_OCI_CONFIG_FILE（显式指定，部署/测试用）；
+#   2. OCI CLI 官方环境变量 OCI_CLI_CONFIG_FILE（尊重用户已有设置）；
+#   3. ~/oci_config（存在时用它）；
+#   4. 回退 ~/.oci/config（旧部署的兼容路径）。
+# 首次通过机器人上传配置时，旧文件会自动迁移到 ~/oci_config
+# （见 tgbot/handlers_client.py 的 append_oci_profile）。
+OCI_CONFIG_ENV_VAR = "MBOT_OCI_CONFIG_FILE"
+OCI_CONFIG_ROOT_PATH = os.path.expanduser("~/oci_config")
+OCI_CONFIG_LEGACY_PATH = os.path.expanduser("~/.oci/config")
+# OCI 配置文件里的 profile 名（多账号时建多个 profile，如 DEFAULT / ACCOUNT2）。
 DEFAULT_PROFILE = "DEFAULT"
 # 默认区域（如 ap-singapore-1 / us-sanjose-1 / us-chicago-1）。
 DEFAULT_REGION = "ap-singapore-1"
@@ -54,6 +67,53 @@ PROXY_FILE = os.environ.get(
 # 代理地址允许的协议前缀（与 tgbot 机器人代理 PROXY_SCHEMES 一致）。
 PROXY_SCHEMES = ("http://", "https://", "socks5://")
 # =====================================================
+
+
+def resolve_oci_config_path():
+    """返回当前生效的 OCI 配置文件路径（只读解析，绝不写盘）。
+
+    优先级：MBOT_OCI_CONFIG_FILE > OCI_CLI_CONFIG_FILE >
+    ~/oci_config（存在时）> ~/.oci/config（存在时）> ~/oci_config
+    （两边都不存在时返回新路径，写入方负责创建）。
+    """
+    explicit = (os.environ.get(OCI_CONFIG_ENV_VAR) or "").strip()
+    if explicit:
+        return os.path.expanduser(explicit)
+    official = (os.environ.get("OCI_CLI_CONFIG_FILE") or "").strip()
+    if official:
+        return os.path.expanduser(official)
+    if os.path.exists(OCI_CONFIG_ROOT_PATH):
+        return OCI_CONFIG_ROOT_PATH
+    if os.path.exists(OCI_CONFIG_LEGACY_PATH):
+        return OCI_CONFIG_LEGACY_PATH
+    return OCI_CONFIG_ROOT_PATH
+
+
+def read_oci_config_profiles(path=None):
+    """读 OCI 配置文件，返回 {profile 名: {键: 值}}。
+
+    文件不存在 / 解析失败时返回 {}。只读配置文本，不读 key_file
+    指向的私钥文件。注意 configparser 的坑：OCI 配置文件有 [DEFAULT]
+    段，必须用 default_section 换名才能正常读。
+    """
+    import configparser
+    target = path or resolve_oci_config_path()
+    parser = configparser.ConfigParser(
+        default_section="__oci_no_defaults__", interpolation=None)
+    try:
+        read = parser.read(target, encoding="utf-8")
+    except (OSError, configparser.Error):
+        return {}
+    if not read:
+        return {}
+    profiles = {}
+    for section in parser.sections():
+        try:
+            profiles[section] = {key: value.strip()
+                                 for key, value in parser.items(section)}
+        except configparser.Error:
+            continue
+    return profiles
 
 
 def get_oci_proxy(proxy_file=None):
@@ -116,7 +176,7 @@ class QuotaExceededError(OCIError):
 
 
 class AuthError(OCIError):
-    """认证失败：NotAuthenticated / NotAuthorized。检查 ~/.oci/config 与密钥。"""
+    """认证失败：NotAuthenticated / NotAuthorized。检查 OCI 配置与密钥。"""
 
 
 class NotFoundError(OCIError):
@@ -168,6 +228,9 @@ class OCIClient:
 
         args 里不要带 --profile / --region（本方法自动追加）。
         调用前设 SUPPRESS_LABEL_WARNING=True（压掉 OCI CLI 3.x 的警告）。
+        配置文件路径经 OCI_CLI_CONFIG_FILE 环境变量传给子进程
+        （resolve_oci_config_path() 解析，~/oci_config 优先，
+        旧部署回退 ~/.oci/config）。
         代理（环境变量 / oci_proxy.json）只进子进程 env，不改全局环境。
         不解析输出、不抛异常，由调用方自己判断。
         """
@@ -176,6 +239,7 @@ class OCIClient:
             "--region", region or self.region,
         ]
         env = dict(os.environ, SUPPRESS_LABEL_WARNING="True")
+        env["OCI_CLI_CONFIG_FILE"] = resolve_oci_config_path()
         env.update(proxy_env(self.proxy))
         return subprocess.run(cmd, capture_output=True, text=True,
                               timeout=timeout or self.timeout, env=env)

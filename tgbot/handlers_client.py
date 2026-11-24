@@ -5,7 +5,9 @@
   - /command   远程执行 Shell：选已保存主机 -> 发命令文本 -> Paramiko 执行回显
   - /pubkey    SSH 公钥管理：列出 / 添加 / 删除（只存公钥，绝不存私钥）
   - /oproxy    机器人出站代理设置（设置后需重启机器人服务才生效）
-  - /uploadapi 添加 OCI API：发 config 文件或粘贴文本，校验后写入 ~/.oci/config
+  - /uploadapi 添加 OCI API：发 config 文件或粘贴文本，支持 R-Bot
+    格式（oci=begin/end 块，多 profile 一次导入），校验后写入
+    ~/oci_config（key_file 在 /root 下保留，否则归一到 /root/<PROFILE>.pem）
 
 /oracle 菜单项（handlers_extra._DISPATCH 转发到本模块）：
   - 23. 占用 25% 内存（memballoon）：选实例 -> 二次确认 -> SSH 启动内存占用进程
@@ -29,7 +31,7 @@ handle_client_text_input 按状态分发；文件消息由 handle_client_documen
   - 所有 handler 都加 @require_allowed，白名单外用户直接拒绝。
   - /command 有危险命令黑名单（见配置区 DANGEROUS_COMMAND_PATTERNS），
     命中直接拒绝执行；输出超长截断 + 分段（Telegram 单条 4096 字符上限）。
-  - 写操作（删公钥、清代理、写 ~/.oci/config、启停占用进程）都有二次确认
+  - 写操作（删公钥、清代理、写 OCI 配置、启停占用进程）都有二次确认
     或明确的确认步骤。
   - 本文件不含真实 OCID / Token / IP / 私钥；测试用 203.0.113.x 与假公钥。
   - 主机列表复用 Web 面板的主机存储（DATA_DIR/hosts.json，
@@ -43,6 +45,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import socket
 import time
 from datetime import datetime, timezone
@@ -53,8 +56,10 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram import Update
 from telegram.ext import ContextTypes
 
+from oci.client import OCI_CONFIG_LEGACY_PATH, OCI_CONFIG_ROOT_PATH
 from oci.instance import list_instances
 from oci.network import get_public_ip
+from tgbot.config import update_env_file_vars
 from tgbot.services import (
     fmt_error,
     get_cli,
@@ -83,8 +88,13 @@ SSH_KEYS_FILE = os.path.join(DATA_DIR, "ssh_keys.json")
 PROXY_FILE = os.path.join(DATA_DIR, "proxy.json")
 MEM_HOG_FILE = os.path.join(DATA_DIR, "mem_hog.json")
 KNOWN_HOSTS_FILE = os.path.join(DATA_DIR, "known_hosts")
-# OCI config 文件路径（/uploadapi 写入目标）。
-OCI_CONFIG_PATH = os.path.expanduser("~/.oci/config")
+# OCI config 文件路径（/uploadapi 与 /oci 的写入目标）：M_Bot 管理的
+# OCI 配置放 root 家目录（~/oci_config），与 R-Bot 的放置习惯一致。
+# 环境变量 MBOT_OCI_CONFIG_FILE 可显式指定（测试/部署用）。
+# 旧部署的 ~/.oci/config 在首次写入时自动迁移（内容原样复制过去，
+# 旧文件保留作备份）；读的时候新旧两个文件都会查。
+OCI_CONFIG_PATH = (os.environ.get("MBOT_OCI_CONFIG_FILE")
+                   or OCI_CONFIG_ROOT_PATH)
 
 # ---- /command ----
 # 远程命令执行超时（秒），超时后终止并提示用户。
@@ -816,23 +826,57 @@ async def _handle_proxy_text(update, context, text):
 
 # ================= /uploadapi 添加 API =================
 
-def parse_oci_config_text(text):
-    """解析用户上传的 OCI config 文本。
+def _extract_oci_block(text):
+    """从 R-Bot 风格的整份配置里取出 oci=begin...oci=end 之间的内容。
 
-    返回 {"profile": str|None, "fields": dict, "missing": [str],
-          "error": str|None, "extra_profiles": [str]}。
-    成功时 error 为 None；missing 列出缺的必填键（REQUIRED_OCI_KEYS）；
-    多个 section 时只取第一个，其余名字放 extra_profiles 提示用户。
+    没有标记时返回原文（普通单份 config 直接解析）。
+    只有 begin 没有 end 时返回 None（调用方报错）。
+    块外的内容（username/password/azure 块等）一律忽略，不解析。
     """
-    result = {"profile": None, "fields": {}, "missing": [],
+    lines = text.splitlines()
+    start = end = None
+    for i, line in enumerate(lines):
+        stripped = line.strip().lower()
+        if stripped == "oci=begin":
+            start = i
+        elif stripped == "oci=end" and start is not None:
+            end = i
+            break
+    if start is None:
+        return text
+    if end is None:
+        return None
+    return "\n".join(lines[start + 1:end])
+
+
+def parse_oci_config_text(text):
+    """解析用户上传的 OCI config 文本（支持 R-Bot 格式）。
+
+    接受两种输入：
+      1. 普通 OCI config 文本（一个或多个 [PROFILE] 段）；
+      2. R-Bot 风格的整份配置：只取 oci=begin 与 oci=end 之间的内容。
+    返回 {"profiles": [{"profile", "fields", "missing"}],
+          "profile": 首个 profile 名, "fields": 首个字段 dict,
+          "missing": 首个缺失键, "error": str|None,
+          "extra_profiles": []}。
+    profiles 按文件里的顺序排，全部导入（旧版只取第一个；
+    extra_profiles 保留作兼容，恒为空列表）。
+    任一 profile 名不合法时 error 说明是哪个名字。
+    """
+    result = {"profiles": [], "profile": None, "fields": {}, "missing": [],
               "error": None, "extra_profiles": []}
     text = (text or "").lstrip("\ufeff").strip()
     if not text:
         result["error"] = "内容为空。"
         return result
-    parser = configparser.ConfigParser()
+    block = _extract_oci_block(text)
+    if block is None:
+        result["error"] = "只找到 oci=begin，没找到 oci=end。"
+        return result
+    parser = configparser.ConfigParser(
+        default_section="__oci_no_defaults__", interpolation=None)
     try:
-        parser.read_string(text)
+        parser.read_string(block)
     except configparser.MissingSectionHeaderError:
         result["error"] = "没有找到 [PROFILE] 段。"
         return result
@@ -843,46 +887,71 @@ def parse_oci_config_text(text):
     if not sections:
         result["error"] = "没有找到 [PROFILE] 段。"
         return result
-    profile = sections[0]
-    if not PROFILE_NAME_RE.match(profile):
-        result["error"] = (f"profile 名「{profile}」不合法，"
-                           "只能含字母、数字、下划线、点、横线。")
-        return result
-    result["profile"] = profile
-    result["extra_profiles"] = sections[1:]
-    fields = {key: value.strip()
-              for key, value in parser.items(profile)}
-    result["fields"] = fields
-    result["missing"] = [key for key in REQUIRED_OCI_KEYS
-                         if not fields.get(key)]
+    for profile in sections:
+        if not PROFILE_NAME_RE.match(profile):
+            result["error"] = (f"profile 名「{profile}」不合法，"
+                               "只能含字母、数字、下划线、点、横线。")
+            return result
+        fields = {key: value.strip()
+                  for key, value in parser.items(profile)}
+        missing = [key for key in REQUIRED_OCI_KEYS if not fields.get(key)]
+        result["profiles"].append({"profile": profile, "fields": fields,
+                                   "missing": missing})
+    first = result["profiles"][0]
+    result["profile"] = first["profile"]
+    result["fields"] = first["fields"]
+    result["missing"] = first["missing"]
     return result
 
 
 def profile_exists_in_config(profile, path=None):
-    """~/.oci/config 里是否已有同名 profile。"""
-    path = path or OCI_CONFIG_PATH
-    if not os.path.exists(path):
-        return False
-    parser = configparser.ConfigParser()
-    try:
-        parser.read(path, encoding="utf-8")
-    except configparser.Error:
-        return False
-    return parser.has_section(profile)
+    """OCI 配置文件里是否已有同名 profile。
+
+    path 未指定时新文件（~/oci_config）与旧文件（~/.oci/config）都查；
+    指定 path 时只查该文件。注意 [DEFAULT] 段要用换名的
+    default_section 才能被 has_section 认出来。
+    """
+    candidates = [path] if path else [OCI_CONFIG_PATH,
+                                      OCI_CONFIG_LEGACY_PATH]
+    for candidate in candidates:
+        if not candidate or not os.path.exists(candidate):
+            continue
+        parser = configparser.ConfigParser(
+            default_section="__oci_no_defaults__", interpolation=None)
+        try:
+            parser.read(candidate, encoding="utf-8")
+        except configparser.Error:
+            continue
+        if parser.has_section(profile):
+            return True
+    return False
 
 
 def append_oci_profile(profile, fields, path=None):
-    """把新 profile 追加到 ~/.oci/config（已有内容原样不动）。
+    """把新 profile 追加到 OCI 配置文件（已有内容原样不动）。
 
+    目标默认是 ~/oci_config；目标不存在但旧文件 ~/.oci/config 存在时，
+    先把旧文件内容原样迁移过去（旧文件保留作备份），再追加。
     同名 profile 已存在时抛 ValueError，不覆盖。
-    返回写入的文件路径。
+    写入后文件权限设 600。返回写入的文件路径。
     """
-    path = path or OCI_CONFIG_PATH
-    if profile_exists_in_config(profile, path):
+    target = path or OCI_CONFIG_PATH
+    if profile_exists_in_config(profile, target):
         raise ValueError(f"profile「{profile}」已存在，请改名后重传。")
-    parent = os.path.dirname(path)
+    if path is None and profile_exists_in_config(profile):
+        raise ValueError(f"profile「{profile}」已存在，请改名后重传。")
+    try:
+        same_as_legacy = (os.path.abspath(target)
+                          == os.path.abspath(OCI_CONFIG_LEGACY_PATH))
+    except (OSError, ValueError):
+        same_as_legacy = False
+    parent = os.path.dirname(target)
     if parent:
         os.makedirs(parent, exist_ok=True)
+    if (path is None and not same_as_legacy
+            and not os.path.exists(target)
+            and os.path.exists(OCI_CONFIG_LEGACY_PATH)):
+        shutil.copyfile(OCI_CONFIG_LEGACY_PATH, target)
     lines = [f"[{profile}]"]
     for key in REQUIRED_OCI_KEYS:
         if key in fields:
@@ -892,13 +961,139 @@ def append_oci_profile(profile, fields, path=None):
             lines.append(f"{key} = {value}")
     block = "\n".join(lines) + "\n"
     existing = ""
-    if os.path.exists(path):
-        with open(path, encoding="utf-8") as f:
+    if os.path.exists(target):
+        with open(target, encoding="utf-8") as f:
             existing = f.read()
     sep = "" if (not existing or existing.endswith("\n")) else "\n"
-    with open(path, "a", encoding="utf-8") as f:
+    with open(target, "a", encoding="utf-8") as f:
         f.write(sep + block)
-    return path
+    try:
+        os.chmod(target, 0o600)
+    except OSError:
+        pass
+    return target
+
+
+def normalize_oci_key_file(profile, fields):
+    """key_file 归一化：已在 root 家目录下的绝对路径保留原样
+    （如 /root/1.pem，与 R-Bot 习惯一致）；其余一律改成
+    ~/<profile>.pem。返回 (new_fields, original_key_file)。
+    """
+    original = (fields.get("key_file") or "").strip()
+    home = os.path.expanduser("~")
+    new_fields = dict(fields)
+    if original:
+        abs_path = os.path.abspath(os.path.expanduser(original))
+        home_abs = os.path.abspath(home)
+        if abs_path == home_abs or abs_path.startswith(home_abs + os.sep):
+            return new_fields, original
+    new_fields["key_file"] = os.path.join(home, f"{profile}.pem")
+    return new_fields, original
+
+
+def maybe_copy_key_file(original, new_path):
+    """原 key_file 已在服务器上且新路径尚无文件时，复制过去（600 权限）。
+
+    返回 True 表示新路径已有私钥文件（本来就有，或刚复制过去）；
+    False 表示新路径尚无私钥，需用户自行 scp。
+    """
+    if os.path.exists(new_path):
+        return True
+    if not original or not os.path.exists(original):
+        return False
+    try:
+        shutil.copyfile(original, new_path)
+        os.chmod(new_path, 0o600)
+        return True
+    except OSError:
+        return False
+
+
+def prepare_oci_profiles(parsed):
+    """把解析结果整理成待导入列表：过滤已存在、归一化 key_file。
+
+    返回 (new_profiles, skipped_existing, error_text)：
+    new_profiles 是 [{"profile", "fields", "original_key_file"}]；
+    skipped_existing 是已存在而跳过的 profile 名列表；
+    error_text 非空时表示整体失败（任一 profile 缺必填键）。
+    """
+    for entry in parsed["profiles"]:
+        if entry["missing"]:
+            missing = "、".join(entry["missing"])
+            return [], [], (f"profile「{entry['profile']}」缺少必填键："
+                            f"{missing}\n请补全后重新发送。")
+    new_profiles = []
+    skipped = []
+    for entry in parsed["profiles"]:
+        profile = entry["profile"]
+        if profile_exists_in_config(profile):
+            skipped.append(profile)
+            continue
+        fields, original = normalize_oci_key_file(profile, entry["fields"])
+        new_profiles.append({"profile": profile, "fields": fields,
+                             "original_key_file": original})
+    return new_profiles, skipped, ""
+
+
+def commit_oci_profiles(profiles):
+    """逐个把待导入的 profile 写进配置文件，并处理私钥文件。
+
+    profiles 是 prepare_oci_profiles 返回的 new_profiles。
+    返回 [{"profile", "key_file", "key_ready"}]：key_ready 为 True
+    表示该 profile 的私钥文件已在 key_file 路径就位（本来就在，
+    或刚从原路径复制过去）；False 表示需用户自行 scp。
+    任一写入失败时抛 ValueError / OSError（已写入的不回滚，
+    调用方把已成功的个数告诉用户）。
+    """
+    results = []
+    for entry in profiles:
+        profile = entry["profile"]
+        fields = entry["fields"]
+        append_oci_profile(profile, fields)
+        key_path = fields.get("key_file", "")
+        key_ready = maybe_copy_key_file(entry["original_key_file"], key_path)
+        results.append({"profile": profile, "key_file": key_path,
+                        "key_ready": key_ready})
+    return results
+
+
+def add_profile_compartments(profiles):
+    """给新导入的 profile 在 env 文件里加 MBOT_COMPARTMENT_<PROFILE>。
+
+    值取该 profile 的 tenancy OCID（根 compartment 即 tenancy）。
+    已在 env 文件里的键不覆盖（用户可能配了子 compartment）。
+    返回实际写入的 {变量名: tenancy}（为空表示都没写）。
+    """
+    updates = {}
+    for entry in profiles:
+        profile = entry["profile"]
+        tenancy = (entry["fields"].get("tenancy") or "").strip()
+        if not tenancy:
+            continue
+        var = f"MBOT_COMPARTMENT_{profile}"
+        if os.environ.get(var):
+            continue
+        updates[var] = tenancy
+    if not updates:
+        return {}
+    try:
+        env_path = None
+        try:
+            from web import config as web_config
+            env_path = web_config.ENV_FILE
+        except Exception:  # noqa: BLE001 - web.config 不可用时用默认路径
+            env_path = os.path.expanduser("~/.rbot-clone.env")
+        if env_path and os.path.exists(env_path):
+            with open(env_path, encoding="utf-8") as f:
+                existing = f.read()
+            updates = {k: v for k, v in updates.items()
+                       if f"{k}=" not in existing}
+    except OSError:
+        pass
+    if not updates:
+        return {}
+    update_env_file_vars(updates)
+    return updates
 
 
 @require_allowed
@@ -908,11 +1103,59 @@ async def uploadapi_command(update, context):
     context.user_data["ua_awaiting"] = True
     await _reply(update,
                  "📤 添加 OCI API 配置：\n\n"
-                 "请发送 config 文件（.txt / .conf），或直接粘贴 config 文本。\n\n"
-                 "格式要求：含 [PROFILE] 段 + user / fingerprint / tenancy / "
-                 "region / key_file 五个键。\n\n"
-                 "⚠️ 只传 config 文本；私钥文件（key_file 指向的 .pem）"
-                 "不经过 Telegram，请自行 scp 到服务器对应路径。")
+                 "请发送 config 文件（.txt / .conf），或直接粘贴 config 文本。\n"
+                 "支持 R-Bot 格式：oci=begin … oci=end 块里可一次放多个 "
+                 "[PROFILE]，一次全部导入。\n\n"
+                 "格式要求：每个 [PROFILE] 段含 user / fingerprint / "
+                 "tenancy / region / key_file 五个键。\n\n"
+                 "配置写入 ~/oci_config（root 家目录）；key_file 已在 /root "
+                 "下的保留原路径（如 /root/1.pem），其余自动改成 "
+                 "/root/<PROFILE>.pem。\n\n"
+                 "⚠️ 只传 config 文本；私钥文件（.pem）不经过 Telegram，"
+                 "请自行 scp 到服务器对应路径（原 key_file 已在服务器上"
+                 "的，写入后自动复制）。")
+
+
+def build_oci_profiles_confirm_text(profiles, skipped=None):
+    """多 profile 导入的确认文案：逐个列 profile、区域、key_file。"""
+    lines = [f"📤 确认添加 OCI API 配置？（{len(profiles)} 个账号）", ""]
+    for i, entry in enumerate(profiles, 1):
+        fields = entry["fields"]
+        user_tail = (fields.get("user") or "")[-4:]
+        lines.append(f"{i}. {entry['profile']}"
+                     f"（{fields.get('region')}）")
+        lines.append(f"   用户：…{user_tail}")
+        lines.append(f"   key_file：{fields.get('key_file')}")
+        original = entry.get("original_key_file") or ""
+        if original and original != fields.get("key_file"):
+            lines.append(f"   （原 key_file：{original}）")
+    if skipped:
+        lines.append("")
+        lines.append(f"注意：profile「{'、'.join(skipped)}」已存在，"
+                     "本次跳过。")
+    lines.append("")
+    lines.append("⚠️ 私钥文件请自行 scp 到服务器上对应的 key_file 路径；"
+                 "原 key_file 已在服务器上的，写入后自动复制。")
+    return "\n".join(lines)
+
+
+def build_oci_profiles_result_text(results, added_vars, target_path):
+    """多 profile 导入完成后的结果文案。"""
+    names = "、".join(r["profile"] for r in results)
+    lines = [f"✅ 已添加 {len(results)} 个 profile 到 {target_path}：{names}。"]
+    key_lines = []
+    for r in results:
+        if r["key_ready"]:
+            key_lines.append(f"{r['profile']} 私钥已就位：{r['key_file']}")
+        else:
+            key_lines.append(f"{r['profile']} 私钥需 scp 到：{r['key_file']}")
+    if key_lines:
+        lines.append("🔑 " + "；".join(key_lines) + "。")
+    if added_vars:
+        var_names = "、".join(sorted(added_vars))
+        lines.append(f"✅ 已自动配置账号切换（{var_names}），"
+                     "重启机器人后可在菜单里切换到新账号。")
+    return "\n".join(lines)
 
 
 async def _handle_uploadapi_text(update, context, text):
@@ -921,34 +1164,19 @@ async def _handle_uploadapi_text(update, context, text):
     if parsed["error"]:
         await _reply(update, f"❌ 配置格式不对：{parsed['error']}\n请重新发送。")
         return
-    if parsed["missing"]:
-        missing = "、".join(parsed["missing"])
-        await _reply(update, f"❌ 配置缺少必填键：{missing}\n请补全后重新发送。")
+    new_profiles, skipped, error_text = prepare_oci_profiles(parsed)
+    if error_text:
+        await _reply(update, f"❌ {error_text}")
         return
-    profile = parsed["profile"]
-    if profile_exists_in_config(profile):
+    if not new_profiles:
         context.user_data.pop("ua_awaiting", None)
         await _reply(update,
-                     f"⚠️ profile「{profile}」已存在，不会覆盖。\n"
+                     f"⚠️ profile「{'、'.join(skipped)}」已存在，不会覆盖。\n"
                      "请改名后重传（改 [PROFILE] 段名）。")
         return
-    context.user_data["ua_pending"] = {"profile": profile,
-                                       "fields": parsed["fields"]}
-    fields = parsed["fields"]
-    user_tail = (fields.get("user") or "")[-4:]
-    lines = ["📤 确认添加 OCI API 配置？", "",
-             f"profile：{profile}",
-             f"区域：{fields.get('region')}",
-             f"用户：…{user_tail}",
-             f"key_file：{fields.get('key_file')}"]
-    if parsed["extra_profiles"]:
-        lines.append("")
-        lines.append(f"注意：文件里还有其他 profile"
-                     f"（{', '.join(parsed['extra_profiles'])}），"
-                     "本次只添加第一个。")
-    lines.append("")
-    lines.append("⚠️ 私钥文件请自行 scp 到服务器 key_file 指向的路径。")
-    await _reply(update, "\n".join(lines),
+    context.user_data["ua_pending"] = {"profiles": new_profiles}
+    await _reply(update, build_oci_profiles_confirm_text(new_profiles,
+                                                         skipped),
                  reply_markup=InlineKeyboardMarkup([
                      [InlineKeyboardButton("✅ 确认添加",
                                            callback_data="ua:confirm")],
@@ -957,29 +1185,34 @@ async def _handle_uploadapi_text(update, context, text):
 
 @require_allowed
 async def uploadapi_callback(update, context):
-    """回调 ua:confirm：二次确认后真正写入 ~/.oci/config。"""
+    """回调 ua:confirm：二次确认后真正写入 OCI 配置文件。"""
     if _callback_data(update) != "ua:confirm":
         await _reply(update, "参数错误，请重新发送 /uploadapi。")
         return
     pending = context.user_data.get("ua_pending")
-    if not pending:
+    if not pending or not pending.get("profiles"):
         await _reply(update, "待添加的配置已过期，请重新发送 /uploadapi。")
         return
-    profile = pending["profile"]
+    profiles = pending["profiles"]
     try:
-        await run_sync(append_oci_profile, profile, pending["fields"])
-    except ValueError as exc:
-        await _reply(update, f"❌ {exc}")
-        return
-    except OSError as exc:
+        results = await run_sync(commit_oci_profiles, profiles)
+    except (ValueError, OSError) as exc:
         await _reply(update, f"❌ 写入失败：{exc}")
+        return
+    try:
+        added_vars = await run_sync(add_profile_compartments, profiles)
+    except OSError as exc:
+        await _reply(update,
+                     f"✅ 配置已写入，但账号切换变量添加失败：{exc}\n"
+                     "请手动在 env 文件里加 MBOT_COMPARTMENT_<PROFILE> "
+                     "后重启机器人。")
+        context.user_data.pop("ua_pending", None)
+        context.user_data.pop("ua_awaiting", None)
         return
     context.user_data.pop("ua_pending", None)
     context.user_data.pop("ua_awaiting", None)
-    await _reply(update,
-                 f"✅ 已添加 profile「{profile}」到 ~/.oci/config。\n"
-                 "⚠️ 别忘了把私钥文件 scp 到服务器："
-                 f"{pending['fields'].get('key_file')}")
+    await _reply(update, build_oci_profiles_result_text(
+        results, added_vars, OCI_CONFIG_PATH))
 
 
 @require_allowed

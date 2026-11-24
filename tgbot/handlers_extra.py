@@ -48,9 +48,11 @@
 后 patch。
 """
 
+import ipaddress
 import json
 import logging
 import os
+import re
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -95,6 +97,8 @@ from tgbot.boot_form import (
     validate_form,
 )
 from tgbot.keyboards import (
+    DOMAIN_RECORDS_LIMIT,
+    DNS_ADD_TYPES,
     back_to_oracle_keyboard,
     bark_genkey_confirm_keyboard,
     bark_input_cancel_keyboard,
@@ -110,6 +114,11 @@ from tgbot.keyboards import (
     cf_extract_hosts_keyboard,
     cf_manage_keyboard,
     confirm_keyboard,
+    domain_add_cancel_keyboard,
+    domain_add_confirm_keyboard,
+    domain_add_type_keyboard,
+    domain_delete_confirm_keyboard,
+    domain_delete_pick_keyboard,
     domain_records_keyboard,
     domain_zones_keyboard,
     gfw_input_cancel_keyboard,
@@ -403,8 +412,6 @@ RESERVED_IP_DISPLAY_NAME = "bot-reserved-ip"
 # 规格名（升降配时判断用）。
 SHAPE_E2_MICRO = "VM.Standard.E2.1.Micro"
 SHAPE_A1_FLEX = "VM.Standard.A1.Flex"
-# /domain 命令：单条消息最多显示的 DNS 记录数，超出时截断并提示总数。
-DOMAIN_RECORDS_LIMIT = 20
 # 批量操作的动作中文名（确认提示与结果通知共用）。
 _BATCH_ACTION_TEXT = {
     "start": "开机",
@@ -5216,6 +5223,14 @@ async def text_input_callback(update, context):
             f"（账号邮箱 {masked}，{zones_total} 个 Zone）。",
             reply_markup=cf_manage_keyboard())
         return
+    if kind in ("dns_add_name", "dns_add_content"):
+        # /domain 添加记录：第一步收名称，第二步收内容。
+        context.user_data.pop("pending_input", None)
+        if kind == "dns_add_name":
+            await _handle_dns_add_name_input(update, context, text)
+        else:
+            await _handle_dns_add_content_input(update, context, text)
+        return
     if kind in ("add_admin_name", "add_admin_email"):
         # 增加管理员账号：两步输入（用户名 → 邮箱），最后弹二次确认。
         context.user_data.pop("pending_input", None)
@@ -6247,21 +6262,67 @@ async def handle_domain(update, context):
                  reply_markup=domain_zones_keyboard(zones))
 
 
-@require_allowed
-async def domain_callback(update, context):
-    """回调 "domain:zone:<zone_id>" / "domain:back"。
+def _dns_content_hint(rtype):
+    """添加记录时按类型的输入提示。"""
+    hints = {
+        "A": "内容填 IPv4 地址，例如 203.0.113.10",
+        "AAAA": "内容填 IPv6 地址，例如 2001:db8::1",
+        "CNAME": "内容填目标域名，例如 example.com",
+        "TXT": "内容填任意文本，例如 v=spf1 -all",
+        "MX": "内容填邮件服务器域名，例如 mail.example.com",
+    }
+    return hints.get(rtype, "内容不能为空")
 
-    zone：查该 Zone 的 DNS 记录列表；back：重新列 Zone。
-    """
-    data = _callback_data(update)
-    parts = data.split(":", 2)
-    if len(parts) >= 2 and parts[1] == "back":
-        await handle_domain(update, context)
-        return
-    if len(parts) != 3 or parts[1] != "zone":
-        await _reply(update, "参数错误，请重新发送 /domain。")
-        return
-    zone_id = parts[2]
+
+def _validate_dns_record_name(name):
+    """记录名校验：@（根域名）或主机名（字母数字、-、_、.）。"""
+    if name == "@":
+        return True
+    if not name or len(name) > 253:
+        return False
+    if name.startswith(("-", ".")) or name.endswith("."):
+        return False
+    return re.fullmatch(r"[A-Za-z0-9_.-]+", name) is not None
+
+
+def _validate_dns_record_content(rtype, content):
+    """按类型校验记录内容；通过返回 None，否则返回错误文案。"""
+    if not content:
+        return "内容不能为空。"
+    if rtype == "A":
+        try:
+            ipaddress.IPv4Address(content)
+        except ValueError:
+            return "A 记录的内容必须是 IPv4 地址，例如 203.0.113.10。"
+    elif rtype == "AAAA":
+        try:
+            ipaddress.IPv6Address(content)
+        except ValueError:
+            return "AAAA 记录的内容必须是 IPv6 地址，例如 2001:db8::1。"
+    elif rtype in ("CNAME", "MX"):
+        if not is_valid_domain(content.rstrip(".")):
+            return f"{rtype} 记录的内容必须是一个域名，例如 mail.example.com。"
+    return None
+
+
+def fmt_dns_add_summary(zone_name, draft):
+    """添加记录确认页全文。"""
+    name = draft.get("name") or "?"
+    shown_name = "根域名（@）" if name == "@" else name
+    return (
+        "➕ 确认添加 DNS 记录？\n\n"
+        f"Zone：{zone_name}\n"
+        f"类型：{draft.get('type')}\n"
+        f"名称：{shown_name}\n"
+        f"内容：{draft.get('content')}\n"
+        "TTL：自动，代理：关闭\n\n"
+        "（如需开启 Cloudflare 代理或改 TTL，"
+        "请到 Web 面板 DNS 页编辑。）"
+    )
+
+
+async def _show_domain_records(update, context, zone_id):
+    """查某 Zone 的记录并显示；记录存进 user_data 供删除按下标取用。"""
     try:
         client = _get_cf_client()
         records = await run_sync(client.list_dns_records, zone_id)
@@ -6271,9 +6332,217 @@ async def domain_callback(update, context):
     except Exception as exc:  # noqa: BLE001
         await _reply(update, f"❌ 出错了：{exc}")
         return
+    stored = context.user_data.setdefault("domain_records", {})
+    stored[zone_id] = list(records)
     zone_name = _resolve_zone_name(context, zone_id, records)
     await _reply(update, fmt_domain_records(zone_name, records),
                  reply_markup=domain_records_keyboard(zone_id, records))
+
+
+def _domain_stored_records(context, zone_id):
+    """取 user_data 里存的某 Zone 记录列表（删除流程按下标取用）。"""
+    stored = context.user_data.get("domain_records") or {}
+    return stored.get(zone_id)
+
+
+async def _dns_add_do(update, context, zone_id):
+    """确认添加：调 Cloudflare 创建记录，成功后回记录列表。"""
+    draft = context.user_data.get("dns_add_draft") or {}
+    if (draft.get("zone_id") != zone_id or not draft.get("type")
+            or not draft.get("name") or not draft.get("content")):
+        await _reply(update, "添加信息已过期，请重新点“添加记录”。")
+        return
+    try:
+        client = _get_cf_client()
+        await run_sync(client.create_dns_record, zone_id, draft["type"],
+                       draft["name"], draft["content"])
+    except CloudflareError as exc:
+        await _reply(update, fmt_cf_error(exc))
+        return
+    except Exception as exc:  # noqa: BLE001
+        await _reply(update, f"❌ 出错了：{exc}")
+        return
+    context.user_data.pop("dns_add_draft", None)
+    zone_name = _resolve_zone_name(
+        context, zone_id, _domain_stored_records(context, zone_id))
+    await _reply(update,
+                 f"✅ 已添加：{draft['type']} {draft['name']} "
+                 f"-> {draft['content']}（{zone_name}）")
+    await _show_domain_records(update, context, zone_id)
+
+
+async def _dns_delete_pick(update, context, zone_id):
+    """删除记录：列出当前 Zone 的记录供选一条（无记录时提示）。"""
+    records = _domain_stored_records(context, zone_id)
+    if records is None:
+        try:
+            client = _get_cf_client()
+            records = await run_sync(client.list_dns_records, zone_id)
+        except CloudflareError as exc:
+            await _reply(update, fmt_cf_error(exc))
+            return
+        except Exception as exc:  # noqa: BLE001
+            await _reply(update, f"❌ 出错了：{exc}")
+            return
+        context.user_data.setdefault("domain_records", {})[zone_id] = \
+            list(records)
+    if not records:
+        await _reply(update, "这个 Zone 下没有 DNS 记录，无需删除。",
+                     reply_markup=domain_records_keyboard(zone_id, records))
+        return
+    zone_name = _resolve_zone_name(context, zone_id, records)
+    await _reply(update,
+                 f"🗑️ 删除 {zone_name} 的 DNS 记录：\n点一条记录进入确认。",
+                 reply_markup=domain_delete_pick_keyboard(zone_id, records))
+
+
+async def _dns_delete_confirm(update, context, zone_id, idx_text):
+    """删除确认页：显示要删的记录全文，二次确认。"""
+    records = _domain_stored_records(context, zone_id) or []
+    try:
+        idx = int(idx_text)
+        record = records[idx]
+    except (ValueError, IndexError):
+        await _reply(update, "记录不存在或已过期，请刷新列表后再试。")
+        return
+    zone_name = _resolve_zone_name(context, zone_id, records)
+    await _reply(
+        update,
+        "⚠️ 确认删除这条 DNS 记录？\n\n"
+        f"Zone：{zone_name}\n"
+        f"{fmt_domain_record_line(record)}\n\n"
+        "删除后立即生效，不可恢复。",
+        reply_markup=domain_delete_confirm_keyboard(zone_id, idx))
+
+
+async def _dns_delete_do(update, context, zone_id, idx_text):
+    """确认删除：调 Cloudflare 删除记录，成功后回记录列表。"""
+    records = _domain_stored_records(context, zone_id) or []
+    try:
+        idx = int(idx_text)
+        record = records[idx]
+    except (ValueError, IndexError):
+        await _reply(update, "记录不存在或已过期，请刷新列表后再试。")
+        return
+    try:
+        client = _get_cf_client()
+        await run_sync(client.delete_dns_record, zone_id, record.get("id"))
+    except CloudflareError as exc:
+        await _reply(update, fmt_cf_error(exc))
+        return
+    except Exception as exc:  # noqa: BLE001
+        await _reply(update, f"❌ 出错了：{exc}")
+        return
+    await _reply(update, f"🗑️ 已删除：{fmt_domain_record_line(record)}")
+    await _show_domain_records(update, context, zone_id)
+
+
+async def _handle_dns_add_name_input(update, context, text):
+    """添加记录第一步：收记录名，校验后问内容（格式不对可重发）。"""
+    draft = context.user_data.get("dns_add_draft") or {}
+    zone_id = draft.get("zone_id")
+    if not zone_id or not draft.get("type"):
+        await _reply(update, "添加信息已过期，请重新点“添加记录”。")
+        return
+    if not _validate_dns_record_name(text):
+        context.user_data["pending_input"] = {"kind": "dns_add_name"}
+        await _reply_prompt(
+            update, context,
+            "❌ 记录名格式不对：只能是 @（根域名）或主机名"
+            "（字母、数字、-、_、.，例如 www 或 sub.www）。"
+            "请重新发送。",
+            reply_markup=domain_add_cancel_keyboard(zone_id))
+        return
+    draft["name"] = text
+    context.user_data["dns_add_draft"] = draft
+    context.user_data["pending_input"] = {"kind": "dns_add_content"}
+    await _reply_prompt(
+        update, context,
+        f"记录名：{text}\n{_dns_content_hint(draft['type'])}。",
+        reply_markup=domain_add_cancel_keyboard(zone_id))
+
+
+async def _handle_dns_add_content_input(update, context, text):
+    """添加记录第二步：收内容，按类型校验后弹确认页（格式不对可重发）。"""
+    draft = context.user_data.get("dns_add_draft") or {}
+    zone_id = draft.get("zone_id")
+    if not zone_id or not draft.get("type") or not draft.get("name"):
+        await _reply(update, "添加信息已过期，请重新点“添加记录”。")
+        return
+    error = _validate_dns_record_content(draft["type"], text)
+    if error:
+        context.user_data["pending_input"] = {"kind": "dns_add_content"}
+        await _reply_prompt(
+            update, context,
+            f"❌ {error}\n请重新发送内容。",
+            reply_markup=domain_add_cancel_keyboard(zone_id))
+        return
+    draft["content"] = text
+    context.user_data["dns_add_draft"] = draft
+    zone_name = _resolve_zone_name(
+        context, zone_id, _domain_stored_records(context, zone_id))
+    await _reply(update, fmt_dns_add_summary(zone_name, draft),
+                 reply_markup=domain_add_confirm_keyboard(zone_id))
+
+
+@require_allowed
+async def domain_callback(update, context):
+    """回调 "domain:..."：Zone 记录查看 / 添加 / 删除。
+
+    zone：查该 Zone 的 DNS 记录列表；back：重新列 Zone；
+    add：添加记录选类型；addtype：已选类型，开始输名称；
+    add:confirm：确认添加；delpick：删除记录选一条；
+    del：删除某条的确认页；del:yes：确认删除。
+    """
+    data = _callback_data(update)
+    parts = data.split(":")
+    action = parts[1] if len(parts) >= 2 else ""
+    if action == "back":
+        await handle_domain(update, context)
+        return
+    if action == "zone" and len(parts) == 3:
+        await _show_domain_records(update, context, parts[2])
+        return
+    if action == "add":
+        if len(parts) == 4 and parts[2] == "confirm":
+            await _dns_add_do(update, context, parts[3])
+            return
+        if len(parts) == 3:
+            zone_id = parts[2]
+            zone_name = _resolve_zone_name(
+                context, zone_id,
+                _domain_stored_records(context, zone_id))
+            await _reply(update,
+                         f"➕ 给 {zone_name} 添加 DNS 记录：\n先选记录类型。",
+                         reply_markup=domain_add_type_keyboard(zone_id))
+            return
+    if action == "addtype" and len(parts) == 4:
+        zone_id, rtype = parts[2], parts[3]
+        if rtype not in DNS_ADD_TYPES:
+            await _reply(update, "不支持的记录类型，请重新选择。")
+            return
+        context.user_data["dns_add_draft"] = {"zone_id": zone_id,
+                                              "type": rtype}
+        context.user_data["pending_input"] = {"kind": "dns_add_name"}
+        zone_name = _resolve_zone_name(
+            context, zone_id, _domain_stored_records(context, zone_id))
+        await _reply_prompt(
+            update, context,
+            f"➕ {zone_name} 新建 {rtype} 记录：\n"
+            "请发送记录名称（例如 www；根域名填 @）。",
+            reply_markup=domain_add_cancel_keyboard(zone_id))
+        return
+    if action == "delpick" and len(parts) == 3:
+        await _dns_delete_pick(update, context, parts[2])
+        return
+    if action == "del":
+        if len(parts) == 5 and parts[2] == "yes":
+            await _dns_delete_do(update, context, parts[3], parts[4])
+            return
+        if len(parts) == 4:
+            await _dns_delete_confirm(update, context, parts[2], parts[3])
+            return
+    await _reply(update, "参数错误，请重新发送 /domain。")
 
 
 async def _delete_secret_message(update, context):

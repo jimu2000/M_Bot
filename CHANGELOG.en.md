@@ -9,6 +9,39 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [1.28.0] - 2026-11-24
+
+### Added
+- OCI config moved to the root home directory: the bot-managed OCI config file is now `~/oci_config` (i.e. `/root/oci_config` when deployed as root), matching R-Bot's placement convention; on first config upload after upgrade, an existing `~/.oci/config` is migrated automatically (old file kept as backup), and CLI calls fall back to the old file until then, so nothing breaks mid-upgrade
+- /oci and /uploadapi accept the R-Bot format: an `oci=begin` … `oci=end` block holding multiple `[PROFILE]` sections is imported all at once; content outside the block (username/password/azure, etc.) is ignored
+- key_file normalization: absolute paths already under the root home directory are kept as-is (e.g. `/root/1.pem`); everything else becomes `/root/<PROFILE>.pem`; when the original key file already exists on the server it is copied to the new path (mode 600), otherwise the user is told to scp it
+- Newly imported accounts become switchable automatically: the import also writes `MBOT_COMPARTMENT_<PROFILE>` (value: the profile's tenancy OCID, i.e. the root compartment) into the env file, so after a bot restart the new account appears in the switcher; the account table is now built dynamically (registered by `MBOT_COMPARTMENT_*` env vars, region read from the config file), bot and web in sync
+- Display-name disambiguation for same-region accounts: when several accounts share one home region, the first keeps the plain region name ("新加坡") and later ones get a "·profile" suffix (e.g. "新加坡·sg1"), so the switcher stays unambiguous; bot and web in sync
+- Central OCI config path resolution (`resolve_oci_config_path` in `oci/client.py`): `MBOT_OCI_CONFIG_FILE` > `OCI_CLI_CONFIG_FILE` > `~/oci_config` > `~/.oci/config`, passed to every CLI call via environment
+
+### Fixed
+- `profile_exists_in_config` could not see the `[DEFAULT]` section: configparser treats DEFAULT as a special section, so `has_section("DEFAULT")` always returned False; fixed with a renamed default section
+
+### Verification
+- Full test suite: 2413 tests, all passing (including new tests for path resolution, migration, R-Bot format parsing, key normalization and copy, multi-profile import, the dynamic account table, and same-region display-name disambiguation)
+- Live verification (on .160): the existing 4 profiles migrated from `~/.oci/config` to `~/oci_config` with contents verified item by item; instance lists work after bot and web restarts; a R-Bot-format config imported two test accounts in one go — confirm page, write, account-switcher variables, and switcher labels ("新加坡·sg1 / 新加坡·sg2") all fine; the test accounts were removed afterwards at the user's request (he confirmed it was a very old example config and he only has 3 accounts), with the remaining profiles verified unchanged item by item
+
+## [1.27.0] - 2026-11-24
+
+### Added
+- /domain record management (bot): the record list now has "Add record" and "Delete record" buttons — previously the bot could only view records, not add or delete them
+- Add record: pick a type (A/AAAA/CNAME/TXT/MX) → enter the name (www, or @ for the zone apex) → enter the content (validated per type: A must be IPv4, AAAA must be IPv6, CNAME/MX must be a domain name; invalid input can be re-sent) → a confirmation page (zone/type/name/content, TTL auto, proxy off) → create; the record list refreshes automatically afterwards
+- Delete record: pick a record → a confirmation page shows the full record (deletion takes effect immediately and cannot be undone) → confirm to delete; the record list refreshes automatically afterwards; records are looked up by index from the bot's stored list for the current zone, and a stale index asks you to refresh
+- Mobile navigation drawer (panel): previously the sidebar was hidden entirely with `display: none` on screens ≤900px wide, so pages like DNS management, quotas and task management had no entry point at all on phones; the top bar now has a hamburger button and the sidebar slides in as a left drawer (tap the button to open, tap the backdrop/a nav link or press ESC to close); the desktop sidebar stays permanently visible
+
+### Fixed
+- Removed a stale test task left in the local web/data/tasks.json (a fake grab task from an 08:00 test run) that made test_tasks_api_empty_list fail when run on its own; the file is generated at runtime and is not part of the repo
+
+### Verification
+- Full test suite: 2357 tests, all passing (including the new record name/content validation, add and delete flows, and mobile drawer rendering and style tests)
+- Live verification (on .160, 16/16 passed): the bot-side Cloudflare client really created a test TXT record (mbot-verify-127) and deleted it, with list checks confirming it appeared and disappeared; the panel DNS endpoints did the same for another test record; the overview page carries the hamburger button and drawer backdrop, and the CSS no longer hides the sidebar
+- Mobile viewport test (390×844, real browser over a SOCKS proxy, logged in): the drawer starts closed (left -252), opens on hamburger tap (left 0, DNS management visible), and tapping DNS management opens the /dns page with the add-record button present
+
 ## [1.26.0] - 2026-11-24
 
 ### Added

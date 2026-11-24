@@ -9,13 +9,15 @@
 
 安全说明：
   - 本模块不读取、不打印、不外传 OCI API 私钥。认证全部由 OCI CLI
-    自己读 ~/.oci/config 与 key_file 完成。
+    自己读配置文件（~/oci_config，旧部署回退 ~/.oci/config）与
+    key_file 完成。
   - 白名单是硬规则：不在 ALLOWED_USER_IDS 里的用户发任何命令都直接拒绝。
 """
 
 import json
 import os
 import sys
+import tempfile
 
 # ================= 配置区（改这里） =================
 # Telegram 机器人 Token：从环境变量读，不要硬编码。
@@ -30,7 +32,7 @@ ALLOWED_USER_IDS = {
     if x.strip().isdigit()
 }
 
-# 默认 OCI profile（~/.oci/config 里的 profile 名）。
+# 默认 OCI profile（OCI 配置文件里的 profile 名）。
 DEFAULT_PROFILE = "DEFAULT"
 # 默认区域。
 DEFAULT_REGION = "ap-singapore-1"
@@ -40,34 +42,107 @@ DEFAULT_COMPARTMENT_ID = os.environ.get(
     "MBOT_COMPARTMENT_DEFAULT", "ocid1.tenancy.oc1..xxxxxxxx")
 
 # 多账号配置：profile 名 -> {region, compartment_id}。
-# 每个账号在 ~/.oci/config 里对应一个 profile。
-# 部署时用环境变量填真实 compartment OCID：
-#   MBOT_COMPARTMENT_DEFAULT / MBOT_COMPARTMENT_ACCOUNT2 /
-#   MBOT_COMPARTMENT_ACCOUNT3（根 compartment 即 tenancy OCID）。
-# 未设环境变量的账号不加入 PROFILES。
+# 每个账号在 OCI 配置文件（~/oci_config）里对应一个 profile。
+# 注册方式：环境变量 MBOT_COMPARTMENT_<PROFILE>，值是该账号的
+# compartment OCID（根 compartment 即 tenancy OCID）。机器人导入
+# 新账号（/oci / /uploadapi）时会自动往 env 文件里加这一项，
+# 重启机器人后新账号就出现在切换菜单里。
+# region 从配置文件里该 profile 的 region 字段读；读不到时用下面的
+# 回退表（旧账号）或 DEFAULT_REGION（新账号）。
+# 未设 MBOT_COMPARTMENT_* 的 profile 不加入 PROFILES（例如只给
+# R-Bot 用的受限 API profile 不会出现在菜单里）。
+LEGACY_PROFILE_REGIONS = {
+    "DEFAULT": "ap-singapore-1",
+    "ACCOUNT2": "us-sanjose-1",
+    "ACCOUNT3": "us-chicago-1",
+}
+
+
 def _build_profiles():
+    from oci.client import read_oci_config_profiles
+    file_profiles = read_oci_config_profiles()
     profiles = {
         "DEFAULT": {
-            "region": "ap-singapore-1",
+            "region": file_profiles.get("DEFAULT", {}).get("region")
+                      or LEGACY_PROFILE_REGIONS["DEFAULT"],
             "compartment_id": DEFAULT_COMPARTMENT_ID,
         },
     }
-    account2 = os.environ.get("MBOT_COMPARTMENT_ACCOUNT2")
-    if account2:
-        profiles["ACCOUNT2"] = {
-            "region": "us-sanjose-1",
-            "compartment_id": account2,
-        }
-    account3 = os.environ.get("MBOT_COMPARTMENT_ACCOUNT3")
-    if account3:
-        profiles["ACCOUNT3"] = {
-            "region": "us-chicago-1",
-            "compartment_id": account3,
+    for key, value in sorted(os.environ.items()):
+        if not key.startswith("MBOT_COMPARTMENT_") or not value:
+            continue
+        name = key[len("MBOT_COMPARTMENT_"):]
+        if name == "DEFAULT":
+            continue
+        profiles[name] = {
+            "region": file_profiles.get(name, {}).get("region")
+                      or LEGACY_PROFILE_REGIONS.get(name, DEFAULT_REGION),
+            "compartment_id": value,
         }
     return profiles
 
 
 PROFILES = _build_profiles()
+
+
+def _quote_env_value(value):
+    """env 文件里的值：含空格或 shell 特殊字符时用单引号包起来。"""
+    text = str(value)
+    if not text:
+        return "''"
+    import re
+    if re.fullmatch(r"[A-Za-z0-9_@%+=:,./-]+", text):
+        return text
+    return "'" + text.replace("'", "'\"'\"'") + "'"
+
+
+def update_env_file_vars(updates, env_file=None):
+    """把一批 KEY=VALUE 写进 env 文件（原子替换，权限 600）。
+
+    已有的键原地替换，没有的键追加；其余行原样保留。
+    值含空格或特殊字符时用单引号包起来（单引号本身转义为 '"'"'）。
+    env_file 默认取 web/config.py 的 ENV_FILE（不要写死路径）。
+    """
+    if env_file is None:
+        try:
+            from web import config as web_config
+            env_file = web_config.ENV_FILE
+        except Exception:  # noqa: BLE001 - web.config 不可用时回退默认路径
+            env_file = os.path.expanduser("~/.rbot-clone.env")
+    path = env_file
+    lines = []
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            lines = f.readlines()
+    remaining = dict(updates)
+    output = []
+    for line in lines:
+        replaced = False
+        for key, value in updates.items():
+            if line.startswith(f"{key}="):
+                output.append(f"{key}={_quote_env_value(value)}\n")
+                remaining.pop(key, None)
+                replaced = True
+                break
+        if not replaced:
+            output.append(line)
+    for key, value in remaining.items():
+        output.append(f"{key}={_quote_env_value(value)}\n")
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=parent or ".", prefix=".mbot-env-")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.writelines(output)
+        os.replace(tmp_path, path)
+    except BaseException:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        raise
+    os.chmod(path, 0o600)
+    return path
+
 
 # 区域中文名（与 web/config.py 的 REGION_LABELS 保持同步；未知区域显示原代码）。
 # 账号切换（/oracle 菜单顶行“切换账号”按钮）按主区中文名显示账号，不再显示 DEFAULT/ACCOUNT2
@@ -85,15 +160,32 @@ def get_region_label(region):
     return REGION_LABELS.get(region, region)
 
 
+def _needs_profile_suffix(name):
+    """同主区的已注册账号里，自己是不是第一个（按 PROFILES 顺序）。
+
+    不是第一个时显示名要加“·profile”区分，否则切换菜单里分不清
+    （例如 DEFAULT/sg1/sg2 都在新加坡时，sg1 显示“新加坡·sg1”，
+    DEFAULT 保持“新加坡”不变）。
+    """
+    region = get_profile_config(name)["region"]
+    for other, cfg in PROFILES.items():
+        if cfg.get("region") == region:
+            return other != name
+    return False
+
+
 def profile_display_name(name, region_count=None):
     """账号（profile）的显示名：主区中文名；订阅了多个区域时后缀（N 个区）。
 
     例：DEFAULT（新加坡，订阅 3 个区）-> "新加坡（3 个区）"；
     ACCOUNT2（圣何塞，1 个区）-> "圣何塞"。region_count 为 None 或 <=1
     时不加后缀（查不到区数时只显示主区名，不阻塞切换菜单）。
+    同主区有多个账号时，非第一个加“·profile”后缀区分（如“新加坡·sg1”）。
     """
     region = get_profile_config(name)["region"]
     label = get_region_label(region)
+    if _needs_profile_suffix(name):
+        label += f"·{name}"
     if region_count and region_count > 1:
         label += f"（{region_count} 个区）"
     return label
@@ -106,9 +198,12 @@ def profile_display_name_list(name, region_count=None):
     与 profile_display_name 的区别只是分隔符（列表里用顿号，菜单
     顶行用括号）；区数同样是实查的订阅区域数（iam
     region-subscription list），不是写死的。
+    同主区有多个账号时，非第一个同样加“·profile”后缀区分。
     """
     region = get_profile_config(name)["region"]
     label = get_region_label(region)
+    if _needs_profile_suffix(name):
+        label += f"·{name}"
     if region_count and region_count > 1:
         label += f"、{region_count} 个区"
     return label
