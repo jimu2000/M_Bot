@@ -301,6 +301,31 @@ class TestTelegramLoginApi(Phase5eAuthTestCase):
 
     @patch("web.routes.auth.send_bark", return_value=(True, ""))
     @patch("web.routes.auth.send_to_allowed_users", return_value=1)
+    def test_send_code_bark_url_is_magic_link(self, mock_send, mock_bark):
+        """Bark 登录码推送带 url，点通知直接打开一键登录链接。"""
+        r = self.client.post("/api/auth/telegram/send-code", json={})
+        self.assertEqual(r.status_code, 200)
+        mock_bark.assert_called_once()
+        # Telegram 消息里的链接与 Bark 的 url 必须是同一个。
+        tg_text = mock_send.call_args[0][0]
+        link = re.search(r"https?://\S+/login\?token=\S+",
+                         tg_text).group(0)
+        self.assertEqual(mock_bark.call_args.kwargs["url"], link)
+        self.assertIn(link, mock_bark.call_args[0][1])
+
+    @patch("web.routes.auth.send_bark", return_value=(True, ""))
+    def test_push_bark_login_code_passes_url(self, mock_bark):
+        """_push_bark_login_code 传给 send_bark 的 url 就是 magic 链接。"""
+        from web.routes import auth as auth_routes
+        token = "mag" + "ic-token-1"
+        auth_routes._push_bark_login_code(
+            "123456", "https://panel.example.com", token)
+        mock_bark.assert_called_once()
+        expected = "https://panel.example.com/login?token=" + token
+        self.assertEqual(mock_bark.call_args.kwargs["url"], expected)
+
+    @patch("web.routes.auth.send_bark", return_value=(True, ""))
+    @patch("web.routes.auth.send_to_allowed_users", return_value=1)
     def test_send_code_cooldown_429(self, mock_send, mock_bark):
         r1 = self.client.post("/api/auth/telegram/send-code", json={})
         self.assertEqual(r1.status_code, 200)

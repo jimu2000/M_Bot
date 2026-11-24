@@ -4,6 +4,7 @@
 {"title", "body", "level": "active", "group"}，AES-256-CBC 加密
 （key 是 32 字节原文，IV 每次随机 16 位 ASCII 字符），
 POST ciphertext（base64）+ iv（原文）到 Bark 推送地址。
+payload 可选带 "url" 字段（点通知直接打开该链接）。
 加密优先用 cryptography 库，未安装时用 openssl 命令行兜底
 （与 web/routes/cert.py 的兜底模式一致）。
 
@@ -174,21 +175,23 @@ def mask_bark_url(url):
         return "…"
 
 
-def send_bark(title, body, group=BARK_GROUP, config=None):
+def send_bark(title, body, group=BARK_GROUP, url=None, config=None):
     """发一条加密 Bark 推送，返回 (ok, error)。
 
     config 不传时读存储的配置；未配置或开关关闭时直接返回失败，
     不发请求（调用方决定是否静默）。Key/URL 绝不出现在返回值里。
+    url 传入时放进加密前的 payload（Bark 的 url 字段，点通知
+    直接打开该链接）；不传时 payload 里不含 url 键。
     """
     cfg = config if config is not None else load_bark_config()
     if not cfg.get("enabled"):
         return False, "Bark 推送未开启"
     if not bark_configured(cfg):
         return False, "Bark 地址或加密 Key 未配置"
-    payload = json.dumps(
-        {"title": title, "body": body, "level": "active", "group": group},
-        ensure_ascii=False,
-    ).encode("utf-8")
+    data = {"title": title, "body": body, "level": "active", "group": group}
+    if url:
+        data["url"] = url
+    payload = json.dumps(data, ensure_ascii=False).encode("utf-8")
     try:
         ciphertext, iv = encrypt_payload(payload, cfg["key"])
         data = urllib.parse.urlencode(

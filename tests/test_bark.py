@@ -240,6 +240,36 @@ class TestSendBark(unittest.TestCase):
         self.assertNotIn("正文", captured["data"])
         self.assertNotIn(TEST_KEY, captured["data"])
 
+    def test_url_included_in_payload_when_passed(self):
+        """传 url 时 payload 里带 url（点通知打开该链接）。"""
+        login_url = "https://panel.example.com/login?token=" + "abc123"
+        with patch.object(bark_mod, "encrypt_payload",
+                          return_value=("ct", "iv")) as mock_enc, \
+                patch.object(bark_mod.urllib.request, "urlopen",
+                             return_value=self._ok_response()):
+            ok, err = bark_mod.send_bark(
+                "t", "b", url=login_url,
+                config={"url": TEST_URL, "key": TEST_KEY, "enabled": True})
+        self.assertTrue(ok, err)
+        payload = json.loads(mock_enc.call_args[0][0].decode("utf-8"))
+        self.assertEqual(payload["url"], login_url)
+        self.assertEqual(payload["title"], "t")
+        self.assertEqual(payload["body"], "b")
+        self.assertEqual(payload["group"], bark_mod.BARK_GROUP)
+
+    def test_url_absent_from_payload_when_not_passed(self):
+        """不传 url 时 payload 里不含 url 键（现有调用行为不变）。"""
+        with patch.object(bark_mod, "encrypt_payload",
+                          return_value=("ct", "iv")) as mock_enc, \
+                patch.object(bark_mod.urllib.request, "urlopen",
+                             return_value=self._ok_response()):
+            ok, err = bark_mod.send_bark(
+                "t", "b", config={"url": TEST_URL, "key": TEST_KEY,
+                                  "enabled": True})
+        self.assertTrue(ok, err)
+        payload = json.loads(mock_enc.call_args[0][0].decode("utf-8"))
+        self.assertNotIn("url", payload)
+
     def test_non_200_code_returns_error(self):
         resp = MagicMock()
         resp.read.return_value = b'{"code": 400, "message": "bad key"}'

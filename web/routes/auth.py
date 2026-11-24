@@ -207,12 +207,17 @@ def _push_bark_login_code(code, base_url, magic_token):
     Bark 未配置/未开启时 send_bark 直接返回失败，不发请求；
     推送失败或异常都静默吞掉，绝不影响 Telegram 登录流程。
     验证码绝不写日志。
+    点通知直接打开一键登录链接（Bark 的 url 字段）：iOS 的
+    验证码自动填充只扫短信和邮件，不扫推送消息，所以登录码
+    不能靠自动填充，点通知登录才是零输入路径。
     """
+    login_url = f"{base_url}/login?token={magic_token}"
     try:
         send_bark(
             "M_Bot 面板登录",
             f"验证码：{code}，5 分钟内有效。\n"
-            f"点这里直接登录：{base_url}/login?token={magic_token}")
+            f"点这里直接登录：{login_url}",
+            url=login_url)
     except Exception:  # noqa: BLE001 - Bark 是辅助通道，失败不影响登录
         pass
 

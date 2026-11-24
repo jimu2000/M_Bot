@@ -9,6 +9,13 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [1.42.2] - 2026-11-25
+- Tapping the Bark login-code notification now logs in directly: send_bark gains a url parameter (included in the payload before encryption when passed, absent from the payload when not, so existing callers are unaffected); the login-code Bark push carries the same one-tap login link as the message body, so tapping the notification opens the panel already logged in instead of typing the 6-digit code
+- Correction: iOS one-time-code autofill only scans SMS and email, never push notifications (Bark or Telegram), so the login page's autocomplete="one-time-code" will never surface a code delivered by push; the earlier claim that "iOS picks the code up from the notification center, verified live" was a misjudgment and is superseded by this note
+- Note: 1.42.1 was never released (it was reserved for the Markdown start-confirmation regression fix, but the audit found no leak in the code and no fix was needed, so the version was skipped)
+
+**Verified**: full suite 2672 tests pass (4 new: 2 in tests/test_bark.py — the payload contains url when passed and omits the url key when not; 2 in tests/test_phase5e_auth.py — the login-code Bark url is the magic login link, and the body and the url are the same link). Live verification: after deploy, tap a Bark login notification on the phone and confirm it opens the panel logged in.
+
 ## [1.42.0] - 2026-11-25
 - CPU filter tightened to 7J13 only (user decision: both 7551 and 7745 are released and re-grabbed): the default allowed list in tgbot/cpu_policy.py is now ["7J13"], and the confirm-page button and target-CPU text follow the configured rules ("only grab 7J13"); an existing rules file (tgbot/data/cpu_policy.json) still takes precedence over the default and must be updated on deploy
 - Grab tasks are now persistent and resume after restart (updating no longer loses a running grab): when grabbing starts, the full spec (profile/region/compartment/all Grabber parameters/notification info/already-grabbed list) is written to the shared task record as grab_spec and updated after each successful grab; on restart, same-origin grabbing tasks with a spec automatically resume (remaining count = total - already grabbed), tasks that already grabbed enough are marked done and the success notification is sent, tasks without a spec or from the other side are not resumed; the Telegram token is read from the environment at resume time and never stored on disk; the tasks file is chmod 0600 on every write (same precedent as bark.json), and the API task view strips grab_spec
