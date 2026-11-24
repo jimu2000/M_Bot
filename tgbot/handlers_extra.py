@@ -3386,8 +3386,8 @@ async def handle_bootswap(update, context):
     await _reply(
         update, context,
         f"💾 引导卷恢复：给实例「{name}」选一个备份：\n\n"
-        "恢复流程：从备份建新启动盘 → 停机 → 换盘 → 开机。\n"
-        "旧盘只拆不删，仍占启动盘额度。",
+        "恢复流程：从备份建新启动盘 → 停机 → 换盘 → 开机 → 删除旧盘。\n"
+        "恢复成功后旧启动盘会自动删除，不留旧盘占额度。",
         reply_markup=InlineKeyboardMarkup(rows))
 
 
@@ -3422,9 +3422,10 @@ async def bootswap_callback(update, context):
         "① 从备份创建新启动盘\n"
         "② 实例停机\n"
         "③ 拆下旧启动盘，挂上新盘\n"
-        "④ 重新开机\n\n"
+        "④ 重新开机\n"
+        "⑤ 删除旧启动盘\n\n"
         "⚠️ 恢复后系统盘回到备份时的状态，备份之后的数据会丢失；\n"
-        "旧盘只拆不删，仍占启动盘额度，确认新盘没问题后请手动删除。\n"
+        "恢复成功后旧启动盘会自动删除，不留旧盘占额度。\n"
         "整个过程约几分钟，完成后会发通知。"
     )
     await _reply(update, context, text,
@@ -3450,11 +3451,13 @@ def _bootswap_thread(token, chat_id, profile, region, compartment,
                                   on_step=on_step)
         old_tail = (result.get("old_boot_volume_id") or "")[-4:]
         new_tail = (result.get("new_boot_volume_id") or "")[-4:]
+        old_note = ("已删除，额度已释放" if result.get("old_volume_deleted")
+                    else "已拆下，自动删除失败，请手动删除")
         body = (
             f"✅ 实例「{instance_name}」引导卷恢复成功。\n"
             f"备份：{backup_name}\n"
             f"新启动盘：…{new_tail}\n"
-            f"旧启动盘：…{old_tail}（已拆下，未删除，仍占额度）\n"
+            f"旧启动盘：…{old_tail}（{old_note}）\n"
             + ("实例已重新开机。"
                if result.get("was_running") else "实例保持停止状态。"))
         notify_dual(token, chat_id, "💾 引导卷恢复成功", body,

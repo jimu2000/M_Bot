@@ -483,19 +483,22 @@ def _run_bootswap(registry, task_id, cli, compartment_id, instance_id,
         "old_boot_volume_id": result.get("old_boot_volume_id"),
         "new_boot_volume_id": result.get("new_boot_volume_id"),
         "was_running": result.get("was_running"),
+        "old_volume_deleted": result.get("old_volume_deleted"),
     })
     old_tail = (result.get("old_boot_volume_id") or "")[-4:]
     new_tail = (result.get("new_boot_volume_id") or "")[-4:]
+    old_note = ("已删除，额度已释放" if result.get("old_volume_deleted")
+                else "已拆下，自动删除失败，请手动删除")
     registry.append_log(
         task_id,
-        f"换盘成功：新盘 …{new_tail}，旧盘 …{old_tail}（已拆下，未删除）。")
+        f"换盘成功：新盘 …{new_tail}，旧盘 …{old_tail}（{old_note}）。")
     registry.set_status(task_id, "done")
     if notify:
         body = (
             f"✅ 实例「{instance_name}」引导卷恢复成功。\n"
             f"备份：{backup_name}\n"
             f"新启动盘：…{new_tail}\n"
-            f"旧启动盘：…{old_tail}（已拆下，未删除，仍占额度）\n"
+            f"旧启动盘：…{old_tail}（{old_note}）\n"
             + ("实例已重新开机。"
                if result.get("was_running") else "实例保持停止状态。"))
         try:

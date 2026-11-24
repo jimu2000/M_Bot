@@ -91,7 +91,7 @@ class _SwapCli:
                  fail_replace_after_attach=False, never_attach_new=False,
                  backup_state="AVAILABLE",
                  backup_size=47, used_gb=141, attachment_state="ATTACHED",
-                 attachment_present=True, fail_delete_new=False):
+                 attachment_present=True, fail_delete=False):
         self.get_states = list(get_states)
         self.get_calls = 0
         self.calls = []
@@ -103,7 +103,7 @@ class _SwapCli:
         self.used_gb = used_gb
         self.attachment_state = attachment_state
         self.attachment_present = attachment_present
-        self.fail_delete_new = fail_delete_new
+        self.fail_delete = fail_delete
         self._replace_called = False
 
     def run(self, args):
@@ -127,7 +127,7 @@ class _SwapCli:
         if head == ["bv", "boot-volume", "create"]:
             return {"data": {"id": FAKE_BV_NEW}}
         if head == ["bv", "boot-volume", "delete"]:
-            if self.fail_delete_new:
+            if self.fail_delete:
                 raise OCIError("delete new volume failed")
             return {}
         if head == self.REPLACE_HEAD:
@@ -314,18 +314,27 @@ class TestSwapHappyPath(unittest.TestCase):
         self.assertEqual(result["new_boot_volume_id"], FAKE_BV_NEW)
         self.assertFalse(result["rolled_back"])
         self.assertTrue(result["was_running"])
-        self.assertEqual(len(steps), 2)
+        self.assertTrue(result["old_volume_deleted"])
+        self.assertEqual(len(steps), 3)
         self.assertTrue(steps[0].startswith("①"))
         self.assertTrue(steps[1].startswith("②"))
-        # 关键命令都执行了，且顺序正确：建盘 → 原生换盘。
+        self.assertTrue(steps[2].startswith("③"))
+        # 关键命令都执行了，且顺序正确：建盘 → 原生换盘 → 删旧盘。
         heads = [tuple(c[:3]) for c in cli.calls]
         create_i = heads.index(("bv", "boot-volume", "create"))
         replace_i = heads.index(tuple(_SwapCli.REPLACE_HEAD))
+        delete_i = heads.index(("bv", "boot-volume", "delete"))
         self.assertLess(create_i, replace_i)
+        self.assertLess(replace_i, delete_i)
         replace_args = cli.calls[replace_i]
         self.assertIn(FAKE_BV_NEW, replace_args)
         self.assertIn(FAKE_INSTANCE, replace_args)
         self.assertIn("--force", replace_args)
+        # 删的是旧盘（不是新盘），且带 --force（delete 会弹确认）。
+        delete_args = cli.calls[delete_i]
+        self.assertIn(FAKE_BV_OLD, delete_args)
+        self.assertNotIn(FAKE_BV_NEW, delete_args)
+        self.assertIn("--force", delete_args)
         # 没有手动停机/拆盘/挂盘/开机命令（OCI 原生换盘内部处理）。
         for call in cli.calls:
             self.assertNotEqual(call[:3], ["compute", "instance", "action"])
@@ -348,10 +357,29 @@ class TestSwapHappyPath(unittest.TestCase):
             result = swap_boot_volume(cli, FAKE_COMPARTMENT, FAKE_INSTANCE,
                                       FAKE_BACKUP, on_step=steps.append)
         self.assertFalse(result["was_running"])
-        self.assertEqual(len(steps), 2)
+        self.assertTrue(result["old_volume_deleted"])
+        self.assertEqual(len(steps), 3)
         actions = [c for c in cli.calls
                    if c[:3] == ["compute", "instance", "action"]]
         self.assertEqual(actions, [])
+
+    def test_old_volume_delete_failure_still_succeeds(self):
+        """删旧盘失败不影响恢复结果，只标记 old_volume_deleted=False。"""
+        cli = _SwapCli(["RUNNING", "RUNNING", "RUNNING"],
+                       fail_delete=True)
+        steps = []
+        with patch("oci.boot_swap.time.sleep"):
+            result = swap_boot_volume(cli, FAKE_COMPARTMENT, FAKE_INSTANCE,
+                                      FAKE_BACKUP, on_step=steps.append)
+        self.assertFalse(result["old_volume_deleted"])
+        self.assertTrue(result["was_running"])
+        self.assertEqual(result["new_boot_volume_id"], FAKE_BV_NEW)
+        self.assertEqual(len(steps), 3)
+        # 删盘命令确实发了（只是执行失败），且删的是旧盘。
+        deletes = [c for c in cli.calls
+                   if c[:3] == ["bv", "boot-volume", "delete"]]
+        self.assertEqual(len(deletes), 1)
+        self.assertIn(FAKE_BV_OLD, deletes[0])
 
 
 class TestSwapReplaceFailure(unittest.TestCase):
@@ -377,7 +405,7 @@ class TestSwapReplaceFailure(unittest.TestCase):
 
     def test_replace_failure_cleanup_failure_noted(self):
         cli = _SwapCli(["RUNNING", "RUNNING", "RUNNING"],
-                       fail_replace=True, fail_delete_new=True)
+                       fail_replace=True, fail_delete=True)
         with patch("oci.boot_swap.time.sleep"):
             with self.assertRaises(BootSwapError) as ctx:
                 swap_boot_volume(cli, FAKE_COMPARTMENT, FAKE_INSTANCE,

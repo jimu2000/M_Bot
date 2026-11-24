@@ -9,6 +9,15 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [1.35.0] - 2026-11-24
+
+### Changed
+- Boot-volume restore now deletes the old boot volume after a successful swap instead of leaving it behind (user request, 2026-11-24): `swap_boot_volume` deletes the replaced old volume once the swap is confirmed and the instance is back to its pre-swap state (OCI refuses to delete a volume that is still attached, so a still-attached old volume can only fail the delete, never be deleted by mistake). A delete failure does not affect the restore result: the return value marks `old_volume_deleted=False`, and both the bot and web success messages warn the user to delete the old volume manually. The bot's selection and confirmation pages (step ⑤ "delete the old boot volume" added to the flow) and the web instance-page hint are updated to match; the success message's old-volume line now reads "deleted, quota freed" or "auto-delete failed, please delete manually".
+
+### Verification
+- Full test suite: 2474 tests, all passing (3 new: the happy path asserts the delete-old-volume command (old volume, not the new one, with --force, after the swap) and `old_volume_deleted=True`; a delete failure still succeeds the restore and marks False; bot and web delete-failure warning copy; 4 existing tests updated for the new behaviour: happy-path step count 2→3, bot and web success-message assertions now expect "deleted, quota freed").
+- Live verification: deployed to .160 and restarted the bot and the web panel; services are up with no errors in the log. A real swap-through verification needs the next actual restore (the old volume should be deleted automatically and the quota freed at the same time).
+
 ## [1.34.0] - 2026-11-24
 
 ### Added

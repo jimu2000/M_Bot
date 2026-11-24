@@ -294,7 +294,8 @@ class TestBootswapTaskRunner(unittest.TestCase):
                                  "new_boot_volume_id":
                                      "ocid1.bootvolume.oc1..newxxxx",
                                  "rolled_back": False,
-                                 "was_running": True}):
+                                 "was_running": True,
+                                 "old_volume_deleted": True}):
             _run_bootswap(registry, task_id, cli,
                           "ocid1.compartment.oc1..testxxxx",
                           FAKE_INSTANCE, "test-instance",
@@ -302,6 +303,32 @@ class TestBootswapTaskRunner(unittest.TestCase):
         task = registry.get(task_id)
         self.assertEqual(task["status"], "done")
         self.assertEqual(task["result"]["instance_id"], FAKE_INSTANCE)
+        self.assertTrue(task["result"]["old_volume_deleted"])
+        self.assertTrue(any("已删除，额度已释放" in log
+                            for log in task["logs"]))
+
+    def test_run_old_volume_delete_failed_warns(self):
+        """删旧盘失败时任务仍 done，日志里警告手动删除。"""
+        from web.tasks import TaskRegistry, _run_bootswap
+        registry = TaskRegistry()
+        task_id = registry.create("bootswap", detail="引导卷恢复：test")
+        cli = MagicMock()
+        with patch("web.tasks.swap_boot_volume",
+                   return_value={"old_boot_volume_id": FAKE_BV,
+                                 "new_boot_volume_id":
+                                     "ocid1.bootvolume.oc1..newxxxx",
+                                 "rolled_back": False,
+                                 "was_running": True,
+                                 "old_volume_deleted": False}):
+            _run_bootswap(registry, task_id, cli,
+                          "ocid1.compartment.oc1..testxxxx",
+                          FAKE_INSTANCE, "test-instance",
+                          FAKE_BACKUP, "old-backup", notify=None)
+        task = registry.get(task_id)
+        self.assertEqual(task["status"], "done")
+        self.assertFalse(task["result"]["old_volume_deleted"])
+        self.assertTrue(any("自动删除失败" in log
+                            for log in task["logs"]))
 
     def test_run_failure_sets_failed(self):
         from oci.boot_swap import BootSwapError

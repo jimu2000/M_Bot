@@ -307,7 +307,8 @@ class TestBootswapThread(unittest.TestCase):
                                 "new_boot_volume_id":
                                     "ocid1.bootvolume.oc1..newxxxx",
                                 "rolled_back": False,
-                                "was_running": True})
+                                "was_running": True,
+                                "old_volume_deleted": True})
     @patch.object(bot_config, "get_oci_client", return_value=MagicMock())
     def test_success(self, _mock_cli, _mock_swap, mock_notify):
         he._bootswap_thread("token", TEST_CHAT_ID, "DEFAULT",
@@ -319,7 +320,29 @@ class TestBootswapThread(unittest.TestCase):
         self.assertIn("💾 引导卷恢复成功", titles)
         body = mock_notify.call_args_list[-1].args[3]
         self.assertIn("已重新开机", body)
-        self.assertIn("仍占额度", body)
+        self.assertIn("已删除，额度已释放", body)
+
+    @patch.object(he, "notify_dual")
+    @patch.object(he, "swap_boot_volume",
+                  return_value={"old_boot_volume_id": FAKE_BV,
+                                "new_boot_volume_id":
+                                    "ocid1.bootvolume.oc1..newxxxx",
+                                "rolled_back": False,
+                                "was_running": True,
+                                "old_volume_deleted": False})
+    @patch.object(bot_config, "get_oci_client", return_value=MagicMock())
+    def test_old_volume_delete_failed_warns(self, _mock_cli, _mock_swap,
+                                            mock_notify):
+        """删旧盘失败时恢复仍算成功，消息里警告用户手动删除。"""
+        he._bootswap_thread("token", TEST_CHAT_ID, "DEFAULT",
+                            "ap-singapore-1", TEST_COMPARTMENT,
+                            FAKE_INSTANCE, "test-instance",
+                            FAKE_BACKUP, "old-backup")
+        titles = [c.args[2] for c in mock_notify.call_args_list]
+        self.assertIn("💾 引导卷恢复成功", titles)
+        body = mock_notify.call_args_list[-1].args[3]
+        self.assertIn("自动删除失败", body)
+        self.assertIn("手动删除", body)
 
     @patch.object(he, "notify_dual")
     @patch.object(he, "swap_boot_volume",

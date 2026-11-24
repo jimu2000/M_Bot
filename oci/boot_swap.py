@@ -5,7 +5,9 @@
   1. 从备份创建一个新的启动卷（与实例同一可用域，等到 AVAILABLE）；
   2. 调 OCI 原生换盘接口（update-instance-source-via-boot-volume-details）：
      OCI 自己停机、换盘、把实例恢复到换盘前状态，失败时自动回滚；
-  3. 轮询确认新盘已挂上、实例回到换盘前状态。
+  3. 轮询确认新盘已挂上、实例回到换盘前状态；
+  4. 删除换下来的旧启动盘（v1.35.0，用户定：不留旧盘占额度；
+     删除失败只警告，不影响恢复结果）。
 
 为什么不用手动 detach + attach：从备份恢复的启动盘调 attach 会报
 Conflict（2026-11-24 首尔真机验证实测），OCI 只支持用原生换盘接口
@@ -16,10 +18,11 @@ Conflict（2026-11-24 首尔真机验证实测），OCI 只支持用原生换盘
 本模块在失败后实查挂载关系与实例状态确认回滚结论（rolled_back），
 新盘未挂上时顺手删掉避免留孤儿盘占额度。
 
-旧盘只拆不删：换下来的旧启动盘保留为未挂载盘（用户确认新盘没问题后
-可自行在启动盘页面删除；它仍占启动盘免费额度，调用方应在结果消息里
-说明）。新盘创建前做启动盘额度预检（FREE_BOOT_VOLUME_GB），额度
-不够时直接拒绝，不动实例。
+旧盘自动删除（v1.35.0，用户定）：换盘成功、实例回到换盘前状态后，
+自动删除换下来的旧启动盘，不留旧盘占启动盘免费额度。删除失败不影响
+恢复结果，只在返回里标记 old_volume_deleted=False，调用方在结果消息
+里警告用户手动删除。新盘创建前做启动盘额度预检（FREE_BOOT_VOLUME_GB），
+额度不够时直接拒绝，不动实例（新盘先建、旧盘后删，峰值仍需额度）。
 
 原创实现，参考 OCI CLI 公开命令编写：
   oci bv boot-volume create --boot-volume-backup-id ...
@@ -281,7 +284,10 @@ def swap_boot_volume(cli, compartment_id, instance_id, backup_id,
 
     on_step：可选回调，每步开始时调 on_step(中文进度文本)。
     成功返回 {"old_boot_volume_id", "new_boot_volume_id",
-              "rolled_back": False, "was_running": bool}。
+              "rolled_back": False, "was_running": bool,
+              "old_volume_deleted": bool}（旧盘删除成功为 True；
+    删除失败时恢复仍算成功，old_volume_deleted 为 False，调用方
+    应在消息里警告用户手动删除旧盘）。
     失败抛 BootSwapError（替换失败时 OCI 会自动回滚，见
     rolled_back）或 ValueError（前置校验不通过：备份不可用 /
     实例状态不对 / 找不到挂载关系 / 额度不够）。
@@ -312,7 +318,7 @@ def swap_boot_volume(cli, compartment_id, instance_id, backup_id,
     if attachment is None:
         raise ValueError("找不到该实例当前挂载的启动盘，无法换盘。")
     old_volume_id = attachment.get("boot-volume-id")
-    # 前置校验 4：启动盘额度够放新盘（旧盘不删，新盘额外占额度）。
+    # 前置校验 4：启动盘额度够放新盘（新盘先建、旧盘后删，峰值仍需额度）。
     size_gb = backup.get("size-in-gbs") or 0
     ok, remaining = check_boot_volume_space(cli, compartment_id, size_gb)
     if not ok:
@@ -368,7 +374,19 @@ def swap_boot_volume(cli, compartment_id, instance_id, backup_id,
             old_boot_volume_id=old_volume_id,
             new_boot_volume_id=new_volume_id) from exc
 
+    # 第 3 步（v1.35.0）：换盘成功后删除旧启动盘，不留旧盘占额度。
+    # 旧盘此时已拆下（新盘已挂上且实例回到原状态）；OCI 拒绝删除仍
+    # 在用的盘，万一旧盘还挂着这里只会报错，不会误删。删除失败不影响
+    # 恢复结果，只在返回里标记，调用方在消息里警告用户手动删除。
+    step("③ 正在删除旧启动盘…")
+    old_volume_deleted = True
+    try:
+        delete_boot_volume(cli, old_volume_id)
+    except Exception:  # noqa: BLE001 - 删盘失败只警告，不影响恢复结果
+        old_volume_deleted = False
+
     return {"old_boot_volume_id": old_volume_id,
             "new_boot_volume_id": new_volume_id,
             "rolled_back": False,
-            "was_running": was_running}
+            "was_running": was_running,
+            "old_volume_deleted": old_volume_deleted}
