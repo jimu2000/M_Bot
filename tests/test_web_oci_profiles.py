@@ -346,6 +346,104 @@ class WebOciProfilesTestCase(unittest.TestCase):
         self.assertEqual(resp.status_code, 302)
         self.assertIn("/login", resp.headers["location"])
 
+    # ---------- 已配置账号的私钥补传（v1.37.1） ----------
+
+    def _setup_configured_profile(self, key_file):
+        """往临时配置里写一个已配置账号，并把 web PROFILES 指过去。"""
+        text = ("[TESTPROF]\nuser=%s\nfingerprint=%s\nkey_file=%s\n"
+                "tenancy=%s\nregion=ap-singapore-1\n"
+                % (FAKE_USER, FAKE_FINGERPRINT, key_file, FAKE_TENANCY))
+        with open(self._config_path, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        patcher = patch.object(web_config, "PROFILES", {
+            "TESTPROF": {"region": "ap-singapore-1",
+                         "compartment_id": FAKE_TENANCY}})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        for name in ("get_region_counts", "get_profile_regions"):
+            region_patcher = patch("web.routes.profiles.%s" % name,
+                                   return_value={})
+            region_patcher.start()
+            self.addCleanup(region_patcher.stop)
+
+    def _upload_key(self, profile, content, filename="key.pem"):
+        return self.client.post("/api/profiles/%s/key" % profile,
+                                files={"key_file": (filename, content)})
+
+    def test_list_profiles_shows_key_missing(self):
+        key_path = os.path.join(self._home, "missing.pem")
+        self._setup_configured_profile(key_path)
+        data = self.client.get("/api/profiles").json()
+        self.assertTrue(data["ok"])
+        item = [p for p in data["profiles"]
+                if p["name"] == "TESTPROF"][0]
+        self.assertEqual(item["key_file"], key_path)
+        self.assertFalse(item["key_ready"])
+
+    def test_list_profiles_shows_key_ready(self):
+        key_path = os.path.join(self._home, "ready.pem")
+        with open(key_path, "wb") as handle:
+            handle.write(FAKE_PEM)
+        self._setup_configured_profile(key_path)
+        data = self.client.get("/api/profiles").json()
+        item = [p for p in data["profiles"]
+                if p["name"] == "TESTPROF"][0]
+        self.assertTrue(item["key_ready"])
+
+    def test_upload_key_success(self):
+        key_path = os.path.join(self._home, ".oci", "oci_api_key.pem")
+        self._setup_configured_profile(key_path)
+        resp = self._upload_key("TESTPROF", FAKE_PEM, "oci_api_key.pem")
+        data = resp.json()
+        self.assertEqual(resp.status_code, 200, data)
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["key_file"], key_path)
+        self.assertTrue(data["key_ready"])
+        with open(key_path, "rb") as handle:
+            self.assertEqual(handle.read(), FAKE_PEM)
+        self.assertEqual(stat.S_IMODE(os.stat(key_path).st_mode), 0o600)
+        # 列表随之变已就位。
+        listed = self.client.get("/api/profiles").json()
+        item = [p for p in listed["profiles"]
+                if p["name"] == "TESTPROF"][0]
+        self.assertTrue(item["key_ready"])
+
+    def test_upload_key_rejects_non_key(self):
+        key_path = os.path.join(self._home, "key.pem")
+        self._setup_configured_profile(key_path)
+        resp = self._upload_key("TESTPROF", b"not a private key")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("不是私钥文件", resp.json()["error"])
+        self.assertFalse(os.path.exists(key_path))
+
+    def test_upload_key_unknown_profile(self):
+        self._setup_configured_profile(
+            os.path.join(self._home, "key.pem"))
+        resp = self._upload_key("NOPE", FAKE_PEM)
+        self.assertEqual(resp.status_code, 404)
+
+    def test_upload_key_path_outside_home_rejected(self):
+        self._setup_configured_profile("/etc/outside.pem")
+        resp = self._upload_key("TESTPROF", FAKE_PEM)
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("不在 home 下", resp.json()["error"])
+        self.assertFalse(os.path.exists("/etc/outside.pem"))
+
+    def test_upload_key_oversize_rejected(self):
+        key_path = os.path.join(self._home, "key.pem")
+        self._setup_configured_profile(key_path)
+        resp = self._upload_key("TESTPROF", b"A" * (16384 + 1))
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("超过 16KB", resp.json()["error"])
+        self.assertFalse(os.path.exists(key_path))
+
+    def test_upload_key_requires_login(self):
+        self._setup_configured_profile(
+            os.path.join(self._home, "key.pem"))
+        resp = self.anon.post("/api/profiles/TESTPROF/key",
+                              files={"key_file": ("key.pem", FAKE_PEM)})
+        self.assertEqual(resp.status_code, 401)
+
 
 if __name__ == "__main__":
     unittest.main()

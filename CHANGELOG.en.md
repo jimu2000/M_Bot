@@ -9,6 +9,12 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [1.37.2] - 2026-11-24
+- Configured accounts on the cloud accounts page can now upload their private key directly: the account list gains a key status column (ready/missing) and a private key upload control, writing the file to the account's key_file path (mode 600); accounts sharing one key are all fixed by a single upload; a key that is already in place can be replaced (with a confirmation prompt)
+- New endpoint POST /api/profiles/{profile}/key: the upload must be a private key file (rejected above 16KB) and the target path must be under home; GET /api/profiles now also returns key_file and key_ready per profile
+
+**Verification**: full test suite passes, 2536 tests (8 new in tests/test_web_oci_profiles.py covering list key status, successful upload with mode 600, and rejection of non-key/oversize/out-of-home/unknown-profile/unauthenticated uploads). Live verification on the test host: after the panel restarted, all three accounts showed their keys as missing, the upload endpoint worked, and the cloud report recovered once the key was in place.
+
 ## [1.37.1] - 2026-11-24
 - Fixed a re-run of the one-click install deleting the bot service: the token check in update mode used `.+`, which BRE grep treats as a literal plus sign and never matches, so every re-run concluded "no token" and stopped and removed the bot unit; the check now uses BRE-safe `.`, and the bot is kept when its unit still exists but the env file is lost
 - Fixed the panel still serving old code after a re-run install: the units were applied with `systemctl enable --now`, which does not restart an already-running service, so the old process kept serving old code (that was the /accounts 404); units are now applied with enable + restart

@@ -4,6 +4,11 @@
   - GET /api/profiles：返回已配置的账号列表，供前端 profile 下拉动态填充。
     每个 profile 就是一个账号；多区订阅的账号带 regions 列表（订阅的全部
     区域，主区排第一），前端据此显示二级区域下拉（单区账号不显示）。
+    列表还带 key_file（配置里的私钥路径）与 key_ready（私钥是否已在
+    服务器上），供云账户页显示私钥状态与补传私钥。
+  - POST /api/profiles/{profile}/key：给已配置的账号补传/替换私钥
+    （multipart：key_file 字段）。内容必须是私钥，路径必须在 home 下，
+    写盘权限 600；响应不回显私钥内容。
 
 返回形状：{"ok": true, "default": "DEFAULT",
           "profiles": [{name, region, regionLabel, regionCount, regions,
@@ -33,6 +38,8 @@ import time
 
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 
+from oci.client import read_oci_config_profiles
+from tgbot import handlers_client
 from tgbot.cf_config import mask_cf_email
 from tgbot.handlers_client import (
     add_profile_compartments,
@@ -116,6 +123,21 @@ def _key_path_under_home(path):
     return target == home or target.startswith(home + os.sep)
 
 
+def _configured_key_files():
+    """已配置账号的 key_file：{profile 名: key_file 路径}。
+
+    读的是与机器人 /uploadapi 同一份配置文件（handlers_client 的
+    OCI_CONFIG_PATH），只读配置文本，不读私钥文件本身。
+    """
+    try:
+        parsed = read_oci_config_profiles(
+            handlers_client.OCI_CONFIG_PATH)
+    except Exception:  # noqa: BLE001 - 配置读不到时当作无私钥信息
+        return {}
+    return {name: (fields.get("key_file") or "")
+            for name, fields in parsed.items()}
+
+
 def _ordered_regions(name, home_region, codes):
     """订阅区域列表（主区排第一，其余按代码排序）；查不到订阅列表时
     只返回主区（前端按单区处理，不显示二级菜单）。"""
@@ -133,9 +155,10 @@ def _ordered_regions(name, home_region, codes):
 @router.get("/api/profiles")
 def list_profiles(username: str = Depends(get_current_user)):
     """列出已配置的账号（profile）：名字、区域、区域中文名、订阅区数、
-    订阅区域列表、显示名。"""
+    订阅区域列表、显示名、私钥路径与私钥是否就位。"""
     counts = get_region_counts()
     regions = get_profile_regions()
+    key_files = _configured_key_files()
     profiles = [
         {
             "name": name,
@@ -146,11 +169,54 @@ def list_profiles(username: str = Depends(get_current_user)):
                                         regions.get(name)),
             "displayName": config.profile_display_name(
                 name, counts.get(name)),
+            "key_file": key_files.get(name, ""),
+            "key_ready": bool(key_files.get(name))
+                         and os.path.exists(key_files[name]),
         }
         for name, cfg in config.PROFILES.items()
     ]
     return {"ok": True, "default": config.DEFAULT_PROFILE,
             "profiles": profiles}
+
+
+@router.post("/api/profiles/{profile}/key")
+async def upload_profile_key(profile: str,
+                             key_file: UploadFile = File(...),
+                             username: str = Depends(get_current_user)):
+    """给已配置的账号补传/替换私钥（multipart，key_file 字段）。
+
+    写到该账号配置里的 key_file 路径（必须是 home 下的路径，写盘
+    权限 600）。内容必须是私钥文件，否则什么都不写。响应不回显
+    私钥内容。多账号共用同一 key_file 时，传一次就全好了。
+    """
+    if profile not in config.PROFILES:
+        return error_response(f"没有这个账号：{profile}", status_code=404)
+    target = _configured_key_files().get(profile, "")
+    if not target:
+        return error_response(f"账号「{profile}」的配置里没有 key_file",
+                              status_code=400)
+    if not _key_path_under_home(target):
+        return error_response("私钥路径不在 home 下，拒绝写入",
+                              status_code=400)
+    raw = await key_file.read(MAX_PEM_BYTES + 1)
+    await key_file.close()
+    if len(raw) > MAX_PEM_BYTES:
+        return error_response("私钥文件超过 16KB", status_code=400)
+    if not _is_private_key_pem(raw):
+        return error_response("上传的不是私钥文件"
+                              "（需含 -----BEGIN ... PRIVATE KEY-----）",
+                              status_code=400)
+    try:
+        parent = os.path.dirname(target)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(target, "wb") as handle:
+            handle.write(raw)
+        os.chmod(target, 0o600)
+    except OSError as exc:
+        return error_response(f"写入私钥失败：{exc}", status_code=500)
+    return {"ok": True, "profile": profile, "key_file": target,
+            "key_ready": True}
 
 
 @router.post("/api/profiles/parse")

@@ -35,7 +35,7 @@
       var table = el("table", null, "table");
       var head = document.createElement("thead");
       var headRow = document.createElement("tr");
-      ["账号", "主区域", "订阅区域数", "显示名"].forEach(function (h) {
+      ["账号", "主区域", "订阅区域数", "显示名", "私钥状态", "上传私钥"].forEach(function (h) {
         headRow.appendChild(el("th", h, null));
       });
       head.appendChild(headRow);
@@ -47,12 +47,55 @@
         row.appendChild(el("td", p.regionLabel || p.region, null));
         row.appendChild(el("td", p.regionCount == null ? "—" : String(p.regionCount), null));
         row.appendChild(el("td", p.displayName || p.name, null));
+        row.appendChild(el("td", p.key_ready ? "已就位"
+          : (p.key_file ? "缺失，需上传" : "未配置"), null));
+        var uploadCell = document.createElement("td");
+        if (p.key_file) {
+          var input = document.createElement("input");
+          input.type = "file";
+          input.id = "key-" + p.name;
+          input.accept = ".pem";
+          uploadCell.appendChild(input);
+          var btn = el("button", p.key_ready ? "替换" : "上传", "btn");
+          btn.type = "button";
+          btn.addEventListener("click", function () {
+            uploadProfileKey(p.name, p.key_ready);
+          });
+          uploadCell.appendChild(btn);
+        } else {
+          uploadCell.textContent = "—";
+        }
+        row.appendChild(uploadCell);
         body.appendChild(row);
       });
       table.appendChild(body);
       box.appendChild(table);
     } catch (err) {
       box.textContent = "加载失败：" + (err.message || err);
+    }
+  }
+
+  /* 给已配置的账号补传/替换私钥：文件写到该账号配置里的 key_file 路径。 */
+  async function uploadProfileKey(profile, keyReady) {
+    var input = document.getElementById("key-" + profile);
+    if (!input || !input.files || input.files.length === 0) {
+      MBot.toast("请先选择 .pem 私钥文件。");
+      return;
+    }
+    if (keyReady && !window.confirm("该账号私钥已就位，确定要替换吗？")) {
+      return;
+    }
+    var formData = new FormData();
+    formData.append("key_file", input.files[0]);
+    try {
+      var res = await fetch("/api/profiles/" + encodeURIComponent(profile) + "/key",
+        { method: "POST", body: formData, credentials: "same-origin" });
+      var data = await res.json();
+      if (!data.ok) throw new Error(apiError(data, "上传私钥失败"));
+      MBot.toast("私钥已保存到 " + data.key_file + "。");
+      loadAccounts();
+    } catch (err) {
+      MBot.toast("上传失败：" + (err.message || err));
     }
   }
 
