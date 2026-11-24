@@ -808,7 +808,7 @@ class TestCreateAndTasksApi(WebApiTestCase):
         """带全字段创建时，全部新字段透传给 Grabber（阶段 3b 接入）。
 
         target_cpu 非空时按 CPU 规则翻译成配置里的型号列表
-        （默认 7J13/7745），启动 keys 用拼进 guard 公钥的合并文件。
+        （默认 7J13），启动 keys 用拼进 guard 公钥的合并文件。
         """
         mock_keys.return_value.__enter__.return_value = BootKeys(
             path="/tmp/combined.pub", guard_included=True)

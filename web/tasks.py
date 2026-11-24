@@ -11,11 +11,12 @@ status：pending / running / done / failed / cancelled。
 对外返回的任务视图不含 stop_event（不可 JSON 序列化）。
 
 持久化：任务记录（不含 stop_event）保存到 DATA_DIR/tasks.json；
-服务重启时加载，之前还在跑的任务标记为 cancelled（进程已死，
-线程不可能还在跑）。
+服务重启时，带抢机规格（grab_spec）的抢机任务按规格恢复重跑，
+其余还在跑的任务标记为 cancelled（进程已死，线程不可能还在跑）。
 """
 
 import json
+import logging
 import os
 import threading
 import time
@@ -25,12 +26,14 @@ from oci.boot_swap import BootSwapError, swap_boot_volume
 from oci.client import OCIClient, QuotaExceededError
 from oci.grabber import GrabCancelledError, Grabber
 from oci.network import get_public_ip, wait_for_public_ip
+from tgbot import config as bot_config
 from tgbot import task_store
 from tgbot.billing import FREE_SHAPES
 from tgbot.cpu_policy import (combined_boot_keys,
                               get_allowed_cpu_models, make_cpu_check_hook)
 from tgbot.handlers_client import run_remote_command
 from tgbot.notify import (
+    fmt_notify_outcome,
     fmt_paid_instance_alert,
     notify_boot_success,
     notify_dual,
@@ -83,6 +86,8 @@ PLAN_MAX_MEMORY_GB = 24
 PLAN_SYNC_INTERVAL_SECONDS = 60
 # =====================================================
 
+logger = logging.getLogger(__name__)
+
 
 class TaskRegistry:
     """后台长任务的注册表：线程安全，支持创建/查询/日志/取消。
@@ -128,12 +133,30 @@ class TaskRegistry:
     def get(self, task_id):
         """取任务的公开视图；不存在返回 None（含机器人建的任务）。"""
         with self._lock:
-            return task_store.get_record(self.tasks_file, task_id)
+            record = task_store.get_record(self.tasks_file, task_id)
+            if record is None:
+                return None
+            return task_store.public_record(record)
 
     def list(self):
         """全部任务的公开视图列表（按注册顺序，含机器人建的任务）。"""
         with self._lock:
-            return task_store.load_records(self.tasks_file)
+            return [task_store.public_record(record)
+                    for record in task_store.load_records(self.tasks_file)]
+
+    def attach(self, task_id):
+        """把共享文件里已有的任务接进本进程（启动恢复抢机用）。
+
+        只补 stop_event（网页版注册表不存内存任务副本）；
+        记录不存在返回 False。
+        """
+        with self._lock:
+            if task_id in self._stop_events:
+                return True
+            if task_store.get_record(self.tasks_file, task_id) is None:
+                return False
+            self._stop_events[task_id] = threading.Event()
+            return True
 
     def stop_event(self, task_id):
         """取任务的 stop_event（任务循环里检查它）；任务不存在或
@@ -238,6 +261,10 @@ def _notify_grab_success(registry, task_id, cli, params, result, notify):
             registry.append_log(
                 task_id,
                 "开机成功通知部分失败：" + "; ".join(outcome["errors"]))
+        else:
+            # 成功也要留一行记录：推送丢了才有据可查（2026-11-24
+            # 用户实问：网页创建后没收到 Bark，日志里却没有任何记录）。
+            registry.append_log(task_id, fmt_notify_outcome(outcome))
         if shape not in FREE_SHAPES:
             paid = notify_dual(
                 notify.get("token"), notify.get("chat_id"),
@@ -256,7 +283,7 @@ def _notify_grab_success(registry, task_id, cli, params, result, notify):
 
 
 def _run_grabber(registry, task_id, cli, compartment_id, params,
-                 notify=None):
+                 notify=None, resume_spec=None):
     """抢机线程体（daemon 线程里跑）。
 
     进度通过 on_event 回调写进任务日志；结束时更新任务状态与结果。
@@ -264,12 +291,33 @@ def _run_grabber(registry, task_id, cli, compartment_id, params,
     notify 不为空时，抢机成功后双通道推送开机成功通知（TG + Bark，
     含 root 密码；见 _notify_grab_success）。
     target_cpu 非空时按 tgbot/cpu_policy.py 的规则筛 CPU（只留
-    配置里的型号，默认 7J13/7745）：开机时把 guard 公钥拼进启动
+    配置里的型号，默认 7J13）：开机时把 guard 公钥拼进启动
     SSH keys，Grabber 注入 cpu_check_hook，抢到先 SSH 验 CPU，
     不符释放（永删引导卷）继续抢；guard 密钥未配置时筛不了，
     日志里写明并抢到即留。
+    持久化：启动时把完整抢机规格写进共享任务记录（grab_spec），
+    抢到后立即更新已抢列表；服务重启后 resume_interrupted_grabs
+    按它恢复抢机（resume_spec 传进来时就是恢复启动）。规格写盘
+    失败只记日志，不影响抢机本身。
     """
     registry.set_status(task_id, "running")
+
+    # 抢机规格写盘（恢复启动时沿用传进来的那份，不重建）。
+    if resume_spec is not None:
+        spec = resume_spec
+    else:
+        spec = None
+        if registry.tasks_file:
+            try:
+                spec = task_store.build_grab_spec(
+                    cli.profile, cli.region, compartment_id, params,
+                    notify)
+                task_store.update_record(
+                    registry.tasks_file, task_id, fields={"grab_spec": spec})
+            except Exception as exc:  # noqa: BLE001 - 规格写盘失败不拖垮抢机
+                logger.warning("抢机规格写盘失败（任务 %s）：%s",
+                               task_id, exc)
+                spec = None
 
     cpu_unverified = False
 
@@ -319,6 +367,18 @@ def _run_grabber(registry, task_id, cli, compartment_id, params,
             if hook is not None:
                 grabber.cpu_check_hook = hook
             result = grabber.run()
+            # 抢到后立即把成功写进规格：标 done 之前进程死了，
+            # 恢复时按已抢满处理，不会重复再抢一台。
+            if spec is not None and registry.tasks_file:
+                try:
+                    spec["successes"] = [
+                        task_store.grab_success_to_dict(result)]
+                    task_store.update_record(
+                        registry.tasks_file, task_id,
+                        fields={"grab_spec": spec})
+                except Exception as exc:  # noqa: BLE001 - 写盘失败不拖垮抢机
+                    logger.warning("抢机进度写盘失败（任务 %s）：%s",
+                                   task_id, exc)
     except GrabCancelledError:
         registry.set_status(task_id, "cancelled")
         registry.append_log(task_id, "抢机已取消。")
@@ -389,6 +449,122 @@ def start_grab_task(registry, cli, compartment_id, params,
         daemon=True)
     thread.start()
     return task_id
+
+
+# ---------------- 抢机任务启动恢复 ----------------
+
+def _resume_notify(spec):
+    """恢复用的 notify 字典：规格里存的字段 + 现读的 token。"""
+    notify = dict(spec.get("notify") or {})
+    notify["token"] = bot_config.TELEGRAM_BOT_TOKEN
+    return notify
+
+
+def _relaunch_grab(registry, record, spec):
+    """按规格重新拉起一个抢机线程（启动恢复用）。"""
+    task_id = record["id"]
+    params = spec["params"]
+    try:
+        cli = OCIClient(profile=spec.get("profile") or "DEFAULT",
+                        region=spec.get("region") or "ap-singapore-1")
+    except Exception as exc:  # noqa: BLE001 - 账号配不上时任务标失败，不炸启动
+        logger.warning("恢复抢机 %s：建 OCI 客户端失败：%s", task_id, exc)
+        registry.attach(task_id)
+        registry.set_status(task_id, "failed")
+        registry.append_log(task_id,
+                            f"重启后恢复抢机失败：建 OCI 客户端失败：{exc}")
+        return
+    registry.attach(task_id)
+    registry.append_log(task_id, "🔄 重启后恢复抢机")
+    logger.info("恢复抢机 %s：%s", task_id, params.get("display_name"))
+    thread = threading.Thread(
+        target=_run_grabber,
+        args=(registry, task_id, cli, spec.get("compartment_id"),
+              dict(params), _resume_notify(spec)),
+        kwargs={"resume_spec": spec},
+        daemon=True)
+    thread.start()
+
+
+def _finish_resumed_grab(registry, record, spec, successes):
+    """已抢满的恢复任务：标记完成、写结果、后台补发成功通知。
+
+    状态还是 running 说明成功通知还没发出去（线程里的顺序是
+    先标 done 再通知），所以这里要补发；补发在后台线程里做
+    （等公网 IP 最长 60 秒，不能堵面板启动）。
+    """
+    task_id = record["id"]
+    params = spec["params"]
+    result = successes[0]
+    registry.set_result(task_id, {
+        "instance_id": result.instance_id,
+        "attempts": result.attempts,
+        "releases": result.releases,
+        "elapsed_seconds": round(result.elapsed_seconds, 1),
+    })
+    registry.append_log(
+        task_id,
+        f"抢机完成：实例 …{result.instance_id[-4:]}，"
+        f"共尝试 {result.attempts} 次，"
+        f"释放 {result.releases} 台 CPU 不符，"
+        f"总耗时 {result.elapsed_seconds:.0f} 秒。"
+        "（服务重启后恢复，抢机已完成）")
+    registry.set_status(task_id, "done")
+
+    def _notify_in_background():
+        try:
+            cli = OCIClient(profile=spec.get("profile") or "DEFAULT",
+                            region=spec.get("region") or "ap-singapore-1")
+        except Exception as exc:  # noqa: BLE001 - 客户端建不出就不补通知
+            logger.warning("恢复抢机 %s：补发通知时建 OCI 客户端失败：%s",
+                           task_id, exc)
+            return
+        _notify_grab_success(registry, task_id, cli, dict(params), result,
+                             _resume_notify(spec))
+
+    threading.Thread(target=_notify_in_background, daemon=True).start()
+
+
+def resume_interrupted_grabs(registry=None):
+    """启动恢复（web lifespan 调用，代替 TASKS.recover()）。
+
+    面板进程重启时：本来源还在跑的抢机任务按任务记录里的
+    grab_spec 恢复重跑，其余本来源未结束任务按老规矩标为
+    已中断；机器人端的任务绝不碰。已抢满台数的任务标记完成
+    并补发成功通知；无规格或非本来源的抢机任务不恢复。
+    """
+    registry = registry or TASKS
+    path = registry.tasks_file
+    if not path:
+        registry.recover()
+        return
+    records = task_store.load_records(path)
+    resumable = []
+    for record in records:
+        if record.get("origin", "web") != "web":
+            continue
+        if record.get("kind") != "grab":
+            continue
+        if record.get("status") not in ("pending", "running"):
+            continue
+        spec = record.get("grab_spec")
+        if not isinstance(spec, dict) or not spec.get("params"):
+            continue
+        resumable.append((record, spec))
+    relaunch = []
+    for record, spec in resumable:
+        count = (spec["params"].get("count", 1) or 1)
+        successes = [task_store.grab_success_from_dict(s)
+                     for s in spec.get("successes", [])]
+        if len(successes) >= count:
+            _finish_resumed_grab(registry, record, spec, successes)
+        else:
+            relaunch.append((record, spec))
+    # 其余本来源未结束任务标为已中断（要重跑的跳过）。
+    task_store.recover_interrupted(
+        path, "web", keep_ids=[r["id"] for r, _ in relaunch])
+    for record, spec in relaunch:
+        _relaunch_grab(registry, record, spec)
 
 
 # ---------------- 引导卷恢复（停机换盘，原地恢复） ----------------

@@ -556,7 +556,7 @@ def build_preset(form, deploy=None):
         "ocpus": ocpus,
         "memory_gb": memory_gb,
         # E2 默认筛 CPU：只留配置里的型号（cpu_policy.json，默认
-        # 7J13/7745）。target_cpu 非空即开筛，实际列表在抢机时从
+        # 7J13）。target_cpu 非空即开筛，实际列表在抢机时从
         # 配置读，见 handlers_extra._run_grabber_thread。
         "target_cpu": TARGET_CPU if shape == SHAPE_E2_MICRO else None,
         "display_name": generate_display_name(shape, ocpus, memory_gb),

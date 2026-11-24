@@ -485,6 +485,42 @@ class TaskRegistry:
                     detail=detail, log=detail)
             return True
 
+    def append_log(self, task_id, message):
+        """往任务日志追加一条消息（不改详情与状态）。
+
+        共享模式下写进共享文件；纯内存模式下记进内存任务的
+        logs 列表。任务不存在返回 False。
+        """
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None:
+                return False
+            if self.tasks_file:
+                task_store.update_record(
+                    self.tasks_file, task_id, log=message)
+            else:
+                task.setdefault("logs", []).append(message)
+            return True
+
+    def attach(self, task_id):
+        """把共享文件里已有的任务接进内存（启动恢复抢机用）。
+
+        不新建记录，只给本进程补一个带 stop_event 的内存副本；
+        记录不存在或纯内存模式时返回 False。
+        """
+        with self._lock:
+            if task_id in self._tasks:
+                return True
+            if not self.tasks_file:
+                return False
+            record = task_store.get_record(self.tasks_file, task_id)
+            if record is None:
+                return False
+            task = self._record_to_task(record)
+            task["stop_event"] = threading.Event()
+            self._tasks[task_id] = task
+            return True
+
     def get(self, task_id):
         """取任务字典的浅拷贝；不存在返回 None。
 

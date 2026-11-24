@@ -45,24 +45,24 @@ class _PolicyPathMixin(unittest.TestCase):
 class TestPolicyLoadSave(_PolicyPathMixin):
 
     def test_missing_file_returns_defaults(self):
-        self.assertEqual(get_allowed_cpu_models(), ["7J13", "7745"])
+        self.assertEqual(get_allowed_cpu_models(), ["7J13"])
         self.assertEqual(load_cpu_policy(),
-                         {"allowed_cpu_models": ["7J13", "7745"]})
+                         {"allowed_cpu_models": ["7J13"]})
 
     def test_corrupt_file_returns_defaults(self):
         with open(self._policy, "w", encoding="utf-8") as f:
             f.write("not json {{{")
-        self.assertEqual(get_allowed_cpu_models(), ["7J13", "7745"])
+        self.assertEqual(get_allowed_cpu_models(), ["7J13"])
 
     def test_non_dict_returns_defaults(self):
         with open(self._policy, "w", encoding="utf-8") as f:
             json.dump(["7J13"], f)
-        self.assertEqual(get_allowed_cpu_models(), ["7J13", "7745"])
+        self.assertEqual(get_allowed_cpu_models(), ["7J13"])
 
     def test_empty_list_returns_defaults(self):
         with open(self._policy, "w", encoding="utf-8") as f:
             json.dump({"allowed_cpu_models": []}, f)
-        self.assertEqual(get_allowed_cpu_models(), ["7J13", "7745"])
+        self.assertEqual(get_allowed_cpu_models(), ["7J13"])
 
     def test_save_and_load_round_trip(self):
         self.assertTrue(save_cpu_policy(["7J13", " 7745 ", "7763"]))
@@ -95,7 +95,9 @@ class TestCpuMatches(_PolicyPathMixin):
         self.assertFalse(cpu_matches(None, ["7J13"]))
 
     def test_default_allowed_when_none(self):
-        self.assertTrue(cpu_matches("AMD EPYC 7745"))
+        self.assertTrue(cpu_matches("AMD EPYC 7J13"))
+        # 默认只留 7J13：7745 不再是默认允许型号。
+        self.assertFalse(cpu_matches("AMD EPYC 7745"))
         self.assertFalse(cpu_matches("AMD EPYC 7551"))
 
 

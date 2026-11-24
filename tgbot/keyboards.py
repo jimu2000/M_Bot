@@ -370,7 +370,7 @@ def boot_confirm_keyboard(preset=None):
 
     E2 才有 CPU 选项行（只抢配置里的型号 / 什么 CPU 都可以），放在
     “开始抢机”上面；当前选中的带 ✅。型号列表读 cpu_policy.json，
-    默认 7J13/7745。A1 不筛 CPU，不显示该行。
+    默认 7J13。A1 不筛 CPU，不显示该行。
     preset 为 None 时按旧行为（无选项行，兼容旧调用）。
     """
     rows = []

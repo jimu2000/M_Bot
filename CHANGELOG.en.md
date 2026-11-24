@@ -9,6 +9,16 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [1.42.0] - 2026-11-25
+- CPU filter tightened to 7J13 only (user decision: both 7551 and 7745 are released and re-grabbed): the default allowed list in tgbot/cpu_policy.py is now ["7J13"], and the confirm-page button and target-CPU text follow the configured rules ("only grab 7J13"); an existing rules file (tgbot/data/cpu_policy.json) still takes precedence over the default and must be updated on deploy
+- Grab tasks are now persistent and resume after restart (updating no longer loses a running grab): when grabbing starts, the full spec (profile/region/compartment/all Grabber parameters/notification info/already-grabbed list) is written to the shared task record as grab_spec and updated after each successful grab; on restart, same-origin grabbing tasks with a spec automatically resume (remaining count = total - already grabbed), tasks that already grabbed enough are marked done and the success notification is sent, tasks without a spec or from the other side are not resumed; the Telegram token is read from the environment at resume time and never stored on disk; the tasks file is chmod 0600 on every write (same precedent as bark.json), and the API task view strips grab_spec
+- The Grabber's user_data temp file is recreated if deleted externally (previously created only once, so a deleted file made every launch fail)
+- Notification observability: every grab-success notification now leaves one result line in the task log whether it succeeded or not ("通知：Telegram 已发送，Bark 已发送" / "Bark 未配置，已跳过"; partial failures keep the existing wording), and the bot also logs it (into the journal), so a lost push can be traced
+- The instances page no longer shows stale empty CPU models: the instance list request no longer uses the 15-minute frontend cache (fresh fetch on every page visit; the 30-second server cache is enough protection); after rendering, if any instance still has no CPU model, the list is re-fetched once after ~5 seconds with refresh=1 and only the CPU model text on the cards is updated
+- The boot volume dialog on the instances page gains a "恢复启动卷" (restore boot volume) button (next to "备份启动卷", before "取消"), reusing the existing boot-volume restore flow and backend from the instance detail page
+
+**Verified**: full suite 2668 tests pass (17 new: tests/test_v1420_grab_resume.py, covering spec persistence, resume with the correct remaining count, already-complete marking, 0600 permissions, no-spec/other-origin not resumed, user_data recreation, and the three notification-log cases; plus updated default assertions and text assertions for the CPU rule). Live verification: the frontend CPU refresh and the restore button need checking in the browser; restart the bot after deploy to verify grab resume.
+
 ## [1.41.1] - 2026-11-24
 - The orphans endpoint no longer runs its own queries: it reuses the boot volume list cache and filters it (orphan = AVAILABLE and not attached, matching oci.volume.list_orphan_boot_volumes), cold load ~5.0s → ~3.4s; volumes page cold total ~13.5s → ~5.1s (as stated in v1.41.0)
 

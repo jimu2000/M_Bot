@@ -23,6 +23,7 @@
   var bootswapTarget = null; // 待恢复引导卷的实例
   var bootswapSelected = null; // 已选备份的 OCID
   var bootBackupDelTarget = null; // 待删历史备份的实例
+  var cpuRefreshTimer = null; // CPU 型号延迟补拉的定时器（每轮只补拉一次）
   var consoleCommand = ""; // 当前串行控制台连接命令（供复制）
 
   var BATCH_LABEL = {
@@ -170,7 +171,7 @@
           '<div class="instance-meta">' +
             '<div class="instance-meta-row"><span class="instance-meta-label">公网 IP</span><span class="instance-meta-value">' + ipCell + "</span></div>" +
             '<div class="instance-meta-row"><span class="instance-meta-label">Shape</span><span class="instance-meta-value mono">' + esc(fmtShape(inst.shape)) + "</span></div>" +
-            '<div class="instance-meta-row"><span class="instance-meta-label">CPU 型号</span><span class="instance-meta-value mono">' + esc(inst.cpuModel || "未检测") + "</span></div>" +
+            '<div class="instance-meta-row"><span class="instance-meta-label">CPU 型号</span><span class="instance-meta-value mono" data-cpu-model="1">' + esc(inst.cpuModel || "未检测") + "</span></div>" +
             '<div class="instance-meta-row"><span class="instance-meta-label">规格</span><span class="instance-meta-value">' + esc(spec) + "</span></div>" +
             '<div class="instance-meta-row"><span class="instance-meta-label">启动盘</span><span class="instance-meta-value">' + bootVolumeCell(inst) + "</span></div>" +
             '<div class="instance-meta-row"><span class="instance-meta-label">创建时间</span><span class="instance-meta-value">' + created + "</span></div>" +
@@ -183,12 +184,19 @@
     updateBatchBar();
   }
 
-  // 加载实例列表（走前端缓存；force=true 时跳过前端缓存并带 refresh=1
-  // 绕过服务端缓存）。后端并行取公网 IP + 30 秒服务端缓存，首次约 3-5 秒。
-  // 实例与启动盘两个请求并行发（复用 volumes 页的 "vol:list:" 缓存键），
-  // 启动盘按 instanceId 拼到卡片上；启动盘拉取失败时降级（卡片显示"—"），
-  // 不影响实例列表。切账号/区域期间旧请求的结果直接丢弃，不覆盖新数据。
+  // 加载实例列表（实例请求不走前端缓存，每次进页重新拉：CPU 型号是
+  // 后端收到第一次请求后才触发检测的，缓存里的旧空值会让卡片一直
+  // 显示“未检测”；后端 30 秒服务端缓存已足够保护。force=true 时
+  // 再带 refresh=1 绕过服务端缓存）。后端并行取公网 IP，首次约 3-5 秒。
+  // 实例与启动盘两个请求并行发（启动盘复用 volumes 页的 "vol:list:"
+  // 缓存键），启动盘按 instanceId 拼到卡片上；启动盘拉取失败时降级
+  // （卡片显示"—"），不影响实例列表。切账号/区域期间旧请求的结果
+  // 直接丢弃，不覆盖新数据。
   async function loadInstances(force) {
+    if (cpuRefreshTimer) {
+      clearTimeout(cpuRefreshTimer);
+      cpuRefreshTimer = null;
+    }
     var profileAtStart = currentProfile;
     var regionAtStart = currentRegion;
     if (force) {
@@ -202,7 +210,7 @@
       if (force) volUrl += (volUrl.indexOf("?") === -1 ? "?" : "&") + "refresh=1";
       // 两个请求同时发出，启动盘失败时降级为 null（不影响实例列表）。
       var volPromise = MBot.cachedApi("vol:list:" + (currentProfile || "DEFAULT") + ":" + (currentRegion || ""), volUrl, !!force).catch(function () { return null; });
-      var data = await MBot.cachedApi("inst:" + (currentProfile || "DEFAULT") + ":" + (currentRegion || ""), url, !!force);
+      var data = await MBot.api(url);
       if (profileAtStart !== currentProfile || regionAtStart !== currentRegion) return;
       instances = data.instances || [];
       var volData = await volPromise;
@@ -224,6 +232,7 @@
       });
       loading = false;
       render();
+      scheduleCpuRefresh();
     } catch (err) {
       if (profileAtStart !== currentProfile || regionAtStart !== currentRegion) return;
       loading = false;
@@ -231,6 +240,44 @@
         '<p class="instance-error">加载失败：' +
         MBot.escapeHtml(err.message) + "</p>";
       document.getElementById("instance-empty").hidden = true;
+    }
+  }
+
+  // CPU 型号延迟补拉：后端收到第一次列表请求时才触发 CPU 检测（SSH 查
+  // /proc/cpuinfo，要 1-3 秒），当时返回的 cpuModel 还是空；5 秒后带
+  // refresh=1 重新拉一次（绕过 30 秒服务端缓存），只更新卡片上的
+  // CPU 型号文字，不整页重绘。每轮列表加载只补拉一次（检测不到的
+  // 机器不再反复刷），切账号/区域后旧定时器在 loadInstances 里清掉。
+  function scheduleCpuRefresh() {
+    if (cpuRefreshTimer) return;
+    var missing = instances.some(function (inst) { return !inst.cpuModel; });
+    if (!missing) return;
+    cpuRefreshTimer = setTimeout(function () {
+      cpuRefreshTimer = null;
+      refreshCpuModels();
+    }, 5000);
+  }
+
+  async function refreshCpuModels() {
+    var profileAtStart = currentProfile;
+    var regionAtStart = currentRegion;
+    try {
+      var url = MBot.withProfile("/api/instances", currentProfile, currentRegion);
+      url += (url.indexOf("?") === -1 ? "?" : "&") + "refresh=1";
+      var data = await MBot.api(url);
+      if (profileAtStart !== currentProfile || regionAtStart !== currentRegion) return;
+      (data.instances || []).forEach(function (fresh) {
+        if (!fresh.cpuModel) return;
+        instances.forEach(function (inst) {
+          if (String(inst.id) === String(fresh.id)) inst.cpuModel = fresh.cpuModel;
+        });
+        var card = document.querySelector('[data-instance-id="' + fresh.id + '"]');
+        if (!card) return;
+        var cell = card.querySelector("[data-cpu-model]");
+        if (cell) cell.textContent = fresh.cpuModel;
+      });
+    } catch (err) {
+      // 补拉失败静默（卡片仍显示“未检测”，下次进页再拉）。
     }
   }
 
@@ -949,6 +996,15 @@
       if (!bootVolumeTarget || !bootVolumeTarget.volumeId) return;
       var created = await MBot.backupBootVolume(bootVolumeTarget.volumeId, currentProfile);
       if (created) MBot.closeModal("boot-volume-modal");
+    });
+
+    // 启动盘弹窗里的"恢复启动卷"：复用详情页的引导卷恢复流程
+    // （showBootswap 读 detailTarget，把启动盘弹窗的实例放进去即可）
+    document.getElementById("btn-boot-volume-restore").addEventListener("click", function () {
+      if (!bootVolumeTarget || !bootVolumeTarget.instance) return;
+      detailTarget = bootVolumeTarget.instance;
+      MBot.closeModal("boot-volume-modal");
+      showBootswap();
     });
 
     // 启动盘扩容：前端先校验新容量大于当前容量，后端再校验一次

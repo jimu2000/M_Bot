@@ -57,10 +57,11 @@ async def _lifespan(app):
     MBOT_ENABLE_PLAN_SCHEDULER=1 才启动；巡检调度器同理，
     环境变量 MBOT_ENABLE_INSPECT_SCHEDULER=1），测试不受影响。
     """
-    # 启动恢复：上次未结束的本进程任务标为已中断（机器人端的任务不动）。
-    from web.tasks import TASKS
+    # 启动恢复：本来源还在跑的抢机任务按 grab_spec 恢复重跑，
+    # 其余未结束任务标为已中断（机器人端的任务不动）。
+    from web.tasks import TASKS, resume_interrupted_grabs
 
-    TASKS.recover()
+    resume_interrupted_grabs(TASKS)
     if config.ENABLE_PLAN_SCHEDULER:
         from web.tasks import start_plan_scheduler
 

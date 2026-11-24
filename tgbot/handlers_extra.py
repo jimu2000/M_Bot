@@ -150,6 +150,7 @@ from tgbot.gfw import (
 )
 from tgbot.cpu_policy import (combined_boot_keys,
                               get_allowed_cpu_models, make_cpu_check_hook)
+from tgbot import task_store
 from tgbot.task_store import start_cancel_watcher
 from tgbot.handlers_client import put_remote_file, run_remote_command
 from tgbot.watchdog import (
@@ -160,9 +161,9 @@ from tgbot.watchdog import (
     parse_probe_output,
     probe_command,
 )
-from tgbot.notify import (DEFAULT_BOOT_DISK_GB, fmt_paid_instance_alert,
-                          notify_boot_success, notify_dual,
-                          start_ip_followup)
+from tgbot.notify import (DEFAULT_BOOT_DISK_GB, fmt_notify_outcome,
+                          fmt_paid_instance_alert, notify_boot_success,
+                          notify_dual, start_ip_followup)
 from tgbot.backup_watch import start_backup_watch
 from tgbot.paid_profiles import is_paid_profile, set_paid_profile
 from tgbot.monitoring import (
@@ -244,9 +245,9 @@ from oci.boot_swap import (
     get_boot_volume_attachment,
     swap_boot_volume,
 )
-from oci.client import QuotaExceededError
+from oci.client import OCIClient, QuotaExceededError
 from oci.email import create_sender, is_valid_email
-from oci.grabber import TARGET_CPU, Grabber, GrabCancelledError
+from oci.grabber import TARGET_CPU, Grabber, GrabCancelledError, GrabResult
 from oci.iam import (
     MAX_DESCRIPTION_LEN,
     add_user_to_group,
@@ -1808,7 +1809,8 @@ async def boot_preset_callback(update, context):
     await _reply(update, context, text, reply_markup=boot_confirm_keyboard(preset))
 
 
-def _run_grabber_thread(task_id, cli, compartment_id, preset, notify=None):
+def _run_grabber_thread(task_id, cli, compartment_id, preset, notify=None,
+                        resume_spec=None):
     """抢机线程体（daemon 线程里跑，不要在线程里直接调 Telegram API）。
 
     进度通过 on_event 回调写进任务 detail；结束时更新任务状态。
@@ -1818,7 +1820,7 @@ def _run_grabber_thread(task_id, cli, compartment_id, preset, notify=None):
     停下并在详情里写已抢到的台数。
     新参数（表单/快捷开机的新字段）一律用 .get 兜底，旧版预设照常跑。
     注意：target_cpu 非空时按 tgbot/cpu_policy.py 的规则筛 CPU（只留
-    配置里的型号，默认 7J13/7745）：开机时把 guard 公钥拼进启动
+    配置里的型号，默认 7J13）：开机时把 guard 公钥拼进启动
     SSH keys，Grabber 注入 cpu_check_hook，抢到先 SSH 验 CPU，
     不符释放（永删引导卷）继续抢；guard 密钥未配置时筛不了，
     任务详情里写明并抢到即留。
@@ -1826,6 +1828,10 @@ def _run_grabber_thread(task_id, cli, compartment_id, preset, notify=None):
     "root_password"}，成功后双通道推送开机成功通知（TG + Bark，
     Bark 未开启时只推 TG；root_password 为空时不带密码行）。
     通知失败不影响任务状态，只记日志（密码绝不进日志）。
+    持久化：启动时把完整抢机规格写进共享任务记录（grab_spec），
+    每抢到一台就更新已抢列表；服务重启后 resume_interrupted_grabs
+    按它恢复抢机（resume_spec 传进来时就是恢复启动，已抢的不重抢）。
+    规格写盘失败只记日志，不影响抢机本身。
     """
     cpu_unverified = False
     filter_warning = None
@@ -1843,10 +1849,27 @@ def _run_grabber_thread(task_id, cli, compartment_id, preset, notify=None):
 
     count = preset.get("count", 1) or 1
     base_name = preset["display_name"]
-    successes = []
-    total_attempts = 0
-    total_releases = 0
-    total_elapsed = 0.0
+    if resume_spec is not None:
+        spec = resume_spec
+        successes = [task_store.grab_success_from_dict(s)
+                     for s in spec.get("successes", [])]
+    else:
+        spec = None
+        successes = []
+        if TASKS.tasks_file:
+            try:
+                spec = task_store.build_grab_spec(
+                    cli.profile, cli.region, compartment_id, preset,
+                    notify)
+                task_store.update_record(
+                    TASKS.tasks_file, task_id, fields={"grab_spec": spec})
+            except Exception as exc:  # noqa: BLE001 - 规格写盘失败不拖垮抢机
+                logger.warning("抢机规格写盘失败（任务 %s）：%s",
+                               task_id, exc)
+                spec = None
+    total_attempts = sum(r.attempts for r in successes)
+    total_releases = sum(r.releases for r in successes)
+    total_elapsed = sum(r.elapsed_seconds for r in successes)
     filtering = bool(preset.get("target_cpu"))
     try:
         with combined_boot_keys(preset.get("ssh_keys_file"),
@@ -1863,7 +1886,7 @@ def _run_grabber_thread(task_id, cli, compartment_id, preset, notify=None):
             else:
                 target_cpus = None
                 hook = None
-            for i in range(count):
+            for i in range(len(successes), count):
                 display_name = base_name if count == 1 else f"{base_name}-{i + 1}"
                 grabber = Grabber(
                     cli, compartment_id,
@@ -1888,6 +1911,19 @@ def _run_grabber_thread(task_id, cli, compartment_id, preset, notify=None):
                 total_attempts += result.attempts
                 total_releases += result.releases
                 total_elapsed += result.elapsed_seconds
+                # 每抢到一台就更新规格里的已抢列表：中途重启时
+                # 恢复线程按它算剩余台数，已抢的不重抢。
+                if spec is not None and TASKS.tasks_file:
+                    try:
+                        spec["successes"] = [
+                            task_store.grab_success_to_dict(r)
+                            for r in successes]
+                        task_store.update_record(
+                            TASKS.tasks_file, task_id,
+                            fields={"grab_spec": spec})
+                    except Exception as exc:  # noqa: BLE001 - 写盘失败不拖垮抢机
+                        logger.warning("抢机进度写盘失败（任务 %s）：%s",
+                                       task_id, exc)
     except GrabCancelledError:
         TASKS.update(task_id, status="cancelled", detail="抢机已取消。")
         return
@@ -1923,10 +1959,11 @@ def _run_grabber_thread(task_id, cli, compartment_id, preset, notify=None):
     if notify:
         notify_with_flag = dict(notify)
         notify_with_flag["cpu_unverified"] = cpu_unverified
-        _notify_boot_success(cli, preset, successes, notify_with_flag)
+        _notify_boot_success(cli, preset, successes, notify_with_flag,
+                             task_id=task_id)
 
 
-def _notify_boot_success(cli, preset, successes, notify):
+def _notify_boot_success(cli, preset, successes, notify, task_id=None):
     """抢机成功后的双通道推送（线程内调用）。
 
     每台等公网 IP（刚开出来 VNIC 可能还没 IP，最长等 60 秒）；
@@ -1934,6 +1971,8 @@ def _notify_boot_success(cli, preset, successes, notify):
     IP 一出来补发一条 Telegram 消息（2026-11-24 用户实问：只等
     9 秒经常拿不到 IP，之后再也不补发）。
     通知函数本身不抛异常；这里再包一层，绝不让通知拖垮线程。
+    无论成败都留一行结果：记 logger（进 journal）+ 写任务日志
+    （task_id 传了才写），推送丢了有据可查。
     """
     try:
         instances = []
@@ -1971,8 +2010,13 @@ def _notify_boot_success(cli, preset, successes, notify):
             ssh_key_set=bool(preset.get("ssh_keys_file")),
             cpu_unverified=notify.get("cpu_unverified", False))
         if result.get("errors"):
-            logger.warning("开机成功通知部分失败：%s",
-                           "; ".join(result["errors"]))
+            line = "开机成功通知部分失败：" + "; ".join(result["errors"])
+            logger.warning("%s", line)
+        else:
+            line = fmt_notify_outcome(result)
+            logger.info("%s", line)
+        if task_id is not None:
+            TASKS.append_log(task_id, line)
         # 付费规格实例：额外发一条置顶提醒 + Bark（用户要求 2026-11-24，
         # 一定做）。免费形状（A1.Flex / E2.1.Micro）不发。
         if shape not in FREE_SHAPES:
@@ -1989,6 +2033,133 @@ def _notify_boot_success(cli, preset, successes, notify):
                                "; ".join(paid["errors"]))
     except Exception:  # noqa: BLE001 - 通知绝不能拖垮抢机线程
         logger.exception("开机成功通知异常")
+
+
+def _resume_notify(spec):
+    """恢复用的 notify 字典：规格里存的字段 + 现读的 token。"""
+    notify = dict(spec.get("notify") or {})
+    notify["token"] = bot_config.TELEGRAM_BOT_TOKEN
+    return notify
+
+
+def _relaunch_grab(record, spec):
+    """按规格重新拉起一个抢机线程（启动恢复用）。"""
+    task_id = record["id"]
+    params = spec["params"]
+    preset = dict(params)
+    try:
+        cli = OCIClient(profile=spec.get("profile") or "DEFAULT",
+                        region=spec.get("region") or "ap-singapore-1")
+    except Exception as exc:  # noqa: BLE001 - 账号配不上时任务标失败，不炸启动
+        logger.warning("恢复抢机 %s：建 OCI 客户端失败：%s", task_id, exc)
+        if TASKS.attach(task_id):
+            TASKS.update(task_id, status="failed",
+                         detail=f"重启后恢复抢机失败：建 OCI 客户端失败：{exc}")
+        return
+    if not TASKS.attach(task_id):
+        return
+    TASKS.append_log(task_id, "🔄 重启后恢复抢机")
+    remaining = (preset.get("count", 1) or 1) - len(spec.get("successes", []))
+    logger.info("恢复抢机 %s：%s，剩余 %d 台",
+                task_id, preset.get("display_name"), remaining)
+    thread = threading.Thread(
+        target=_run_grabber_thread,
+        args=(task_id, cli, spec.get("compartment_id"), preset,
+              _resume_notify(spec)),
+        kwargs={"resume_spec": spec},
+        daemon=True)
+    thread.start()
+
+
+def _finish_resumed_grab(record, spec, successes):
+    """已抢满的恢复任务：标记完成、保存快捷开机、后台补发成功通知。
+
+    状态还是 running 说明成功通知还没发出去（线程里的顺序是
+    先标 done 再通知），所以这里要补发；补发在后台线程里做
+    （等公网 IP 最长 60 秒，不能堵机器人启动）。
+    """
+    task_id = record["id"]
+    params = spec["params"]
+    preset = dict(params)
+    count = preset.get("count", 1) or 1
+    if count == 1:
+        result = successes[0]
+        detail = (f"抢到实例 …{result.instance_id[-4:]}，"
+                  f"尝试 {result.attempts} 次，"
+                  f"释放 {result.releases} 台 CPU 不符，"
+                  f"总耗时 {fmt_duration(result.elapsed_seconds)}。")
+    else:
+        ids = "、".join(f"…{r.instance_id[-4:]}" for r in successes)
+        detail = (f"抢到 {len(successes)} 台实例：{ids}，"
+                  f"共尝试 {sum(r.attempts for r in successes)} 次，"
+                  f"释放 {sum(r.releases for r in successes)} 台 CPU 不符，"
+                  f"总耗时 {fmt_duration(sum(r.elapsed_seconds for r in successes))}。")
+    detail += "（服务重启后恢复，抢机已完成）"
+    if not TASKS.attach(task_id):
+        return
+    TASKS.update(task_id, status="done", detail=detail)
+    saved = {key: value for key, value in preset.items()
+             if key not in ("user_data", "root_password")}
+    try:
+        save_preset(saved)
+    except Exception:  # noqa: BLE001 - 保存失败不影响完成状态
+        pass
+
+    def _notify_in_background():
+        try:
+            cli = OCIClient(profile=spec.get("profile") or "DEFAULT",
+                            region=spec.get("region") or "ap-singapore-1")
+        except Exception as exc:  # noqa: BLE001 - 客户端建不出就不补通知
+            logger.warning("恢复抢机 %s：补发通知时建 OCI 客户端失败：%s",
+                           task_id, exc)
+            return
+        _notify_boot_success(cli, preset, successes, _resume_notify(spec),
+                             task_id=task_id)
+
+    threading.Thread(target=_notify_in_background, daemon=True).start()
+
+
+def resume_interrupted_grabs():
+    """启动恢复（bot main() 调用，代替 TASKS.recover()）。
+
+    机器人进程重启时：本来源还在跑的抢机任务按任务记录里的
+    grab_spec 恢复重跑（剩余台数 = count - 已抢到），其余本来源
+    未结束任务按老规矩标为已中断；网页端的任务绝不碰。
+    已抢满台数的任务标记完成并补发成功通知；无规格或非本来源
+    的抢机任务不恢复。
+    """
+    path = TASKS.tasks_file
+    if not path:
+        TASKS.recover()
+        return
+    records = task_store.load_records(path)
+    resumable = []
+    for record in records:
+        if record.get("origin", "web") != TASKS.origin:
+            continue
+        if record.get("kind") != "grab":
+            continue
+        if record.get("status") not in ("pending", "running"):
+            continue
+        spec = record.get("grab_spec")
+        if not isinstance(spec, dict) or not spec.get("params"):
+            continue
+        resumable.append((record, spec))
+    relaunch = []
+    for record, spec in resumable:
+        params = spec["params"]
+        count = params.get("count", 1) or 1
+        successes = [task_store.grab_success_from_dict(s)
+                     for s in spec.get("successes", [])]
+        if len(successes) >= count:
+            _finish_resumed_grab(record, spec, successes)
+        else:
+            relaunch.append((record, spec))
+    # 其余本来源未结束任务标为已中断（要重跑的跳过）。
+    task_store.recover_interrupted(
+        path, TASKS.origin, keep_ids=[r["id"] for r, _ in relaunch])
+    for record, spec in relaunch:
+        _relaunch_grab(record, spec)
 
 
 @require_allowed

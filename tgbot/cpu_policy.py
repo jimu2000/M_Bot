@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """CPU 筛选规则配置（抢机只留指定 CPU 型号）。
 
-规则存在 tgbot/data/cpu_policy.json（0600），默认只留 7J13 与 7745
-（用户 2026-11-23 / 2026-11-24 定：E2 随机分配的 AMD CPU 里，7J13
-最好、7745 常见，两者都留，其余释放继续抢；释放时永久删引导卷，
-见 oci/grabber.py 的 terminate_instance）。
+规则存在 tgbot/data/cpu_policy.json（0600），默认只留 7J13
+（用户 2026-11-24 晚收紧：只留 7J13，7551 与 7745 都抛弃重抢；
+释放时永久删引导卷，见 oci/grabber.py 的 terminate_instance）。
 
 本模块还提供抢机时用的两个配套工具：
   - combined_boot_keys：开机时把 guard 公钥拼进启动 SSH keys，
@@ -28,7 +27,7 @@ from oci.network import wait_for_public_ip
 
 # ================= 配置区（改这里） =================
 # 默认允许的 CPU 型号子串（抢机只留含这些子串的 CPU）。
-DEFAULT_ALLOWED_CPU_MODELS = ["7J13", "7745"]
+DEFAULT_ALLOWED_CPU_MODELS = ["7J13"]
 # 规则文件（tgbot/data/ 下，0600；不存在/损坏时用默认值）。
 POLICY_FILENAME = "cpu_policy.json"
 # CPU 检查：等公网 IP 最长 60 秒；SSH 查不到时最多试 10 次、间隔 15 秒

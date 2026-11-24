@@ -32,7 +32,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tgbot import config as bot_config  # noqa: E402
 from tgbot import handlers, handlers_client, handlers_extra  # noqa: E402
 from tgbot import handlers_menu  # noqa: E402
-from tgbot.services import TASKS, run_sync  # noqa: E402
+from tgbot.services import run_sync  # noqa: E402
 
 # ================= 配置区（改这里） =================
 # 实例状态监控间隔（分钟）：check_instances_job 每隔这么久检查一次。
@@ -362,8 +362,9 @@ def main():
     _setup_logging()
     logger = logging.getLogger(__name__)
     application = build_application()
-    # 启动恢复：上次未结束的本进程任务标为已中断（网页端的任务不动）。
-    TASKS.recover()
+    # 启动恢复：本来源还在跑的抢机任务按 grab_spec 恢复重跑，
+    # 其余未结束任务标为已中断（网页端的任务不动）。
+    handlers_extra.resume_interrupted_grabs()
     logger.info("机器人启动，白名单用户：%s",
                 sorted(bot_config.ALLOWED_USER_IDS))
     application.run_polling(allowed_updates=["message", "callback_query"])

@@ -237,11 +237,14 @@ class Grabber:
         """user_data 非空时确保临时文件已建好，返回路径；空时返回 None。
 
         文件只建一次（多次 launch 共用），run() 结束时由 cleanup() 删除；
-        cleanup() 后再调会重新创建（run() 可重复调用）。
+        cleanup() 后再调会重新创建（run() 可重复调用）。文件被外部
+        删掉时也重建（2026-11-24 实问：/tmp 里的 user-data 文件被
+        误删后，抢机每次 launch 都因文件不存在失败，却一直不重建）。
         """
         if not self.user_data:
             return None
-        if self._user_data_file is None:
+        if (self._user_data_file is None
+                or not os.path.exists(self._user_data_file)):
             with tempfile.NamedTemporaryFile(
                     mode="w", encoding="utf-8", prefix="mbot-user-data-",
                     suffix=".sh", delete=False) as f:
