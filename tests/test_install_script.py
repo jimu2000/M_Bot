@@ -442,6 +442,46 @@ class TestInstallScript(unittest.TestCase):
         self.assertLess(install_fn.find("health_check"),
                         install_fn.find("self_test"))
 
+    def test_update_code_fallback_and_fail_loud(self):
+        # v1.37.0：一键安装必须拿到最新版。update_code 先 git pull，
+        # 失败时 fetch + reset 强制同步；两条路都失败就 die，
+        # 绝不静默用旧代码继续（旧文案“用现有代码继续”已删）。
+        self.assertIn("update_code() {", self.text)
+        update_fn = self.text.split("update_code() {")[1].split(
+            "\n}\n")[0]
+        self.assertIn("git pull --ff-only", update_fn)
+        self.assertNotIn("2>/dev/null", update_fn)
+        self.assertIn("git fetch origin main", update_fn)
+        self.assertIn("git reset --hard origin/main", update_fn)
+        self.assertIn("die \"代码更新失败", update_fn)
+        self.assertNotIn("用现有代码继续", self.text)
+
+    def test_install_and_upgrade_use_update_code(self):
+        # 安装（已有代码时）与 upgrade 子命令都走同一个 update_code。
+        install_fn = self.text.split("install_code() {")[1].split(
+            "\n}\n")[0]
+        self.assertIn("update_code", install_fn)
+        upgrade_fn = self.text.split("cmd_upgrade() {")[1].split(
+            "\n}\n")[0]
+        self.assertIn("update_code", upgrade_fn)
+
+    def test_version_reported_after_install(self):
+        # 装完/升完打印版本号，用户能直接看到拿到的是哪个版本。
+        self.assertIn("installed_version() {", self.text)
+        self.assertIn('ok "代码已就绪（版本 v$(installed_version)）。"',
+                      self.text)
+        self.assertIn('ok "升级完成（版本 v$(installed_version)）。"',
+                      self.text)
+        self.assertIn("代码已更新到 v$(installed_version)", self.text)
+
+    def test_keyring_write_noninteractive(self):
+        # v1.37.0：密钥环文件已存在时 gpg --dearmor 会弹 Overwrite 提问，
+        # 把无人值守的安装挂起；必须加 --batch --yes 直接覆盖。
+        self.assertIn("gpg --batch --yes --dearmor -o "
+                      "/usr/share/keyrings/nginx-archive-keyring.gpg",
+                      self.text)
+        self.assertNotIn("gpg --dearmor -o ", self.text)
+
 
 if __name__ == "__main__":
     unittest.main()

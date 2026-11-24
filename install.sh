@@ -187,7 +187,7 @@ setup_nginx_repo() {
     [ -n "$codename" ] \
         || { warn "读不到系统代号，nginx 用发行版自带版本。"; return 1; }
     if ! curl -fsSL https://nginx.org/keys/nginx_signing.key \
-            | gpg --dearmor -o /usr/share/keyrings/nginx-archive-keyring.gpg \
+            | gpg --batch --yes --dearmor -o /usr/share/keyrings/nginx-archive-keyring.gpg \
             2>/dev/null; then
         warn "nginx 签名密钥下载失败，nginx 用发行版自带版本。"
         return 1
@@ -336,11 +336,35 @@ prompt_config() {
 }
 
 # ---------- 代码 ----------
+# 把已安装的代码更新到最新版：先 git pull，快进失败时改用
+# fetch + reset 强制同步（只动 git 跟踪的代码文件；环境文件在
+# /root/.mbot.env、运行时数据与 __pycache__ 都不在 git 里，不受影响）；
+# 两条路都失败时直接退出，绝不静默用旧代码继续装。
+update_code() {
+    info "更新代码到最新版…"
+    if (cd "$INSTALL_DIR" && git pull --ff-only); then
+        ok "代码已更新到最新版。"
+        return 0
+    fi
+    warn "git pull 失败，改用 fetch + reset 强制同步到最新版…"
+    (cd "$INSTALL_DIR" && git fetch origin main \
+        && git reset --hard origin/main) \
+        || die "代码更新失败：拿不到最新版，停止安装（请检查网络，或手动处理 $INSTALL_DIR 的本地改动）。"
+    ok "代码已强制同步到最新版。"
+}
+
+installed_version() {
+    # 已安装代码的版本号（VERSION 文件内容，读不到时返回 unknown）。
+    if [ -f "$INSTALL_DIR/VERSION" ]; then
+        cat "$INSTALL_DIR/VERSION"
+    else
+        echo "unknown"
+    fi
+}
+
 install_code() {
     if [ -d "$INSTALL_DIR/.git" ]; then
-        info "更新代码（git pull）…"
-        (cd "$INSTALL_DIR" && git pull --ff-only 2>/dev/null) \
-            || warn "git pull 失败（可能有本地改动），用现有代码继续。"
+        update_code
     else
         info "克隆代码到 $INSTALL_DIR …"
         [ -e "$INSTALL_DIR" ] && die "$INSTALL_DIR 已存在但不是 git 仓库，请先移走它。"
@@ -351,7 +375,7 @@ install_code() {
         || die "代码缺 requirements.txt，克隆不完整，请删除 $INSTALL_DIR 重试。"
     [ -f "$INSTALL_DIR/web/app.py" ] \
         || die "代码缺 web/app.py，克隆不完整，请删除 $INSTALL_DIR 重试。"
-    ok "代码已就绪。"
+    ok "代码已就绪（版本 v$(installed_version)）。"
 }
 
 setup_venv() {
@@ -1666,7 +1690,7 @@ cmd_install() {
         print_access_info
     else
         echo
-        echo "更新完成：代码已更新，服务已重启。"
+        echo "更新完成：代码已更新到 v$(installed_version)，服务已重启。"
         echo "查看状态：bash install.sh status"
     fi
 }
@@ -1675,14 +1699,13 @@ cmd_upgrade() {
     require_root
     [ -d "$INSTALL_DIR/.git" ] || die "未安装（$INSTALL_DIR 不存在），先运行不带参数的安装。"
     info "升级：拉最新代码 → 装依赖 → 重启服务…"
-    (cd "$INSTALL_DIR" && git pull --ff-only) \
-        || die "git pull 失败（可能有本地改动），请手动处理。"
+    update_code
     "$VENV_DIR/bin/pip" install --quiet -r "$INSTALL_DIR/requirements.txt"
     "$VENV_DIR/bin/pip" install --quiet oci-cli
     # shellcheck disable=SC2086
     systemctl restart $(mbot_services)
     health_check || warn "健康检查有告警，见上面日志。"
-    ok "升级完成。"
+    ok "升级完成（版本 v$(installed_version)）。"
 }
 
 cmd_uninstall() {

@@ -11,7 +11,7 @@
 </div>
 
 <p style="color: var(--text-muted); margin-top: -8px;">
-  面板服务器的 ACME 证书状态（acme.sh 管理）；续期会跑 <span class="mono">acme.sh --renew</span>，执行前需二次确认。
+  面板服务器的证书状态（自动识别 acme.sh / certbot / lego / nginx 指向的证书）；续期仅支持 acme.sh 管理的证书，执行前需二次确认。
 </p>
 
 <div id="cert-loading" class="card" style="text-align: center; color: var(--text-muted);">
@@ -28,6 +28,7 @@
     <table class="data">
       <tbody>
         <tr><td style="width: 140px;">acme.sh</td><td id="cert-acme">—</td></tr>
+        <tr><td>来源</td><td id="cert-source">—</td></tr>
         <tr><td>域名</td><td id="cert-domain" class="mono">—</td></tr>
         <tr><td>颁发者</td><td id="cert-issuer">—</td></tr>
         <tr><td>生效时间</td><td id="cert-not-before">—</td></tr>

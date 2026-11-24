@@ -1,6 +1,6 @@
 # M_Bot Oracle开源管理面板
 
-> **当前版本：v1.36.0** · 更新记录见 [CHANGELOG.md](CHANGELOG.md)（[英文版 / English](CHANGELOG.en.md)）
+> **当前版本：v1.37.0** · 更新记录见 [CHANGELOG.md](CHANGELOG.md)（[英文版 / English](CHANGELOG.en.md)）
 
 [中文](#中文) | [English](#english)
 
@@ -53,6 +53,8 @@ Token 是机器人调用 Telegram Bot API 的通行证，格式是一串数字 +
 重新生成一串新的，旧的立即失效。
 
 **注意：** Token 谁拿到谁就能控制你的机器人，不要发到群聊、不要贴到公开地方。
+
+**注意：** 同一个 Token 只在一台机器上跑一个机器人。两台机器用同一个 Token 会互相抢消息，命令随机分到其中一台，另一台的配置缺失时就报错；测试用的第二台机器请新建一个机器人、拿新的 Token。
 
 ### 拿到 OCI API 密钥（详细步骤）
 
@@ -406,6 +408,11 @@ new one; the old one stops working immediately.
 
 **Note:** anyone with the token can control your bot — never post it in a
 group chat or anywhere public.
+
+**Note:** run only one bot per token, on one machine. Two machines sharing
+a token compete for updates, so commands land on a random one — and fail
+when that machine is missing the config. For a second test machine, create
+another bot and use its own token.
 
 ### Getting your OCI API key (step by step)
 

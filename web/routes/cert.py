@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """证书管理（阶段 5 工作包 E）：ACME 证书状态与续期。
 
-  - GET /api/cert/status：读面板服务器的 ACME 证书，返回 面板形状
+  - GET /api/cert/status：读面板服务器的证书，返回面板形状
     {acmeEnabled, domain, issuer, notBefore, notAfter, remainingHours,
-     status}；无证书时 status="none"，其余字段为 None。
+     status, source}；无证书时 status="none"，其余字段为 None。
+    证书按 acme.sh → certbot → lego → nginx（ssl_certificate 指向的
+    文件）的顺序找，source 标明找到的来源；续期只走 acme.sh。
   - POST /api/cert/renew：跑 acme.sh --renew 续期（body 须含 confirm=true），
     异步执行，返回 taskId；GET /api/cert/renew/{taskId} 查执行状态。
 
 证书路径：优先读环境变量 MBOT_ACME_HOME（默认 ~/.acme.sh），域名
 优先用查询参数 ?domain=，否则用环境变量 MBOT_CERT_DOMAIN，否则
-自动取 acme.sh 目录下第一个有 .cer 的域名。
+自动取第一个找到的证书（各来源内按字典序）。
 证书解析优先用 cryptography（已装时），否则调 openssl 命令行兜底。
 """
 
@@ -35,8 +37,22 @@ ACME_HOME = os.environ.get("MBOT_ACME_HOME",
                            os.path.expanduser("~/.acme.sh"))
 # acme.sh 可执行文件路径（默认 ACME_HOME 下的 acme.sh）。
 ACME_SH = os.environ.get("MBOT_ACME_SH", os.path.join(ACME_HOME, "acme.sh"))
-# 默认域名（不设时自动检测 acme.sh 目录下第一个有证书的域名）。
+# 默认域名（不设时自动检测第一个找到的证书的域名）。
 CERT_DOMAIN = os.environ.get("MBOT_CERT_DOMAIN", "")
+# certbot live 目录（默认 /etc/letsencrypt/live）。
+CERTBOT_LIVE_DIR = os.environ.get("MBOT_CERTBOT_LIVE_DIR",
+                                  "/etc/letsencrypt/live")
+# lego 证书目录（多个时冒号分隔；默认先用户目录后 /etc/lego）。
+LEGO_CERT_DIRS = [d for d in os.environ.get(
+    "MBOT_LEGO_CERT_DIRS",
+    os.path.join(os.path.expanduser("~"), ".lego", "certificates")
+    + ":/etc/lego/certificates").split(":") if d]
+# nginx 配置（找 ssl_certificate 用；面板自己的 vhost 放第一位）。
+NGINX_CONF_GLOBS = [
+    "/etc/nginx/conf.d/mbot-panel.conf",
+    "/etc/nginx/conf.d/*.conf",
+    "/etc/nginx/sites-enabled/*",
+]
 # 续期命令超时（秒）：acme.sh 续期含 DNS/HTTP 验证，一般 1 分钟内完成。
 RENEW_TIMEOUT_SECONDS = 300
 # 剩余时间小于这么多小时即判为“即将过期”（7 天）。
@@ -64,17 +80,159 @@ def _is_acme_enabled():
 def find_cert_file(domain=None):
     """找证书文件，返回 (域名, 证书路径)；找不到返回 (None, None)。
 
-    domain 指定时只查该域名的 <domain>.cer；不指定时扫描 ACME_HOME
-    下 */*.cer，取字典序第一个（结果稳定）。
+    domain 指定时查 <domain>/<domain>.cer，ECC 证书再查
+    <domain>_ecc/<domain>.cer；不指定时扫描 ACME_HOME 下 */*.cer，
+    取字典序第一个（跳过 ca.cer——那是中间证书，不是叶子证书），
+    域名去掉目录名末尾的 _ecc 后缀。
     """
     if domain:
-        path = os.path.join(ACME_HOME, domain, f"{domain}.cer")
+        for sub in (domain, f"{domain}_ecc"):
+            path = os.path.join(ACME_HOME, sub, f"{domain}.cer")
+            if os.path.isfile(path):
+                return domain, path
+        return None, None
+    matches = sorted(p for p in glob.glob(
+        os.path.join(ACME_HOME, "*", "*.cer"))
+        if os.path.basename(p) != "ca.cer")
+    if not matches:
+        return None, None
+    path = matches[0]
+    dirname = os.path.basename(os.path.dirname(path))
+    if dirname.endswith("_ecc"):
+        dirname = dirname[:-4]
+    return dirname, path
+
+
+def _find_certbot(domain=None):
+    """certbot 证书：<live>/<domain>/fullchain.pem。
+
+    domain 指定时只查该域名；不指定时扫描 live 下的 fullchain.pem，
+    取字典序第一个（结果稳定）。
+    """
+    if domain:
+        path = os.path.join(CERTBOT_LIVE_DIR, domain, "fullchain.pem")
         return (domain, path) if os.path.isfile(path) else (None, None)
-    matches = sorted(glob.glob(os.path.join(ACME_HOME, "*", "*.cer")))
+    matches = sorted(glob.glob(os.path.join(CERTBOT_LIVE_DIR, "*",
+                                            "fullchain.pem")))
     if not matches:
         return None, None
     path = matches[0]
     return os.path.basename(os.path.dirname(path)), path
+
+
+def _find_lego(domain=None):
+    """lego 证书：<lego>/certificates/<domain>.crt（多目录按序找）。
+
+    domain 指定时只查该域名；不指定时各目录内取字典序第一个 .crt。
+    """
+    for cert_dir in LEGO_CERT_DIRS:
+        if domain:
+            path = os.path.join(cert_dir, f"{domain}.crt")
+            if os.path.isfile(path):
+                return domain, path
+        else:
+            matches = sorted(glob.glob(os.path.join(cert_dir, "*.crt")))
+            if matches:
+                path = matches[0]
+                return os.path.basename(path)[:-4], path
+    return None, None
+
+
+_SSL_CERT_RE = re.compile(r"^\s*ssl_certificate\s+([^;\s]+)\s*;",
+                          re.MULTILINE)
+
+
+def _nginx_cert_paths():
+    """nginx 配置里的 ssl_certificate 路径（按配置文件顺序，去重，
+    只留真实存在的文件）。"""
+    paths = []
+    seen = set()
+    for pattern in NGINX_CONF_GLOBS:
+        for conf in sorted(glob.glob(pattern)):
+            try:
+                with open(conf, encoding="utf-8", errors="ignore") as f:
+                    content = f.read()
+            except OSError:
+                continue
+            for match in _SSL_CERT_RE.finditer(content):
+                path = match.group(1)
+                if path not in seen and os.path.isfile(path):
+                    seen.add(path)
+                    paths.append(path)
+    return paths
+
+
+def _cert_common_name(cert_path):
+    """证书的 CN（nginx 来源推导域名用）；取不到返回 None。"""
+    if _CRYPTOGRAPHY_AVAILABLE:
+        try:
+            with open(cert_path, "rb") as f:
+                cert = x509.load_pem_x509_certificate(f.read())
+            attrs = cert.subject.get_attributes_for_oid(
+                x509.NameOID.COMMON_NAME)
+            if attrs:
+                return attrs[0].value
+        except Exception:  # noqa: BLE001 - 解析失败时走 openssl 兜底
+            pass
+    try:
+        result = subprocess.run(
+            ["openssl", "x509", "-in", cert_path, "-noout", "-subject",
+             "-nameopt", "RFC2253"],
+            capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    match = re.search(r"(?:^|,)CN=([^,]+)", result.stdout)
+    return match.group(1) if match else None
+
+
+def _domain_from_cert_path(path):
+    """从证书路径推导域名：certbot live 目录名 / lego 文件名；
+    推导不出时读证书 CN；都取不到返回 None。"""
+    parts = path.split(os.sep)
+    if "live" in parts:
+        idx = parts.index("live")
+        if idx + 1 < len(parts):
+            return parts[idx + 1]
+    base = os.path.basename(path)
+    if base.endswith(".crt"):
+        return base[:-4]
+    return _cert_common_name(path)
+
+
+def _find_nginx_cert(domain=None):
+    """nginx 实际在用的证书（ssl_certificate 指向的文件）。
+
+    domain 指定时只接受推导域名一致的；不指定时取第一个。
+    """
+    for path in _nginx_cert_paths():
+        found = _domain_from_cert_path(path)
+        if domain and found != domain:
+            continue
+        return found, path
+    return None, None
+
+
+def find_cert_file_any(domain=None):
+    """找证书文件（多来源），返回 (域名, 证书路径, 来源)。
+
+    来源按序：acme.sh → certbot → lego → nginx（实际在用的证书）。
+    找不到返回 (None, None, None)。续期只走 acme.sh，不用这个函数。
+    """
+    found_domain, path = find_cert_file(domain)
+    if path is not None:
+        return found_domain, path, "acme.sh"
+    found_domain, path = _find_certbot(domain)
+    if path is not None:
+        return found_domain, path, "certbot"
+    found_domain, path = _find_lego(domain)
+    if path is not None:
+        return found_domain, path, "lego"
+    found_domain, path = _find_nginx_cert(domain)
+    if path is not None:
+        return found_domain, path, "nginx"
+    return None, None, None
 
 
 def _parse_with_cryptography(cert_path):
@@ -146,19 +304,22 @@ def get_cert_status(domain=None):
 
     status：none（无证书）/ valid（有效）/ expiring（7 天内过期）/
     expired（已过期）。remainingHours 为负数表示已过期这么多小时。
+    source：证书来源（acme.sh / certbot / lego / nginx，无证书时 None）。
     """
     acme_enabled = _is_acme_enabled()
     domain = domain or CERT_DOMAIN or None
-    found_domain, cert_path = find_cert_file(domain)
+    found_domain, cert_path, source = find_cert_file_any(domain)
     if cert_path is None:
         return {"acmeEnabled": acme_enabled, "domain": found_domain,
                 "issuer": None, "notBefore": None, "notAfter": None,
-                "remainingHours": None, "status": "none"}
+                "remainingHours": None, "status": "none",
+                "source": None}
     parsed = parse_cert(cert_path)
     if parsed is None:
         return {"acmeEnabled": acme_enabled, "domain": found_domain,
                 "issuer": None, "notBefore": None, "notAfter": None,
-                "remainingHours": None, "status": "none"}
+                "remainingHours": None, "status": "none",
+                "source": source}
     now = datetime.now(timezone.utc)
     remaining = parsed["notAfter"] - now
     remaining_hours = int(remaining.total_seconds() // 3600)
@@ -172,7 +333,8 @@ def get_cert_status(domain=None):
             "issuer": parsed["issuer"],
             "notBefore": _iso(parsed["notBefore"]),
             "notAfter": _iso(parsed["notAfter"]),
-            "remainingHours": remaining_hours, "status": status}
+            "remainingHours": remaining_hours, "status": status,
+            "source": source}
 
 
 # ---------------- 续期任务（异步） ----------------

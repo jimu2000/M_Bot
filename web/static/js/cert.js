@@ -12,6 +12,13 @@
     none: "无证书",
   };
 
+  var SOURCE_TEXT = {
+    "acme.sh": "acme.sh",
+    certbot: "certbot",
+    lego: "lego",
+    nginx: "nginx 配置",
+  };
+
   function fmtHours(hours) {
     if (hours == null) return "—";
     if (hours < 0) return "已过期 " + Math.abs(hours) + " 小时";
@@ -27,6 +34,8 @@
     MBot.api("/api/cert/status").then(function (res) {
       currentDomain = res.domain;
       document.getElementById("cert-acme").textContent = res.acmeEnabled ? "已安装" : "未安装";
+      document.getElementById("cert-source").textContent =
+        SOURCE_TEXT[res.source] || (res.source || "—");
       document.getElementById("cert-domain").textContent = res.domain || "—";
       document.getElementById("cert-issuer").textContent = res.issuer || "—";
       document.getElementById("cert-not-before").textContent =
@@ -40,11 +49,15 @@
         : res.status === "expiring" ? "var(--warning, #eab308)"
         : res.status === "expired" ? "var(--danger)" : "inherit";
       var renewBtn = document.getElementById("btn-renew-cert");
-      renewBtn.disabled = !res.domain || !res.acmeEnabled;
-      document.getElementById("cert-renew-hint").textContent =
-        !res.acmeEnabled ? "acme.sh 未安装，无法续期。"
-        : !res.domain ? "没有可续期的证书。"
-        : "";
+      var canRenew = res.domain && res.source === "acme.sh" && res.acmeEnabled;
+      renewBtn.disabled = !canRenew;
+      var hint = "";
+      if (!res.domain) hint = "没有可续期的证书。";
+      else if (res.source === "certbot") hint = "该证书由 certbot 管理续期，面板不做续期。";
+      else if (res.source === "lego") hint = "该证书由 lego 自动续期，面板不做续期。";
+      else if (res.source === "nginx") hint = "该证书不在 acme.sh 管理下，面板无法续期。";
+      else if (!res.acmeEnabled) hint = "acme.sh 未安装，无法续期。";
+      document.getElementById("cert-renew-hint").textContent = hint;
       document.getElementById("cert-loading").hidden = true;
       document.getElementById("cert-cards").hidden = false;
     }).catch(function (err) {

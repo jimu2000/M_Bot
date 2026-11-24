@@ -92,6 +92,23 @@ class CertTestCase(unittest.TestCase):
         self._acme_sh_patcher.start()
         self._domain_patcher = patch("web.routes.cert.CERT_DOMAIN", "")
         self._domain_patcher.start()
+        # 多来源回退的目录也指到临时空目录（与本机真实环境隔离）。
+        self.certbot_live = os.path.join(self._tmp.name, "live")
+        self.lego_dir = os.path.join(self._tmp.name, "lego")
+        self.nginx_dir = os.path.join(self._tmp.name, "nginx")
+        os.makedirs(self.certbot_live)
+        os.makedirs(self.lego_dir)
+        os.makedirs(self.nginx_dir)
+        self._certbot_patcher = patch("web.routes.cert.CERTBOT_LIVE_DIR",
+                                      self.certbot_live)
+        self._certbot_patcher.start()
+        self._lego_patcher = patch("web.routes.cert.LEGO_CERT_DIRS",
+                                   [self.lego_dir])
+        self._lego_patcher.start()
+        self._nginx_patcher = patch(
+            "web.routes.cert.NGINX_CONF_GLOBS",
+            [os.path.join(self.nginx_dir, "*.conf")])
+        self._nginx_patcher.start()
         self.client = TestClient(self.app)
         self.anon = TestClient(self.app)
         self.client.post("/api/auth/login",
@@ -102,6 +119,9 @@ class CertTestCase(unittest.TestCase):
         self._acme_home_patcher.stop()
         self._acme_sh_patcher.stop()
         self._domain_patcher.stop()
+        self._certbot_patcher.stop()
+        self._lego_patcher.stop()
+        self._nginx_patcher.stop()
         self._data_dir_patcher.stop()
         self._tmp.cleanup()
 
@@ -166,6 +186,30 @@ class TestCertStatus(CertTestCase):
     def test_bad_domain_400(self):
         r = self.client.get("/api/cert/status?domain=bad_domain!")
         self.assertEqual(r.status_code, 400)
+
+    def test_ecc_dir_skips_ca_cert(self):
+        # acme.sh 的 ECC 证书目录是 <domain>_ecc，里面 ca.cer 是中间证书
+        # （有效期更长），叶子证书是 <domain>.cer；状态页要显示叶子，
+        # 域名不带 _ecc 后缀；?domain= 也能找到 _ecc 目录里的证书。
+        ecc_dir = os.path.join(self.acme_home, f"{TEST_DOMAIN}_ecc")
+        os.makedirs(ecc_dir, exist_ok=True)
+        now = datetime.now(timezone.utc)
+        _make_self_signed_cert(now - timedelta(days=1),
+                                now + timedelta(days=1095),
+                                os.path.join(ecc_dir, "ca.cer"))
+        _make_self_signed_cert(now - timedelta(days=1),
+                                now + timedelta(days=30),
+                                os.path.join(ecc_dir, f"{TEST_DOMAIN}.cer"))
+        r = self.client.get("/api/cert/status")
+        body = r.json()
+        self.assertEqual(body["status"], "valid")
+        self.assertEqual(body["source"], "acme.sh")
+        self.assertEqual(body["domain"], TEST_DOMAIN)
+        # 剩余约 30 天（叶子），不是 1095 天（中间证书）。
+        self.assertLess(body["remainingHours"], 24 * 60)
+        r = self.client.get("/api/cert/status",
+                            params={"domain": TEST_DOMAIN})
+        self.assertEqual(r.json()["domain"], TEST_DOMAIN)
 
     def test_acme_not_installed(self):
         os.unlink(self.acme_sh)
@@ -248,6 +292,105 @@ class TestCertRenew(CertTestCase):
     def test_anon_401(self):
         r = self.anon.post("/api/cert/renew", json={"confirm": True})
         self.assertEqual(r.status_code, 401)
+
+
+class TestCertStatusSources(CertTestCase):
+    """GET /api/cert/status 的多来源回退（v1.37.0）。
+
+    acme.sh 无证书时按 certbot → lego → nginx 的顺序找；
+    找到的来源在响应里标明；续期仍只走 acme.sh。
+    """
+
+    def _valid_window(self):
+        now = datetime.now(timezone.utc)
+        return now - timedelta(days=1), now + timedelta(days=30)
+
+    def _write_certbot_cert(self, domain):
+        cert_dir = os.path.join(self.certbot_live, domain)
+        os.makedirs(cert_dir, exist_ok=True)
+        path = os.path.join(cert_dir, "fullchain.pem")
+        _make_self_signed_cert(*self._valid_window(), path)
+        return path
+
+    def _write_lego_cert(self, domain):
+        path = os.path.join(self.lego_dir, f"{domain}.crt")
+        _make_self_signed_cert(*self._valid_window(), path)
+        return path
+
+    def _write_nginx_conf(self, cert_path):
+        conf_path = os.path.join(self.nginx_dir, "panel.conf")
+        with open(conf_path, "w", encoding="utf-8") as f:
+            f.write("server {\n"
+                    f"    ssl_certificate {cert_path};\n"
+                    "    ssl_certificate_key /tmp/nonexistent.key;\n"
+                    "}\n")
+        return conf_path
+
+    def test_certbot_fallback(self):
+        self._write_certbot_cert(TEST_DOMAIN)
+        r = self.client.get("/api/cert/status")
+        data = r.json()
+        self.assertEqual(data["status"], "valid")
+        self.assertEqual(data["source"], "certbot")
+        self.assertEqual(data["domain"], TEST_DOMAIN)
+        self.assertIsNotNone(data["notAfter"])
+
+    def test_certbot_domain_param(self):
+        self._write_certbot_cert(TEST_DOMAIN)
+        self._write_certbot_cert("other.com")
+        r = self.client.get("/api/cert/status",
+                            params={"domain": "other.com"})
+        data = r.json()
+        self.assertEqual(data["domain"], "other.com")
+        self.assertEqual(data["source"], "certbot")
+        r = self.client.get("/api/cert/status",
+                            params={"domain": "missing.com"})
+        self.assertEqual(r.json()["status"], "none")
+
+    def test_lego_fallback(self):
+        self._write_lego_cert(TEST_DOMAIN)
+        r = self.client.get("/api/cert/status")
+        data = r.json()
+        self.assertEqual(data["status"], "valid")
+        self.assertEqual(data["source"], "lego")
+        self.assertEqual(data["domain"], TEST_DOMAIN)
+
+    def test_nginx_fallback_domain_from_cn(self):
+        # 证书在无规律路径下，域名只能从证书 CN 读。
+        cert_path = os.path.join(self._tmp.name, "random-name.pem")
+        _make_self_signed_cert(*self._valid_window(), cert_path)
+        self._write_nginx_conf(cert_path)
+        r = self.client.get("/api/cert/status")
+        data = r.json()
+        self.assertEqual(data["status"], "valid")
+        self.assertEqual(data["source"], "nginx")
+        self.assertEqual(data["domain"], TEST_DOMAIN)
+
+    def test_acme_takes_precedence(self):
+        self._write_cert(*self._valid_window())
+        self._write_certbot_cert(TEST_DOMAIN)
+        r = self.client.get("/api/cert/status")
+        data = r.json()
+        self.assertEqual(data["source"], "acme.sh")
+        self.assertEqual(data["status"], "valid")
+
+    def test_certbot_before_lego(self):
+        self._write_certbot_cert(TEST_DOMAIN)
+        self._write_lego_cert(TEST_DOMAIN)
+        r = self.client.get("/api/cert/status")
+        self.assertEqual(r.json()["source"], "certbot")
+
+    def test_no_cert_anywhere(self):
+        r = self.client.get("/api/cert/status")
+        data = r.json()
+        self.assertEqual(data["status"], "none")
+        self.assertIsNone(data["source"])
+        self.assertIsNone(data["domain"])
+
+    def test_renew_still_acme_only(self):
+        self._write_certbot_cert(TEST_DOMAIN)
+        r = self.client.post("/api/cert/renew", json={"confirm": True})
+        self.assertEqual(r.status_code, 404)
 
 
 if __name__ == "__main__":

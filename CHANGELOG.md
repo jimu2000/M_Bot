@@ -9,6 +9,15 @@
 
 ## [Unreleased]
 
+## [1.37.0] - 2026-11-24
+- 证书管理页现在能读 install.sh 装的证书：状态接口按 acme.sh → certbot → lego → nginx（ssl_certificate 指向的文件）的顺序找证书，响应里新增 source 字段标明来源；nginx 来源的域名从路径或证书 CN 推导。续期仍只走 acme.sh，certbot/lego 来源的证书页面会提示由其自动续期、面板不做续期
+- acme.sh 扫描跳过 ca.cer（中间证书），只读叶子证书；ECC 证书目录 `<domain>_ecc` 的域名不再带 _ecc 后缀显示，`?domain=` 也能找到 _ecc 目录里的证书
+- 一键安装保证最新版：install.sh 新增共用函数 update_code，安装（已有代码时）与 upgrade 子命令都走它——先 git pull，快进失败时改用 fetch + reset 强制同步到最新版，两条路都失败直接停住报错，绝不再静默用旧代码继续装；装完与升完都打印版本号
+- 一键安装全程无交互：nginx 仓库密钥写入加 `--batch --yes`，密钥环文件已存在时直接覆盖，不再弹 Overwrite 提问把安装挂起（之前重跑安装会在这一步停住，代码根本没更新到）
+- README 的 Token 教程补一条警告：同一个 Token 只在一台机器上跑一个机器人，两台机器共用 Token 会互相抢消息
+
+**验证**：全量测试 2525 个全过（新增 tests/test_phase5e_cert.py 9 个，覆盖 certbot/lego/nginx 回退、域名参数、来源优先级、续期仍只走 acme.sh、ECC 目录跳过中间证书；tests/test_install_script.py 4 个，覆盖 update_code 回退与报错、安装与升级共用、装完打印版本、密钥环写入非交互）。.160 真机验证：证书状态来源仍为 acme.sh，域名去掉 _ecc 后缀、有效期改显示叶子证书（2027-02-21）；.101 上关闭标准输入完整重跑一键安装，全程无提问、结束时版本为 v1.37.0，证书页正确读出 certbot 证书。
+
 ## [1.36.0] - 2026-11-24
 - 网页版新增云账户页（/accounts）：添加租户与机器人 /uploadapi 同步——粘贴 config 文本或上传 config 文件自动解析（支持 R-Bot 格式、一次多个账号），已存在的账号自动过滤跳过；私钥文件（.pem）在确认步骤直接上传（内容校验必须是私钥、600 权限保存、路径强制在 home 下），不经过 Telegram；配置里的 [cloudflare] 段一并保存；compartment 环境变量自动补写；新账号重启机器人与面板后生效
 - 解析→确认两步流程：解析返回 pending_id（10 分钟有效、一次性），确认时才写配置；响应里不回显 OCID、指纹与 Cloudflare 凭据值
