@@ -9,6 +9,22 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [1.31.0] - 2026-11-24
+
+### Added
+- The installer now auto-detects the local firewall type: ufw / firewalld / nftables / iptables — whichever is running is used to open SSH + 80 + 443 + 9527. When none is running, ufw is enabled if installed, otherwise skipped (ports are open by default). nft/iptables rules are inserted at the head of the chain (before any drop), with a warning that they do not survive a reboot and a suggestion to switch to ufw or firewalld.
+- On OCI instances, the installer opens the cloud security list via the OCI API: after confirming OCI through instance metadata, it uses the OCI CLI to add inbound rules for 80/443/9527 to the primary VNIC's subnet security list (or NSG rules when NSGs are attached). Authentication prefers an existing OCI config file and falls back to instance principals. Already-open ports (including all-protocol rules) are skipped; any failure only warns and prints manual steps without interrupting the install.
+- The Telegram bot Token is now optional: leaving it empty installs the panel only, without creating the bot service (panel login and instance management work normally; only Telegram login codes and the bot menu are unavailable). To add the bot later, fill in the Token and user ID in the env file and re-run the installer; management commands (start/stop/restart/status/log/upgrade) only touch services that actually exist.
+- Port 9527 occupied by another service no longer blocks the install: the firewall and cloud security list skip it (the reverse proxy cannot bind it, and opening it would only expose the other service); setup_nginx only warns and continues when a domain is given and port 443 is free (the panel uses 443), and fails only otherwise (verified on .129, where the R-Bot client holds 9527).
+
+### Fixed
+- The certbot domain certificate flow now uses `certonly --webroot`: previously `certbot --nginx` rewrote the nginx config and reloaded it, which failed when port 443 was already taken by xray — the certificate was issued but discarded. Now certbot only issues the certificate and the installer writes the 443 vhost itself, falling back to port 9527 when 443 is occupied (same as the cfdns path). A deploy hook reloads nginx after renewal, and the port-80 validation entry is kept for renewals.
+
+### Verification
+- Full test suite: 2457 tests, all passing (7 new: firewall detection, firewall backends, OCI cloud opening, rule-merging logic, optional Token, certbot webroot fallback, 9527-occupied skip; 5 existing tests updated for the renames).
+- The rule-merging logic was run separately against 6 cases, all passing (all-protocol rules count as open, TCP port-range coverage, NSG incremental rules with direction, EGRESS rules ignored, empty rules fully filled).
+- Live verification: full install on .101 (domain + Let's Encrypt certificate); see the v1.31.0 install verification notes below.
+
 ## [1.30.0] - 2026-11-24
 
 ### Added

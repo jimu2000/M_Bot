@@ -81,12 +81,18 @@ class TestInstallScript(unittest.TestCase):
 
     def test_selfsigned_and_certbot(self):
         self.assertIn("openssl req -x509", self.text)
-        self.assertIn("certbot --nginx", self.text)
+        # certbot 只发证不改 nginx 配置（certonly --webroot）：--nginx
+        # 会在 443 被 xray 占了时重载失败；不用 python3-certbot-nginx。
+        self.assertIn("certbot certonly --webroot", self.text)
+        self.assertNotIn("python3-certbot-nginx", self.text)
 
-    def test_ufw_ssh_safeguard(self):
-        # UFW 开启前必须先放行 SSH 端口（detect_ssh_port），不能把自己锁外面
+    def test_firewall_ssh_safeguard(self):
+        # 放行端口列表里必须含 SSH 端口（detect_ssh_port），UFW 开启前
+        # 不能把自己锁外面；UFW 分支仍有 --force enable。
         self.assertIn("detect_ssh_port", self.text)
-        self.assertIn('ufw allow "$ssh_port/tcp"', self.text)
+        ports_fn = self.text.split("firewall_ports()")[1].split("}")[0]
+        self.assertIn("detect_ssh_port", ports_fn)
+        self.assertIn('ufw allow "$port/tcp"', self.text)
         self.assertIn("ufw --force enable", self.text)
 
     def test_apt_lock_wait(self):
@@ -122,7 +128,9 @@ class TestInstallScript(unittest.TestCase):
         self.assertNotRegex(self.text, r"\b\d{9,10}:[A-Za-z0-9_-]{20,}\b")
         self.assertNotRegex(self.text, r"ocid1\.[a-z]+\.oc1\.\.[a-z0-9]{10,}")
         ips = re.findall(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", self.text)
-        allowed = {"127.0.0.1", "0.0.0.0"}
+        # 169.254.169.254 是云元数据链路本地地址（OCI/AWS/GCP 通用常量），
+        # 不是真实服务器 IP。
+        allowed = {"127.0.0.1", "0.0.0.0", "169.254.169.254"}
         self.assertEqual(set(ips) - allowed, set(),
                          f"脚本里出现非回环 IP：{set(ips) - allowed}")
 
@@ -157,17 +165,42 @@ class TestInstallScript(unittest.TestCase):
         self.assertIn("CERT_OK=0", self.text)
         self.assertIn('[ "${CERT_OK:-0}" = "1" ]', self.text)
 
-    def test_ufw_always_allows_panel_port(self):
-        # 9527 必须始终放行，不能只在"没域名"分支里放：域名证书失败
-        # 回落自签时面板走的就是 9527（首尔测试机实测）。
-        ufw_section = self.text.split("setup_ufw()")[1].split(
-            "# Oracle 云镜像")[0]
-        self.assertIn('ufw allow "${PANEL_PORT}/tcp"', ufw_section)
-        # 9527 的放行必须在"域名分支"之前（无条件），不能只在 else 里
-        panel_pos = ufw_section.find('ufw allow "${PANEL_PORT}/tcp"')
-        domain_pos = ufw_section.find('if [ -n "${DOMAIN:-}" ]')
+    def test_firewall_always_allows_panel_port(self):
+        # 9527 默认放行，不能只在"没域名"分支里放：域名证书失败
+        # 回落自签时面板走的就是 9527（首尔测试机实测）；9527 被
+        # 别的服务占了时才跳过（反代绑不上，放行只会暴露别人的服务）。
+        ports_fn = self.text.split("panel_ports()")[1].split(
+            "firewall_ports()")[0]
+        self.assertIn("${PANEL_PORT}", ports_fn)
+        # 9527 在无条件行里（只受"被占用"条件约束），443 只在域名分支里。
+        panel_pos = ports_fn.find("${PANEL_PORT}")
+        domain_pos = ports_fn.find('[ -n "${DOMAIN:-}" ]')
         self.assertLess(panel_pos, domain_pos)
-        self.assertNotIn("else\n        ufw allow", ufw_section)
+
+    def test_firewall_always_allows_port_80(self):
+        # 80 必须始终放行：IP 证书 http-01 验证（申请与续期）都要用，
+        # 不能只在"有域名"分支里放。
+        ports_fn = self.text.split("panel_ports()")[1].split(
+            "firewall_ports()")[0]
+        self.assertIn('"80"', ports_fn)
+        port80_pos = ports_fn.find('"80"')
+        domain_pos = ports_fn.find('[ -n "${DOMAIN:-}" ]')
+        self.assertLess(port80_pos, domain_pos)
+
+    def test_panel_port_skipped_when_occupied(self):
+        # 9527 被别的服务占了时：防火墙与云端都不放行它（反代绑不上，
+        # 放行只会暴露别人的服务）；setup_nginx 里域名 + 443 空闲时
+        # 只警告继续，否则才报错退出。
+        self.assertIn("panel_ports()", self.text)
+        ports_fn = self.text.split("panel_ports()")[1].split(
+            "firewall_ports()")[0]
+        self.assertIn('grep ":${PANEL_PORT} "', ports_fn)
+        self.assertIn("grep -qv nginx", ports_fn)
+        self.assertIn('ports="$(panel_ports)"', self.text)
+        nginx_fn = self.text.split("setup_nginx()")[1].split(
+            "detect_ssh_port()")[0]
+        self.assertIn("port443_free", nginx_fn)
+        self.assertIn("面板走 443，不影响", nginx_fn)
 
     def test_readme_quickstart(self):
         with open(README, encoding="utf-8") as f:
@@ -220,21 +253,11 @@ class TestInstallScript(unittest.TestCase):
     def test_ip_nginx_vhost(self):
         # IP 路径的 nginx 配置：80 端口只 serve 验证文件，面板走
         # 9527 ssl 且证书指 lego 的文件；80 vhost 要保留（续期还要用）。
-        self.assertIn("write_nginx_ip_acme()", self.text)
+        self.assertIn("write_nginx_acme_vhost()", self.text)
         self.assertIn("write_nginx_lego_ip()", self.text)
         self.assertIn("location /.well-known/acme-challenge/ {", self.text)
         self.assertIn('ssl_certificate ${crt};', self.text)
         self.assertIn("LEGO_CERT_DIR", self.text)
-
-    def test_ufw_always_allows_port_80(self):
-        # 80 必须始终放行：IP 证书 http-01 验证（申请与续期）都要用，
-        # 不能只在"有域名"分支里放。
-        ufw_section = self.text.split("setup_ufw()")[1].split(
-            "# Oracle 云镜像")[0]
-        self.assertIn('ufw allow 80/tcp', ufw_section)
-        port80_pos = ufw_section.find('ufw allow 80/tcp')
-        domain_pos = ufw_section.find('if [ -n "${DOMAIN:-}" ]')
-        self.assertLess(port80_pos, domain_pos)
 
     def test_domain_443_fallback_to_panel_port(self):
         # cfdns 域名路径：443 被别的服务占了时面板改走 9527，
@@ -285,6 +308,85 @@ class TestInstallScript(unittest.TestCase):
         self.assertIn("CF_API_KEY=%s", self.text)
         self.assertIn("CF_API_EMAIL=%s", self.text)
         self.assertIn("MBOT_INSTALL_CF_API_KEY", self.text)
+
+    def test_firewall_detection(self):
+        # 防火墙自动识别：ufw / firewalld / nft / iptables 四种都认，
+        # UFW 必须在 nft 之前判（UFW 走 nft 后端，ruleset 里有它的链，
+        # 先判 nft 会误判）；都没在跑时返回 none。
+        self.assertIn("detect_firewall()", self.text)
+        self.assertIn("setup_firewall()", self.text)
+        detect_fn = self.text.split("detect_firewall()")[1].split(
+            "firewall_ports()")[0]
+        self.assertIn('echo "ufw"', detect_fn)
+        self.assertIn('echo "firewalld"', detect_fn)
+        self.assertIn('echo "nft"', detect_fn)
+        self.assertIn('echo "iptables"', detect_fn)
+        self.assertIn('echo "none"', detect_fn)
+        self.assertLess(detect_fn.find('echo "ufw"'),
+                        detect_fn.find('echo "nft"'))
+        self.assertIn("_firewall_ufw", self.text)
+        self.assertIn("_firewall_firewalld", self.text)
+        self.assertIn("_firewall_nft", self.text)
+        self.assertIn("_firewall_iptables", self.text)
+
+    def test_firewall_backends(self):
+        # 四种后端的放行命令都要有；nft/iptables 插链首（drop 前面），
+        # 且要提醒重启会丢、建议换 ufw/firewalld。
+        self.assertIn("firewall-cmd --permanent --add-port=", self.text)
+        self.assertIn("nft insert rule", self.text)
+        self.assertIn('-I INPUT -p tcp --dport "$port" -j ACCEPT',
+                      self.text)
+        self.assertIn("重启后会丢", self.text)
+
+    def test_oci_cloud_ports(self):
+        # OCI 云端安全列表经 API 自动放行：读实例元数据确认是 OCI，
+        # 走 vnic → 子网 → 安全列表（或 NSG）；认证优先配置文件，
+        # 没有时试实例主体；任何失败只警告 + 打印手动步骤，安装不中断
+        # （open_cloud_ports 里不能有 die）。
+        self.assertIn("open_cloud_ports()", self.text)
+        self.assertIn("169.254.169.254/opc/v1/instance/", self.text)
+        self.assertIn("169.254.169.254/opc/v1/vnics/", self.text)
+        self.assertIn("network vnic get", self.text)
+        self.assertIn("network subnet get", self.text)
+        self.assertIn("network security-list update", self.text)
+        self.assertIn("--force", self.text)
+        self.assertIn("network nsg rules add", self.text)
+        self.assertIn("--auth instance_principal", self.text)
+        self.assertIn("手动在 OCI 控制台放行", self.text)
+        cloud_fn = self.text.split("open_cloud_ports()")[1].split(
+            "_oci_open_ports()")[0]
+        self.assertNotIn("die ", cloud_fn)
+        self.assertIn("CLOUD_OPENED=1", self.text)
+
+    def test_oci_rules_builder(self):
+        # 规则补齐逻辑：protocol=all 视为全放行；TCP 按端口范围判；
+        # 全部已放行时退出 2 跳过 API 调用；NSG 模式只输出新增规则
+        # 且带 direction 字段；GET 返回的 null 键要去掉再传给 update。
+        self.assertIn("_oci_rules_with_ports()", self.text)
+        self.assertIn('r.get("protocol") == "all"', self.text)
+        self.assertIn("sys.exit(2)", self.text)
+        self.assertIn('rule["direction"] = "INGRESS"', self.text)
+        self.assertIn("if v is not None", self.text)
+
+    def test_bot_token_optional(self):
+        # Token 可留空：留空只装面板，不建机器人服务；更新模式下从
+        # env 文件看有没有 Token 决定；管理命令只操作实际存在的服务。
+        self.assertIn("留空则只装面板", self.text)
+        self.assertIn("BOT_ENABLED=0", self.text)
+        self.assertIn("BOT_ENABLED=1", self.text)
+        self.assertIn("mbot_services()", self.text)
+        self.assertIn('systemctl restart $(mbot_services)', self.text)
+        self.assertNotIn('die "Token 不能为空', self.text)
+
+    def test_certbot_webroot_443_fallback(self):
+        # certbot 域名路径：certonly --webroot 发证 + 共用 HTTPS 写入
+        # 函数（443 被占改走 9527）；续期要挂 deploy hook 重载 nginx；
+        # 80 上留验证入口（续期走 webroot http-01）。
+        self.assertIn("write_nginx_domain_https()", self.text)
+        self.assertIn("certbot certonly --webroot", self.text)
+        self.assertIn("renewal-hooks/deploy/mbot-reload-nginx.sh", self.text)
+        self.assertIn("acme_on_80", self.text)
+        self.assertIn('if [ "$acme_on_80" = "1" ]', self.text)
 
 
 if __name__ == "__main__":

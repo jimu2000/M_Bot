@@ -33,6 +33,11 @@
 #   - 面板只绑 127.0.0.1:9527，不直接对外；外网访问走 nginx 反代 + HTTPS。
 #   - nginx 从 nginx.org 官方仓库装最新版（stable 分支），不是发行版
 #     自带的旧版；仓库加不上时回落发行版版本，安装不中断。
+#   - 防火墙自动识别：ufw / firewalld / nftables / iptables，哪个在跑
+#     就用哪个放行 SSH + 80 + 443 + 9527；都没在跑时优先启用 ufw。
+#   - OCI 实例还会经 OCI API 自动放行云端安全列表（80/443/9527）；
+#     没配 API 认证时只警告，安装不中断。
+#   - Telegram Token 可留空：留空则只装面板，不装机器人。
 #   - 有域名：自动申请 Let's Encrypt 证书，访问 https://你的域名。
 #     验证方式二选一：http（80 端口验证，默认，certbot）或 cfdns
 #     （Cloudflare DNS 验证，lego，需 CF API Token；验证不占端口，
@@ -234,31 +239,39 @@ prompt_config() {
     fi
     FRESH_INSTALL=1
     echo
-    echo "=== M_Bot 安装配置（Token 与用户 ID 必填，密码/域名可留空） ==="
-    # Token：环境变量 > 交互输入。
+    echo "=== M_Bot 安装配置（Token 留空则只装面板；密码/域名可留空） ==="
+    # Token：环境变量 > 交互输入 > 留空（只装面板，不装机器人）。
     # 注意：read 后面都要加 || true——nohup / 非交互运行时 stdin
     # 可能是 EOF，read 返回非零，set -e 会直接杀掉脚本。
-    # EOF 时变量保持为空，后面按"未提供"处理（Token 缺了会报错，
+    # EOF 时变量保持为空，后面按"未提供"处理（Token 缺了只装面板，
     # 密码/域名缺了走默认值）。
     TOKEN="${MBOT_INSTALL_TOKEN:-}"
     if [ -z "$TOKEN" ]; then
-        printf "Telegram 机器人 Token（@BotFather 处获得）："
+        printf "Telegram 机器人 Token（@BotFather 处获得，留空则只装面板）："
         read -r TOKEN || true
     fi
-    [ -n "$TOKEN" ] || die "Token 不能为空（去 @BotFather 建机器人再来）。"
-    case "$TOKEN" in
-        *:*[A-Za-z0-9_-]*) : ;;
-        *) die "Token 格式不对，应为 数字:字母数字 的形式。" ;;
-    esac
-    # 用户 ID：环境变量 > 交互输入。
-    USER_ID="${MBOT_INSTALL_USER_ID:-}"
-    if [ -z "$USER_ID" ]; then
-        printf "你的 Telegram 用户 ID（纯数字，@userinfobot 发 /start 查看）："
-        read -r USER_ID || true
+    if [ -n "$TOKEN" ]; then
+        case "$TOKEN" in
+            *:*[A-Za-z0-9_-]*) : ;;
+            *) die "Token 格式不对，应为 数字:字母数字 的形式。" ;;
+        esac
+        BOT_ENABLED=1
+    else
+        BOT_ENABLED=0
+        info "未提供 Token：只装面板，不装机器人。"
+        info "以后想加机器人：在 $ENV_FILE 里填 MBOT_TELEGRAM_TOKEN 与 MBOT_ALLOWED_USERS 后重跑安装即可。"
     fi
-    case "$USER_ID" in
-        *[!0-9]*|"") die "用户 ID 必须是纯数字。" ;;
-    esac
+    # 用户 ID：有 Token 时必填（机器人白名单），没 Token 时不用问。
+    USER_ID="${MBOT_INSTALL_USER_ID:-}"
+    if [ "$BOT_ENABLED" = "1" ]; then
+        if [ -z "$USER_ID" ]; then
+            printf "你的 Telegram 用户 ID（纯数字，@userinfobot 发 /start 查看）："
+            read -r USER_ID || true
+        fi
+        case "$USER_ID" in
+            *[!0-9]*|"") die "用户 ID 必须是纯数字。" ;;
+        esac
+    fi
     # 管理员密码：环境变量 > 交互输入 > 自动生成。
     ADMIN_PASSWORD="${MBOT_INSTALL_PASSWORD:-}"
     if [ -z "$ADMIN_PASSWORD" ]; then
@@ -393,8 +406,27 @@ EOF
 }
 
 # ---------- systemd 单元 ----------
+# 本机上实际存在的 M_Bot 服务（面板一定有，机器人只在装了时有）。
+# start/stop/restart/status/log/upgrade 都走它，避免对不存在的
+# 机器人服务调 systemctl（会报错退出）。
+mbot_services() {
+    printf '%s' "$WEB_SERVICE"
+    if [ -f "/etc/systemd/system/${BOT_SERVICE}.service" ]; then
+        printf ' %s' "$BOT_SERVICE"
+    fi
+}
+
 write_systemd_units() {
-    info "写入 systemd 单元（$WEB_SERVICE / $BOT_SERVICE）…"
+    # 更新模式下 prompt_config 没跑，BOT_ENABLED 未设：从 env 文件
+    # 看有没有 Token 决定要不要机器人服务。
+    if [ -z "${BOT_ENABLED:-}" ]; then
+        if grep -q "^MBOT_TELEGRAM_TOKEN=.+" "$ENV_FILE" 2>/dev/null; then
+            BOT_ENABLED=1
+        else
+            BOT_ENABLED=0
+        fi
+    fi
+    info "写入 systemd 单元（$WEB_SERVICE$([ "$BOT_ENABLED" = "1" ] && echo " / $BOT_SERVICE")）…"
     cat > "/etc/systemd/system/${WEB_SERVICE}.service" <<EOF
 [Unit]
 Description=M_Bot web panel (FastAPI + uvicorn)
@@ -417,7 +449,8 @@ StandardError=journal
 [Install]
 WantedBy=multi-user.target
 EOF
-    cat > "/etc/systemd/system/${BOT_SERVICE}.service" <<EOF
+    if [ "$BOT_ENABLED" = "1" ]; then
+        cat > "/etc/systemd/system/${BOT_SERVICE}.service" <<EOF
 [Unit]
 Description=M_Bot Telegram Bot
 After=network-online.target
@@ -439,10 +472,23 @@ StandardError=journal
 [Install]
 WantedBy=multi-user.target
 EOF
+        systemctl daemon-reload
+        systemctl enable --now "$WEB_SERVICE" "$BOT_SERVICE" \
+            || die "启动服务失败，请看 journalctl -u $WEB_SERVICE / -u $BOT_SERVICE。"
+        ok "服务已启动（开机自启）。"
+        return 0
+    fi
+    # 只装面板：之前装过机器人、现在改只装面板时，把旧机器人服务停掉删掉。
+    if [ -f "/etc/systemd/system/${BOT_SERVICE}.service" ]; then
+        systemctl stop "$BOT_SERVICE" 2>/dev/null || true
+        systemctl disable "$BOT_SERVICE" 2>/dev/null || true
+        rm -f "/etc/systemd/system/${BOT_SERVICE}.service"
+        info "已停掉旧的机器人服务（本次只装面板）。"
+    fi
     systemctl daemon-reload
-    systemctl enable --now "$WEB_SERVICE" "$BOT_SERVICE" \
-        || die "启动服务失败，请看 journalctl -u $WEB_SERVICE / -u $BOT_SERVICE。"
-    ok "服务已启动（开机自启）。"
+    systemctl enable --now "$WEB_SERVICE" \
+        || die "启动面板服务失败，请看 journalctl -u $WEB_SERVICE。"
+    ok "面板服务已启动（开机自启）；未装机器人。"
 }
 
 # ---------- nginx 反代 ----------
@@ -494,51 +540,48 @@ EOF
 
 write_nginx_domain() {
     local domain="$1"
-    # 先写纯 HTTP 的 vhost（certbot 需要它做 http-01 验证），
-    # 再让 certbot --nginx 自动加上 HTTPS。
-    cat > "$NGINX_CONF" <<EOF
-# M_Bot 面板反代（install.sh 生成，Let's Encrypt，域名 ${domain}）
-server {
-    listen 80;
-    listen [::]:80;
-    server_name ${domain};
-
-    client_max_body_size 100m;
-
-    location / {
-        proxy_pass http://127.0.0.1:${INTERNAL_PORT};
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_read_timeout 3600s;
-        proxy_send_timeout 3600s;
-        proxy_connect_timeout 60s;
-    }
-}
-EOF
-    nginx -t >/dev/null 2>&1 || die "nginx 配置校验失败，请检查 $NGINX_CONF。"
-    systemctl reload nginx 2>/dev/null || systemctl restart nginx \
-        || die "nginx 重载失败，请看 journalctl -u nginx。"
+    # certbot 只发证、不改 nginx 配置（certonly --webroot），443 的
+    # vhost 我们自己写：certbot --nginx 会在 443 被 xray 占了时重载
+    # 失败，证发了也白发（2026-11-24 .101 实测：xray 占 443 是常态）。
+    # 80 被非 nginx 进程占用时 http-01 验证不了，直接回落自签。
+    if command_exists ss; then
+        local holder
+        holder="$(ss -ltnp 2>/dev/null | grep ':80 ' | grep -v nginx | head -n 1 || true)"
+        if [ -n "$holder" ]; then
+            warn "80 端口已被占用：${holder}，域名证书验证不了，回落自签证书。"
+            CERT_OK=0
+            write_nginx_selfsigned
+            return 0
+        fi
+    fi
     # certbot 只在有域名时才需要，这里按需安装，装不上也不致命。
+    # certonly --webroot 不需要 nginx 插件包。
     if ! command_exists certbot; then
         info "安装 certbot（域名证书用）…"
         wait_for_apt
-        apt-get install -y -qq certbot python3-certbot-nginx >/dev/null 2>&1 \
+        apt-get install -y -qq certbot >/dev/null 2>&1 \
             || warn "certbot 安装失败，只能用自签证书。"
     fi
     if command_exists certbot; then
         info "申请 Let's Encrypt 证书（域名 $domain，需该域名已解析到本机）…"
-        if certbot --nginx -d "$domain" --non-interactive --agree-tos \
-                --register-unsafely-without-email --redirect >/dev/null 2>&1; then
-            ok "Let's Encrypt 证书已申请并生效。"
-            CERT_OK=1
-            CERT_KIND=domain
-            CERT_PORT=443
-            return 0
+        write_nginx_acme_vhost "$domain" || die "nginx 验证配置写入失败。"
+        if certbot certonly --webroot -w "$ACME_WEBROOT" -d "$domain" \
+                --non-interactive --agree-tos \
+                --register-unsafely-without-email >/dev/null 2>&1; then
+            # 续期后重载 nginx：certbot 自带定时续期（certbot.timer），
+            # 不挂 deploy hook 的话续了新证 nginx 还在用旧证。
+            mkdir -p /etc/letsencrypt/renewal-hooks/deploy
+            printf '#!/bin/sh\nsystemctl reload nginx\n' \
+                > /etc/letsencrypt/renewal-hooks/deploy/mbot-reload-nginx.sh
+            chmod +x /etc/letsencrypt/renewal-hooks/deploy/mbot-reload-nginx.sh
+            if write_nginx_domain_https "$domain" \
+                    "/etc/letsencrypt/live/${domain}/fullchain.pem" \
+                    "/etc/letsencrypt/live/${domain}/privkey.pem" 1; then
+                ok "Let's Encrypt 证书已申请并生效。"
+                CERT_OK=1
+                CERT_KIND=domain
+                return 0
+            fi
         fi
         warn "certbot 申请证书失败（域名可能未解析到本机），回落自签证书。"
     else
@@ -677,15 +720,17 @@ EOF
 # 其余请求一律 404（面板不在 80 上）。server_name 写 IP 本身，
 # http-01 的验证请求 Host 就是 IP，能精确匹配上（机器上若还有
 # 别的 80 端口站点也不会抢走验证请求）。
-write_nginx_ip_acme() {
-    local ip="$1"
+# 80 端口的 ACME 验证 vhost：只 serve 验证文件，其余 404。
+# server_name 可以是 IP（IP 证书）或域名（certbot http-01）。
+write_nginx_acme_vhost() {
+    local name="$1"
     mkdir -p "$ACME_WEBROOT/.well-known/acme-challenge"
     cat > "$NGINX_CONF" <<EOF
-# M_Bot 面板反代（install.sh 生成，IP 证书验证中）
+# M_Bot 面板反代（install.sh 生成，ACME 验证中）
 server {
     listen 80;
     listen [::]:80;
-    server_name ${ip};
+    server_name ${name};
 
     location /.well-known/acme-challenge/ {
         root ${ACME_WEBROOT};
@@ -756,16 +801,17 @@ EOF
     ok "nginx 反代已生效（Let's Encrypt IP 证书，端口 ${PANEL_PORT}）。"
 }
 
-# 域名 + Cloudflare DNS-01 拿到后的配置：443 ssl 单 vhost，
-# DNS 验证不占端口，80 端口不用留。
-# 注意：DNS 验证不占 443，不等于面板不用 443——面板本身还是要
-# 监听 443 才能用 https://域名 访问。443 已被 xray 之类服务占了
-# 时，面板改走 ${PANEL_PORT}（证书照样有效，地址带端口就行）。
-write_nginx_lego_domain() {
-    local domain="$1"
-    local crt="$LEGO_CERT_DIR/${domain}.crt" key="$LEGO_CERT_DIR/${domain}.key"
+# 域名拿到证书后的完整配置（lego cfdns 与 certbot http 共用）：
+# 面板走 443 ssl，443 已被 xray 之类服务占了时改走 ${PANEL_PORT}
+# （证书照样有效，地址带端口就行）；80 端口做跳转。
+# $1 域名，$2 证书 fullchain，$3 私钥，$4 是否在 80 上留验证入口
+# （certbot 续期用 webroot http-01，80 必须能 serve 验证文件；
+# lego cfdns 续期走 DNS，不用留）。
+# 成功时设 CERT_PORT，返回 0；失败返回 1。
+write_nginx_domain_https() {
+    local domain="$1" crt="$2" key="$3" acme_on_80="${4:-0}"
     [ -f "$crt" ] && [ -f "$key" ] \
-        || { warn "lego 证书文件不存在：$crt"; return 1; }
+        || { warn "证书文件不存在：$crt"; return 1; }
     local port=443 redirect="https://\$host\$request_uri"
     if command_exists ss; then
         local holder
@@ -777,6 +823,13 @@ write_nginx_lego_domain() {
         fi
     fi
     CERT_PORT="$port"
+    local acme_location=""
+    if [ "$acme_on_80" = "1" ]; then
+        acme_location="    location /.well-known/acme-challenge/ {
+        root ${ACME_WEBROOT};
+    }
+"
+    fi
     cat > "$NGINX_CONF" <<EOF
 # M_Bot 面板反代（install.sh 生成，Let's Encrypt，域名 ${domain}）
 server {
@@ -809,13 +862,22 @@ server {
     listen 80;
     listen [::]:80;
     server_name ${domain};
-    return 301 ${redirect};
+${acme_location}    location / {
+        return 301 ${redirect};
+    }
 }
 EOF
     nginx -t >/dev/null 2>&1 || die "nginx 配置校验失败，请检查 $NGINX_CONF。"
     systemctl reload nginx 2>/dev/null || systemctl restart nginx \
         || die "nginx 重载失败，请看 journalctl -u nginx。"
     ok "nginx 反代已生效（Let's Encrypt 证书，域名 ${domain}，端口 ${port}）。"
+}
+
+# 域名 + Cloudflare DNS-01 拿到后的配置（lego 的证书文件）。
+write_nginx_lego_domain() {
+    local domain="$1"
+    write_nginx_domain_https "$domain" \
+        "$LEGO_CERT_DIR/${domain}.crt" "$LEGO_CERT_DIR/${domain}.key" 0
 }
 
 # 无域名时自动申请 Let's Encrypt IP 证书。失败返回 1，调用方回落自签。
@@ -842,7 +904,7 @@ request_ip_cert() {
     install_lego || return 1
     write_lego_env
     write_lego_deploy_hook
-    write_nginx_ip_acme "$ip" || return 1
+    write_nginx_acme_vhost "$ip" || return 1
     info "申请 Let's Encrypt IP 证书（$ip，shortlived，有效期约 6 天，自动续期）…"
     local args="--profile shortlived --http --http.webroot $ACME_WEBROOT -d $ip --deploy-hook $LEGO_DIR/deploy-hook.sh"
     if ( [ -f "$LEGO_DIR/env" ] && set -a && . "$LEGO_DIR/env" && set +a || true; \
@@ -883,15 +945,26 @@ request_domain_cert_cfdns() {
 }
 
 setup_nginx() {
-    # 9527 已被非 nginx 进程占用时先停下来（常见于装过其他面板），
-    # 否则 nginx 绑不上端口，用户会看到一片空白。
+    # 9527 已被非 nginx 进程占用时：面板走 443 就没关系（有域名且
+    # 443 空闲），只警告；否则面板要走 9527，绑不上只能先停掉它。
     if command_exists ss; then
         local holder
         holder="$(ss -ltnp 2>/dev/null | grep ":${PANEL_PORT} " | head -n 1 || true)"
         if [ -n "$holder" ]; then
             case "$holder" in
                 *nginx*) : ;;  # 已是我们自己的 nginx，重装时正常
-                *) die "端口 ${PANEL_PORT} 已被占用：${holder}。请先停掉它再安装。" ;;
+                *)
+                    local port443_free=0
+                    if [ -n "${DOMAIN:-}" ] \
+                        && ! ss -ltnp 2>/dev/null | grep ':443 ' | grep -qv nginx; then
+                        port443_free=1
+                    fi
+                    if [ "$port443_free" = "1" ]; then
+                        warn "端口 ${PANEL_PORT} 已被占用：${holder}。域名 + 443 空闲，面板走 443，不影响（证书申请失败回落自签时会绑不上 ${PANEL_PORT}，届时请先停掉它）。"
+                    else
+                        die "端口 ${PANEL_PORT} 已被占用：${holder}。请先停掉它再安装。"
+                    fi
+                    ;;
             esac
         fi
     fi
@@ -906,9 +979,7 @@ setup_nginx() {
     fi
 }
 
-# ---------- UFW ----------
-# 开启前先放行当前 SSH 端口（sshd 实际监听端口 > sshd_config > 22），
-# 否则 ufw enable 会把自己锁在外面。
+# SSH 端口：sshd 实际监听端口 > sshd_config > 22。
 detect_ssh_port() {
     local port=""
     if command_exists ss; then
@@ -921,25 +992,85 @@ detect_ssh_port() {
     echo "${port:-22}"
 }
 
-setup_ufw() {
-    command_exists ufw || { warn "未装 ufw，跳过防火墙设置。"; return 0; }
-    local ssh_port
-    ssh_port="$(detect_ssh_port)"
-    info "放行 SSH 端口 $ssh_port 与面板端口…"
-    ufw allow "$ssh_port/tcp" >/dev/null 2>&1 || true
-    # 9527 始终放行：域名证书申请失败回落自签时，面板走的就是这个端口。
-    # 只在有域名时才放行 80/443 的话，回落路径会被 UFW 挡住
-    # （2026-11-24 首尔测试机实测：回落时 UFW 里只有 80/443）。
-    ufw allow "${PANEL_PORT}/tcp" >/dev/null 2>&1 || true
-    # 80 始终放行：无域名时 IP 证书用 http-01 验证（申请与续期都要用），
-    # 有域名时 http 验证也要用；自签回落时 80 上没服务，放行也无妨。
-    ufw allow 80/tcp >/dev/null 2>&1 || true
-    if [ -n "${DOMAIN:-}" ]; then
-        ufw allow 443/tcp >/dev/null 2>&1 || true
+# ---------- 本机防火墙 ----------
+# 自动识别在运行的防火墙类型并放行本项目需要的端口：
+# SSH 端口（当前实际端口）+ 80 + 443（有域名时）+ 9527（面板端口）。
+# 支持 ufw / firewalld / nftables / iptables；都没在跑时优先用 ufw
+# （装了就启用），否则端口默认就是通的，跳过。
+# 注意检测顺序：UFW 在 Debian 12+ 上走 nft 后端，nft ruleset 里有
+# ufw 的链——必须先认 UFW，否则会把 UFW 误判成裸 nft。
+detect_firewall() {
+    if command_exists ufw && ufw status 2>/dev/null | grep -q "Status: active"; then
+        echo "ufw"; return 0
     fi
+    if command_exists firewall-cmd && firewall-cmd --state 2>/dev/null | grep -q "^running$"; then
+        echo "firewalld"; return 0
+    fi
+    if command_exists nft && nft list ruleset 2>/dev/null | grep -qE "table (inet|ip) filter"; then
+        echo "nft"; return 0
+    fi
+    if command_exists iptables; then
+        local policy
+        policy="$(iptables -S INPUT 2>/dev/null | head -n 1 || true)"
+        if [ "$policy" != "-P INPUT ACCEPT" ]; then
+            echo "iptables"; return 0
+        fi
+        if iptables -S INPUT 2>/dev/null | grep -qE "^-A INPUT .*(-j DROP|-j REJECT)"; then
+            echo "iptables"; return 0
+        fi
+    fi
+    echo "none"
+}
+
+# 面板需要的端口（不含 SSH）：80 始终 + 9527 + 443（有域名时）。
+# 9527 被别的服务占了时不放行：反代绑不上 9527，放行只会把别人
+# 的服务暴露出去（.129 实测：R-Bot 客户端占着 9527）。本机防火墙
+# 与云端安全列表共用这份列表。
+panel_ports() {
+    local ports="80"
+    if ! command_exists ss || ! ss -ltnp 2>/dev/null | grep ":${PANEL_PORT} " | grep -qv nginx; then
+        ports="$ports ${PANEL_PORT}"
+    fi
+    [ -n "${DOMAIN:-}" ] && ports="$ports 443"
+    echo "$ports"
+}
+
+# 需要放行的端口（空格分隔）：SSH 始终 + 面板端口。80 必须无条件：
+# IP 证书验证（申请与续期）要用 80。
+firewall_ports() {
+    echo "$(detect_ssh_port) $(panel_ports)"
+}
+
+setup_firewall() {
+    local fw
+    fw="$(detect_firewall)"
+    info "本机防火墙：$fw（放行 $(firewall_ports)）…"
+    case "$fw" in
+        ufw) _firewall_ufw ;;
+        firewalld) _firewall_firewalld ;;
+        nft) _firewall_nft ;;
+        iptables) _firewall_iptables ;;
+        none)
+            if command_exists ufw; then
+                info "没有在运行的防火墙，用 ufw（启用它）。"
+                _firewall_ufw
+            else
+                info "本机没有在运行的防火墙，端口默认都是通的，跳过。"
+            fi
+            ;;
+    esac
+}
+
+# UFW：开启前先放行 SSH 端口（sshd 实际监听端口 > sshd_config > 22），
+# 否则 ufw enable 会把自己锁在外面。
+_firewall_ufw() {
+    local port
+    for port in $(firewall_ports); do
+        ufw allow "$port/tcp" >/dev/null 2>&1 || true
+    done
     if ufw status 2>/dev/null | grep -q "Status: inactive"; then
         ufw --force enable >/dev/null 2>&1 || warn "ufw 开启失败，请手动检查。"
-        ok "UFW 已开启（已放行 SSH $ssh_port + 面板端口）。"
+        ok "UFW 已开启（已放行 SSH + 面板端口）。"
     else
         ok "UFW 规则已添加（防火墙本来就是开着的）。"
     fi
@@ -952,6 +1083,211 @@ setup_ufw() {
         remove_shadow_reject 4
         remove_shadow_reject 6
     fi
+}
+
+# firewalld：--permanent 写永久规则，reload 生效（重启仍在）。
+_firewall_firewalld() {
+    local port
+    for port in $(firewall_ports); do
+        firewall-cmd --permanent --add-port="$port/tcp" >/dev/null 2>&1 || true
+    done
+    firewall-cmd --reload >/dev/null 2>&1 || warn "firewalld 重载失败，请手动检查。"
+    ok "firewalld 规则已添加（--permanent，重启仍在）。"
+}
+
+# nftables：找到 filter 表的 input 链，在链首插入放行规则
+# （insert 放最前面，避免被链尾的 drop 挡住；已有的不重复加）。
+_firewall_nft() {
+    local chain=""
+    local table
+    for table in "inet filter" "ip filter"; do
+        if nft list chain $table input >/dev/null 2>&1; then
+            chain="$table input"
+            break
+        fi
+    done
+    [ -n "$chain" ] || { warn "nft 有 filter 表但找不到 input 链，请手动放行端口。"; return 0; }
+    local port
+    for port in $(firewall_ports); do
+        if ! nft list chain $chain 2>/dev/null | grep -q "tcp dport $port accept"; then
+            nft insert rule $chain tcp dport "$port" accept 2>/dev/null \
+                || warn "nft 放行 $port 失败，请手动检查。"
+        fi
+    done
+    ok "nft 规则已添加。"
+    warn "nft 规则只在当前生效，重启后会丢（除非写进 /etc/nftables.conf）；建议改用 ufw 或 firewalld 管理。"
+}
+
+# iptables：-I 插到链首（REJECT/DROP 前面），-C 先查避免重复。
+_firewall_iptables() {
+    local port ipt
+    for ipt in iptables ip6tables; do
+        command_exists "$ipt" || continue
+        for port in $(firewall_ports); do
+            "$ipt" -C INPUT -p tcp --dport "$port" -j ACCEPT >/dev/null 2>&1 \
+                || "$ipt" -I INPUT -p tcp --dport "$port" -j ACCEPT >/dev/null 2>&1 \
+                || warn "$ipt 放行 $port 失败，请手动检查。"
+        done
+    done
+    ok "iptables 规则已添加。"
+    warn "iptables 规则只在当前生效，重启后会丢（除非装了 iptables-persistent 或写进 /etc/iptables/rules.v4）；建议改用 ufw 或 firewalld 管理。"
+}
+
+# ---------- 云端安全列表（OCI） ----------
+# 本机防火墙开了还不够：OCI 实例的安全列表（安全组）那层也要放行
+# 80/443/9527，否则外网照样进不来。这里经 OCI API 自动加规则。
+# 只在 OCI 上跑（读实例元数据确认）；认证优先用已有的 OCI 配置
+# 文件（~/oci_config），没有时试实例主体（需动态组 + 策略）。
+# 任何一步失败都只警告 + 打印手动操作步骤，安装不中断。
+# 需要放行的端口：80 + 9527 始终，有域名时加 443（SSH 云上本来就通）。
+open_cloud_ports() {
+    local meta
+    meta="$(curl -s -m 3 http://169.254.169.254/opc/v1/instance/ 2>/dev/null || true)"
+    [ -n "$meta" ] || { info "不是 OCI 实例（无元数据服务），跳过云端放行。"; return 0; }
+    echo "$meta" | grep -q "ocid1.instance" || { info "元数据不是 OCI 格式，跳过云端放行。"; return 0; }
+    local oci_bin="$VENV_DIR/bin/oci"
+    [ -x "$oci_bin" ] || { warn "OCI CLI 不在 $oci_bin，跳过云端放行。"; return 0; }
+    local ports
+    ports="$(panel_ports)"
+    info "OCI 实例：检查云端安全列表是否放行 $ports …"
+    if _oci_open_ports "$oci_bin" "$ports"; then
+        CLOUD_OPENED=1
+        return 0
+    fi
+    CLOUD_OPENED=0
+    warn "云端放行没完成（见上面原因），请手动在 OCI 控制台放行："
+    warn "  Networking → VCN → 子网 → 安全列表 → 添加入站规则：来源 0.0.0.0/0，TCP 目标端口 $ports。"
+    return 0
+}
+
+# 真正调 OCI API 的部分（失败返回 1，调用方只警告）。
+_oci_open_ports() {
+    local oci_bin="$1" ports="$2"
+    local auth_args=""
+    if [ ! -f "$HOME/oci_config" ] && [ ! -f "$HOME/.oci/config" ]; then
+        auth_args="--auth instance_principal"
+    fi
+    export SUPPRESS_LABEL_WARNING=True
+    # 主网卡：元数据里取 vnicId。
+    local vnic_id
+    vnic_id="$(curl -s -m 3 http://169.254.169.254/opc/v1/vnics/ 2>/dev/null \
+        | python3 -c "import json,sys; print(json.load(sys.stdin)[0]['vnicId'])" 2>/dev/null || true)"
+    [ -n "$vnic_id" ] || { warn "读不到主网卡 ID（元数据异常）。"; return 1; }
+    local vnic
+    vnic="$("$oci_bin" $auth_args network vnic get --vnic-id "$vnic_id" --output json 2>/dev/null)" \
+        || { warn "OCI API 调用失败（无可用认证：既没有 OCI 配置文件，实例主体也没配动态组/策略）。"; return 1; }
+    local subnet_id nsg_ids
+    subnet_id="$(printf '%s' "$vnic" | python3 -c "import json,sys; print(json.load(sys.stdin)['data']['subnet-id'])" 2>/dev/null || true)"
+    nsg_ids="$(printf '%s' "$vnic" | python3 -c "import json,sys; print(' '.join(json.load(sys.stdin)['data'].get('nsg-ids') or []))" 2>/dev/null || true)"
+    [ -n "$subnet_id" ] || { warn "读不到子网 ID。"; return 1; }
+    if [ -n "$nsg_ids" ]; then
+        # 网卡挂了 NSG 时安全列表规则不生效，只加 NSG 规则（additive）。
+        local nsg
+        for nsg in $nsg_ids; do
+            _oci_add_nsg_rules "$oci_bin" "$auth_args" "$nsg" "$ports" || return 1
+        done
+        return 0
+    fi
+    local sl_ids
+    sl_ids="$("$oci_bin" $auth_args network subnet get --subnet-id "$subnet_id" --output json 2>/dev/null \
+        | python3 -c "import json,sys; print(' '.join(json.load(sys.stdin)['data'].get('security-list-ids') or []))" 2>/dev/null || true)"
+    [ -n "$sl_ids" ] || { warn "读不到安全列表 ID。"; return 1; }
+    local sl
+    for sl in $sl_ids; do
+        _oci_add_sl_rules "$oci_bin" "$auth_args" "$sl" "$ports" || return 1
+    done
+    return 0
+}
+
+# 给定现有 ingress 规则 JSON 与端口列表，输出补齐后的规则 JSON。
+# $3 = "nsg" 时只输出新增的规则（NSG rules add 是增量的），并带
+# direction 字段；默认输出全量（安全列表 update 是全量替换）。
+# 全部已放行时不输出、退出 2（调用方据此跳过 API 调用）。
+# 已放行的判定：来源 0.0.0.0/0 且 protocol=all（全协议），或 TCP
+# 规则的端口范围覆盖该端口（无 tcp-options 视为全部 TCP 端口）；
+# NSG 规则只看 direction=INGRESS 的。
+_oci_rules_with_ports() {
+    python3 - "$1" "$2" "${3:-}" <<'PYEOF'
+import json, sys
+rules = json.loads(sys.argv[1] or "[]")
+ports = [int(p) for p in sys.argv[2].split()]
+nsg_mode = len(sys.argv) > 3 and sys.argv[3] == "nsg"
+
+def covered(port):
+    for r in rules:
+        if r.get("direction") not in (None, "INGRESS"):
+            continue
+        if r.get("source") != "0.0.0.0/0":
+            continue
+        if r.get("protocol") == "all":
+            return True
+        if r.get("protocol") != "6":
+            continue
+        opts = r.get("tcp-options") or {}
+        rng = opts.get("destination-port-range") or {}
+        if not rng:
+            return True
+        if rng.get("min", 0) <= port <= rng.get("max", 65535):
+            return True
+    return False
+
+missing = [p for p in ports if not covered(p)]
+if not missing:
+    sys.exit(2)
+added = []
+for p in missing:
+    rule = {"source": "0.0.0.0/0", "source-type": "CIDR_BLOCK",
+            "protocol": "6", "description": "M_Bot panel",
+            "is-stateless": False,
+            "tcp-options": {"destination-port-range": {"min": p, "max": p}}}
+    if nsg_mode:
+        rule["direction"] = "INGRESS"
+    added.append(rule)
+out = added if nsg_mode else rules + added
+# update 只接受干净的字段：去掉 GET 返回的 null 选项键。
+clean = [{k: v for k, v in r.items() if v is not None} for r in out]
+print(json.dumps(clean))
+PYEOF
+}
+
+_oci_add_sl_rules() {
+    local oci_bin="$1" auth_args="$2" sl_id="$3" ports="$4"
+    local current new_rules rc
+    current="$("$oci_bin" $auth_args network security-list get --security-list-id "$sl_id" --output json 2>/dev/null \
+        | python3 -c "import json,sys; print(json.dumps(json.load(sys.stdin)['data'].get('ingress-security-rules') or []))" 2>/dev/null || true)"
+    [ -n "$current" ] || { warn "读安全列表失败。"; return 1; }
+    new_rules="$(_oci_rules_with_ports "$current" "$ports")"
+    rc=$?
+    if [ "$rc" = "2" ]; then
+        ok "云端安全列表已放行 $ports，无需改动。"
+        return 0
+    fi
+    [ "$rc" = "0" ] || { warn "生成安全列表规则失败。"; return 1; }
+    "$oci_bin" $auth_args network security-list update --security-list-id "$sl_id" \
+        --ingress-security-rules "$new_rules" --force >/dev/null 2>&1 \
+        || { warn "更新安全列表失败（权限不足或 API 错误）。"; return 1; }
+    ok "云端安全列表已放行 $ports。"
+    return 0
+}
+
+_oci_add_nsg_rules() {
+    local oci_bin="$1" auth_args="$2" nsg_id="$3" ports="$4"
+    local current new_rules rc
+    current="$("$oci_bin" $auth_args network nsg rules list --nsg-id "$nsg_id" --output json 2>/dev/null \
+        | python3 -c "import json,sys; print(json.dumps(json.load(sys.stdin).get('data') or []))" 2>/dev/null || true)"
+    [ -n "$current" ] || { warn "读 NSG 规则失败。"; return 1; }
+    new_rules="$(_oci_rules_with_ports "$current" "$ports" "nsg")"
+    rc=$?
+    if [ "$rc" = "2" ]; then
+        ok "云端 NSG 已放行 $ports，无需改动。"
+        return 0
+    fi
+    [ "$rc" = "0" ] || { warn "生成 NSG 规则失败。"; return 1; }
+    "$oci_bin" $auth_args network nsg rules add --nsg-id "$nsg_id" \
+        --security-rules "$new_rules" >/dev/null 2>&1 \
+        || { warn "更新 NSG 失败（权限不足或 API 错误）。"; return 1; }
+    ok "云端 NSG 已放行 $ports。"
+    return 0
 }
 
 # 删掉镜像自带的、挡在 UFW 链前面的 INPUT REJECT 规则。
@@ -990,11 +1326,15 @@ health_check() {
         warn "面板服务未运行！看日志：journalctl -u $WEB_SERVICE -n 50"
         fail=1
     fi
-    if systemctl is-active --quiet "$BOT_SERVICE"; then
-        ok "机器人服务运行中。"
+    if [ -f "/etc/systemd/system/${BOT_SERVICE}.service" ]; then
+        if systemctl is-active --quiet "$BOT_SERVICE"; then
+            ok "机器人服务运行中。"
+        else
+            warn "机器人服务未运行（常见原因是 Token 不对）！看日志：journalctl -u $BOT_SERVICE -n 50"
+            fail=1
+        fi
     else
-        warn "机器人服务未运行（常见原因是 Token 不对）！看日志：journalctl -u $BOT_SERVICE -n 50"
-        fail=1
+        info "未装机器人服务，跳过检查。"
     fi
     # 内部端口是 uvicorn（面板本身），外部端口是 nginx（反代）。
     # 两个都要在：只查外部端口会在 uvicorn 挂了时误报正常
@@ -1050,16 +1390,25 @@ print_access_info() {
     fi
     echo
     echo "下一步："
-    echo "  1. 在 Telegram 里找你的机器人，发 /uploadapi 上传 OCI 配置"
-    echo "     （~/oci_config + API 私钥），或手动放到服务器的 /root/ 下。"
-    echo "  2. 发 /oracle 打开菜单，点“切换账号/区域”确认账号已接通。"
-    echo "如果浏览器打不开面板：检查云厂商的安全组/安全列表是否放行了"
-    if [ -n "${DOMAIN:-}" ] && [ "${CERT_OK:-0}" = "1" ]; then
-        echo "  ${CERT_PORT:-443} 端口（本机 UFW 已放行，云上那层也要放行）。"
+    if [ "${BOT_ENABLED:-1}" = "1" ]; then
+        echo "  1. 在 Telegram 里找你的机器人，发 /uploadapi 上传 OCI 配置"
+        echo "     （~/oci_config + API 私钥），或手动放到服务器的 /root/ 下。"
+        echo "  2. 发 /oracle 打开菜单，点“切换账号/区域”确认账号已接通。"
     else
-        echo "  ${PANEL_PORT} 端口（本机 UFW 已放行，云上那层也要放行）。"
-        if [ "${CERT_KIND:-selfsigned}" = "ip" ]; then
-            echo "IP 证书续期要走 80 端口验证，云上安全组也要放行 80。"
+        echo "  1. 把 OCI 配置手动放到服务器的 /root/ 下（~/oci_config + API 私钥），"
+        echo "     面板里切换账号即可用；或在 $ENV_FILE 里填 Token 后重跑安装补装机器人。"
+    fi
+    if [ "${CLOUD_OPENED:-0}" = "1" ]; then
+        echo "云端安全列表已自动放行（80/443/9527），本机防火墙也已放行。"
+    else
+        echo "如果浏览器打不开面板：检查云厂商的安全组/安全列表是否放行了"
+        if [ -n "${DOMAIN:-}" ] && [ "${CERT_OK:-0}" = "1" ]; then
+            echo "  ${CERT_PORT:-443} 端口（本机防火墙已放行，云上那层也要放行）。"
+        else
+            echo "  ${PANEL_PORT} 端口（本机防火墙已放行，云上那层也要放行）。"
+            if [ "${CERT_KIND:-selfsigned}" = "ip" ]; then
+                echo "IP 证书续期要走 80 端口验证，云上安全组也要放行 80。"
+            fi
         fi
     fi
     echo "管理命令：bash install.sh start|stop|restart|status|log|upgrade|uninstall"
@@ -1079,8 +1428,11 @@ cmd_install() {
     write_env_file
     write_systemd_units
     if [ "$FRESH_INSTALL" = "1" ]; then
+        # 顺序：先放行两层防火墙（本机 + 云端），再申请证书——
+        # http-01 验证要 80 端口从外网能通，云上没放行会发证失败。
+        setup_firewall
+        open_cloud_ports
         setup_nginx
-        setup_ufw
     elif [ ! -f "$NGINX_CONF" ]; then
         # 更新模式但 nginx 配置丢了：按环境变量的域名重建（没给就自签）。
         DOMAIN="${MBOT_INSTALL_DOMAIN:-}"
@@ -1106,7 +1458,8 @@ cmd_upgrade() {
         || die "git pull 失败（可能有本地改动），请手动处理。"
     "$VENV_DIR/bin/pip" install --quiet -r "$INSTALL_DIR/requirements.txt"
     "$VENV_DIR/bin/pip" install --quiet oci-cli
-    systemctl restart "$WEB_SERVICE" "$BOT_SERVICE"
+    # shellcheck disable=SC2086
+    systemctl restart $(mbot_services)
     health_check || warn "健康检查有告警，见上面日志。"
     ok "升级完成。"
 }
@@ -1133,13 +1486,14 @@ cmd_uninstall() {
 
 # ---------- 入口 ----------
 # 不带参数：首次=安装，再次=更新并重启（R-Bot 模板同款用法）。
+# 管理命令只操作实际存在的服务（没装机器人时不碰机器人服务）。
 case "${1:-}" in
     "")         cmd_install ;;
-    start)      systemctl start "$WEB_SERVICE" "$BOT_SERVICE" && echo "已启动。" ;;
-    stop)       systemctl stop "$WEB_SERVICE" "$BOT_SERVICE" && echo "已停止。" ;;
-    restart)    systemctl restart "$WEB_SERVICE" "$BOT_SERVICE" && echo "已重启。" ;;
-    status)     systemctl status "$WEB_SERVICE" "$BOT_SERVICE" --no-pager ;;
-    log)        journalctl -u "$WEB_SERVICE" -u "$BOT_SERVICE" -n 100 --no-pager ;;
+    start)      systemctl start $(mbot_services) && echo "已启动。" ;;
+    stop)       systemctl stop $(mbot_services) && echo "已停止。" ;;
+    restart)    systemctl restart $(mbot_services) && echo "已重启。" ;;
+    status)     systemctl status $(mbot_services) --no-pager ;;
+    log)        journalctl $(mbot_services | sed 's/^/-u /;s/ / -u /g') -n 100 --no-pager ;;
     upgrade)    cmd_upgrade ;;
     uninstall)  cmd_uninstall ;;
     *)
