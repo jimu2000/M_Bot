@@ -9,6 +9,15 @@
 
 ## [Unreleased]
 
+## [1.35.3] - 2026-11-24
+
+### 变更
+- 登录页统计代码换回 Microsoft Clarity（MBOT_CLARITY_ID 环境变量配置，未配置不加载；Clicky 代码与 MBOT_CLICKY_ID 移除）
+
+### 验证
+- 全量测试 2491 个全过（2 个登录页统计测试随之更换：Clarity 加载/未配置两种情况）
+- 真机验证：部署到 .160 后重启面板，登录页 HTML 含 Clarity 脚本、无 Clicky
+
 ## [1.35.2] - 2026-11-24
 
 ### 新增

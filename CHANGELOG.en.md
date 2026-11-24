@@ -9,6 +9,15 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [1.35.3] - 2026-11-24
+
+### Changed
+- Login-page analytics switched back to Microsoft Clarity (configured via the MBOT_CLARITY_ID environment variable; not loaded when unconfigured; Clicky code and MBOT_CLICKY_ID removed).
+
+### Verification
+- Full test suite: 2491 tests, all passing (the 2 login-page analytics tests swapped over: Clarity loaded / unconfigured cases).
+- Live verification: deployed to .160 and restarted the panel; the login page HTML contains the Clarity script and no Clicky code.
+
 ## [1.35.2] - 2026-11-24
 
 ### Added

@@ -12,9 +12,15 @@
 <title>登录 · M_Bot Oracle开源管理面板</title>
 <link rel="stylesheet" href="/static/css/themes.css">
 <link rel="stylesheet" href="/static/css/base.css">
-{% if clicky_id %}
-{# Clicky 统计：仅配置了 MBOT_CLICKY_ID 时加载（登录页统计） #}
-<script async data-id="{{ clicky_id }}" src="//static.getclicky.com/js"></script>
+{% if clarity_id %}
+{# Microsoft Clarity 统计：仅配置了 MBOT_CLARITY_ID 时加载（登录页统计） #}
+<script type="text/javascript">
+    (function(c,l,a,r,i,t,y){
+        c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+        t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+        y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+    })(window, document, "clarity", "script", "{{ clarity_id }}");
+</script>
 {% endif %}
 </head>
 <body>
@@ -75,9 +81,6 @@
     </form>
 
     <p class="login-foot">默认凭据请查看部署文档</p>
-    {% if clicky_id %}
-    <p class="login-foot"><a title="Agent-ready analytics" href="https://clicky.com/{{ clicky_id }}"><img alt="Clicky" src="//static.getclicky.com/media/links/badge.gif" border="0" /></a></p>
-    {% endif %}
   </div>
 </div>
 
