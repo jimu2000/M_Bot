@@ -205,6 +205,12 @@ from oci.boot_backup import (
     list_boot_volume_backups,
     restore_boot_volume_backup,
 )
+from oci.boot_swap import (
+    BootSwapError,
+    check_boot_volume_space,
+    get_boot_volume_attachment,
+    swap_boot_volume,
+)
 from oci.client import QuotaExceededError
 from oci.email import create_sender, is_valid_email
 from oci.grabber import TARGET_CPU, Grabber, GrabCancelledError
@@ -2810,6 +2816,166 @@ async def boot_backup_delete_callback(update, context):
         reply_markup=confirm_keyboard("delbb", idx, "🗑️ 确认删除备份"))
 
 
+# ---------------- 引导卷恢复（停机换盘，原地恢复） ----------------
+
+# 正在换盘的实例 OCID 集合（同一实例同时只允许一个换盘任务）。
+_BOOTSWAP_RUNNING = set()
+_BOOTSWAP_LOCK = threading.Lock()
+
+
+@require_allowed
+async def handle_bootswap(update, context):
+    """实例操作“引导卷恢复”的备份选择（dispatch 项 "bootswap"）。
+
+    由 handlers.py 的 "i:bootswap:<idx>" 回调转发（pending_idx 已写入）。
+    列出该实例当前启动盘的 AVAILABLE 备份，点备份进确认页
+    （bootswap_callback），真正执行在 handle_confirm("bootswap")。
+    """
+    idx = context.user_data.get("pending_idx")
+    inst = resolve_instance(context, idx)
+    if inst is None:
+        await _reply(update, "请先在实例列表里选一台实例，"
+                     "再点“引导卷恢复”。",
+                     reply_markup=back_to_oracle_keyboard())
+        return
+    name = inst.get("display-name") or "?"
+    state = (inst.get("lifecycle-state") or "").upper()
+    if state not in ("RUNNING", "STOPPED"):
+        await _reply(update,
+                     f"实例「{name}」当前状态是 {state or '未知'}，"
+                     "只有运行中或已停止的实例才能恢复引导卷。")
+        return
+    cli = get_cli(context)
+    compartment = get_compartment(context)
+    try:
+        attachment = await run_sync(get_boot_volume_attachment, cli,
+                                    compartment, inst["id"])
+    except Exception as exc:  # noqa: BLE001 - OCI 异常统一转中文提示
+        await _reply(update, fmt_error(exc))
+        return
+    if attachment is None:
+        await _reply(update,
+                     f"找不到实例「{name}」当前挂载的启动盘，无法恢复引导卷。")
+        return
+    try:
+        backups = await run_sync(
+            list_boot_volume_backups, cli, compartment,
+            boot_volume_id=attachment.get("boot-volume-id"))
+    except Exception as exc:  # noqa: BLE001 - OCI 异常统一转中文提示
+        await _reply(update, fmt_error(exc))
+        return
+    available = [b for b in backups
+                 if (b.get("lifecycle-state") or "").upper() == "AVAILABLE"]
+    if not available:
+        await _reply(
+            update,
+            f"实例「{name}」的启动盘还没有可用备份（AVAILABLE）。\n"
+            "请先在菜单 7（启动盘）里给它创建一个备份，几分钟后可用。",
+            reply_markup=back_to_oracle_keyboard())
+        return
+    context.user_data["bootswap_backups"] = available
+    context.user_data["bootswap_idx"] = idx
+    rows = []
+    for i, backup in enumerate(available):
+        created = (backup.get("time-created") or "")[:16].replace("T", " ")
+        rows.append([InlineKeyboardButton(
+            f"{backup.get('display-name') or '?'}"
+            f"（{backup.get('size-in-gbs')}GB，{created}）",
+            callback_data=f"bs:pick:{i}")])
+    rows.append([InlineKeyboardButton("◀ 返回实例",
+                                      callback_data=f"i:detail:{idx}")])
+    await _reply(
+        update,
+        f"💾 引导卷恢复：给实例「{name}」选一个备份：\n\n"
+        "恢复流程：从备份建新启动盘 → 停机 → 换盘 → 开机。\n"
+        "旧盘只拆不删，仍占启动盘额度。",
+        reply_markup=InlineKeyboardMarkup(rows))
+
+
+@require_allowed
+async def bootswap_callback(update, context):
+    """回调 "bs:pick:<bidx>"：选备份后出确认页。
+
+    真正执行在 handle_confirm("bootswap")。
+    """
+    parts = _callback_data(update).split(":")
+    action = parts[1] if len(parts) > 1 else ""
+    if action != "pick":
+        return
+    try:
+        bidx = int(parts[2]) if len(parts) > 2 else -1
+    except ValueError:
+        bidx = -1
+    backups = context.user_data.get("bootswap_backups") or []
+    inst = resolve_instance(context, context.user_data.get("bootswap_idx"))
+    if bidx < 0 or bidx >= len(backups) or inst is None:
+        await _reply(update,
+                     "备份选择已过期，请重新打开实例详情再点“引导卷恢复”。")
+        return
+    backup = backups[bidx]
+    name = inst.get("display-name") or "?"
+    backup_name = backup.get("display-name") or "?"
+    created = (backup.get("time-created") or "")[:16].replace("T", " ")
+    text = (
+        f"⚠️ 确认用备份恢复实例「{name}」的引导卷？\n\n"
+        f"备份：{backup_name}（{backup.get('size-in-gbs')}GB，{created}）\n\n"
+        "恢复流程：\n"
+        "① 从备份创建新启动盘\n"
+        "② 实例停机\n"
+        "③ 拆下旧启动盘，挂上新盘\n"
+        "④ 重新开机\n\n"
+        "⚠️ 恢复后系统盘回到备份时的状态，备份之后的数据会丢失；\n"
+        "旧盘只拆不删，仍占启动盘额度，确认新盘没问题后请手动删除。\n"
+        "整个过程约几分钟，完成后会发通知。"
+    )
+    await _reply(update, text,
+                 reply_markup=confirm_keyboard("bootswap", bidx, "💾 确认恢复"))
+
+
+def _bootswap_thread(token, chat_id, profile, region, compartment,
+                     instance_id, instance_name, backup_id, backup_name):
+    """引导卷恢复的后台线程体：跑换盘，进度与结果走 notify_dual 发。
+
+    换盘要几分钟（建盘 + 停机 + 换盘 + 开机），不能在回调里等；
+    结束时把实例从 _BOOTSWAP_RUNNING 里放掉。
+    """
+    try:
+        cli = bot_config.get_oci_client(profile=profile, region=region)
+
+        def on_step(text):
+            notify_dual(token, chat_id,
+                        f"💾 引导卷恢复「{instance_name}」", text,
+                        group="bootswap")
+
+        result = swap_boot_volume(cli, compartment, instance_id, backup_id,
+                                  on_step=on_step)
+        old_tail = (result.get("old_boot_volume_id") or "")[-4:]
+        new_tail = (result.get("new_boot_volume_id") or "")[-4:]
+        body = (
+            f"✅ 实例「{instance_name}」引导卷恢复成功。\n"
+            f"备份：{backup_name}\n"
+            f"新启动盘：…{new_tail}\n"
+            f"旧启动盘：…{old_tail}（已拆下，未删除，仍占额度）\n"
+            + ("实例已重新开机。"
+               if result.get("was_running") else "实例保持停止状态。"))
+        notify_dual(token, chat_id, "💾 引导卷恢复成功", body,
+                    group="bootswap")
+    except BootSwapError as exc:
+        body = (
+            f"❌ 实例「{instance_name}」引导卷恢复失败：{exc}\n"
+            + ("已换回旧盘。" if exc.rolled_back
+               else "回滚未完成，请在控制台手动处理。"))
+        notify_dual(token, chat_id, "💾 引导卷恢复失败", body,
+                    group="bootswap")
+    except Exception as exc:  # noqa: BLE001 - 线程里任何异常都要通知用户
+        notify_dual(token, chat_id, "💾 引导卷恢复失败",
+                    f"❌ 实例「{instance_name}」引导卷恢复失败：{exc}",
+                    group="bootswap")
+    finally:
+        with _BOOTSWAP_LOCK:
+            _BOOTSWAP_RUNNING.discard(instance_id)
+
+
 def _fmt_boot_backup_multiselect(backups, selected):
     """多选删除模式的列表文字：标题 + 已选数量 + 操作提示。"""
     return (f"💾 启动卷备份（多选删除，共 {len(backups)} 个）：\n"
@@ -4617,6 +4783,9 @@ async def _handle_confirm_inner(action, idx, update, context):
       - restorebb：从备份恢复出新实例（新实例名在
         user_data["pending_restore_name"]，idx 是
         user_data["boot_backups"] 的下标）。
+      - bootswap：用备份替换实例的启动盘（原地恢复；idx 是
+        user_data["bootswap_backups"] 的下标，实例下标在
+        user_data["bootswap_idx"]；后台线程跑换盘，结果走通知）。
       - delmfa：删除全部 MFA TOTP 设备（idx 无用，传 0）。
       - rename：改实例名（新名在 user_data["pending_rename_name"]）。
       - reinstall：重装系统（用当前镜像重建引导卷）。
@@ -4868,6 +5037,65 @@ async def _handle_confirm_inner(action, idx, update, context):
         await _reply(update,
                      f"✅ 恢复成功，新实例「{display_name}」已开机"
                      f"（{shape}）。\n实例 ID：…{instance_id[-12:]}")
+        return True
+
+    if action == "bootswap":
+        backups = context.user_data.get("bootswap_backups") or []
+        inst = resolve_instance(context,
+                                context.user_data.get("bootswap_idx"))
+        try:
+            bidx = int(idx)
+        except (TypeError, ValueError):
+            bidx = -1
+        if inst is None or bidx < 0 or bidx >= len(backups):
+            await _reply(update,
+                         "备份选择已过期，请重新打开实例详情再点“引导卷恢复”。")
+            return True
+        backup = backups[bidx]
+        cli = get_cli(context)
+        compartment = get_compartment(context)
+        # 额度重检（确认期间可能有变化）。
+        try:
+            ok, remaining = await run_sync(
+                check_boot_volume_space, cli, compartment,
+                backup.get("size-in-gbs") or 0)
+        except Exception as exc:  # noqa: BLE001
+            await _reply(update, fmt_error(exc))
+            return True
+        if not ok:
+            await _reply(
+                update,
+                f"❌ 启动盘额度不足：还剩 {remaining}GB，"
+                f"新盘需要 {backup.get('size-in-gbs')}GB。"
+                "请先删除不用的启动盘再恢复。")
+            return True
+        instance_id = inst["id"]
+        with _BOOTSWAP_LOCK:
+            if instance_id in _BOOTSWAP_RUNNING:
+                await _reply(update, "这台实例正在换盘，请等它完成后再试。")
+                return True
+            _BOOTSWAP_RUNNING.add(instance_id)
+        name = inst.get("display-name") or "?"
+        await _reply(
+            update,
+            f"♻️ 已开始恢复实例「{name}」的引导卷（约几分钟），"
+            "完成后会发通知告诉你。")
+        chat_id = (update.effective_chat.id
+                   if update.effective_chat else _notify_chat_id(context))
+        try:
+            thread = threading.Thread(
+                target=_bootswap_thread,
+                args=(bot_config.TELEGRAM_BOT_TOKEN, chat_id,
+                      get_current_profile(context),
+                      get_current_region(context),
+                      compartment, instance_id, name,
+                      backup["id"], backup.get("display-name") or "?"),
+                daemon=True)
+            thread.start()
+        except Exception:  # noqa: BLE001 - 线程起不来就放掉锁并报错
+            with _BOOTSWAP_LOCK:
+                _BOOTSWAP_RUNNING.discard(instance_id)
+            await _reply(update, "❌ 启动恢复任务失败，请稍后再试。")
         return True
 
     if action == "delmfa":
@@ -6074,7 +6302,7 @@ async def handle_upgrade(update, context):
 # ================= /oracle 菜单分发 =================
 
 # 本模块实现的菜单项 key -> handler（"changeip"/"rename"/"reinstall"/
-# "console" 不是菜单项，是实例操作 "i:<act>:<idx>" 的转发项）。
+# "console"/"bootswap" 不是菜单项，是实例操作 "i:<act>:<idx>" 的转发项）。
 # 未列出的项 dispatch 返回 False：
 #   - instances：核心项，由 handlers.py 处理，不在本模块；
 #   - disable / delapi：不实现（原因见 docs/phase2-todo.md；
@@ -6127,6 +6355,7 @@ _DISPATCH = {
     "rename": handle_rename_prompt,
     "reinstall": handle_reinstall_prompt,
     "console": handle_console,
+    "bootswap": handle_bootswap,
     "memballoon": handlers_client.handle_memballoon,
     "memclear": handlers_client.handle_memclear,
 }

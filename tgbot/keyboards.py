@@ -274,6 +274,12 @@ def instance_actions_keyboard(idx, state="RUNNING"):
         InlineKeyboardButton("✏️ 改名", callback_data=f"i:rename:{idx}"),
         InlineKeyboardButton("💿 重装系统", callback_data=f"i:reinstall:{idx}"),
     ])
+    if state in ("RUNNING", "STOPPED"):
+        # 引导卷恢复（停机换盘）：只有运行中 / 已停止的实例能换盘。
+        rows.append([
+            InlineKeyboardButton("💾 引导卷恢复",
+                                 callback_data=f"i:bootswap:{idx}"),
+        ])
     rows.append([
         InlineKeyboardButton("🖥️ 串行控制台", callback_data=f"i:console:{idx}"),
     ])

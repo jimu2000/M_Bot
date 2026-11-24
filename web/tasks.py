@@ -21,6 +21,7 @@ import threading
 import time
 from datetime import datetime
 
+from oci.boot_swap import BootSwapError, swap_boot_volume
 from oci.client import OCIClient, QuotaExceededError
 from oci.grabber import GrabCancelledError, Grabber
 from oci.network import get_public_ip
@@ -410,6 +411,103 @@ def start_grab_task(registry, cli, compartment_id, params,
     thread = threading.Thread(
         target=_run_grabber,
         args=(registry, task_id, cli, compartment_id, params, notify),
+        daemon=True)
+    thread.start()
+    return task_id
+
+
+# ---------------- 引导卷恢复（停机换盘，原地恢复） ----------------
+
+# 正在换盘的实例 OCID 集合（同一实例同时只允许一个换盘任务；
+# 与机器人进程的锁各自独立，跨进程同时换同一台需用户自行避免）。
+_BOOTSWAP_RUNNING = set()
+_BOOTSWAP_LOCK = threading.Lock()
+
+
+def _run_bootswap(registry, task_id, cli, compartment_id, instance_id,
+                  instance_name, backup_id, backup_name, notify):
+    """换盘任务的线程体：跑 swap，进度进任务日志，结果双通道通知。"""
+    registry.set_status(task_id, "running")
+
+    def on_step(text):
+        registry.append_log(task_id, text)
+
+    try:
+        result = swap_boot_volume(cli, compartment_id, instance_id,
+                                  backup_id, on_step=on_step)
+    except BootSwapError as exc:
+        registry.set_status(task_id, "failed")
+        registry.append_log(task_id, f"换盘失败：{exc}")
+        if notify:
+            body = (f"❌ 实例「{instance_name}」引导卷恢复失败：{exc}\n"
+                    + ("已换回旧盘。" if exc.rolled_back
+                       else "回滚未完成，请在控制台手动处理。"))
+            try:
+                notify_dual(notify.get("token"), notify.get("chat_id"),
+                            "💾 引导卷恢复失败", body, group="bootswap")
+            except Exception as notify_exc:  # noqa: BLE001 - 通知失败只记日志
+                registry.append_log(task_id, f"通知发送失败：{notify_exc}")
+        return
+    except Exception as exc:  # noqa: BLE001 - 线程里任何异常都要落到任务状态
+        registry.set_status(task_id, "failed")
+        registry.append_log(task_id, f"换盘失败：{exc}")
+        if notify:
+            try:
+                notify_dual(notify.get("token"), notify.get("chat_id"),
+                            "💾 引导卷恢复失败",
+                            f"❌ 实例「{instance_name}」引导卷恢复失败：{exc}",
+                            group="bootswap")
+            except Exception as notify_exc:  # noqa: BLE001 - 通知失败只记日志
+                registry.append_log(task_id, f"通知发送失败：{notify_exc}")
+        return
+    finally:
+        with _BOOTSWAP_LOCK:
+            _BOOTSWAP_RUNNING.discard(instance_id)
+    registry.set_result(task_id, {
+        "instance_id": instance_id,
+        "old_boot_volume_id": result.get("old_boot_volume_id"),
+        "new_boot_volume_id": result.get("new_boot_volume_id"),
+        "was_running": result.get("was_running"),
+    })
+    old_tail = (result.get("old_boot_volume_id") or "")[-4:]
+    new_tail = (result.get("new_boot_volume_id") or "")[-4:]
+    registry.append_log(
+        task_id,
+        f"换盘成功：新盘 …{new_tail}，旧盘 …{old_tail}（已拆下，未删除）。")
+    registry.set_status(task_id, "done")
+    if notify:
+        body = (
+            f"✅ 实例「{instance_name}」引导卷恢复成功。\n"
+            f"备份：{backup_name}\n"
+            f"新启动盘：…{new_tail}\n"
+            f"旧启动盘：…{old_tail}（已拆下，未删除，仍占额度）\n"
+            + ("实例已重新开机。"
+               if result.get("was_running") else "实例保持停止状态。"))
+        try:
+            notify_dual(notify.get("token"), notify.get("chat_id"),
+                        "💾 引导卷恢复成功", body, group="bootswap")
+        except Exception as notify_exc:  # noqa: BLE001 - 通知失败只记日志
+            registry.append_log(task_id, f"通知发送失败：{notify_exc}")
+
+
+def start_bootswap_task(registry, cli, compartment_id, instance_id,
+                        instance_name, backup_id, backup_name,
+                        notify=None):
+    """注册换盘任务并开 daemon 线程跑，返回任务 ID。
+
+    同一实例已有换盘任务在跑时抛 ValueError（调用方应转 409）。
+    notify：双通道通知信息 {"token", "chat_id"}，为 None 时不通知。
+    """
+    with _BOOTSWAP_LOCK:
+        if instance_id in _BOOTSWAP_RUNNING:
+            raise ValueError("这台实例正在换盘，请等它完成后再试。")
+        _BOOTSWAP_RUNNING.add(instance_id)
+    task_id = registry.create(
+        "bootswap", detail=f"引导卷恢复：{instance_name}")
+    thread = threading.Thread(
+        target=_run_bootswap,
+        args=(registry, task_id, cli, compartment_id, instance_id,
+              instance_name, backup_id, backup_name, notify),
         daemon=True)
     thread.start()
     return task_id

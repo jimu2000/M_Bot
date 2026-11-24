@@ -305,7 +305,27 @@
       </table>
     </div>
     <div class="modal-foot">
+      <button type="button" class="btn" id="detail-bootswap-btn" hidden>💾 引导卷恢复</button>
       <button type="button" class="btn btn-primary" data-close-modal="detail-modal">关闭</button>
+    </div>
+  </div>
+</div>
+
+{# 引导卷恢复弹窗：选备份后确认，停机换盘，原地恢复 #}
+<div class="modal-overlay" id="bootswap-modal" hidden>
+  <div class="modal-box">
+    <div class="modal-head">
+      <span>引导卷恢复</span>
+      <button type="button" class="modal-close" data-close-modal="bootswap-modal" aria-label="关闭">×</button>
+    </div>
+    <div class="modal-body">
+      <p>用备份替换实例 <b id="bootswap-name"></b> 的启动盘（停机换盘，原地恢复）。</p>
+      <p class="hint">流程：从备份创建新启动盘 → 停机 → 换盘 → 开机。旧盘只拆不删，仍占启动盘额度；恢复后系统盘回到备份时的状态，备份之后的数据会丢失。</p>
+      <div id="bootswap-list">加载中…</div>
+    </div>
+    <div class="modal-foot">
+      <button type="button" class="btn" data-close-modal="bootswap-modal">取消</button>
+      <button type="button" class="btn btn-danger" id="bootswap-confirm-btn" disabled>确认恢复</button>
     </div>
   </div>
 </div>

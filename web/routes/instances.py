@@ -31,6 +31,11 @@
     上限 4 核/24GB；直接 update，OCI 自动重启实例）。
   - POST /api/instances/{id}/repair：尝试修复（检查实例状态/主 VNIC/
     公网 IP，缺失时重新附加临时公网 IP；返回修复报告）。
+  - GET /api/instances/{id}/boot-backups：该实例当前启动盘的
+    AVAILABLE 备份列表（引导卷恢复的备份选择用）。
+  - POST /api/instances/{id}/restore-boot-volume：用备份替换实例的
+    启动盘（body {backup_id, confirm}，confirm 必须为 true；停机换盘，
+    原地恢复；后台任务跑，返回 task_id，进度在任务页看）。
 
 profile 与 region 通过查询参数传（如 ?profile=ACCOUNT2&region=us-sanjose-1），
 默认 DEFAULT 账号的主区。
@@ -43,6 +48,11 @@ import time
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
+from oci.boot_backup import get_boot_volume_backup, list_boot_volume_backups
+from oci.boot_swap import (
+    check_boot_volume_space,
+    get_boot_volume_attachment,
+)
 from oci.client import OCIError
 from oci.instance import (
     batch_restart,
@@ -72,6 +82,8 @@ from oci.network import (
 )
 from oci.quota import SHAPE_A1_FLEX, SHAPE_E2_MICRO, check_a1_single_instance_cap
 from oci.volume import get_boot_volume, list_boot_volume_attachments
+from tgbot import config as bot_config
+from tgbot.bark import load_bark_config
 from web import config
 from web.deps import (
     error_response,
@@ -79,6 +91,7 @@ from web.deps import (
     oci_error_response,
     resolve_profile,
 )
+from web.tasks import TASKS, start_bootswap_task
 
 router = APIRouter()
 
@@ -146,6 +159,21 @@ class ReinstallBody(BaseModel):
     confirm: bool = False
     confirm_name: str = ""
     image_id: str = None
+
+
+class RestoreBootVolumeBody(BaseModel):
+    """引导卷恢复请求体：必须 confirm=true。"""
+
+    backup_id: str = ""
+    confirm: bool = False
+
+
+def _notify_chat_id():
+    """通知用的 chat_id：Bark 配置里记的 > 白名单第一个用户 ID。"""
+    chat_id = load_bark_config().get("chat_id")
+    if not chat_id and bot_config.ALLOWED_USER_IDS:
+        chat_id = next(iter(bot_config.ALLOWED_USER_IDS))
+    return chat_id
 
 
 class ChangeIpBody(BaseModel):
@@ -666,3 +694,101 @@ def repair(instance_id: str,
         return oci_error_response(exc)
     clear_instance_list_cache(profile or config.DEFAULT_PROFILE)
     return {"ok": True, "instance_id": instance_id, "report": report}
+
+
+@router.get("/api/instances/{instance_id}/boot-backups")
+def boot_backups(instance_id: str,
+                 profile: str = Query(default=None),
+                 region: str = Query(default=None),
+                 username: str = Depends(get_current_user)):
+    """该实例当前启动盘的 AVAILABLE 备份列表（引导卷恢复的备份选择用）。
+
+    返回 {ok, boot_volume_id, backups}；backups 每项是精简字典
+    （id / display-name / size-in-gbs / lifecycle-state / time-created）。
+    """
+    try:
+        cli, compartment_id = resolve_profile(profile, region)
+        attachment = get_boot_volume_attachment(cli, compartment_id,
+                                                instance_id)
+        if attachment is None:
+            return error_response("找不到该实例当前挂载的启动盘",
+                                  status_code=400)
+        boot_volume_id = attachment.get("boot-volume-id")
+        backups = list_boot_volume_backups(cli, compartment_id,
+                                           boot_volume_id=boot_volume_id)
+    except ValueError as exc:
+        return error_response(str(exc), status_code=400)
+    except OCIError as exc:
+        return oci_error_response(exc)
+    available = [b for b in backups
+                 if (b.get("lifecycle-state") or "").upper() == "AVAILABLE"]
+    return {"ok": True, "boot_volume_id": boot_volume_id,
+            "backups": available}
+
+
+@router.post("/api/instances/{instance_id}/restore-boot-volume")
+def restore_boot_volume(instance_id: str,
+                        body: RestoreBootVolumeBody,
+                        profile: str = Query(default=None),
+                        region: str = Query(default=None),
+                        username: str = Depends(get_current_user)):
+    """用备份替换实例的启动盘（停机换盘，原地恢复）。
+
+    body 必须含 confirm=true 且 backup_id。校验：实例是 RUNNING 或
+    STOPPED、备份属于该实例当前启动盘且 AVAILABLE、启动盘额度够放
+    新盘。校验通过后起后台任务跑换盘，返回 {ok, task_id}，进度在
+    任务页看，完成/失败时双通道通知。同一实例已有换盘任务在跑时
+    返回 409。
+    """
+    if not body.confirm:
+        return error_response("请确认恢复（confirm=true）",
+                              status_code=400)
+    if not (body.backup_id or "").strip():
+        return error_response("backup_id 不能为空", status_code=400)
+    try:
+        cli, compartment_id = resolve_profile(profile, region)
+        detail = get_instance(cli, instance_id)
+        if isinstance(detail, dict):
+            detail = detail.get("data") or detail
+        name = (detail or {}).get("display-name") or instance_id[-4:]
+        state = ((detail or {}).get("lifecycle-state") or "").upper()
+        if state not in ("RUNNING", "STOPPED"):
+            return error_response(
+                f"实例当前状态是 {state or '未知'}，只有运行中或已停止的"
+                "实例才能恢复引导卷", status_code=400)
+        attachment = get_boot_volume_attachment(cli, compartment_id,
+                                                instance_id)
+        if attachment is None:
+            return error_response("找不到该实例当前挂载的启动盘",
+                                  status_code=400)
+        backup = get_boot_volume_backup(cli, body.backup_id.strip())
+        if backup.get("boot-volume-id") != attachment.get("boot-volume-id"):
+            return error_response("该备份不属于这台实例的启动盘",
+                                  status_code=400)
+        if (backup.get("lifecycle-state") or "").upper() != "AVAILABLE":
+            return error_response(
+                f"备份当前状态是 {backup.get('lifecycle-state') or '未知'}，"
+                "只有 AVAILABLE 状态的备份才能恢复", status_code=400)
+        ok, remaining = check_boot_volume_space(
+            cli, compartment_id, backup.get("size-in-gbs") or 0)
+        if not ok:
+            return error_response(
+                f"启动盘额度不足：还剩 {remaining}GB，"
+                f"新盘需要 {backup.get('size-in-gbs')}GB。"
+                "请先删除不用的启动盘再恢复。", status_code=400)
+        notify = {"token": bot_config.TELEGRAM_BOT_TOKEN,
+                  "chat_id": _notify_chat_id()}
+        task_id = start_bootswap_task(
+            TASKS, cli, compartment_id, instance_id, name,
+            backup["id"], backup.get("display-name") or "?",
+            notify=notify)
+    except ValueError as exc:
+        message = str(exc)
+        if "正在换盘" in message:
+            return error_response(message, status_code=409)
+        return error_response(message, status_code=400)
+    except OCIError as exc:
+        return oci_error_response(exc)
+    clear_instance_list_cache(profile or config.DEFAULT_PROFILE)
+    return {"ok": True, "instance_id": instance_id, "task_id": task_id,
+            "message": "引导卷恢复已开始，进度请在任务页查看"}

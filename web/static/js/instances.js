@@ -19,6 +19,9 @@
   var ipTarget = null; // IP 管理弹窗当前实例
   var bootVolumeTarget = null; // 启动盘弹窗当前实例 {instance, volumeId, size}
   var resizeTarget = null; // 待升降配的实例
+  var detailTarget = null; // 详情弹窗当前实例 {id, name, state}
+  var bootswapTarget = null; // 待恢复引导卷的实例
+  var bootswapSelected = null; // 已选备份的 OCID
   var consoleCommand = ""; // 当前串行控制台连接命令（供复制）
 
   var BATCH_LABEL = {
@@ -259,9 +262,63 @@
       document.getElementById("detail-boot-volume").textContent = bootText;
       document.getElementById("detail-created").textContent =
         inst["time-created"] ? RBot.formatTime(inst["time-created"]) : "—";
+      detailTarget = {
+        id: instId,
+        name: inst["display-name"] || "—",
+        state: inst["lifecycle-state"] || "",
+      };
+      // 引导卷恢复只对运行中 / 已停止的实例可用
+      document.getElementById("detail-bootswap-btn").hidden =
+        !(detailTarget.state === "RUNNING" || detailTarget.state === "STOPPED");
       RBot.openModal("detail-modal");
     } catch (err) {
       RBot.toast("加载实例详情失败：" + err.message, "error");
+    }
+  }
+
+  // 引导卷恢复弹窗：列该实例启动盘的可用备份，选一个确认后起后台任务
+  async function showBootswap() {
+    if (!detailTarget) return;
+    bootswapTarget = detailTarget;
+    bootswapSelected = null;
+    document.getElementById("bootswap-name").textContent = bootswapTarget.name;
+    document.getElementById("bootswap-confirm-btn").disabled = true;
+    var listEl = document.getElementById("bootswap-list");
+    listEl.textContent = "加载中…";
+    RBot.closeModal("detail-modal");
+    RBot.openModal("bootswap-modal");
+    try {
+      var res = await RBot.api(RBot.withProfile(
+        "/api/instances/" + encodeURIComponent(bootswapTarget.id) + "/boot-backups",
+        currentProfile, currentRegion));
+      var backups = res.backups || [];
+      if (!backups.length) {
+        listEl.textContent = "这台实例的启动盘还没有可用备份（AVAILABLE）。请先在启动盘页面创建备份，几分钟后可用。";
+        return;
+      }
+      listEl.innerHTML = "";
+      backups.forEach(function (b) {
+        var label = document.createElement("label");
+        label.className = "radio-row";
+        var radio = document.createElement("input");
+        radio.type = "radio";
+        radio.name = "bootswap-backup";
+        radio.value = b.id;
+        radio.addEventListener("change", function () {
+          bootswapSelected = b.id;
+          document.getElementById("bootswap-confirm-btn").disabled = false;
+        });
+        var text = document.createElement("span");
+        var created = b["time-created"] ? RBot.formatTime(b["time-created"]) : "—";
+        text.textContent = (b["display-name"] || "—") + "（" +
+          (b["size-in-gbs"] != null ? b["size-in-gbs"] + "GB" : "—") +
+          "，" + created + "）";
+        label.appendChild(radio);
+        label.appendChild(text);
+        listEl.appendChild(label);
+      });
+    } catch (err) {
+      listEl.textContent = "加载备份失败：" + err.message;
     }
   }
 
@@ -630,6 +687,32 @@
         await loadInstances();
       } catch (err) {
         RBot.toast("终止失败：" + err.message, "error");
+      }
+    });
+
+    // 详情弹窗里的“引导卷恢复”按钮：打开备份选择弹窗
+    document.getElementById("detail-bootswap-btn").addEventListener("click", function () {
+      showBootswap();
+    });
+
+    // 引导卷恢复确认：起后台任务，跳任务页看进度
+    document.getElementById("bootswap-confirm-btn").addEventListener("click", async function () {
+      if (!bootswapTarget || !bootswapSelected) return;
+      var btn = document.getElementById("bootswap-confirm-btn");
+      btn.disabled = true;
+      try {
+        await RBot.api(RBot.withProfile(
+          "/api/instances/" + encodeURIComponent(bootswapTarget.id) + "/restore-boot-volume",
+          currentProfile, currentRegion), {
+          method: "POST",
+          body: { backup_id: bootswapSelected, confirm: true },
+        });
+        RBot.toast("引导卷恢复已开始，进度请在任务页查看", "success");
+        RBot.closeModal("bootswap-modal");
+        window.location.href = "/tasks";
+      } catch (err) {
+        RBot.toast("恢复失败：" + err.message, "error");
+        btn.disabled = false;
       }
     });
 

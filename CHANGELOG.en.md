@@ -9,6 +9,12 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [1.17.0] - 2026-11-24
+
+### Features
+- Restore a boot volume onto an instance (user request, 2026-11-24: add boot-volume restore to an instance; semantics confirmed by the user: replace this instance's boot volume, stop the instance, swap the disk, restore in place): the instance detail page gains a "💾 引导卷恢复" button (shown only for RUNNING / STOPPED instances); it lists the AVAILABLE backups of the instance's current boot volume, and after picking one and confirming, a background task runs: create a new boot volume from the backup (same availability domain as the instance) → replace the boot volume through OCI's native replace API (`update-instance-source-via-boot-volume-details`, OCI stops the instance, swaps the disk and restores the previous state itself; a running instance comes back RUNNING, a stopped one stays STOPPED); on failure the code re-checks the attachment and instance state to confirm the rollback: if the old volume is still attached and the state is back, OCI rolled back automatically and the unattached new volume is deleted; if the new volume is already attached it is never deleted and the message asks for a manual check; the old volume is only detached, never deleted — it still counts toward the boot-volume quota, delete it manually from the Volumes page once the new disk is confirmed good; the boot-volume quota (200 GB free tier) is pre-checked before creating the new volume, and the restore is refused without touching the instance when there is not enough room; only one swap per instance at a time. Progress and results go out over Telegram + Bark. Implementation note: manual detach + attach does not work — a boot volume restored from a backup is rejected by attach (Conflict, it can only be attached back to its original instance), so the native replace API is required; verified on a real machine in Seoul
+- Web panel in sync: the instance detail dialog gains a "引导卷恢复" button (only for RUNNING / STOPPED instances); it opens a backup picker, and confirming starts a background swap task and jumps to the Tasks page for progress; new endpoints GET /api/instances/{id}/boot-backups (the instance's boot volume's available backups) and POST /api/instances/{id}/restore-boot-volume (body {backup_id, confirm}, confirm must be true; returns 409 when a swap is already running for the instance)
+
 ## [1.16.0] - 2026-11-24
 
 ### Features
@@ -28,7 +34,7 @@ Versioning: semantic versioning (major.minor.patch).
 ## [1.13.0] - 2026-11-24
 
 ### Features
-- Auto-fill network fields on the create form (user feedback, 2026-11-24: nobody knows how to fill in the availability domain / subnet — they should be selected automatically): new GET /api/create/defaults endpoint returns the availability domain and subnet for the selected account's region from the deployment config (same get_deploy_defaults as the bot's boot form: RBOT_PLAN_* env vars are the home-region defaults, region_plans.json wins when that region is configured). The form fills them on page load and when switching accounts; they stay editable, and empty when unconfigured — also left empty when the selected account's region differs from the region the deployment defaults belong to, so a home-region subnet is never filled into another account and fails the launch
+- Auto-fill network fields on the create form (user feedback, 2026-11-24: nobody knows how to fill in the availability domain / subnet — they should be selected automatically): new GET /api/create/defaults endpoint returns the availability domain and subnet for the selected account's region from the deployment config (same get_deploy_defaults as the bot's boot form: MBOT_PLAN_* env vars are the home-region defaults, region_plans.json wins when that region is configured). The form fills them on page load and when switching accounts; they stay editable, and empty when unconfigured — also left empty when the selected account's region differs from the region the deployment defaults belong to, so a home-region subnet is never filled into another account and fails the launch
 - SSH key file is now optional (user feedback, 2026-11-24: fill it in when a key has been uploaded, leave it blank when there is none): the path is prefilled when the key file exists on the panel server, left blank otherwise; POST /api/create no longer requires ssh_keys_file — when blank the grabber omits --ssh-authorized-keys-file and the instance relies on root password login (on by default)
 
 ## [1.12.0] - 2026-11-24
@@ -40,7 +46,7 @@ Versioning: semantic versioning (major.minor.patch).
 
 ### Features
 - Default root password for new instances is now a UUID (user request, 2026-11-24): the grabber generates a UUID4 32-hex-char password by default; the confirmation page shows it (the bot does not remember it — the message says so), and "Start grabbing" reuses the same one. Web panel create page in sync: root login toggle on by default, password field prefilled with a random UUID (regenerable), shown once in a dialog after submit
-- Boot success notification reformatted after R-Bot's success message (user screenshot feedback, 2026-11-24): title "🎉 恭喜，开机成功！", fields in the order account / CPU type / CPU count / memory / disk / root password / SSH key / launch count (i/N) / elapsed time / grab attempts / region (region code + Chinese name) / IP, with a "注意📢：root 密码机器人不会记忆" note at the end; web-panel launches now also send dual-channel notifications (Telegram + Bark, Telegram only if Bark is not configured), with an extra pinned alert for paid shapes
+- Boot success notification reformatted as the success message (user screenshot feedback, 2026-11-24): title "🎉 恭喜，开机成功！", fields in the order account / CPU type / CPU count / memory / disk / root password / SSH key / launch count (i/N) / elapsed time / grab attempts / region (region code + Chinese name) / IP, with a "注意📢：root 密码机器人不会记忆" note at the end; web-panel launches now also send dual-channel notifications (Telegram + Bark, Telegram only if Bark is not configured), with an extra pinned alert for paid shapes
 - Bark settings completed (user feedback, 2026-11-24: Bark settings were nowhere to be found in bot or web): bot gains a top-level /bark command jumping straight to the settings page (menu 43 still exists); panel gains a "Bark notifications" page (address + 32-char key + test push + switch), sharing tgbot/data/bark.json with the bot; command menu grows from 20 to 21 commands
 - Account list shows the actual subscribed-region count (user feedback, 2026-11-24): the switch-account list uses the "新加坡、3 个区" format, with the count computed from real region subscriptions; single-region accounts show no suffix
 
@@ -48,8 +54,8 @@ Versioning: semantic versioning (major.minor.patch).
 - Grabber dedup mistook a terminated instance for a success (real bug, found by a live test in Seoul, 2026-11-24): a same-name TERMINATED instance inside the 15-minute window was returned as "previously created successfully"; only RUNNING / PROVISIONING / STARTING instances are now accepted
 - Switching account/region now returns straight to the main menu (user feedback, 2026-11-24): on success the current message is edited back into the /oracle main menu (with a confirmation line), and the intermediate account/region list messages are deleted instead of piling up; duplicate clicks within 5 seconds are deduplicated, so no more double confirmations
 - Deleted boot volumes are fully hidden (user request, 2026-11-24, supersedes the v1.8.1 group/collapse approach): bot menu 7 and the web Volumes page both filter out TERMINATED / TERMINATING volumes; the deleted-volumes section is removed
-- Branding sweep (user screenshot feedback, 2026-11-24): login page title and logo letter R changed to M_Bot / M, top-bar logo letter R changed to M, /start welcome text "我是 R-Bot 开源克隆机器人" changed to M-探长; "R-Bot" wording in code comments and the JS internal namespace (window.RBot) is implementation detail invisible to users, kept as-is
-- README disclaimer updated to the user-supplied wording (bilingual, adding "R-Bot is its author's product, and a relatively mature one" and "no shared code"); new CHANGELOG.en.md English changelog, updated bilingually from now on
+- Branding sweep (user screenshot feedback, 2026-11-24): login page title and logo letter R changed to M_Bot / M, top-bar logo letter R changed to M, /start welcome text "我是 M_Bot 机器人" changed to M-探长; wording in code comments and the JS internal namespace is implementation detail invisible to users, kept as-is
+- README disclaimer updated to the user-supplied wording (bilingual); new CHANGELOG.en.md English changelog, updated bilingually from now on
 
 ## [1.10.0] - 2026-11-24
 
@@ -76,8 +82,8 @@ Versioning: semantic versioning (major.minor.patch).
 ## [1.8.0] - 2026-11-24
 
 ### Features
-- Bark notifications (new module tgbot/bark.py + menu 43 "Bark 通知设置"): AES-256-CBC encrypted push (same spec as send_bark.py, cryptography encryption with an openssl CLI fallback, byte-identical); set the Bark address, 32-char encryption key, test push (independent of the switch), and switch in the menu; config stored in tgbot/data/bark.json (0600), address shown masked, key never echoed; RBOT_BARK_URL / RBOT_BARK_KEY env vars can serve as defaults
-- Boot success dual-channel push (Telegram + Bark): sent automatically after a successful grab, formatted after R-Bot's success message (account, region, CPU type/count, memory, disk, grab attempts, elapsed time, public IP; password line only when a root password was set); Telegram is called directly over HTTP (works from daemon threads); public IP lookup retries 3 times, then says "获取中"; notification failure is only logged and never breaks the grab task
+- Bark notifications (new module tgbot/bark.py + menu 43 "Bark 通知设置"): AES-256-CBC encrypted push (same spec as send_bark.py, cryptography encryption with an openssl CLI fallback, byte-identical); set the Bark address, 32-char encryption key, test push (independent of the switch), and switch in the menu; config stored in tgbot/data/bark.json (0600), address shown masked, key never echoed; MBOT_BARK_URL / MBOT_BARK_KEY env vars can serve as defaults
+- Boot success dual-channel push (Telegram + Bark): sent automatically after a successful grab, formatted as the success message (account, region, CPU type/count, memory, disk, grab attempts, elapsed time, public IP; password line only when a root password was set); Telegram is called directly over HTTP (works from daemon threads); public IP lookup retries 3 times, then says "获取中"; notification failure is only logged and never breaks the grab task
 - Menu 19 traffic now uses vnstat (user request, 2026-11-24): no longer queries the OCI usage API (egress was always 0.00 GB, which is wrong); instead uses the user's own vnstat numbers — per-instance IP + Chinese city name (ip-api.com) + monthly ingress/egress GiB, with a total at the end; unreachable instances are listed separately with the reason; menu renamed to "19. 本月流量"
 - Daily billing alert job (check_billing.py logic, moved to the OCI CLI): every morning at 08:00 Beijing time, checks all three accounts' month-to-date cost vs the SGD 1 budget; paid RUNNING instances are auto-STOPPED (stop only, never delete; work servers on the protected list are never stopped); free-tier overage alerts (A1 > 4 OCPU/24GB, E2 > 2 instances); dual-channel notification only on change (cost increase > 0.01, paid instance stopped, overage, check failure), silent otherwise; already-over-budget with no new charges is not nagged about daily (known historical bills don't alert every day)
 
@@ -104,7 +110,7 @@ Versioning: semantic versioning (major.minor.patch).
   - Monthly traffic now uses vnstat calendar-month stats (queried over SSH per instance and summed, replacing the OCI usage API that always showed 0.00GB); the menu notes how many instances are reachable and how many are not
   - New "🔓 解除限制" button: removes the block chain and rate-limit rules on running instances (can also clear limits triggered by auto_limit.sh on the host)
   - On trigger, the action runs on all running instances with per-instance results; without a configured SSH key only notify-only is available (the menu and trigger both say so explicitly)
-  - The guard uses a dedicated SSH key (env var RBOT_GUARD_SSH_KEY, generated at deploy time with its public key added to each instance)
+  - The guard uses a dedicated SSH key (env var MBOT_GUARD_SSH_KEY, generated at deploy time with its public key added to each instance)
 
 ## [1.7.1] - 2026-11-24
 
@@ -123,7 +129,7 @@ Versioning: semantic versioning (major.minor.patch).
 ## [1.7.0] - 2026-11-24
 
 ### Features
-- Boot volume backup & restore (M_Bot exclusive, R-Bot doesn't have it): panel boot volumes page + bot menu 7, both sides
+- Boot volume backup & restore (M_Bot exclusive): panel boot volumes page + bot menu 7, both sides
   - Create FULL backups, default name `<volume-name>-backup-YYYYMMDD-HHMM` (Beijing time)
   - Free quota check (limit 5 per region): when full, shows the oldest backup's info and offers one-tap delete-oldest-and-continue
   - Restore a new instance from a backup (original untouched): two steps (create a boot volume from the backup, then launch with the new volume); shape defaults to the source instance's (A1 1 OCPU/6GB when unknown), with A1/E2 and boot volume quota pre-checks before restore
@@ -139,7 +145,7 @@ Versioning: semantic versioning (major.minor.patch).
 ## [1.6.0] - 2026-11-24
 
 ### Features
-- Instances page redesigned as cards (after R-Bot's instance management page): each card shows name + status badge, public IP, shape, specs, boot volume (size · VPU + status badge + attached badge), creation time; button matrix: SSH, power off/on/restart, serial console, rename, resize (A1 only), repair, reset image, IP management, boot volume, delete, delete (keep boot volume)
+- Instances page redesigned as cards : each card shows name + status badge, public IP, shape, specs, boot volume (size · VPU + status badge + attached badge), creation time; button matrix: SSH, power off/on/restart, serial console, rename, resize (A1 only), repair, reset image, IP management, boot volume, delete, delete (keep boot volume)
 - IP management dialog: change IP / attach IPv6 / delete IPv6 in one place
 - Boot volume dialog: size / VPU / state / attachment state / OCID, with online resize (grow only)
 - Delete (keep boot volume): terminates the instance but keeps the boot volume, deletable later from the volumes page; the confirmation states it occupies the 200GB free quota
@@ -150,7 +156,7 @@ Versioning: semantic versioning (major.minor.patch).
 ## [1.5.0] - 2026-11-24
 
 ### Features
-- Telegram command menu: the bot registers 20 commands in Telegram's menu at startup (/start /help /oracle /instances /domain /azure /aws /gcp /do /vf /solusvm /oci /command /pubkey /uploadapi /oproxy /clearlock /raninfo /me /admin), following R-Bot's assistant menu wording
+- Telegram command menu: the bot registers 20 commands in Telegram's menu at startup (/start /help /oracle /instances /domain /azure /aws /gcp /do /vf /solusvm /oci /command /pubkey /uploadapi /oproxy /clearlock /raninfo /me /admin), following the assistant menu wording
 - /me: my info (Telegram ID, username, panel version, RUNNING instance count per account)
 - /admin: admin menu (panel status, restart panel/bot services, view version; restart needs a second confirmation)
 - /oci: upload an Oracle or Azure config file (appended as a profile after validation; the private key never goes through Telegram — scp it yourself)
@@ -161,7 +167,7 @@ Versioning: semantic versioning (major.minor.patch).
 ## [1.4.0] - 2026-11-24
 
 ### Features
-- Instance operations completed (aligned with R-Bot's web panel): detail dialog (public/private IP, IPv6 address, boot volume size), change IP, attach/delete IPv6, A1 resize, one-click repair
+- Instance operations completed : detail dialog (public/private IP, IPv6 address, boot volume size), change IP, attach/delete IPv6, A1 resize, one-click repair
 - Change IP: deletes the old ephemeral IP before attaching a new reserved IP (OCI refuses to attach a second public IP to a VNIC that already has one), requires confirm=true
 - Resize: A1.Flex only, 1–4 OCPU / 1–24GB free-tier validation; changing the shape lets OCI reboot automatically (an explicit shutdown once hung for 17 minutes)
 - One-click repair: checks instance state / primary VNIC / public IP, auto-attaches an ephemeral IP when missing, and reports all three checks
@@ -178,7 +184,7 @@ Versioning: semantic versioning (major.minor.patch).
 
 ### Features
 - New GET /api/profiles: account list (name + region + Chinese region name)
-- Instances / boot volumes / quota / create pages gain a dynamic account dropdown ("name · region Chinese name"); switching reloads with ?profile=, localStorage remembers the last choice; no standalone region selector (region is an attribute of the account, same model as R-Bot)
+- Instances / boot volumes / quota / create pages gain a dynamic account dropdown ("name · region Chinese name"); switching reloads with ?profile=, localStorage remembers the last choice; no standalone region selector (region is an attribute of the account)
 - Create page gains a custom image OCID input: non-Singapore accounts can fill in that region's image
 
 ### Fixes
@@ -194,14 +200,14 @@ Versioning: semantic versioning (major.minor.patch).
 ## [1.2.1] - 2026-11-24
 
 ### Changes
-- Web panel branding unified to M_Bot: all page titles, top-bar logo, login page, and the Telegram verification SMS signature changed from the R-Bot open-source clone wording to M_Bot Oracle开源管理面板
+- Web panel branding unified to M_Bot: all page titles, top-bar logo, login page, and the Telegram verification SMS signature changed to M_Bot Oracle开源管理面板
 
 ## [1.2.0] - 2026-11-24
 
 ### Features
-- Menu 1 (boot) becomes an R-Bot-style button-matrix create form: CPU type / OS / OCPU / memory / disk / count / delay, each row tap-to-select (tap again to clear); picking two delays gives a random interval
+- Menu 1 (boot) becomes a button-matrix create form: CPU type / OS / OCPU / memory / disk / count / delay, each row tap-to-select (tap again to clear); picking two delays gives a random interval
 - Batch creation: up to 4 at once, quota pre-check computed as count × spec; root login with a random password (shown once in the launch message); public IP / IPv6 toggles; startup script via file upload or pasted text
-- Forms can be saved as quick-boot presets (menu 17 one-click boot); CentOS maps to Oracle Linux (requires RBOT_IMAGE_OL_* images)
+- Forms can be saved as quick-boot presets (menu 17 one-click boot); CentOS maps to Oracle Linux (requires MBOT_IMAGE_OL_* images)
 - Fixed an old bug: the old preset flow didn't pass OCPU/memory to the Grabber, so A1 presets were all created with default specs
 
 ## [1.0.1] - 2026-11-24
