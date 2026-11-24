@@ -180,6 +180,13 @@ def cert_page(request: Request):
     return redirect or _render(request, "cert.html", "证书管理")
 
 
+@router.get("/accounts")
+def accounts_page(request: Request):
+    """云账户页（已配置账号列表 + 添加租户）。"""
+    redirect = _require_login(request)
+    return redirect or _render(request, "accounts.html", "云账户")
+
+
 @router.get("/inspect")
 def inspect_page(request: Request):
     """巡检计划页（阶段 5 工作包 E）。"""

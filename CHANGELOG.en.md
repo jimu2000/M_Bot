@@ -9,6 +9,13 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [1.36.0] - 2026-11-24
+- New Accounts page on the web panel (/accounts): adding a tenant now works like the bot's /uploadapi — paste config text or upload a config file for auto-parsing (R-Bot format supported, several accounts at once), existing accounts are filtered out automatically; private keys (.pem) are uploaded in the confirm step (contents validated as a private key, saved with 0600 permissions, path forced under home), never through Telegram; a [cloudflare] section in the config is saved too; compartment env vars are added automatically; new accounts take effect after restarting the bot and the panel
+- Two-step parse-then-confirm flow: parsing returns a pending_id (valid 10 minutes, single-use); nothing is written until confirmation; responses never echo OCIDs, fingerprints, or Cloudflare credential values
+- README tutorial addition: open t.me/<username> directly when you can't find your own bot
+
+**Verification**: full test suite passes, 2512 tests (21 new in tests/test_web_oci_profiles.py, covering parsing, filtering, R-Bot format, no credential echo, pem upload and validation, path traversal protection, single-use confirmation, and unauthenticated rejection). Live verification on the deployment host passed 13/13: the /accounts page, parsing, and committing a fake account (config + 0600 pem + env var all written), then fully restored byte-identical.
+
 ## [1.35.5] - 2026-11-24
 
 ### Docs

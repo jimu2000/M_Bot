@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{# 云账户：已配置账号列表 + 添加租户（解析 config、上传 pem），数据来自 /api/profiles/* #}
+{% block title %}云账户 · M_Bot Oracle开源管理面板{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1>云账户</h1>
+  <div class="spacer"></div>
+  <button type="button" class="btn" id="btn-refresh-accounts">↻ 刷新</button>
+</div>
+
+<div class="card" style="margin-bottom: 16px;">
+  <strong>已配置账号</strong>
+  <div id="accounts-list" style="margin-top: 12px; color: var(--text-muted);">加载中…</div>
+</div>
+
+<div class="card" style="margin-bottom: 16px;">
+  <strong>添加租户</strong>
+  <p style="color: var(--text-muted); margin: 8px 0 0;">
+    粘贴 OCI config 文本或上传 config 文件（支持 R-Bot 格式，一次多个账号）；
+    已存在的账号会自动过滤跳过。私钥文件（.pem）在确认步骤上传，不经过 Telegram。
+  </p>
+  <div style="margin-top: 12px;">
+    <label style="color: var(--text-muted);">config 文本
+      <textarea id="cfg-text" rows="8" placeholder="[DEFAULT]&#10;user=ocid1.user.oc1..xxxx&#10;fingerprint=aa:bb:cc:...&#10;key_file=/root/oci_api_key.pem&#10;tenancy=ocid1.tenancy.oc1..xxxx&#10;region=ap-singapore-1" autocomplete="off" style="width: 100%; font-family: monospace;"></textarea>
+    </label>
+  </div>
+  <div style="margin-top: 12px; display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end;">
+    <label style="color: var(--text-muted);">或上传 config 文件（.txt / .conf）
+      <input type="file" id="cfg-file" accept=".txt,.conf,.config,text/plain">
+    </label>
+    <button type="button" class="btn btn-primary" id="btn-parse">解析配置</button>
+  </div>
+
+  <div id="parse-result" style="margin-top: 16px;" hidden>
+    <div id="parse-notes" style="color: var(--text-muted);"></div>
+    <table class="table" style="margin-top: 12px;">
+      <thead>
+        <tr><th>账号</th><th>区域</th><th>私钥路径</th><th>私钥状态</th><th>上传私钥 (.pem)</th></tr>
+      </thead>
+      <tbody id="parse-rows"></tbody>
+    </table>
+    <div style="margin-top: 12px; display: flex; gap: 12px; flex-wrap: wrap;">
+      <button type="button" class="btn btn-primary" id="btn-commit">确认添加</button>
+      <button type="button" class="btn" id="btn-cancel-parse">取消</button>
+    </div>
+  </div>
+
+  <div id="commit-result" style="margin-top: 16px;" hidden></div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="/static/js/accounts.js"></script>
+{% endblock %}

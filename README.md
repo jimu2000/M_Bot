@@ -1,6 +1,6 @@
 # M_Bot Oracle开源管理面板
 
-> **当前版本：v1.35.5** · 更新记录见 [CHANGELOG.md](CHANGELOG.md)（[英文版 / English](CHANGELOG.en.md)）
+> **当前版本：v1.36.0** · 更新记录见 [CHANGELOG.md](CHANGELOG.md)（[英文版 / English](CHANGELOG.en.md)）
 
 [中文](#中文) | [English](#english)
 
@@ -114,7 +114,8 @@ key_file 写私钥在服务器上的实际路径就行：直接放 `/root/` 下�
   （.txt / .conf）或直接粘贴文本，按提示确认，机器人会写到服务器的
   `~/oci_config`（即 `/root/oci_config`）。找不到自己的机器人？在 Telegram
   搜索框搜它的 @用户名（建机器人时起的、以 bot 结尾的那个），或在 @BotFather
-  里 `/mybots` → 选你的机器人 → 点 @用户名打开。注意：机器人要先装好 M_Bot
+  里 `/mybots` → 选你的机器人 → 点 @用户名打开，也可以直接开
+  `t.me/<用户名>`。注意：机器人要先装好 M_Bot
   （安装时填了这个 Token）才会回消息，没装好之前发了也没反应。如果服务器上
   还有旧的 `~/.oci/config`，不用管它——M_Bot 优先读 `~/oci_config`，只有它
   不存在时才读旧文件。
@@ -187,8 +188,14 @@ wget -O install.sh https://raw.githubusercontent.com/jimu2000/M_Bot/main/install
 **Web 面板（`web/`，FastAPI + WebSocket + Paramiko + xterm.js）**
 - 登录（pbkdf2 哈希、失败锁定翻倍最长 30 分钟、图形验证码可选、
   Telegram 验证码登录可选）
-- 页面：总览 / 实例 / 创建实例 / 配额 / 启动盘 / 任务 / GFW 换 IP / Bark 通知 /
-  终端 / DNS 管理 / 对象存储 / 邮件服务 / 证书管理 / 巡检计划 / 云报告
+- 页面：总览 / 实例 / 云账户 / 创建实例 / 配额 / 启动盘 / 任务 / GFW 换 IP /
+  Bark 通知 / 终端 / DNS 管理 / 对象存储 / 邮件服务 / 证书管理 / 巡检计划 /
+  云报告
+- 云账户页添加租户：粘贴 config 文本或上传 config 文件自动解析（支持 R-Bot
+  格式、一次多个账号），已存在的账号自动过滤；私钥文件（.pem）在确认步骤
+  直接上传（内容校验必须是私钥、600 权限保存、路径强制在 home 下），
+  不经过 Telegram；配置里的 [cloudflare] 段一并保存；compartment 环境变量
+  自动补写；新账号重启机器人与面板后生效
 - 创建实例：可用域与子网按所选账号自动填充（来自部署配置），SSH 公钥文件
   有上传就填、没有就留空（可选项，只靠 root 密码登录也能开机）
 - 多区订阅二级菜单：实例 / 启动盘 / 配额 / 创建 / GFW 页的账号下拉旁有
@@ -467,7 +474,7 @@ path under `/root/` is kept as-is.
   bot writes it to `~/oci_config` on the server (i.e. `/root/oci_config`).
   Can't find your bot? Search Telegram for its @username (the one ending in
   `bot` you picked when creating it), or in @BotFather send `/mybots`, pick
-  your bot, and tap its @username. Note: the bot only replies after M_Bot
+  your bot, and tap its @username — or open `t.me/<username>` directly. Note: the bot only replies after M_Bot
   is installed with its token — before that, it won't respond. If the server
   still has an old `~/.oci/config`, ignore it — M_Bot reads `~/oci_config`
   first and only falls back to the old file when it doesn't exist.
@@ -555,9 +562,17 @@ Manage it with: `bash install.sh start|stop|restart|status|log|upgrade|uninstall
 **Web panel (`web/`, FastAPI + WebSocket + Paramiko + xterm.js)**
 - Login (pbkdf2 hashing, doubling lockout up to 30 minutes, optional image
   captcha, optional Telegram code login)
-- Pages: overview / instances / create / quota / boot volumes / tasks /
-  GFW IP change / Bark notifications / terminal / DNS / object storage /
-  email / certificates / inspection plans / cloud report
+- Pages: overview / instances / accounts / create / quota / boot volumes /
+  tasks / GFW IP change / Bark notifications / terminal / DNS / object
+  storage / email / certificates / inspection plans / cloud report
+- Accounts page: add a tenant by pasting config text or uploading a config
+  file (auto-parsed, R-Bot format supported, several accounts at once);
+  existing accounts are filtered out automatically, and private keys (.pem)
+  are uploaded in the confirm step (contents validated as a private key,
+  saved with 0600 permissions, path forced under home, never through
+  Telegram); a [cloudflare] section in the config is saved too, and
+  compartment env vars are added automatically; new accounts take effect
+  after restarting the bot and the panel
 - Create instance: the availability domain and subnet auto-fill from the
   deployment config for the selected account, and the SSH key file is
   prefilled when one exists on the server (optional — root password login
