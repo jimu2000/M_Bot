@@ -552,6 +552,132 @@ class TestBootPresetLoad(BootFormHandlersTestCase):
         self.assertIn("b:load:0", callbacks_of(reply_markup_of(update)))
         self.assertIn(preset["display_name"], reply_text_of(update))
 
+    async def test_presets_menu_has_edit_delete_buttons(self):
+        presets_file = self.tmp_path("presets.json")
+        preset = bf.build_preset(filled_form(), FAKE_DEPLOY)
+        self._write_presets(presets_file, [preset])
+        with patch.object(bot_config, "PRESETS_FILE", presets_file):
+            update = make_update()
+            context = make_context()
+            await he.handle_presets(update, context)
+        callbacks = callbacks_of(reply_markup_of(update))
+        self.assertIn("b:load:0", callbacks)
+        self.assertIn("b:edit:0", callbacks)
+        self.assertIn("b:del:0", callbacks)
+
+    async def test_edit_prefills_form(self):
+        presets_file = self.tmp_path("presets.json")
+        preset = bf.build_preset(filled_form(), FAKE_DEPLOY)
+        self._write_presets(presets_file, [preset])
+        with patch.object(bot_config, "PRESETS_FILE", presets_file):
+            update = make_update(callback_data="b:edit:0")
+            context = make_context()
+            await he.boot_preset_edit_callback(update, context)
+        form = context.user_data["boot_form"]
+        self.assertEqual(form["cpu"], "arm")
+        self.assertEqual(form["os"], "ubuntu")
+        self.assertEqual(form["ocpus"], 1)
+        self.assertEqual(form["memory_gb"], 6)
+        self.assertEqual(context.user_data["editing_preset_idx"], 0)
+        self.assertIn("正在编辑", reply_text_of(update))
+        self.assertIn("bf:save", callbacks_of(reply_markup_of(update)))
+
+    async def test_edit_out_of_range(self):
+        presets_file = self.tmp_path("presets.json")
+        self._write_presets(presets_file, [])
+        with patch.object(bot_config, "PRESETS_FILE", presets_file):
+            update = make_update(callback_data="b:edit:0")
+            context = make_context()
+            await he.boot_preset_edit_callback(update, context)
+        self.assertIn("已不存在", reply_text_of(update))
+        self.assertNotIn("editing_preset_idx", context.user_data)
+
+    async def test_delete_asks_confirm(self):
+        presets_file = self.tmp_path("presets.json")
+        preset = bf.build_preset(filled_form(), FAKE_DEPLOY)
+        self._write_presets(presets_file, [preset])
+        with patch.object(bot_config, "PRESETS_FILE", presets_file):
+            update = make_update(callback_data="b:del:0")
+            context = make_context()
+            await he.boot_preset_delete_callback(update, context)
+        text = reply_text_of(update)
+        self.assertIn("确定删除", text)
+        self.assertIn(preset["display_name"], text)
+        callbacks = callbacks_of(reply_markup_of(update))
+        self.assertIn("b:delok:0", callbacks)
+        self.assertIn("o:presets", callbacks)
+        # 确认前文件没动。
+        with open(presets_file, encoding="utf-8") as fh:
+            self.assertEqual(len(json.load(fh)), 1)
+
+    async def test_delete_confirm_removes_and_refreshes(self):
+        presets_file = self.tmp_path("presets.json")
+        first = bf.build_preset(filled_form(), FAKE_DEPLOY)
+        second = bf.build_preset(filled_form(memory_gb=12), FAKE_DEPLOY)
+        second["display_name"] = "ARM_2026-11-24-keep"
+        self._write_presets(presets_file, [first, second])
+        with patch.object(bot_config, "PRESETS_FILE", presets_file):
+            update = make_update(callback_data="b:delok:0")
+            context = make_context()
+            await he.boot_preset_delete_confirm_callback(update, context)
+        with open(presets_file, encoding="utf-8") as fh:
+            saved = json.load(fh)
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(saved[0]["display_name"], "ARM_2026-11-24-keep")
+        text = reply_text_of(update)
+        self.assertIn("已删除", text)
+        self.assertIn("ARM_2026-11-24-keep", text)
+        self.assertIn("快捷开机配置（1 条）", text)
+        callbacks = callbacks_of(reply_markup_of(update))
+        self.assertIn("b:load:0", callbacks)
+        self.assertIn("b:edit:0", callbacks)
+        self.assertIn("b:del:0", callbacks)
+
+    async def test_delete_confirm_out_of_range(self):
+        presets_file = self.tmp_path("presets.json")
+        self._write_presets(presets_file, [])
+        with patch.object(bot_config, "PRESETS_FILE", presets_file):
+            update = make_update(callback_data="b:delok:0")
+            context = make_context()
+            await he.boot_preset_delete_confirm_callback(update, context)
+        self.assertIn("已不存在", reply_text_of(update))
+
+    async def test_save_when_editing_updates_in_place(self):
+        presets_file = self.tmp_path("presets.json")
+        preset = bf.build_preset(filled_form(), FAKE_DEPLOY)
+        self._write_presets(presets_file, [preset])
+        with patch.object(bot_config, "PRESETS_FILE", presets_file):
+            update = make_update(callback_data="bf:save")
+            context = make_context()
+            context.user_data["boot_form"] = filled_form(memory_gb=12)
+            context.user_data["editing_preset_idx"] = 0
+            await he.boot_form_callback(update, context)
+        self.assertIn("已更新快捷开机配置", reply_text_of(update))
+        self.assertNotIn("editing_preset_idx", context.user_data)
+        with open(presets_file, encoding="utf-8") as fh:
+            saved = json.load(fh)
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(saved[0]["memory_gb"], 12)
+        # 编辑是改配置不是改名。
+        self.assertEqual(saved[0]["display_name"],
+                         preset["display_name"])
+
+    async def test_save_when_editing_missing_falls_back_to_append(self):
+        presets_file = self.tmp_path("presets.json")
+        preset = bf.build_preset(filled_form(), FAKE_DEPLOY)
+        self._write_presets(presets_file, [preset])
+        with patch.object(bot_config, "PRESETS_FILE", presets_file):
+            update = make_update(callback_data="bf:save")
+            context = make_context()
+            context.user_data["boot_form"] = filled_form(memory_gb=12)
+            context.user_data["editing_preset_idx"] = 5
+            await he.boot_form_callback(update, context)
+        self.assertIn("已保存为快捷开机", reply_text_of(update))
+        with open(presets_file, encoding="utf-8") as fh:
+            saved = json.load(fh)
+        self.assertEqual(len(saved), 2)
+        self.assertEqual(saved[1]["memory_gb"], 12)
+
 
 class TestBootGoWithRoot(BootFormHandlersTestCase):
 

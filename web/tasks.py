@@ -24,12 +24,13 @@ from datetime import datetime
 from oci.boot_swap import BootSwapError, swap_boot_volume
 from oci.client import OCIClient, QuotaExceededError
 from oci.grabber import GrabCancelledError, Grabber
-from oci.network import get_public_ip
+from oci.network import get_public_ip, wait_for_public_ip
 from tgbot.billing import FREE_SHAPES
 from tgbot.notify import (
     fmt_paid_instance_alert,
     notify_boot_success,
     notify_dual,
+    start_ip_followup,
 )
 from web import config
 
@@ -272,20 +273,18 @@ TASKS = TaskRegistry()
 def _notify_grab_success(registry, task_id, cli, params, result, notify):
     """抢机成功后的双通道推送（与机器人端 _notify_boot_success 同逻辑）。
 
-    查公网 IP（最多重试 3 次，间隔 3 秒；查不到写"获取中"），调
+    等公网 IP（最长 60 秒）；60 秒还没 IP 就先发通知写"获取中"，
+    再起跟进线程后台继续等，IP 一出来补发一条 TG 消息。调
     notify_boot_success 发 TG + Bark；付费形状额外发一条置顶提醒。
     绝不抛异常，通知失败只记进任务日志，不影响任务本身。
     """
     try:
-        public_ip = None
-        for attempt in range(3):
-            try:
-                public_ip = get_public_ip(cli, result.instance_id)
-            except Exception:  # noqa: BLE001 - 查 IP 失败就重试/放弃
-                public_ip = None
-            if public_ip or attempt == 2:
-                break
-            time.sleep(3)
+        public_ip = wait_for_public_ip(cli, result.instance_id)
+        if not public_ip:
+            start_ip_followup(
+                lambda: get_public_ip(cli, result.instance_id),
+                params.get("display_name") or "?",
+                notify.get("token"), notify.get("chat_id"))
         shape = params.get("shape") or ""
         ocpus = params.get("ocpus") or 1
         memory_gb = params.get("memory_gb")

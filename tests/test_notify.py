@@ -198,13 +198,13 @@ class TestGrabberThreadNotify(unittest.TestCase):
         task_id = self.tasks.register("grab")
         with patch.object(he, "Grabber",
                           return_value=self._fake_grabber(result)), \
-                patch.object(he, "get_public_ip",
-                             return_value="203.0.113.10") as get_ip, \
+                patch.object(he, "wait_for_public_ip",
+                             return_value="203.0.113.10") as wait_ip, \
+                patch.object(he, "start_ip_followup") as followup, \
                 patch.object(he, "save_preset"), \
                 patch.object(he, "notify_boot_success",
                              return_value={"telegram": True, "bark": False,
-                                           "errors": []}) as notify_fn, \
-                patch.object(he.time, "sleep"):
+                                           "errors": []}) as notify_fn:
             he._run_grabber_thread(task_id, MagicMock(), "comp",
                                    self.preset, notify=self.notify)
         self.assertEqual(self.tasks.get(task_id)["status"], "done")
@@ -221,7 +221,10 @@ class TestGrabberThreadNotify(unittest.TestCase):
         self.assertEqual(instances[0]["public_ip"], "203.0.113.10")
         self.assertEqual(instances[0]["attempts"], 2)
         self.assertEqual(args[1]["root_password"], "pw123")
-        get_ip.assert_called_once()
+        wait_ip.assert_called_once()
+        self.assertEqual(wait_ip.call_args[0][1],
+                         "ocid1.instance.oc1..aaa1")
+        followup.assert_not_called()
 
     def test_no_notify_arg_skips_notification(self):
         result = GrabResult(instance_id="ocid1.instance.oc1..aaa1", releases=0,
@@ -235,24 +238,39 @@ class TestGrabberThreadNotify(unittest.TestCase):
                                    self.preset)
         self.assertFalse(notify_fn.called)
 
-    def test_ip_retry_then_give_up(self):
+    def test_ip_wait_gives_up_starts_followup(self):
+        """wait 超时返回 None 时，通知写"获取中"并起跟进线程。
+
+        轮询重试行为本身在 test_network.TestWaitForPublicIp 里测。
+        """
         result = GrabResult(instance_id="ocid1.instance.oc1..aaa1", releases=0,
                             attempts=1, elapsed_seconds=3.0)
         task_id = self.tasks.register("grab")
         with patch.object(he, "Grabber",
                           return_value=self._fake_grabber(result)), \
-                patch.object(he, "get_public_ip", return_value=None), \
+                patch.object(he, "wait_for_public_ip",
+                             return_value=None), \
                 patch.object(he, "save_preset"), \
                 patch.object(he, "notify_boot_success",
                              return_value={"telegram": True, "bark": False,
                                            "errors": []}) as notify_fn, \
-                patch.object(he.time, "sleep") as sleep_mock:
+                patch.object(he, "start_ip_followup") as followup:
             he._run_grabber_thread(task_id, MagicMock(), "comp",
                                    self.preset, notify=self.notify)
-        # 查 3 次 IP（2 次 sleep 间隔），最后一次不 sleep。
-        self.assertEqual(sleep_mock.call_count, 2)
         instances = notify_fn.call_args[0][8]
         self.assertIsNone(instances[0]["public_ip"])
+        followup.assert_called_once()
+        args = followup.call_args[0]
+        self.assertEqual(args[1], "ARM_2026-11-24")
+        self.assertEqual(args[2], "T")
+        self.assertEqual(args[3], 654321)
+        # 传给跟进线程的回调要绑对实例 id。
+        with patch.object(he, "get_public_ip",
+                          return_value="203.0.113.10") as get_ip:
+            self.assertEqual(args[0](), "203.0.113.10")
+        get_ip.assert_called_once()
+        self.assertEqual(get_ip.call_args[0][1],
+                         "ocid1.instance.oc1..aaa1")
 
 
 class TestSendTelegramMessageFull(unittest.TestCase):
@@ -400,7 +418,7 @@ class TestPaidInstanceHook(unittest.TestCase):
             attempts=1, elapsed_seconds=3.0)]
 
     def test_paid_shape_pins_alert(self):
-        with patch.object(he, "get_public_ip",
+        with patch.object(he, "wait_for_public_ip",
                           return_value="203.0.113.10"), \
                 patch.object(he, "notify_boot_success",
                              return_value={"telegram": True, "bark": False,
@@ -421,7 +439,7 @@ class TestPaidInstanceHook(unittest.TestCase):
 
     def test_free_shape_no_alert(self):
         self.preset["shape"] = "VM.Standard.A1.Flex"
-        with patch.object(he, "get_public_ip",
+        with patch.object(he, "wait_for_public_ip",
                           return_value="203.0.113.10"), \
                 patch.object(he, "notify_boot_success",
                              return_value={"telegram": True, "bark": False,
@@ -430,6 +448,48 @@ class TestPaidInstanceHook(unittest.TestCase):
             he._notify_boot_success(MagicMock(), self.preset,
                                     self.successes, self.notify)
         dual.assert_not_called()
+
+
+class TestIpFollowup(unittest.TestCase):
+    """start_ip_followup：后台等 IP，出来后补发 TG 消息。"""
+
+    def test_ip_appears_sends_message(self):
+        get_ip = MagicMock(side_effect=[None, "203.0.113.10"])
+        with patch.object(notify_mod, "send_telegram_message",
+                          return_value=(True, "")) as send:
+            thread = notify_mod.start_ip_followup(
+                get_ip, "AMD_2026-11-25", "T", 654321,
+                timeout_seconds=5, interval_seconds=0.01)
+            self.assertIsNotNone(thread)
+            thread.join(timeout=5)
+        self.assertFalse(thread.is_alive())
+        send.assert_called_once()
+        args = send.call_args[0]
+        self.assertEqual(args[0], "T")
+        self.assertEqual(args[1], 654321)
+        self.assertIn("AMD_2026-11-25", args[2])
+        self.assertIn("203.0.113.10", args[2])
+
+    def test_timeout_sends_nothing(self):
+        get_ip = MagicMock(return_value=None)
+        with patch.object(notify_mod, "send_telegram_message") as send:
+            thread = notify_mod.start_ip_followup(
+                get_ip, "AMD_2026-11-25", "T", 654321,
+                timeout_seconds=0.05, interval_seconds=0.01)
+            self.assertIsNotNone(thread)
+            thread.join(timeout=5)
+        self.assertFalse(thread.is_alive())
+        send.assert_not_called()
+
+    def test_missing_token_or_chat_no_thread(self):
+        get_ip = MagicMock(return_value="203.0.113.10")
+        self.assertIsNone(notify_mod.start_ip_followup(
+            get_ip, "x", "", 654321))
+        self.assertIsNone(notify_mod.start_ip_followup(
+            get_ip, "x", "T", None))
+        self.assertIsNone(notify_mod.start_ip_followup(
+            None, "x", "T", 654321))
+        get_ip.assert_not_called()
 
 
 if __name__ == "__main__":

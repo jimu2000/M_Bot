@@ -9,6 +9,13 @@
 
 ## [Unreleased]
 
+## [1.40.0] - 2026-11-24
+- 快捷开机（菜单 17）新增编辑与删除：每条配置一行三个按钮，🚀 开机 / ✏️ 编辑 / 🗑️ 删除；编辑把配置反向填进开机表单（新增 tgbot/boot_form.py 的 form_from_preset，旧版预设缺 cpu/os 时按形状与镜像反推），保存后原地更新、名字保持原样；删除先确认再删，删完刷新列表并显示已删除提示
+- 修复抢机成功后通知里 IP 一直是"获取中"：原来只重试 3 次、每次隔 3 秒（不到 10 秒就放弃），OCI 分配公网 IP 经常要 30 秒以上；改成先等 60 秒（新增 oci/network.py 的 wait_for_public_ip），60 秒还没 IP 就先发通知、后台跟进线程继续等（新增 tgbot/notify.py 的 start_ip_followup，最长 10 分钟），IP 一出来补发一条 Telegram 消息；机器人与网页抢机同步改
+- 修复新开的 Ubuntu 实例无法 root 登录：原来 user-data 只有改密码 + ssh_pwauth，但 Ubuntu 镜像默认 disable_root: true（root 的 key 被加强制命令，只能看到 "Please login as the user ubuntu"）且 PermitRootLogin 默认禁密码；build_user_data 现在加 disable_root: false + 写 sshd drop-in（PermitRootLogin yes）并 reload sshd（ssh/sshd 两个服务名都试）；机器人与网页共用同一个函数，一次改好
+
+**验证**：全量测试 2575 个全过（新增 21 个：tests/test_network.py 4 个、tests/test_notify.py 3 个、tests/test_web_grab_notify.py 2 个、tests/test_boot_form.py 4 个、tests/test_boot_form_handlers.py 8 个；另有 12 个旧测试随新逻辑改 mock）。真机验证：.160 上 wait_for_public_ip 对已有 IP 的实例立即返回；新开的 Ubuntu 实例上手动验证 root 登录修复有效（清强制命令 + PermitRootLogin yes 后 ssh root 可登）；生成的 user-data 经 YAML 解析校验合法。
+
 ## [1.39.0] - 2026-11-24
 - 新增定时自动升级：安装时自动设置 cron（每天凌晨 4 点服务器本地时间），跑 `install.sh auto-upgrade`；先比对本地与远端版本，已是最新版时只记日志不重启服务，有新版时才拉代码、装依赖、重启在跑或已设自启的服务并做健康检查
 - 自动升级失败时发 Bark 通知（标题"M_Bot 自动升级失败"，含主机名、原因与日志路径；Bark 未配置或未开启时静默跳过，通知异常绝不影响升级流程）

@@ -9,6 +9,8 @@ Token / Key / 密码绝不记日志、不出现在返回值里。
 
 import json
 import logging
+import threading
+import time
 import urllib.error
 import urllib.request
 
@@ -17,6 +19,11 @@ from tgbot.bark import send_bark
 logger = logging.getLogger(__name__)
 
 DEFAULT_BOOT_DISK_GB = 47
+# start_ip_followup() 跟进等 IP：开机通知已发出但 IP 还没分配时，
+# 后台继续轮询，最长等 10 分钟，IP 一出来就补发一条 TG 消息。
+# 10 分钟还没 IP 就静默放弃（实例列表里能看到，不再打扰用户）。
+IP_FOLLOWUP_MAX_SECONDS = 600
+IP_FOLLOWUP_INTERVAL_SECONDS = 30
 
 
 def send_telegram_message_full(token, chat_id, text, parse_mode=None):
@@ -53,6 +60,47 @@ def send_telegram_message(token, chat_id, text, parse_mode=None):
     ok, err, _mid = send_telegram_message_full(token, chat_id, text,
                                                parse_mode)
     return ok, err
+
+
+def start_ip_followup(get_ip, instance_name, token, chat_id,
+                      timeout_seconds=None, interval_seconds=None):
+    """IP 跟进线程：开机通知已发但 IP 还没分配时，后台继续等。
+
+    get_ip 是无参回调（调用方传 lambda: get_public_ip(cli, id)）；
+    每隔 interval 查一次，查到 IP 就补发一条 Telegram 消息即停；
+    超时还没 IP 就静默放弃。daemon 线程，绝不抛异常。
+    token / chat_id / get_ip 缺失时不启动，返回 None。
+    返回启动的 Thread（测试用 join 等它结束），未启动返回 None。
+    """
+    if not callable(get_ip) or not token or chat_id is None:
+        return None
+    timeout = (IP_FOLLOWUP_MAX_SECONDS if timeout_seconds is None
+               else timeout_seconds)
+    interval = (IP_FOLLOWUP_INTERVAL_SECONDS if interval_seconds is None
+                else interval_seconds)
+
+    def _worker():
+        try:
+            deadline = time.monotonic() + timeout
+            while True:
+                try:
+                    ip = get_ip()
+                except Exception:  # noqa: BLE001 - 查询失败继续等
+                    ip = None
+                if ip:
+                    send_telegram_message(
+                        token, chat_id,
+                        f"🌐 实例「{instance_name}」的公网 IP 已分配：{ip}")
+                    return
+                if time.monotonic() >= deadline:
+                    return
+                time.sleep(interval)
+        except Exception:  # noqa: BLE001 - 跟进线程绝不能抛异常
+            logger.warning("IP 跟进线程异常退出", exc_info=True)
+
+    thread = threading.Thread(target=_worker, daemon=True)
+    thread.start()
+    return thread
 
 
 def pin_telegram_message(token, chat_id, message_id):

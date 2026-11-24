@@ -21,6 +21,7 @@
 """
 
 from concurrent.futures import ThreadPoolExecutor
+import time
 
 # ================= 配置区（改这里） =================
 # change_public_ip() 创建保留 IP 时的默认显示名。
@@ -28,6 +29,11 @@ DEFAULT_CHANGED_IP_NAME = "changed-ip"
 # 创建保留 IP 时的 lifetime：RESERVED（保留 IP，实例释放后仍保留）；
 # EPHEMERAL 是临时 IP，随实例释放而释放，换 IP 场景不要用。
 RESERVED_LIFETIME = "RESERVED"
+# wait_for_public_ip() 等刚开出的实例分配公网 IP：VNIC 刚建好时
+# 可能还没 IP，3 秒查一次、最多等 60 秒（2026-11-24 实测：抢机后
+# 只等 9 秒经常拿不到 IP，通知里写"获取中"后就再也不补发）。
+BOOT_IP_WAIT_TIMEOUT_SECONDS = 60
+BOOT_IP_WAIT_INTERVAL_SECONDS = 5
 # =====================================================
 
 
@@ -66,6 +72,31 @@ def get_public_ip(cli, instance_id):
         if vnic.get("is-primary"):
             return vnic.get("public-ip")
     return None
+
+
+def wait_for_public_ip(cli, instance_id, timeout_seconds=None,
+                       interval_seconds=None):
+    """轮询等一台实例分配公网 IPv4（刚开出时 VNIC 可能还没 IP）。
+
+    查到就返回 IP；超时返回 None。单次查询异常按无 IP 处理继续等，
+    绝不抛异常（调用方是通知流程，不能让查 IP 拖垮开机通知）。
+    timeout_seconds / interval_seconds 不传时用配置区默认值。
+    """
+    timeout = (BOOT_IP_WAIT_TIMEOUT_SECONDS if timeout_seconds is None
+               else timeout_seconds)
+    interval = (BOOT_IP_WAIT_INTERVAL_SECONDS if interval_seconds is None
+                else interval_seconds)
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            ip = get_public_ip(cli, instance_id)
+        except Exception:  # noqa: BLE001 - 查询失败按无 IP 处理继续等
+            ip = None
+        if ip:
+            return ip
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(interval)
 
 
 def attach_public_ips(cli, instances, max_workers=5):

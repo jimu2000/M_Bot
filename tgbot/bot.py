@@ -172,6 +172,13 @@ def build_application():
     application.add_handler(CallbackQueryHandler(
         handlers_extra.boot_preset_load_callback, pattern=r"^b:load:"))
     application.add_handler(CallbackQueryHandler(
+        handlers_extra.boot_preset_edit_callback, pattern=r"^b:edit:"))
+    application.add_handler(CallbackQueryHandler(
+        handlers_extra.boot_preset_delete_callback, pattern=r"^b:del:"))
+    application.add_handler(CallbackQueryHandler(
+        handlers_extra.boot_preset_delete_confirm_callback,
+        pattern=r"^b:delok:"))
+    application.add_handler(CallbackQueryHandler(
         handlers_extra.boot_form_callback, pattern=r"^bf:"))
     application.add_handler(CallbackQueryHandler(
         handlers_extra.task_cancel_callback, pattern=r"^t:cancel:"))

@@ -89,6 +89,7 @@ from tgbot.boot_form import (
     deploy_region_mismatch,
     fmt_boot_form_summary,
     fmt_form_text,
+    form_from_preset,
     generate_root_password,
     get_deploy_defaults,
     new_form,
@@ -156,7 +157,8 @@ from tgbot.watchdog import (
     probe_command,
 )
 from tgbot.notify import (DEFAULT_BOOT_DISK_GB, fmt_paid_instance_alert,
-                          notify_boot_success, notify_dual)
+                          notify_boot_success, notify_dual,
+                          start_ip_followup)
 from tgbot.backup_watch import start_backup_watch
 from tgbot.paid_profiles import is_paid_profile, set_paid_profile
 from tgbot.monitoring import (
@@ -276,6 +278,7 @@ from oci.network import (
     list_ipv6_for_vnic,
     list_public_ips,
     list_vnics,
+    wait_for_public_ip,
 )
 from oci.objectstorage import (
     delete_bucket,
@@ -642,6 +645,38 @@ def save_preset(preset, path=None):
     parent = os.path.dirname(path)
     if parent:
         os.makedirs(parent, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(presets, f, ensure_ascii=False, indent=2)
+    return presets
+
+
+def update_preset(idx, preset, path=None):
+    """原地更新 presets.json 第 idx 条（编辑保存用），返回完整列表。
+
+    下标越界时返回原列表不写盘。saved_at 刷新为现在。
+    """
+    path = path or bot_config.PRESETS_FILE
+    presets = load_presets(path)
+    if idx < 0 or idx >= len(presets):
+        return presets
+    entry = dict(preset)
+    entry["saved_at"] = datetime.now(timezone.utc).isoformat()
+    presets[idx] = entry
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(presets, f, ensure_ascii=False, indent=2)
+    return presets
+
+
+def delete_preset(idx, path=None):
+    """删掉 presets.json 第 idx 条（删除确认后用），返回完整列表。
+
+    下标越界时返回原列表不写盘。
+    """
+    path = path or bot_config.PRESETS_FILE
+    presets = load_presets(path)
+    if idx < 0 or idx >= len(presets):
+        return presets
+    del presets[idx]
     with open(path, "w", encoding="utf-8") as f:
         json.dump(presets, f, ensure_ascii=False, indent=2)
     return presets
@@ -1317,6 +1352,7 @@ async def handle_boot(update, context):
     旧的预设选择键盘（boot_preset_keyboard / b:boot:）仍保留注册，
     仅供旧消息上的按钮回退使用；菜单 1 入口已改成表单。
     """
+    context.user_data.pop("editing_preset_idx", None)
     context.user_data["boot_form"] = new_form()
     form = context.user_data["boot_form"]
     await _reply(update, context, fmt_form_text(form),
@@ -1413,6 +1449,8 @@ async def _boot_form_save(update, context, form):
 
     保存时按当前工作区域取部署值（与确认开机一致）：以前这里不传
     区域，存的永远是主区部署值，在别的区用快捷开机就会跨区报错。
+    从菜单 17 点"编辑"进来的表单（user_data 里有 editing_preset_idx）
+    保存时原地更新那条预设（名字保持原样），不是追加一条新的。
     """
     deploy = get_deploy_defaults(region=get_current_region(context),
                                  profile=get_current_profile(context))
@@ -1431,8 +1469,26 @@ async def _boot_form_save(update, context, form):
     except ValueError as exc:
         await _reply(update, context, f"❌ {exc}", reply_markup=boot_form_keyboard(form))
         return
-    save_preset(preset)
     shape = preset["shape"].replace("VM.Standard.", "")
+    editing_idx = context.user_data.pop("editing_preset_idx", None)
+    if editing_idx is not None:
+        presets = load_presets()
+        if 0 <= editing_idx < len(presets):
+            # 编辑是改配置不是改名：build_preset 会重算名字（按今天
+            # 日期），这里写回原名。
+            preset["display_name"] = (
+                presets[editing_idx].get("display_name")
+                or preset["display_name"])
+            update_preset(editing_idx, preset)
+            await _reply(update, context,
+                         f"✏️ 已更新快捷开机配置：{preset['display_name']}"
+                         f"（{shape}，{preset['ocpus']} 核 / "
+                         f"{preset['memory_gb']}GB）。\n"
+                         "菜单 17（快捷开机）里可以一键用它开机。",
+                         reply_markup=back_to_oracle_keyboard())
+            return
+        # 正在编辑的那条已被删掉（另一端删的）：退化为追加保存。
+    save_preset(preset)
     await _reply(update, context,
                  f"💾 已保存为快捷开机：{preset['display_name']}（{shape}，"
                  f"{preset['ocpus']} 核 / {preset['memory_gb']}GB）。\n"
@@ -1571,6 +1627,79 @@ async def boot_preset_load_callback(update, context):
         ok, reason = False, fmt_error(exc)
     await _reply(update, context, fmt_boot_form_summary(preset, ok, reason),
                  reply_markup=boot_confirm_keyboard(preset))
+
+
+@require_allowed
+async def boot_preset_edit_callback(update, context):
+    """回调 "b:edit:<idx>"：菜单 17 里编辑一条快捷开机配置。
+
+    把预设反向填进开机表单（form_from_preset），记下
+    editing_preset_idx 后显示表单；点"保存为快捷开机"时原地更新
+    （见 _boot_form_save），点"确定开机"则按改后的值开机。
+    """
+    data = _callback_data(update)
+    try:
+        idx = int(data.split(":")[-1])
+    except ValueError:
+        idx = -1
+    presets = load_presets()
+    if idx < 0 or idx >= len(presets):
+        await _reply(update, context, "该配置已不存在，请重新打开菜单 17。",
+                     reply_markup=back_to_oracle_keyboard())
+        return
+    context.user_data["boot_form"] = form_from_preset(presets[idx])
+    context.user_data["editing_preset_idx"] = idx
+    form = context.user_data["boot_form"]
+    await _reply(update, context,
+                 f"✏️ 正在编辑快捷开机配置："
+                 f"{presets[idx].get('display_name', '?')}\n"
+                 "改好后点“保存为快捷开机”原地更新，或点“确定开机”"
+                 "直接用改后的配置开机。\n\n" + fmt_form_text(form),
+                 reply_markup=boot_form_keyboard(form))
+
+
+@require_allowed
+async def boot_preset_delete_callback(update, context):
+    """回调 "b:del:<idx>"：菜单 17 里删除一条快捷开机配置（先确认）。"""
+    data = _callback_data(update)
+    try:
+        idx = int(data.split(":")[-1])
+    except ValueError:
+        idx = -1
+    presets = load_presets()
+    if idx < 0 or idx >= len(presets):
+        await _reply(update, context, "该配置已不存在，请重新打开菜单 17。",
+                     reply_markup=back_to_oracle_keyboard())
+        return
+    name = presets[idx].get("display_name", "?")
+    await _reply(update, context,
+                 f"🗑️ 确定删除快捷开机配置「{name}」吗？\n"
+                 "只删这条配置，不影响已开出的实例。",
+                 reply_markup=InlineKeyboardMarkup([
+                     [InlineKeyboardButton("🗑️ 确认删除",
+                                           callback_data=f"b:delok:{idx}")],
+                     [InlineKeyboardButton("❌ 取消",
+                                           callback_data="o:presets")],
+                 ]))
+
+
+@require_allowed
+async def boot_preset_delete_confirm_callback(update, context):
+    """回调 "b:delok:<idx>"：确认删除后删掉配置并刷新菜单 17 列表。"""
+    data = _callback_data(update)
+    try:
+        idx = int(data.split(":")[-1])
+    except ValueError:
+        idx = -1
+    presets = load_presets()
+    if idx < 0 or idx >= len(presets):
+        await _reply(update, context, "该配置已不存在，请重新打开菜单 17。",
+                     reply_markup=back_to_oracle_keyboard())
+        return
+    name = presets[idx].get("display_name", "?")
+    delete_preset(idx)
+    await handle_presets(update, context,
+                         notice=f"🗑️ 已删除快捷开机配置「{name}」。")
 
 
 async def _handle_boot_form_input(update, context, kind, text):
@@ -1758,8 +1887,10 @@ def _run_grabber_thread(task_id, cli, compartment_id, preset, notify=None):
 def _notify_boot_success(cli, preset, successes, notify):
     """抢机成功后的双通道推送（线程内调用）。
 
-    每台查公网 IP（刚开出来 VNIC 可能还没 IP，最多重试 3 次，
-    间隔 3 秒；查不到就写“获取中”，不阻塞通知）。
+    每台等公网 IP（刚开出来 VNIC 可能还没 IP，最长等 60 秒）；
+    60 秒还没 IP 就先发通知写"获取中"，再起跟进线程后台继续等，
+    IP 一出来补发一条 Telegram 消息（2026-11-24 用户实问：只等
+    9 秒经常拿不到 IP，之后再也不补发）。
     通知函数本身不抛异常；这里再包一层，绝不让通知拖垮线程。
     """
     try:
@@ -1768,15 +1899,11 @@ def _notify_boot_success(cli, preset, successes, notify):
         base_name = preset["display_name"]
         for i, result in enumerate(successes):
             name = base_name if count == 1 else f"{base_name}-{i + 1}"
-            public_ip = None
-            for attempt in range(3):
-                try:
-                    public_ip = get_public_ip(cli, result.instance_id)
-                except Exception:  # noqa: BLE001 - 查 IP 失败就重试/放弃
-                    public_ip = None
-                if public_ip or attempt == 2:
-                    break
-                time.sleep(3)
+            public_ip = wait_for_public_ip(cli, result.instance_id)
+            if not public_ip:
+                start_ip_followup(
+                    lambda iid=result.instance_id: get_public_ip(cli, iid),
+                    name, notify.get("token"), notify.get("chat_id"))
             instances.append({
                 "name": name,
                 "public_ip": public_ip,
@@ -3901,22 +4028,29 @@ async def handle_logs(update, context):
 # ---- 17. 快捷开机 ----
 
 @require_allowed
-async def handle_presets(update, context):
-    """菜单 17：列出已保存的快捷开机配置，每条一个一键开机按钮。
+async def handle_presets(update, context, notice=None):
+    """菜单 17：列出已保存的快捷开机配置，每条一行三个按钮。
 
+    🚀 一键开机（进配置摘要确认页，确认才开始抢机）；✏️ 编辑
+    （把配置填进开机表单，保存后原地更新）；🗑️ 删除（先确认再删）。
     抢机成功后自动保存本次配置（见 _run_grabber_thread）；菜单 1
-    的表单也可点"保存为快捷开机"主动保存。点某条的开机按钮后进
-    配置摘要确认页（boot_preset_load_callback），确认才开始抢机。
+    的表单也可点"保存为快捷开机"主动保存。
+    notice 非空时作为首行提示（如删除成功）一起显示。
     """
     presets = load_presets()
     if not presets:
-        await _reply(update, context,
-                     "还没有保存的快捷开机配置。\n"
-                     "抢机成功后会自动保存本次配置到这里，"
-                     "也可以在菜单 1 的表单里点“保存为快捷开机”。",
+        text = ("还没有保存的快捷开机配置。\n"
+                "抢机成功后会自动保存本次配置到这里，"
+                "也可以在菜单 1 的表单里点“保存为快捷开机”。")
+        if notice:
+            text = notice + "\n\n" + text
+        await _reply(update, context, text,
                      reply_markup=back_to_oracle_keyboard())
         return
-    lines = [f"⚡ 快捷开机配置（{len(presets)} 条）：", ""]
+    lines = []
+    if notice:
+        lines.extend([notice, ""])
+    lines.extend([f"⚡ 快捷开机配置（{len(presets)} 条）：", ""])
     rows = []
     for idx, preset in enumerate(presets):
         shape = (preset.get("shape") or "?").replace("VM.Standard.", "")
@@ -3925,9 +4059,13 @@ async def handle_presets(update, context):
         lines.append(f"• {preset.get('display_name', '?')}：{shape} "
                      f"（{preset.get('ocpus')} 核 / "
                      f"{preset.get('memory_gb')}GB）{count_text}")
-        rows.append([InlineKeyboardButton(
-            f"🚀 {preset.get('display_name', '?')}",
-            callback_data=f"b:load:{idx}")])
+        rows.append([
+            InlineKeyboardButton(
+                f"🚀 {preset.get('display_name', '?')}",
+                callback_data=f"b:load:{idx}"),
+            InlineKeyboardButton("✏️", callback_data=f"b:edit:{idx}"),
+            InlineKeyboardButton("🗑️", callback_data=f"b:del:{idx}"),
+        ])
     rows.append([InlineKeyboardButton("◀ Oracle 菜单", callback_data="o:menu")])
     await _reply(update, context, "\n".join(lines),
                  reply_markup=InlineKeyboardMarkup(rows))

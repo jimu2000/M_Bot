@@ -536,6 +536,13 @@ class TestBuildUserData(unittest.TestCase):
         self.assertIn("root:Ab1!xxxx", data)
         self.assertIn("ssh_pwauth: true", data)
         self.assertIn("expire: false", data)
+        # v1.39.1：Ubuntu 镜像默认 disable_root + 禁 root 密码登录，
+        # 只改密码不够，必须同时放行 root 登录。
+        self.assertIn("disable_root: false", data)
+        self.assertIn("60-mbot-root-login.conf", data)
+        self.assertIn("PermitRootLogin yes", data)
+        self.assertIn("systemctl reload ssh || systemctl reload sshd",
+                      data)
 
     def test_script_only_passthrough(self):
         data = bf.build_user_data(None, "#!/bin/bash\necho hi")
@@ -556,6 +563,15 @@ class TestBuildUserData(unittest.TestCase):
         self.assertIn("echo hi", data)
         # 脚本行应缩进在 content 块里（6 空格）。
         self.assertIn("      echo hi", data)
+        # v1.39.1：密码+脚本分支也要放行 root 登录；reload 要在
+        # 跑脚本之前执行。
+        self.assertIn("disable_root: false", data)
+        self.assertIn("60-mbot-root-login.conf", data)
+        self.assertIn("PermitRootLogin yes", data)
+        reload_pos = data.index("systemctl reload ssh")
+        script_pos = data.index(bf.STARTUP_SCRIPT_PATH,
+                                data.index("runcmd:"))
+        self.assertLess(reload_pos, script_pos)
 
     def test_cloud_config_script_conflicts_with_root(self):
         with self.assertRaises(ValueError):
@@ -564,6 +580,77 @@ class TestBuildUserData(unittest.TestCase):
         # 没有 root 密码时 cloud-config 脚本原样通过。
         data = bf.build_user_data(None, "#cloud-config\nruncmd:\n  - echo hi")
         self.assertTrue(data.startswith("#cloud-config"))
+
+
+class TestFormFromPreset(unittest.TestCase):
+    """form_from_preset：预设 -> 表单（编辑用，build_preset 的反向）。"""
+
+    def setUp(self):
+        _patched_images(self)
+
+    def test_a1_round_trip(self):
+        form = _filled_form()
+        preset = bf.build_preset(form, FAKE_DEPLOY)
+        back = bf.form_from_preset(preset)
+        for key in ("cpu", "os", "ocpus", "memory_gb", "disk_gb", "count",
+                    "delays", "ssh_key", "root_login", "public_ip", "ipv6"):
+            self.assertEqual(back[key], form[key], key)
+        self.assertIsNone(back["script"])
+        # 往返后的表单仍能校验通过并生成等价预设。
+        self.assertEqual(bf.validate_form(back, FAKE_DEPLOY), [])
+        rebuilt = bf.build_preset(back, FAKE_DEPLOY)
+        self.assertEqual(rebuilt["shape"], preset["shape"])
+        self.assertEqual(rebuilt["ocpus"], preset["ocpus"])
+        self.assertEqual(rebuilt["memory_gb"], preset["memory_gb"])
+        self.assertEqual(rebuilt["image_id"], preset["image_id"])
+        self.assertEqual(rebuilt["min_delay"], preset["min_delay"])
+        self.assertEqual(rebuilt["max_delay"], preset["max_delay"])
+
+    def test_e2_round_trip(self):
+        form = _filled_form(cpu="amd")
+        preset = bf.build_preset(form, FAKE_DEPLOY)
+        self.assertEqual(preset["shape"], "VM.Standard.E2.1.Micro")
+        back = bf.form_from_preset(preset)
+        self.assertEqual(back["cpu"], "amd")
+        self.assertEqual(back["os"], "ubuntu")
+        # E2 固定规格，表单里核心/内存留空。
+        self.assertIsNone(back["ocpus"])
+        self.assertIsNone(back["memory_gb"])
+        self.assertEqual(bf.validate_form(back, FAKE_DEPLOY), [])
+        rebuilt = bf.build_preset(back, FAKE_DEPLOY)
+        self.assertEqual((rebuilt["ocpus"], rebuilt["memory_gb"]), (1, 1))
+
+    def test_old_preset_without_cpu_os(self):
+        # 旧版预设没有 cpu/os：形状反推 cpu，镜像反推 os。
+        preset = {"shape": "VM.Standard.A1.Flex", "ocpus": 2,
+                  "memory_gb": 12, "image_id": FAKE_OL_AARCH64,
+                  "ssh_keys_file": None, "root_login": True,
+                  "assign_public_ip": False, "assign_ipv6": True,
+                  "count": 2, "min_delay": 30, "max_delay": 30,
+                  "startup_script": "echo hi"}
+        back = bf.form_from_preset(preset)
+        self.assertEqual(back["cpu"], "arm")
+        self.assertEqual(back["os"], "centos")
+        self.assertEqual(back["ocpus"], 2)
+        self.assertEqual(back["memory_gb"], 12)
+        self.assertEqual(back["count"], 2)
+        self.assertEqual(back["delays"], [30])
+        self.assertEqual(back["ssh_key"], "none")
+        self.assertTrue(back["root_login"])
+        self.assertFalse(back["public_ip"])
+        self.assertTrue(back["ipv6"])
+        self.assertEqual(back["script"]["content"], "echo hi")
+
+    def test_unknown_image_kept_as_custom(self):
+        preset = {"shape": "VM.Standard.E2.1.Micro", "ocpus": 1,
+                  "memory_gb": 1,
+                  "image_id": "ocid1.image.oc1..custom000",
+                  "ssh_keys_file": "/tmp/k.pub"}
+        back = bf.form_from_preset(preset)
+        self.assertEqual(back["cpu"], "amd")
+        self.assertEqual(back["os"], "ocid1.image.oc1..custom000")
+        # 自定义镜像 OCID 仍能校验通过（原样当镜像用）。
+        self.assertEqual(bf.validate_form(back, FAKE_DEPLOY), [])
 
 
 class TestFmtAndKeyboard(unittest.TestCase):

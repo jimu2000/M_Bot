@@ -19,7 +19,7 @@ from oci.network import (assign_public_ip, attach_public_ips,
                          change_public_ip,
                          create_reserved_ip, delete_public_ip, get_public_ip,
                          get_vnic, list_private_ips, list_public_ips,
-                         list_vnics)
+                         list_vnics, wait_for_public_ip)
 
 # 占位符（测试里不出现真实 OCID / IP）
 FAKE_COMPARTMENT = "ocid1.tenancy.oc1..xxxxxxxx"
@@ -371,6 +371,61 @@ class TestAttachPublicIps(unittest.TestCase):
         with patch("oci.network.get_public_ip") as mock_get:
             self.assertEqual(attach_public_ips(self.cli, []), [])
         mock_get.assert_not_called()
+
+
+class TestWaitForPublicIp(unittest.TestCase):
+    """wait_for_public_ip：轮询等刚开出的实例分配公网 IP。"""
+
+    def test_immediate_hit_no_sleep(self):
+        with patch("oci.network.get_public_ip",
+                   return_value="203.0.113.10") as mock_get, \
+                patch("oci.network.time.monotonic",
+                      side_effect=[0]) as mock_clock, \
+                patch("oci.network.time.sleep") as mock_sleep:
+            ip = wait_for_public_ip(MagicMock(), FAKE_INSTANCE,
+                                    timeout_seconds=60, interval_seconds=5)
+        self.assertEqual(ip, "203.0.113.10")
+        mock_get.assert_called_once()
+        mock_sleep.assert_not_called()
+        self.assertEqual(mock_clock.call_count, 1)
+
+    def test_retry_then_success(self):
+        with patch("oci.network.get_public_ip",
+                   side_effect=[None, None, "203.0.113.10"]) as mock_get, \
+                patch("oci.network.time.monotonic",
+                      side_effect=[0, 0, 0]), \
+                patch("oci.network.time.sleep") as mock_sleep:
+            ip = wait_for_public_ip(MagicMock(), FAKE_INSTANCE,
+                                    timeout_seconds=60, interval_seconds=5)
+        self.assertEqual(ip, "203.0.113.10")
+        self.assertEqual(mock_get.call_count, 3)
+        self.assertEqual(mock_sleep.call_count, 2)
+        mock_sleep.assert_called_with(5)
+
+    def test_timeout_returns_none(self):
+        with patch("oci.network.get_public_ip",
+                   return_value=None) as mock_get, \
+                patch("oci.network.time.monotonic",
+                      side_effect=[0, 0, 11]), \
+                patch("oci.network.time.sleep") as mock_sleep:
+            ip = wait_for_public_ip(MagicMock(), FAKE_INSTANCE,
+                                    timeout_seconds=10, interval_seconds=5)
+        self.assertIsNone(ip)
+        self.assertEqual(mock_get.call_count, 2)
+        mock_sleep.assert_called_once_with(5)
+
+    def test_query_exception_tolerated(self):
+        with patch("oci.network.get_public_ip",
+                   side_effect=[RuntimeError("boom"),
+                                "203.0.113.10"]) as mock_get, \
+                patch("oci.network.time.monotonic",
+                      side_effect=[0, 0]), \
+                patch("oci.network.time.sleep") as mock_sleep:
+            ip = wait_for_public_ip(MagicMock(), FAKE_INSTANCE,
+                                    timeout_seconds=60, interval_seconds=5)
+        self.assertEqual(ip, "203.0.113.10")
+        self.assertEqual(mock_get.call_count, 2)
+        mock_sleep.assert_called_once_with(5)
 
 
 if __name__ == "__main__":

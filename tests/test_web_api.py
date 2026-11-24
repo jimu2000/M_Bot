@@ -743,7 +743,7 @@ class TestCreateAndTasksApi(WebApiTestCase):
 
     @patch("web.tasks.notify_boot_success",
             return_value={"telegram": True, "bark": False, "errors": []})
-    @patch("web.tasks.get_public_ip", return_value="203.0.113.10")
+    @patch("web.tasks.wait_for_public_ip", return_value="203.0.113.10")
     @patch("web.tasks.Grabber")
     @patch("web.routes.create.can_launch", return_value=(True, "可以创建"))
     def test_create_starts_grab_task(self, mock_can, mock_grabber_cls,
@@ -788,7 +788,7 @@ class TestCreateAndTasksApi(WebApiTestCase):
 
     @patch("web.tasks.notify_boot_success",
             return_value={"telegram": True, "bark": False, "errors": []})
-    @patch("web.tasks.get_public_ip", return_value="203.0.113.10")
+    @patch("web.tasks.wait_for_public_ip", return_value="203.0.113.10")
     @patch("web.tasks.Grabber")
     @patch("web.routes.create.can_launch", return_value=(True, "可以创建"))
     def test_create_full_fields_passed_to_grabber(self, mock_can,
@@ -834,7 +834,7 @@ class TestCreateAndTasksApi(WebApiTestCase):
 
     @patch("web.tasks.notify_boot_success",
             return_value={"telegram": True, "bark": False, "errors": []})
-    @patch("web.tasks.get_public_ip", return_value="203.0.113.10")
+    @patch("web.tasks.wait_for_public_ip", return_value="203.0.113.10")
     @patch("web.tasks.Grabber")
     @patch("web.routes.create.can_launch", return_value=(True, "可以创建"))
     def test_create_root_password_generated_and_notified(
@@ -867,7 +867,7 @@ class TestCreateAndTasksApi(WebApiTestCase):
 
     @patch("web.tasks.notify_boot_success",
             return_value={"telegram": True, "bark": False, "errors": []})
-    @patch("web.tasks.get_public_ip", return_value="203.0.113.10")
+    @patch("web.tasks.wait_for_public_ip", return_value="203.0.113.10")
     @patch("web.tasks.Grabber")
     @patch("web.routes.create.can_launch", return_value=(True, "可以创建"))
     def test_create_frontend_password_used(
@@ -889,7 +889,7 @@ class TestCreateAndTasksApi(WebApiTestCase):
 
     @patch("web.tasks.notify_boot_success",
             return_value={"telegram": True, "bark": False, "errors": []})
-    @patch("web.tasks.get_public_ip", return_value="203.0.113.10")
+    @patch("web.tasks.wait_for_public_ip", return_value="203.0.113.10")
     @patch("web.tasks.Grabber")
     @patch("web.routes.create.can_launch", return_value=(True, "可以创建"))
     def test_create_root_login_false_no_password(
@@ -983,7 +983,7 @@ class TestCreateAndTasksApi(WebApiTestCase):
 
     @patch("web.tasks.notify_boot_success",
             return_value={"telegram": True, "bark": False, "errors": []})
-    @patch("web.tasks.get_public_ip", return_value="203.0.113.10")
+    @patch("web.tasks.wait_for_public_ip", return_value="203.0.113.10")
     @patch("web.tasks.Grabber")
     @patch("web.routes.create.can_launch", return_value=(True, "可以创建"))
     def test_create_without_ssh_keys_file_ok(self, mock_can,
@@ -1007,7 +1007,7 @@ class TestCreateAndTasksApi(WebApiTestCase):
 
     @patch("web.tasks.notify_boot_success",
             return_value={"telegram": True, "bark": False, "errors": []})
-    @patch("web.tasks.get_public_ip", return_value="203.0.113.10")
+    @patch("web.tasks.wait_for_public_ip", return_value="203.0.113.10")
     @patch("web.tasks.Grabber")
     @patch("web.routes.create.can_launch", return_value=(True, "可以创建"))
     @patch("web.deps.get_profile_regions",
@@ -1060,7 +1060,7 @@ class TestCreateAndTasksApi(WebApiTestCase):
 
     @patch("web.tasks.notify_boot_success",
             return_value={"telegram": True, "bark": False, "errors": []})
-    @patch("web.tasks.get_public_ip", return_value="203.0.113.10")
+    @patch("web.tasks.wait_for_public_ip", return_value="203.0.113.10")
     @patch("web.tasks.Grabber")
     @patch("web.routes.create.can_launch", return_value=(True, "可以创建"))
     def test_list_tasks(self, mock_can, mock_grabber_cls, mock_ip,
@@ -1327,7 +1327,7 @@ class TestNotifyGrabSuccess(unittest.TestCase):
                        "root_password": "0123456789abcdef0123456789abcdef"}
 
     def test_free_shape_notifies_no_pin_alert(self):
-        with patch.object(tasks_mod, "get_public_ip",
+        with patch.object(tasks_mod, "wait_for_public_ip",
                           return_value=FAKE_IP), \
                 patch.object(tasks_mod, "notify_boot_success",
                              return_value={"telegram": True, "bark": False,
@@ -1354,7 +1354,7 @@ class TestNotifyGrabSuccess(unittest.TestCase):
 
     def test_paid_shape_pins_alert(self):
         self.params["shape"] = "VM.Standard.E5.Flex"
-        with patch.object(tasks_mod, "get_public_ip",
+        with patch.object(tasks_mod, "wait_for_public_ip",
                           return_value=FAKE_IP), \
                 patch.object(tasks_mod, "notify_boot_success",
                              return_value={"telegram": True, "bark": False,
@@ -1375,21 +1375,34 @@ class TestNotifyGrabSuccess(unittest.TestCase):
         self.assertEqual(kwargs.get("group"), "paid-instance")
 
     def test_ip_lookup_failure_does_not_block(self):
-        with patch.object(tasks_mod, "get_public_ip",
+        """wait 超时返回 None 时照常通知（IP 写"获取中"），并起跟进线程。
+
+        轮询重试行为本身在 test_network.TestWaitForPublicIp 里测。
+        """
+        with patch.object(tasks_mod, "wait_for_public_ip",
                           return_value=None), \
                 patch.object(tasks_mod, "notify_boot_success",
                              return_value={"telegram": True, "bark": False,
                                            "errors": []}) as notify_fn, \
-                patch.object(tasks_mod.time, "sleep") as sleep_mock:
+                patch.object(tasks_mod, "start_ip_followup") as followup:
             tasks_mod._notify_grab_success(
                 self.registry, "g1", MagicMock(), self.params,
                 self.result, self.notify)
-        # 查 3 次 IP（2 次 sleep 间隔），查不到也照常通知。
-        self.assertEqual(sleep_mock.call_count, 2)
         self.assertIsNone(notify_fn.call_args[0][8][0]["public_ip"])
+        followup.assert_called_once()
+        args = followup.call_args[0]
+        self.assertEqual(args[1], "ARM_2026-11-24")
+        self.assertEqual(args[2], "T")
+        self.assertEqual(args[3], 654321)
+        # 传给跟进线程的回调要绑对实例 id。
+        with patch.object(tasks_mod, "get_public_ip",
+                          return_value=FAKE_IP) as get_ip:
+            self.assertEqual(args[0](), FAKE_IP)
+        get_ip.assert_called_once()
+        self.assertEqual(get_ip.call_args[0][1], FAKE_INSTANCE)
 
     def test_notify_exception_logged_not_raised(self):
-        with patch.object(tasks_mod, "get_public_ip",
+        with patch.object(tasks_mod, "wait_for_public_ip",
                           return_value=FAKE_IP), \
                 patch.object(tasks_mod, "notify_boot_success",
                              side_effect=RuntimeError("boom")):

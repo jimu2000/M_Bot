@@ -582,6 +582,63 @@ def build_preset(form, deploy=None):
     }
 
 
+def form_from_preset(preset):
+    """已保存的快捷开机预设 -> 开机表单 dict（编辑用，build_preset 的反向）。
+
+    优先用预设里存的 cpu/os（build_preset 会存）；旧版预设没有这两项
+    时反推：形状 E2 -> cpu=amd、A1 -> cpu=arm；镜像 OCID 对得上部署值
+    里的 Ubuntu/OL 镜像时反推 os，对不上时把 OCID 本身当自定义镜像
+    （resolve_image_id 会原样返回，仍能开机）。
+    E2 是固定规格，表单里 ocpus/memory_gb 留 None（resolve_spec 归一
+    为 1/1）。display_name 不进表单（build_preset 会重新生成；编辑保
+    存时由调用方把原名写回去，见 handlers_extra._boot_form_save）。
+    """
+    form = new_form()
+    preset = preset or {}
+    shape = preset.get("shape") or ""
+    cpu = preset.get("cpu")
+    if cpu is None:
+        if shape == SHAPE_E2_MICRO:
+            cpu = "amd"
+        elif shape == SHAPE_A1_FLEX:
+            cpu = "arm"
+    form["cpu"] = cpu
+    os_value = preset.get("os")
+    if os_value is None:
+        image_id = preset.get("image_id")
+        deploy = get_deploy_defaults()
+        if image_id in (deploy.get("image_aarch64"),
+                        deploy.get("image_x86_64")):
+            os_value = "ubuntu"
+        elif image_id in (deploy.get("ol_aarch64"),
+                          deploy.get("ol_x86_64")):
+            os_value = "centos"
+        elif image_id:
+            os_value = image_id  # 自定义镜像 OCID
+    form["os"] = os_value
+    if shape != SHAPE_E2_MICRO:
+        form["ocpus"] = preset.get("ocpus")
+        form["memory_gb"] = preset.get("memory_gb")
+    form["disk_gb"] = preset.get("boot_volume_size_gbs")
+    form["count"] = preset.get("count") or 1
+    min_delay = preset.get("min_delay")
+    max_delay = preset.get("max_delay")
+    if min_delay is None and max_delay is None:
+        form["delays"] = []
+    elif min_delay == max_delay:
+        form["delays"] = [min_delay]
+    else:
+        form["delays"] = [min_delay, max_delay]
+    form["ssh_key"] = "none" if preset.get("ssh_keys_file") is None else "use"
+    form["root_login"] = bool(preset.get("root_login"))
+    form["public_ip"] = bool(preset.get("assign_public_ip", True))
+    form["ipv6"] = bool(preset.get("assign_ipv6"))
+    script = preset.get("startup_script")
+    form["script"] = ({"name": "开机脚本", "content": script}
+                      if script else None)
+    return form
+
+
 # ---------------- root 密码与 user-data ----------------
 
 def generate_root_password():
@@ -615,6 +672,16 @@ def build_user_data(root_password=None, startup_script=None):
     - 都没有：返回 None（Grabber 不传 --user-data-file）。
     脚本本身已是 #cloud-config 时不能与 root 密码共存（两份
     cloud-config 无法合并），抛 ValueError。
+
+    有 root 密码时还必须加两样（2026-11-24 实测：Ubuntu 24.04 镜像
+    默认 disable_root: true，root 的 key 会被加强制命令，只能看到
+    "Please login as the user ubuntu"；且 PermitRootLogin 默认
+    prohibit-password，密码也登不进）：
+    - disable_root: false：cloud-init 不再给 root 的 key 加强制命令，
+      密钥登录 root 直接可用；
+    - write_files 写 /etc/ssh/sshd_config.d/60-mbot-root-login.conf
+      （PermitRootLogin yes）+ runcmd reload sshd：密码登录 root 可用
+      （ssh 服务名 Ubuntu 是 ssh、Oracle Linux 是 sshd，两边都试）。
     """
     script = _normalize_script(startup_script)
     if root_password and script.startswith("#cloud-config"):
@@ -624,15 +691,24 @@ def build_user_data(root_password=None, startup_script=None):
         return None
     if root_password and not script:
         return ("#cloud-config\n"
+                "disable_root: false\n"
                 "chpasswd:\n"
                 "  list: |\n"
                 f"    root:{root_password}\n"
                 "  expire: false\n"
-                "ssh_pwauth: true\n")
+                "ssh_pwauth: true\n"
+                "write_files:\n"
+                "  - path: /etc/ssh/sshd_config.d/60-mbot-root-login.conf\n"
+                '    permissions: "0644"\n'
+                "    content: |\n"
+                "      PermitRootLogin yes\n"
+                "runcmd:\n"
+                "  - systemctl reload ssh || systemctl reload sshd || true\n")
     if script and not root_password:
         return script
     lines = [
         "#cloud-config",
+        "disable_root: false",
         "chpasswd:",
         "  list: |",
         f"    root:{root_password}",
@@ -645,8 +721,15 @@ def build_user_data(root_password=None, startup_script=None):
     ]
     for line in script.split("\n"):
         lines.append("      " + line if line else "")
-    lines.append("runcmd:")
-    lines.append(f"  - {STARTUP_SCRIPT_PATH}")
+    lines.extend([
+        "  - path: /etc/ssh/sshd_config.d/60-mbot-root-login.conf",
+        '    permissions: "0644"',
+        "    content: |",
+        "      PermitRootLogin yes",
+        "runcmd:",
+        "  - systemctl reload ssh || systemctl reload sshd || true",
+        f"  - {STARTUP_SCRIPT_PATH}",
+    ])
     return "\n".join(lines) + "\n"
 
 
