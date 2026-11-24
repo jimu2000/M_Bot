@@ -18,17 +18,28 @@
 #   2. 你的 Telegram 用户 ID：找 @userinfobot 发 /start 拿到
 #      （纯数字，装到一半会问你；白名单只放这个 ID）。
 #   3. OCI API 密钥：安装后在机器人里用 /uploadapi 上传你的
-#      OCI 配置（~/.oci/config + API 私钥），或手动放到 ~/.oci/。
+#      OCI 配置（~/oci_config + API 私钥），或手动放到 /root/ 下。
 #
 # 非交互安装（跳过提问，变量缺了就用默认值/自动生成）：
 #   MBOT_INSTALL_TOKEN=xxx MBOT_INSTALL_USER_ID=123 \
 #     MBOT_INSTALL_PASSWORD=xxx MBOT_INSTALL_DOMAIN=panel.example.com \
+#     MBOT_INSTALL_CERT_METHOD=cfdns MBOT_INSTALL_CF_API_TOKEN=xxx \
 #     bash install.sh
+#   cfdns 的凭据也可以不传：安装时会先看 OCI 配置文件
+#   ~/oci_config（即 /root/oci_config）里有没有 [cloudflare] 段，
+#   有就直接用（cf_token，或 cf_key + cf_email），不用再问。
 #
 # 注意：
 #   - 面板只绑 127.0.0.1:9527，不直接对外；外网访问走 nginx 反代 + HTTPS。
-#   - 有域名：certbot 自动申请 Let's Encrypt 证书，访问 https://你的域名。
-#   - 没域名：openssl 生成自签证书，访问 https://服务器IP:9527
+#   - nginx 从 nginx.org 官方仓库装最新版（stable 分支），不是发行版
+#     自带的旧版；仓库加不上时回落发行版版本，安装不中断。
+#   - 有域名：自动申请 Let's Encrypt 证书，访问 https://你的域名。
+#     验证方式二选一：http（80 端口验证，默认，certbot）或 cfdns
+#     （Cloudflare DNS 验证，lego，需 CF API Token；验证不占端口，
+#     443 被别的服务占了时面板改走 9527 端口）。
+#   - 没域名：自动用服务器公网 IP 申请 Let's Encrypt IP 证书
+#     （lego，shortlived，有效期约 6 天，cron 每 2 天自动续期），
+#     访问 https://服务器IP:9527；申请失败时回落自签证书
 #     （浏览器会提示证书不受信任，点“继续访问”即可）。
 #   - 管理员密码不给就自动生成，只显示一次，并存到
 #     /root/.mbot-admin-password（600 权限）。
@@ -61,8 +72,22 @@ PANEL_PORT=9527
 INTERNAL_PORT=18001
 # nginx 反代配置路径（conf.d 里的独立文件，不动用户已有配置）。
 NGINX_CONF="/etc/nginx/conf.d/mbot-panel.conf"
-# 自签证书目录（没域名时用）。
+# 自签证书目录（没域名、IP 证书又申请失败时回落用）。
 SELFSIGN_DIR="/etc/nginx/ssl/mbot-selfsigned"
+# lego（ACME 客户端，IP 证书与 Cloudflare DNS-01 用；单文件 Go 二进制，
+# 从 GitHub releases 下，支持 --profile shortlived 与 IP 证书）。
+# 版本钉死：升级前先在测试机上验过新版的命令行没变。
+LEGO_VERSION="v5.7.0"
+LEGO_BIN="/usr/local/bin/lego"
+LEGO_DIR="/etc/lego"
+# lego 证书存放目录（lego 默认结构：certificates/<名字>.crt/.key）。
+LEGO_CERT_DIR="$LEGO_DIR/certificates"
+# ACME webroot（IP 证书 http-01 验证用，nginx 80 端口 serve 它）。
+ACME_WEBROOT="/var/www/mbot-acme"
+# 证书续期脚本与 cron（IP 证书只有 160 小时有效期，每 2 天跑一次；
+# lego run 兼续期：证书没到续期窗口时直接跳过）。
+RENEW_SCRIPT="/usr/local/bin/mbot-renew-cert.sh"
+RENEW_CRON="/etc/cron.d/mbot-cert-renew"
 # =====================================================
 
 # ---------- 输出 ----------
@@ -124,6 +149,49 @@ wait_for_apt() {
     done
 }
 
+# nginx.org 官方仓库（stable 分支）：发行版自带的 nginx 太旧，
+# 这里加官方仓库装最新版。失败返回 1，调用方回落发行版版本，
+# 安装不中断。仓库 URL 里发行版名按系统自动换（debian/ubuntu，
+# 不能写死 debian，否则 Ubuntu 上 404）。
+# 密钥放专用 keyring + signed-by（只信任 nginx.org 的包），
+# 不放全局 trusted.gpg.d。
+setup_nginx_repo() {
+    local id codename
+    id="$(. /etc/os-release; echo "${ID:-}")"
+    case "$id" in
+        debian|ubuntu) : ;;
+        *) warn "未知发行版 $id，nginx 用发行版自带版本。"; return 1 ;;
+    esac
+    # 取仓库密钥要 curl + gpg + lsb-release，精简镜像上未必预装。
+    if ! command_exists curl || ! command_exists gpg \
+            || ! command_exists lsb_release; then
+        wait_for_apt
+        apt-get install -y -qq apt-transport-https ca-certificates curl \
+            gnupg lsb-release >/dev/null 2>&1 \
+            || { warn "仓库工具安装失败，nginx 用发行版自带版本。"; return 1; }
+    fi
+    codename="$(lsb_release -cs 2>/dev/null || true)"
+    [ -n "$codename" ] \
+        || codename="$(. /etc/os-release; echo "${VERSION_CODENAME:-}")"
+    [ -n "$codename" ] \
+        || { warn "读不到系统代号，nginx 用发行版自带版本。"; return 1; }
+    if ! curl -fsSL https://nginx.org/keys/nginx_signing.key \
+            | gpg --dearmor -o /usr/share/keyrings/nginx-archive-keyring.gpg \
+            2>/dev/null; then
+        warn "nginx 签名密钥下载失败，nginx 用发行版自带版本。"
+        return 1
+    fi
+    printf 'deb [signed-by=/usr/share/keyrings/nginx-archive-keyring.gpg] https://nginx.org/packages/%s %s nginx\n' \
+        "$id" "$codename" > /etc/apt/sources.list.d/nginx.list
+    printf 'Package: *\nPin: origin nginx.org\nPin-Priority: 900\n' \
+        > /etc/apt/preferences.d/99nginx
+    wait_for_apt
+    apt-get update -qq >/dev/null 2>&1 \
+        || { warn "nginx 仓库更新失败，nginx 用发行版自带版本。"; return 1; }
+    ok "nginx.org 官方仓库已添加（${id} ${codename}，stable 分支）。"
+    return 0
+}
+
 install_deps() {
     info "安装系统依赖（python3 / git / nginx / ufw / certbot）…"
     export DEBIAN_FRONTEND=noninteractive
@@ -138,8 +206,14 @@ install_deps() {
         sleep 15
         wait_for_apt
     done
+    # nginx 要最新版：先加 nginx.org 官方仓库，加不上回落发行版版本。
+    setup_nginx_repo || true
     attempt=0
-    until apt-get install -y -qq python3 python3-venv python3-pip git nginx \
+    # --force-confold：机器上已有 nginx 配置时保留它（不覆盖用户改过的
+    # 配置；新装时没影响）。
+    until apt-get install -y -qq -o Dpkg::Options::="--force-confdef" \
+        -o Dpkg::Options::="--force-confold" \
+        python3 python3-venv python3-pip git nginx \
         ufw curl wget openssl iproute2 procps psmisc >/dev/null; do
         attempt=$((attempt + 1))
         [ "$attempt" -ge 3 ] && die "apt 安装依赖失败，请检查网络与 apt 源。"
@@ -147,7 +221,7 @@ install_deps() {
         sleep 15
         wait_for_apt
     done
-    ok "系统依赖已就绪。"
+    ok "系统依赖已就绪（nginx $(nginx -v 2>&1 | head -n 1)）。"
 }
 
 # ---------- 交互提问 ----------
@@ -209,6 +283,41 @@ prompt_config() {
             *.*) : ;;
             *) die "域名格式不对，应含至少一个点（如 panel.example.com）。" ;;
         esac
+    fi
+    # 证书验证方式：有域名时问（http 默认 / cfdns）。
+    # 没域名时不问，自动走 IP 证书。
+    CERT_METHOD="${MBOT_INSTALL_CERT_METHOD:-http}"
+    if [ -n "$DOMAIN" ] && [ -z "${MBOT_INSTALL_CERT_METHOD+x}" ]; then
+        printf "域名证书验证方式（http=80 端口验证[默认]，cfdns=Cloudflare DNS 验证）："
+        read -r CERT_METHOD || true
+        CERT_METHOD="${CERT_METHOD:-http}"
+    fi
+    case "$CERT_METHOD" in
+        http|cfdns) : ;;
+        *) die "验证方式只能是 http 或 cfdns。" ;;
+    esac
+    # cfdns 时问 Cloudflare API Token（read -s 不回显；Token 要有
+    # Zone:DNS:Edit + Zone:Zone:Read 权限，存在 /etc/lego/env 里，
+    # 600 权限，续期也要用它）。
+    # 凭据优先级：环境变量 > OCI 配置文件 ~/oci_config 的
+    # [cloudflare] 段（cf_token，或 cf_key + cf_email）> 交互输入。
+    CF_API_TOKEN="${MBOT_INSTALL_CF_API_TOKEN:-}"
+    CF_API_KEY="${MBOT_INSTALL_CF_API_KEY:-}"
+    CF_EMAIL="${MBOT_INSTALL_CF_EMAIL:-}"
+    if [ "$CERT_METHOD" = "cfdns" ]; then
+        if [ -z "$CF_API_TOKEN" ] && [ -z "$CF_API_KEY" ] \
+                && read_cf_from_oci_config; then
+            info "从 OCI 配置文件 [cloudflare] 段读到 Cloudflare 凭据，直接用它。"
+        fi
+        if [ -z "$CF_API_TOKEN" ] && [ -z "$CF_API_KEY" ]; then
+            printf "Cloudflare API Token（Zone:DNS:Edit + Zone:Zone:Read 权限）："
+            read -r -s CF_API_TOKEN || true
+            echo
+        fi
+        if [ -z "$CF_API_TOKEN" ] \
+                && { [ -z "$CF_API_KEY" ] || [ -z "$CF_EMAIL" ]; }; then
+            die "cfdns 需要 Cloudflare 凭据（Token，或 Key + 邮箱），都没有就选 http。"
+        fi
     fi
 }
 
@@ -427,6 +536,8 @@ EOF
                 --register-unsafely-without-email --redirect >/dev/null 2>&1; then
             ok "Let's Encrypt 证书已申请并生效。"
             CERT_OK=1
+            CERT_KIND=domain
+            CERT_PORT=443
             return 0
         fi
         warn "certbot 申请证书失败（域名可能未解析到本机），回落自签证书。"
@@ -435,6 +546,340 @@ EOF
     fi
     CERT_OK=0
     write_nginx_selfsigned
+}
+
+# ---------- lego（IP 证书 / Cloudflare DNS-01） ----------
+# 从 OCI 配置文件（~/oci_config，旧版回退 ~/.oci/config）的
+# [cloudflare] 段读 CF 凭据：cf_token / cf_key（cf_account_key）/
+# cf_email。读到可用的就设 CF_API_TOKEN / CF_API_KEY / CF_EMAIL
+# 三个变量并返回 0，否则返回 1（调用方改问用户）。
+# 用 python3 解析（configparser，段名大小写不敏感；install_deps
+# 已装好 python3，prompt_config 在它之后跑）。
+read_cf_from_oci_config() {
+    local cfg=""
+    for f in "$HOME/oci_config" "$HOME/.oci/config"; do
+        [ -f "$f" ] && cfg="$f" && break
+    done
+    [ -n "$cfg" ] || return 1
+    local out
+    out="$(python3 -c '
+import configparser, sys
+p = configparser.ConfigParser(interpolation=None)
+try:
+    p.read(sys.argv[1], encoding="utf-8")
+except configparser.Error:
+    sys.exit(1)
+sec = next((s for s in p.sections() if s.lower() == "cloudflare"), None)
+if not sec:
+    sys.exit(1)
+items = {k: v.strip() for k, v in p.items(sec)}
+token = items.get("cf_token", "")
+key = items.get("cf_key") or items.get("cf_account_key", "")
+email = items.get("cf_email", "")
+if not (token or (key and email)):
+    sys.exit(1)
+print(token)
+print(key)
+print(email)
+' "$cfg" 2>/dev/null)" || return 1
+    CF_API_TOKEN="$(printf '%s' "$out" | sed -n '1p')"
+    CF_API_KEY="$(printf '%s' "$out" | sed -n '2p')"
+    CF_EMAIL="$(printf '%s' "$out" | sed -n '3p')"
+    return 0
+}
+
+# Let's Encrypt 从 2026-01-15 起正式给公网 IP 发证，但只发 shortlived
+# （有效期 160 小时，约 6 天），验证只能用 http-01（80 端口）或
+# tls-alpn-01（443 端口），不能用 dns-01。certbot 要 5.4+ 才支持 IP
+# 证书，Debian/Ubuntu 的 apt 装不到这么新的版本，所以 IP 证书与
+# Cloudflare DNS-01 统一用 lego（单文件 Go 二进制，v4.22+ 支持
+# --profile，v5.7.0 实测可用；--email 可留空，lego 会用
+# noemail@example.com 注册账号）。
+install_lego() {
+    # 已装且版本对就跳过（重装/更新时不用重复下载）。
+    if [ -x "$LEGO_BIN" ] && "$LEGO_BIN" --version 2>/dev/null | grep -q "$LEGO_VERSION"; then
+        return 0
+    fi
+    local arch
+    case "$(uname -m)" in
+        x86_64|amd64) arch="amd64" ;;
+        aarch64|arm64) arch="arm64" ;;
+        *) warn "lego 不支持当前架构 $(uname -m)，只能用自签证书。"; return 1 ;;
+    esac
+    local url="https://github.com/go-acme/lego/releases/download/${LEGO_VERSION}/lego_${LEGO_VERSION}_linux_${arch}.tar.gz"
+    local tmp
+    tmp="$(mktemp -d)"
+    info "下载 lego ${LEGO_VERSION}（${arch}）…"
+    if ! curl -sL -m 120 -o "$tmp/lego.tar.gz" "$url"; then
+        warn "lego 下载失败，只能用自签证书。"
+        rm -rf "$tmp"
+        return 1
+    fi
+    if tar -xzf "$tmp/lego.tar.gz" -C "$tmp" lego 2>/dev/null \
+            && install -m 755 "$tmp/lego" "$LEGO_BIN"; then
+        rm -rf "$tmp"
+        ok "lego 已安装：$("$LEGO_BIN" --version 2>/dev/null | head -n 1)"
+        return 0
+    fi
+    warn "lego 解压/安装失败，只能用自签证书。"
+    rm -rf "$tmp"
+    return 1
+}
+
+# lego 凭据文件（600 权限，只放给定的变量；CF Token 不进 shell 历史、
+# 不打印；续期脚本每次跑之前 source 它）。
+# lego 的 Cloudflare 凭据名：CF_DNS_API_TOKEN（Token）或
+# CF_API_KEY + CF_API_EMAIL（Global Key + 邮箱）。
+write_lego_env() {
+    mkdir -p "$LEGO_DIR"
+    chmod 700 "$LEGO_DIR"
+    {
+        [ -n "${CF_API_TOKEN:-}" ] && printf 'CF_DNS_API_TOKEN=%s\n' "$CF_API_TOKEN"
+        [ -n "${CF_API_KEY:-}" ] && printf 'CF_API_KEY=%s\n' "$CF_API_KEY"
+        [ -n "${CF_EMAIL:-}" ] && printf 'CF_API_EMAIL=%s\n' "$CF_EMAIL"
+    } > "$LEGO_DIR/env" || true
+    chmod 600 "$LEGO_DIR/env"
+}
+
+# lego deploy hook：证书创建/续期成功后重载 nginx，让新证书生效。
+# 单独存成脚本文件，避免 --deploy-hook 后面跟带空格的命令串
+# （续期脚本里拼命令时引用容易错）。
+write_lego_deploy_hook() {
+    cat > "$LEGO_DIR/deploy-hook.sh" <<'EOF'
+#!/bin/sh
+# lego deploy hook（install.sh 生成）：证书更新后重载 nginx。
+systemctl reload nginx 2>/dev/null || systemctl restart nginx
+EOF
+    chmod 700 "$LEGO_DIR/deploy-hook.sh"
+}
+
+# 证书续期脚本 + cron：lego v5 里 run 兼续期，证书没到续期窗口时
+# 直接跳过；shortlived 证书默认剩一半寿命（约 3 天）时续，
+# 每 2 天跑一次正好。$1 = 发证时的 lego 参数（无空格的 token 串，
+# 续期原样重跑；凭据每次从 /etc/lego/env 读，不写进脚本）。
+write_renew_script() {
+    cat > "$RENEW_SCRIPT" <<EOF
+#!/bin/bash
+# M_Bot 证书续期（install.sh 生成）：IP 证书只有 160 小时有效期，
+# 每 2 天跑一次；域名证书到期前自动续；未到续期窗口时 lego 直接跳过。
+set -euo pipefail
+[ -f $LEGO_DIR/env ] && set -a && . $LEGO_DIR/env && set +a || true
+exec $LEGO_BIN run --path $LEGO_DIR --accept-tos $1
+EOF
+    chmod 700 "$RENEW_SCRIPT"
+    printf '0 3 */2 * * root %s >> /var/log/mbot-cert-renew.log 2>&1\n' \
+        "$RENEW_SCRIPT" > "$RENEW_CRON"
+    chmod 644 "$RENEW_CRON"
+    ok "证书自动续期已设置（每 2 天凌晨 3 点）。"
+}
+
+# IP 证书验证用的 80 端口 vhost：只 serve ACME 验证文件，
+# 其余请求一律 404（面板不在 80 上）。server_name 写 IP 本身，
+# http-01 的验证请求 Host 就是 IP，能精确匹配上（机器上若还有
+# 别的 80 端口站点也不会抢走验证请求）。
+write_nginx_ip_acme() {
+    local ip="$1"
+    mkdir -p "$ACME_WEBROOT/.well-known/acme-challenge"
+    cat > "$NGINX_CONF" <<EOF
+# M_Bot 面板反代（install.sh 生成，IP 证书验证中）
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${ip};
+
+    location /.well-known/acme-challenge/ {
+        root ${ACME_WEBROOT};
+    }
+
+    location / {
+        return 404;
+    }
+}
+EOF
+    nginx -t >/dev/null 2>&1 || die "nginx 配置校验失败，请检查 $NGINX_CONF。"
+    systemctl reload nginx 2>/dev/null || systemctl restart nginx \
+        || die "nginx 重载失败，请看 journalctl -u nginx。"
+}
+
+# IP 证书拿到后的完整配置：80 端口验证 vhost 保留（续期还要用），
+# 面板走 ${PANEL_PORT} ssl，用 lego 的 IP 证书。
+write_nginx_lego_ip() {
+    local ip="$1"
+    local crt="$LEGO_CERT_DIR/${ip}.crt" key="$LEGO_CERT_DIR/${ip}.key"
+    [ -f "$crt" ] && [ -f "$key" ] \
+        || { warn "lego 证书文件不存在：$crt"; return 1; }
+    cat > "$NGINX_CONF" <<EOF
+# M_Bot 面板反代（install.sh 生成，Let's Encrypt IP 证书，${ip}）
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${ip};
+
+    location /.well-known/acme-challenge/ {
+        root ${ACME_WEBROOT};
+    }
+
+    location / {
+        return 404;
+    }
+}
+
+server {
+    listen ${PANEL_PORT} ssl;
+    listen [::]:${PANEL_PORT} ssl;
+    server_name ${ip};
+
+    ssl_certificate ${crt};
+    ssl_certificate_key ${key};
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    client_max_body_size 100m;
+
+    location / {
+        proxy_pass http://127.0.0.1:${INTERNAL_PORT};
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+        proxy_connect_timeout 60s;
+    }
+}
+EOF
+    nginx -t >/dev/null 2>&1 || die "nginx 配置校验失败，请检查 $NGINX_CONF。"
+    systemctl reload nginx 2>/dev/null || systemctl restart nginx \
+        || die "nginx 重载失败，请看 journalctl -u nginx。"
+    ok "nginx 反代已生效（Let's Encrypt IP 证书，端口 ${PANEL_PORT}）。"
+}
+
+# 域名 + Cloudflare DNS-01 拿到后的配置：443 ssl 单 vhost，
+# DNS 验证不占端口，80 端口不用留。
+# 注意：DNS 验证不占 443，不等于面板不用 443——面板本身还是要
+# 监听 443 才能用 https://域名 访问。443 已被 xray 之类服务占了
+# 时，面板改走 ${PANEL_PORT}（证书照样有效，地址带端口就行）。
+write_nginx_lego_domain() {
+    local domain="$1"
+    local crt="$LEGO_CERT_DIR/${domain}.crt" key="$LEGO_CERT_DIR/${domain}.key"
+    [ -f "$crt" ] && [ -f "$key" ] \
+        || { warn "lego 证书文件不存在：$crt"; return 1; }
+    local port=443 redirect="https://\$host\$request_uri"
+    if command_exists ss; then
+        local holder
+        holder="$(ss -ltnp 2>/dev/null | grep ':443 ' | grep -v nginx | head -n 1 || true)"
+        if [ -n "$holder" ]; then
+            warn "443 端口已被占用，面板改走 ${PANEL_PORT} 端口。"
+            port="$PANEL_PORT"
+            redirect="https://\$host:${PANEL_PORT}\$request_uri"
+        fi
+    fi
+    CERT_PORT="$port"
+    cat > "$NGINX_CONF" <<EOF
+# M_Bot 面板反代（install.sh 生成，Let's Encrypt，域名 ${domain}）
+server {
+    listen ${port} ssl;
+    listen [::]:${port} ssl;
+    server_name ${domain};
+
+    ssl_certificate ${crt};
+    ssl_certificate_key ${key};
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    client_max_body_size 100m;
+
+    location / {
+        proxy_pass http://127.0.0.1:${INTERNAL_PORT};
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+        proxy_connect_timeout 60s;
+    }
+}
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${domain};
+    return 301 ${redirect};
+}
+EOF
+    nginx -t >/dev/null 2>&1 || die "nginx 配置校验失败，请检查 $NGINX_CONF。"
+    systemctl reload nginx 2>/dev/null || systemctl restart nginx \
+        || die "nginx 重载失败，请看 journalctl -u nginx。"
+    ok "nginx 反代已生效（Let's Encrypt 证书，域名 ${domain}，端口 ${port}）。"
+}
+
+# 无域名时自动申请 Let's Encrypt IP 证书。失败返回 1，调用方回落自签。
+request_ip_cert() {
+    local ip
+    ip="$(curl -s -m 5 https://api.ipify.org 2>/dev/null || true)"
+    [ -n "$ip" ] || { warn "拿不到公网 IP，只能用自签证书。"; return 1; }
+    # Let's Encrypt 不给内网/保留地址发证。
+    case "$ip" in
+        10.*|172.1[6-9].*|172.2[0-9].*|172.3[0-1].*|192.168.*|127.*|0.*)
+            warn "公网 IP 是内网地址 $ip，Let's Encrypt 不给内网 IP 发证，只能用自签证书。"
+            return 1 ;;
+    esac
+    # http-01 验证走 80 端口：80 被非 nginx 进程占用时验证不了。
+    # nginx 自己占着没关系（验证 vhost 就写在 nginx 里）。
+    if command_exists ss; then
+        local holder
+        holder="$(ss -ltnp 2>/dev/null | grep ':80 ' | grep -v nginx | head -n 1 || true)"
+        if [ -n "$holder" ]; then
+            warn "80 端口已被占用：${holder}，IP 证书验证不了，只能用自签证书。"
+            return 1
+        fi
+    fi
+    install_lego || return 1
+    write_lego_env
+    write_lego_deploy_hook
+    write_nginx_ip_acme "$ip" || return 1
+    info "申请 Let's Encrypt IP 证书（$ip，shortlived，有效期约 6 天，自动续期）…"
+    local args="--profile shortlived --http --http.webroot $ACME_WEBROOT -d $ip --deploy-hook $LEGO_DIR/deploy-hook.sh"
+    if ( [ -f "$LEGO_DIR/env" ] && set -a && . "$LEGO_DIR/env" && set +a || true; \
+         "$LEGO_BIN" run --path "$LEGO_DIR" --accept-tos $args >/dev/null 2>&1 ); then
+        write_renew_script "$args"
+        if write_nginx_lego_ip "$ip"; then
+            CERT_OK=1
+            CERT_KIND=ip
+            ok "Let's Encrypt IP 证书已生效（每 2 天自动续期）。"
+            return 0
+        fi
+    fi
+    warn "IP 证书申请失败（可能 80 端口未对外放行），回落自签证书。"
+    return 1
+}
+
+# 有域名 + cfdns 时用 Cloudflare DNS-01 申请证书（不占 80/443 端口，
+# 443 被 xray 之类服务占了也能用）。失败返回 1，调用方回落自签。
+request_domain_cert_cfdns() {
+    local domain="$1"
+    install_lego || return 1
+    write_lego_env
+    write_lego_deploy_hook
+    info "申请 Let's Encrypt 证书（域名 $domain，Cloudflare DNS 验证）…"
+    local args="--dns cloudflare -d $domain --deploy-hook $LEGO_DIR/deploy-hook.sh"
+    if ( [ -f "$LEGO_DIR/env" ] && set -a && . "$LEGO_DIR/env" && set +a || true; \
+         "$LEGO_BIN" run --path "$LEGO_DIR" --accept-tos $args >/dev/null 2>&1 ); then
+        write_renew_script "$args"
+        if write_nginx_lego_domain "$domain"; then
+            CERT_OK=1
+            CERT_KIND=domain
+            ok "Let's Encrypt 证书已生效（Cloudflare DNS 验证）。"
+            return 0
+        fi
+    fi
+    warn "Cloudflare DNS 验证失败（Token 权限不对或域名不在该账号下），回落自签证书。"
+    return 1
 }
 
 setup_nginx() {
@@ -451,9 +896,13 @@ setup_nginx() {
         fi
     fi
     if [ -n "${DOMAIN:-}" ]; then
-        write_nginx_domain "$DOMAIN"
+        if [ "${CERT_METHOD:-http}" = "cfdns" ]; then
+            request_domain_cert_cfdns "$DOMAIN" || write_nginx_selfsigned
+        else
+            write_nginx_domain "$DOMAIN"
+        fi
     else
-        write_nginx_selfsigned
+        request_ip_cert || write_nginx_selfsigned
     fi
 }
 
@@ -482,8 +931,10 @@ setup_ufw() {
     # 只在有域名时才放行 80/443 的话，回落路径会被 UFW 挡住
     # （2026-11-24 首尔测试机实测：回落时 UFW 里只有 80/443）。
     ufw allow "${PANEL_PORT}/tcp" >/dev/null 2>&1 || true
+    # 80 始终放行：无域名时 IP 证书用 http-01 验证（申请与续期都要用），
+    # 有域名时 http 验证也要用；自签回落时 80 上没服务，放行也无妨。
+    ufw allow 80/tcp >/dev/null 2>&1 || true
     if [ -n "${DOMAIN:-}" ]; then
-        ufw allow 80/tcp >/dev/null 2>&1 || true
         ufw allow 443/tcp >/dev/null 2>&1 || true
     fi
     if ufw status 2>/dev/null | grep -q "Status: inactive"; then
@@ -554,10 +1005,13 @@ health_check() {
         warn "面板内部端口 ${INTERNAL_PORT} 未监听，uvicorn 可能未起来。"
         fail=1
     fi
-    if command_exists ss && ss -ltn 2>/dev/null | grep -q ":${PANEL_PORT} "; then
-        ok "面板外部端口 ${PANEL_PORT} 监听中。"
+    # 外部端口：域名部署走 443（443 被占时走 9527），无域名走 9527。
+    # 查“nginx 进程占着 9527 或 443”而不是只查端口在听：443 可能被
+    # xray 之类服务占着，只查端口会误报正常。
+    if command_exists ss && ss -ltnp 2>/dev/null | grep nginx | grep -qE ":(${PANEL_PORT}|443) "; then
+        ok "nginx 反代监听中。"
     else
-        warn "面板外部端口 ${PANEL_PORT} 未监听，nginx 反代可能未起来。"
+        warn "nginx 反代未监听（${PANEL_PORT} 或 443），面板可能无法访问。"
         fail=1
     fi
     return "$fail"
@@ -572,13 +1026,21 @@ print_access_info() {
     # 面板走的是 IP:9527，给域名地址会误导用户（域名根本不解析；
     # 2026-11-24 首尔测试机实测）。
     if [ -n "${DOMAIN:-}" ] && [ "${CERT_OK:-0}" = "1" ]; then
-        echo "面板地址：https://${DOMAIN}/login"
+        if [ "${CERT_PORT:-443}" = "443" ]; then
+            echo "面板地址：https://${DOMAIN}/login"
+        else
+            echo "面板地址：https://${DOMAIN}:${CERT_PORT}/login（443 端口被占用，面板改走 ${CERT_PORT} 端口）"
+        fi
     else
         if [ -n "${DOMAIN:-}" ]; then
             echo "域名证书申请失败，已回落自签证书（域名解析到本机后可重跑安装）。"
         fi
         echo "面板地址：https://${ip}:${PANEL_PORT}/login"
-        echo "（自签证书，浏览器提示不受信任时点“继续访问”即可）"
+        if [ "${CERT_KIND:-selfsigned}" = "ip" ]; then
+            echo "（Let's Encrypt IP 证书，有效期约 6 天，cron 每 2 天自动续期）"
+        else
+            echo "（自签证书，浏览器提示不受信任时点“继续访问”即可）"
+        fi
     fi
     echo "用户名：admin"
     if [ "${GENERATED_PASSWORD:-0}" = "1" ]; then
@@ -589,13 +1051,16 @@ print_access_info() {
     echo
     echo "下一步："
     echo "  1. 在 Telegram 里找你的机器人，发 /uploadapi 上传 OCI 配置"
-    echo "     （~/.oci/config + API 私钥），或手动放到服务器的 ~/.oci/。"
+    echo "     （~/oci_config + API 私钥），或手动放到服务器的 /root/ 下。"
     echo "  2. 发 /oracle 打开菜单，点“切换账号/区域”确认账号已接通。"
     echo "如果浏览器打不开面板：检查云厂商的安全组/安全列表是否放行了"
     if [ -n "${DOMAIN:-}" ] && [ "${CERT_OK:-0}" = "1" ]; then
-        echo "  443 端口（本机 UFW 已放行，云上那层也要放行）。"
+        echo "  ${CERT_PORT:-443} 端口（本机 UFW 已放行，云上那层也要放行）。"
     else
         echo "  ${PANEL_PORT} 端口（本机 UFW 已放行，云上那层也要放行）。"
+        if [ "${CERT_KIND:-selfsigned}" = "ip" ]; then
+            echo "IP 证书续期要走 80 端口验证，云上安全组也要放行 80。"
+        fi
     fi
     echo "管理命令：bash install.sh start|stop|restart|status|log|upgrade|uninstall"
     echo "=================================================="
@@ -650,6 +1115,7 @@ cmd_uninstall() {
     require_root
     echo "即将卸载 M_Bot：停服务、删 systemd 单元、删 nginx 反代、删 $INSTALL_DIR。"
     echo "环境文件 $ENV_FILE 与密码文件 $ADMIN_PASSWORD_FILE 会保留（凭据不删）。"
+    echo "证书续期 cron 与脚本会删掉；/etc/lego 里的证书与 CF Token 保留（重装还能用）。"
     printf "确认卸载？输入 yes 继续："
     read -r ans || true
     [ "$ans" = "yes" ] || { echo "已取消。"; exit 0; }
@@ -657,6 +1123,7 @@ cmd_uninstall() {
     systemctl disable "$WEB_SERVICE" "$BOT_SERVICE" 2>/dev/null || true
     rm -f "/etc/systemd/system/${WEB_SERVICE}.service" \
         "/etc/systemd/system/${BOT_SERVICE}.service"
+    rm -f "$RENEW_CRON" "$RENEW_SCRIPT"
     systemctl daemon-reload
     rm -f "$NGINX_CONF"
     nginx -t >/dev/null 2>&1 && systemctl reload nginx 2>/dev/null || true

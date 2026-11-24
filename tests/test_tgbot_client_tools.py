@@ -418,6 +418,110 @@ class TestParseOciConfig(unittest.TestCase):
         self.assertEqual(parsed["extra_profiles"], [])
 
 
+class TestCloudflareSection(unittest.TestCase):
+    """[cloudflare] 段：解析时跳过 profile、提凭据；保存不覆盖（v1.30.0）。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.path = os.path.join(self._tmp.name, "oci_config")
+
+    def test_parse_skips_cloudflare_section(self):
+        parsed = hc.parse_oci_config_text(
+            FAKE_CONFIG_TEXT + "\n[cloudflare]\ncf_token = fake-token\n")
+        self.assertIsNone(parsed["error"])
+        self.assertEqual([p["profile"] for p in parsed["profiles"]],
+                         ["NEWACC"])
+        self.assertEqual(parsed["cloudflare"]["api_token"], "fake-token")
+
+    def test_parse_cloudflare_key_pair(self):
+        parsed = hc.parse_oci_config_text(
+            FAKE_CONFIG_TEXT + "\n[cloudflare]\n"
+            "cf_account_key = fake-key\ncf_email = user@example.com\n")
+        self.assertIsNone(parsed["error"])
+        self.assertEqual(parsed["cloudflare"]["api_key"], "fake-key")
+        self.assertEqual(parsed["cloudflare"]["email"], "user@example.com")
+
+    def test_parse_cloudflare_incomplete_ignored(self):
+        # 只有 Key 没邮箱：凭据不可用，当没有。
+        parsed = hc.parse_oci_config_text(
+            FAKE_CONFIG_TEXT + "\n[cloudflare]\ncf_key = fake-key\n")
+        self.assertIsNone(parsed["error"])
+        self.assertIsNone(parsed["cloudflare"])
+
+    def test_parse_only_cloudflare_errors(self):
+        parsed = hc.parse_oci_config_text(
+            "[cloudflare]\ncf_token = fake-token\n")
+        self.assertIsNotNone(parsed["error"])
+        self.assertIn("PROFILE", parsed["error"])
+
+    def test_commit_saves_section(self):
+        status = hc.commit_cf_section(
+            {"api_token": "fake-token", "api_key": "", "email": ""},
+            self.path)
+        self.assertEqual(status, "saved")
+        with open(self.path, encoding="utf-8") as f:
+            text = f.read()
+        self.assertIn("[cloudflare]", text)
+        self.assertIn("cf_token = fake-token", text)
+        self.assertEqual(stat.S_IMODE(os.stat(self.path).st_mode), 0o600)
+
+    def test_commit_existing_not_overwritten(self):
+        with open(self.path, "w", encoding="utf-8") as f:
+            f.write("[cloudflare]\ncf_token = old-token\n")
+        status = hc.commit_cf_section(
+            {"api_token": "new-token", "api_key": "", "email": ""},
+            self.path)
+        self.assertEqual(status, "exists")
+        with open(self.path, encoding="utf-8") as f:
+            text = f.read()
+        self.assertIn("old-token", text)
+        self.assertNotIn("new-token", text)
+
+    def test_commit_case_insensitive_exists(self):
+        with open(self.path, "w", encoding="utf-8") as f:
+            f.write("[Cloudflare]\ncf_token = old-token\n")
+        status = hc.commit_cf_section(
+            {"api_token": "new-token", "api_key": "", "email": ""},
+            self.path)
+        self.assertEqual(status, "exists")
+
+    def test_commit_empty_writes_nothing(self):
+        self.assertEqual(hc.commit_cf_section(None, self.path), "empty")
+        self.assertEqual(hc.commit_cf_section({}, self.path), "empty")
+        self.assertFalse(os.path.exists(self.path))
+
+    def test_confirm_text_mentions_cloudflare(self):
+        profiles = [{"profile": "NEWACC",
+                     "fields": {"region": "ap-singapore-1",
+                                "user": "ocid1.user.oc1..fake",
+                                "key_file": "/root/NEWACC.pem"},
+                     "original_key_file": "/root/NEWACC.pem"}]
+        text = hc.build_oci_profiles_confirm_text(
+            profiles, None, {"api_token": "fake-token",
+                             "api_key": "", "email": ""}, False)
+        self.assertIn("[cloudflare]", text)
+        self.assertNotIn("fake-token", text)
+
+    def test_confirm_text_cf_only(self):
+        text = hc.build_oci_profiles_confirm_text(
+            [], None, {"api_token": "fake-token",
+                       "api_key": "", "email": ""}, False)
+        self.assertIn("Cloudflare", text)
+        self.assertNotIn("个账号", text)
+        self.assertNotIn("fake-token", text)
+
+    def test_result_text_cf_saved(self):
+        text = hc.build_oci_profiles_result_text(
+            [], {}, "/root/oci_config", "saved")
+        self.assertIn("已保存到 [cloudflare] 段", text)
+
+    def test_result_text_cf_exists(self):
+        text = hc.build_oci_profiles_result_text(
+            [], {}, "/root/oci_config", "exists")
+        self.assertIn("已存在，未覆盖", text)
+
+
 class TestAppendOciProfile(unittest.TestCase):
 
     def setUp(self):

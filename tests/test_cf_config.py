@@ -171,6 +171,105 @@ class TestResolvePrecedence(unittest.TestCase):
         self.assertEqual((token, key, email, source), ("", "", "", None))
 
 
+class TestOciConfigSource(unittest.TestCase):
+    """resolve：OCI 配置 [cloudflare] 段是第二优先级（v1.30.0）。
+
+    顺序：文件 > OCI 配置 [cloudflare] 段 > 环境变量。
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.path = os.path.join(self.tmp.name, "cloudflare.json")
+        self.oci_path = os.path.join(self.tmp.name, "oci_config")
+
+    def _write_oci(self, text):
+        with open(self.oci_path, "w", encoding="utf-8") as f:
+            f.write(text)
+
+    def test_token_from_oci_config(self):
+        self._write_oci("[DEFAULT]\nuser = ocid1.user.oc1..fake\n\n"
+                        "[cloudflare]\ncf_token = oci-token\n")
+        with patch.dict(os.environ, {}, clear=True):
+            token, _k, _e, source = cf_config.resolve_cf_credentials(
+                path=self.path, oci_path=self.oci_path)
+        self.assertEqual(token, "oci-token")
+        self.assertEqual(source, "oci_config")
+
+    def test_key_pair_from_oci_config(self):
+        self._write_oci("[cloudflare]\ncf_key = oci-key\n"
+                        "cf_email = user@example.com\n")
+        with patch.dict(os.environ, {}, clear=True):
+            _t, key, email, source = cf_config.resolve_cf_credentials(
+                path=self.path, oci_path=self.oci_path)
+        self.assertEqual(key, "oci-key")
+        self.assertEqual(email, "user@example.com")
+        self.assertEqual(source, "oci_config")
+
+    def test_cf_account_key_alias(self):
+        # R-Bot 叫法是 cf_account_key，不是 cf_key。
+        self._write_oci("[cloudflare]\ncf_account_key = oci-key\n"
+                        "cf_email = user@example.com\n")
+        with patch.dict(os.environ, {}, clear=True):
+            _t, key, _e, source = cf_config.resolve_cf_credentials(
+                path=self.path, oci_path=self.oci_path)
+        self.assertEqual(key, "oci-key")
+        self.assertEqual(source, "oci_config")
+
+    def test_section_name_case_insensitive(self):
+        self._write_oci("[Cloudflare]\ncf_token = oci-token\n")
+        with patch.dict(os.environ, {}, clear=True):
+            token, _k, _e, source = cf_config.resolve_cf_credentials(
+                path=self.path, oci_path=self.oci_path)
+        self.assertEqual(token, "oci-token")
+        self.assertEqual(source, "oci_config")
+
+    def test_file_beats_oci_config(self):
+        cf_config.save_cf_config({"api_token": "file-token"},
+                                 path=self.path)
+        self._write_oci("[cloudflare]\ncf_token = oci-token\n")
+        with patch.dict(os.environ, {}, clear=True):
+            token, _k, _e, source = cf_config.resolve_cf_credentials(
+                path=self.path, oci_path=self.oci_path)
+        self.assertEqual(token, "file-token")
+        self.assertEqual(source, "file")
+
+    def test_oci_config_beats_env(self):
+        self._write_oci("[cloudflare]\ncf_token = oci-token\n")
+        env = {"CF_API_TOKEN": "env-token"}
+        with patch.dict(os.environ, env, clear=True):
+            token, _k, _e, source = cf_config.resolve_cf_credentials(
+                path=self.path, oci_path=self.oci_path)
+        self.assertEqual(token, "oci-token")
+        self.assertEqual(source, "oci_config")
+
+    def test_missing_oci_file_falls_to_env(self):
+        env = {"CF_API_TOKEN": "env-token"}
+        with patch.dict(os.environ, env, clear=True):
+            token, _k, _e, source = cf_config.resolve_cf_credentials(
+                path=self.path, oci_path=self.oci_path)
+        self.assertEqual(token, "env-token")
+        self.assertEqual(source, "env")
+
+    def test_malformed_oci_file_falls_to_env(self):
+        self._write_oci("这不是 config 格式，没有段头。\n")
+        env = {"CF_API_TOKEN": "env-token"}
+        with patch.dict(os.environ, env, clear=True):
+            token, _k, _e, source = cf_config.resolve_cf_credentials(
+                path=self.path, oci_path=self.oci_path)
+        self.assertEqual(token, "env-token")
+        self.assertEqual(source, "env")
+
+    def test_key_without_email_falls_to_env(self):
+        self._write_oci("[cloudflare]\ncf_key = oci-key\n")
+        env = {"CF_API_TOKEN": "env-token"}
+        with patch.dict(os.environ, env, clear=True):
+            token, _k, _e, source = cf_config.resolve_cf_credentials(
+                path=self.path, oci_path=self.oci_path)
+        self.assertEqual(token, "env-token")
+        self.assertEqual(source, "env")
+
+
 class TestMaskEmail(unittest.TestCase):
     """mask_cf_email：只留首字符与域名。"""
 

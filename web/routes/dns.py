@@ -169,6 +169,7 @@ def get_credentials(username: str = Depends(get_current_user)):
     """当前凭据状态：是否已配置、来源、方式、脱敏邮箱。
 
     绝不返回凭据值。source：file（机器人/面板里保存的）/
+    oci_config（OCI 配置文件 ~/oci_config 里的 [cloudflare] 段）/
     env（服务器环境变量里的）/ None（都没配）。
     """
     if resolve_cf_credentials is None:
@@ -219,8 +220,11 @@ def delete_credentials(username: str = Depends(get_current_user)):
         return error_response("凭据管理模块未就绪", status_code=502)
     _token, _key, _email, source = resolve_cf_credentials()
     if source != "file":
-        return error_response("没有已保存的凭据文件"
-                              "（当前用的是环境变量里的凭据）",
+        if source == "oci_config":
+            detail = "（当前用的是 OCI 配置文件 ~/oci_config 里的凭据）"
+        else:
+            detail = "（当前用的是环境变量里的凭据）"
+        return error_response("没有已保存的凭据文件" + detail,
                               status_code=400)
     clear_cf_config()
     return {"ok": True}

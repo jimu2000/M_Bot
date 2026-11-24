@@ -349,6 +349,20 @@ class TestDnsCredentials(DnsApiTestCase):
         self.assertNotIn("fake-key", r.text)
         self.assertNotIn("user@example.com", r.text)
 
+    def test_get_credentials_oci_config(self):
+        # v1.30.0：凭据来自 OCI 配置 [cloudflare] 段。
+        with patch.object(
+                dns_routes, "resolve_cf_credentials",
+                return_value=("", "fake-key", "user@example.com",
+                              "oci_config")):
+            r = self.client.get("/api/dns/credentials")
+        body = r.json()
+        self.assertTrue(body["configured"])
+        self.assertEqual(body["source"], "oci_config")
+        self.assertEqual(body["auth_mode"], "api_key")
+        self.assertEqual(body["email_masked"], "u***@example.com")
+        self.assertNotIn("fake-key", r.text)
+
     def test_get_credentials_unconfigured(self):
         with patch.object(dns_routes, "resolve_cf_credentials",
                           return_value=("", "", "", None)):
@@ -422,6 +436,16 @@ class TestDnsCredentials(DnsApiTestCase):
             r = self.client.delete("/api/dns/credentials")
         self.assertEqual(r.status_code, 400)
         self.assertIn("没有已保存的凭据文件", r.json()["error"])
+
+    def test_delete_oci_config_source_400(self):
+        # v1.30.0：凭据在 OCI 配置文件里时，删除也要说清来源。
+        with patch.object(
+                dns_routes, "resolve_cf_credentials",
+                return_value=("", "fake-key", "user@example.com",
+                              "oci_config")):
+            r = self.client.delete("/api/dns/credentials")
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("OCI 配置文件", r.json()["error"])
 
     def test_extract_success(self):
         with patch.object(dns_routes, "get_oci_client",

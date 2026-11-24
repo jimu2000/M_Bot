@@ -230,7 +230,10 @@
       delBtn.hidden = true;
       return;
     }
-    var where = res.source === "file" ? "面板/机器人里保存的" : "服务器环境变量里的";
+    var whereMap = {"file": "面板/机器人里保存的",
+                    "oci_config": "OCI 配置文件 ~/oci_config 里的",
+                    "env": "服务器环境变量里的"};
+    var where = whereMap[res.source] || "服务器环境变量里的";
     var mode = res.auth_mode === "token" ? "API Token" : "Global API Key";
     status.textContent = "已配置（" + where + "，" + mode +
       (res.email_masked ? "，" + res.email_masked : "") + "）。";

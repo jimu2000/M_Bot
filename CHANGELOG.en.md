@@ -9,6 +9,45 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [1.30.0] - 2026-11-24
+
+### Added
+- Cloudflare credentials can live in the OCI config file: add a `[cloudflare]` section to `~/oci_config` (`/root/oci_config`) with `cf_token`, or `cf_key`/`cf_account_key` + `cf_email`; the bot's `/domain` and the panel DNS page use it. Precedence: saved in bot/panel > OCI config `[cloudflare]` section > environment variables. The credential management page shows the source.
+- `/uploadapi` and `/oci` imports preserve the `[cloudflare]` section: if an R-Bot-format config contains it, it is appended to the config file after confirmation (never overwritten if already present; can be saved on its own when there is no new profile; credential values are never echoed in chat).
+- The installer reads cfdns credentials from the OCI config first: for `cfdns` verification, precedence is environment variables > the `[cloudflare]` section of `~/oci_config` > interactive input; a Key + email pair is also written to `/etc/lego/env` (previously only a Token was supported).
+- nginx is installed latest from the official nginx.org repository: the installer adds the official repo (stable branch, URL switches between debian/ubuntu automatically) instead of the outdated distro package; the key goes to a dedicated keyring with `signed-by` (trusted only for nginx.org packages), and apt pinning (900) keeps future upgrades on the official repo. Falls back to the distro package if the repo cannot be added, without interrupting the install; the installed version is printed afterwards.
+- Installing nginx preserves existing configuration: `apt-get install` uses `--force-confold`, so a modified nginx config on the machine is not overwritten (no effect on fresh installs).
+
+### Verification
+- Full test suite: 2450 tests, all passing (29 new: 9 for the OCI config CF source, 12 for `[cloudflare]` section parsing and saving, 4 install.sh static tests, 2 DNS credential API tests, 2 credential management page tests).
+- Live verification (.160): after deployment the bot's `/domain` works (credentials still come from environment variables, source displayed correctly); the OCI config CF source and section saving were verified through production code paths.
+- The nginx.org repository and real IP certificate issuance will be verified when the user runs the install test on .101.
+
+## [1.29.0] - 2026-11-24
+
+### Added
+- Automatic Let's Encrypt IP certificate when no domain is given: the installer now requests a certificate for the server's public IP (lego v5.7.0, `shortlived` profile, 160-hour validity), so `https://IP:9527` no longer triggers a browser warning; validation uses http-01 (nginx serves the webroot on port 80); issuance failure falls back to a self-signed certificate without interrupting the install
+- Automatic IP certificate renewal: a renewal script plus a cron job every 2 days at 03:00 (in lego v5, `run` also renews; short-lived certs renew by default at half lifetime; a deploy hook reloads nginx after a renewal); the port-80 validation vhost is kept, so renewal never stops nginx
+- New `cfdns` validation method for domains: pick `http` (port-80 validation, default, certbot, unchanged) or `cfdns` (Cloudflare DNS-01 via lego; needs a CF API token with Zone:DNS:Edit + Zone:Zone:Read; validation uses no ports; the token lives only in `/etc/lego/env`, mode 600, and is reused for renewal)
+- Domain panel falls back to port 9527 when 443 is taken: after a cfdns issuance, if another service (e.g. xray) already holds 443, the panel listens on 9527 instead (the certificate is still valid) and the final message shows the ported URL
+
+### Fixed
+- Health check no longer trusts a listening port alone: port 443 may belong to xray, which used to fake a pass; it now requires the nginx process to hold 9527 or 443 (it also used to false-alarm on 9527 for domain deployments)
+- UFW now always allows port 80: IP certificate http-01 validation (issuance and renewal) needs it, not only domain installs
+
+### Verification
+- Full test suite: 2421 tests, all passing (8 new install.sh static tests: lego version and architectures, IP certificate shortlived/webroot, cfdns prompts and token, renewal automation, IP nginx config, UFW port 80, 443 fallback, health check)
+- Real lego v5.7.0 binary verified: `--profile`, `--http.webroot`, `--dns cloudflare`, and `--deploy-hook` all present; account registration against the LE staging server works without `--email` (lego uses `noemail@example.com` as a placeholder); real IP certificate issuance will be verified by the user's install test on .101
+
+## [1.28.1] - 2026-11-24
+
+### Fixed
+- OCI config paths in the docs now match v1.28.0: the install script (header notes and post-install message) and README (prerequisites and manual install, both languages) now say `/root/` (config `~/oci_config`, key `/root/xxx.pem`) instead of `~/.oci/`; the legacy path `~/.oci/config` created by `oci setup config` is still read and auto-migrated on the first `/uploadapi` import, now documented as such
+- Auth-failure hint now points to `~/oci_config`
+
+### Verification
+- Full test suite: 2413 tests, all passing
+
 ## [1.28.0] - 2026-11-24
 
 ### Added

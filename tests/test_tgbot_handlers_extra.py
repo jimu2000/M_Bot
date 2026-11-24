@@ -2932,5 +2932,32 @@ class TestVolumeGrouping(HandlersExtraTestCase):
 
 
 
+class TestFmtCfStatus(unittest.TestCase):
+    """fmt_cf_status：来源文案按 source 区分（v1.30.0 加 oci_config）。"""
+
+    def test_oci_config_source(self):
+        with patch.object(
+                he, "resolve_cf_credentials",
+                return_value=("", "fake-key", "user@example.com",
+                              "oci_config")), patch.object(
+                he, "mask_cf_email", return_value="u***@example.com"):
+            text = he.fmt_cf_status()
+        self.assertIn("OCI 配置文件", text)
+        self.assertIn("Global API Key", text)
+        self.assertIn("u***@example.com", text)
+        self.assertNotIn("fake-key", text)
+        self.assertNotIn("user@example.com", text)
+
+    def test_file_source_fallback_line(self):
+        with patch.object(
+                he, "resolve_cf_credentials",
+                return_value=("fake-token", "", "", "file")), patch.object(
+                he, "mask_cf_email", return_value="***"):
+            text = he.fmt_cf_status()
+        self.assertIn("机器人/面板里保存的", text)
+        self.assertIn("API Token", text)
+        self.assertIn("OCI 配置或环境变量", text)
+
+
 if __name__ == "__main__":
     unittest.main()

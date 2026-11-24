@@ -179,6 +179,112 @@ class TestInstallScript(unittest.TestCase):
         self.assertIn("### Quick start\n", readme)
         self.assertIn("### 手动安装", readme)
         self.assertIn("### Manual install", readme)
+    def test_lego_pinned_and_arch_aware(self):
+        # lego 版本钉死（升级前要在测试机上验命令行没变），
+        # amd64/arm64 都要能下（OCI 免费机很多是 ARM）。
+        self.assertIn('LEGO_VERSION="v5.', self.text)
+        self.assertIn("install_lego()", self.text)
+        self.assertIn("github.com/go-acme/lego/releases/download", self.text)
+        self.assertIn('x86_64|amd64) arch="amd64"', self.text)
+        self.assertIn('aarch64|arm64) arch="arm64"', self.text)
+
+    def test_ip_cert_shortlived_webroot(self):
+        # 无域名自动申请 IP 证书：必须走 shortlived（LE 只给 IP 发
+        # 短效证），http-01 用 webroot（nginx 在跑，不能用 standalone
+        # 抢 80 端口）；内网 IP 直接拒绝（LE 不给内网 IP 发证）。
+        self.assertIn("request_ip_cert()", self.text)
+        self.assertIn("--profile shortlived", self.text)
+        self.assertIn("--http.webroot", self.text)
+        self.assertIn("10.*|172.1[6-9].*", self.text)
+        self.assertIn("192.168.*", self.text)
+        self.assertIn("api.ipify.org", self.text)
+
+    def test_cfdns_prompt_and_token(self):
+        # 有域名时问验证方式（http/cfdns），cfdns 要 CF API Token，
+        # 输入不回显，Token 只进 /etc/lego/env（600），不进命令行。
+        self.assertIn("MBOT_INSTALL_CERT_METHOD", self.text)
+        self.assertIn("http|cfdns", self.text)
+        self.assertIn("CF_DNS_API_TOKEN", self.text)
+        self.assertIn("--dns cloudflare", self.text)
+        self.assertIn("read -r -s CF_API_TOKEN", self.text)
+        self.assertIn('chmod 600 "$LEGO_DIR/env"', self.text)
+
+    def test_cert_renewal_automation(self):
+        # IP 证书只有 160 小时：续期脚本 + 每 2 天 cron；lego v5 里
+        # run 兼续期；deploy hook 在证书更新后重载 nginx。
+        self.assertIn("write_renew_script()", self.text)
+        self.assertIn("0 3 */2 * * root", self.text)
+        self.assertIn("deploy-hook.sh", self.text)
+        self.assertIn("systemctl reload nginx", self.text)
+
+    def test_ip_nginx_vhost(self):
+        # IP 路径的 nginx 配置：80 端口只 serve 验证文件，面板走
+        # 9527 ssl 且证书指 lego 的文件；80 vhost 要保留（续期还要用）。
+        self.assertIn("write_nginx_ip_acme()", self.text)
+        self.assertIn("write_nginx_lego_ip()", self.text)
+        self.assertIn("location /.well-known/acme-challenge/ {", self.text)
+        self.assertIn('ssl_certificate ${crt};', self.text)
+        self.assertIn("LEGO_CERT_DIR", self.text)
+
+    def test_ufw_always_allows_port_80(self):
+        # 80 必须始终放行：IP 证书 http-01 验证（申请与续期）都要用，
+        # 不能只在"有域名"分支里放。
+        ufw_section = self.text.split("setup_ufw()")[1].split(
+            "# Oracle 云镜像")[0]
+        self.assertIn('ufw allow 80/tcp', ufw_section)
+        port80_pos = ufw_section.find('ufw allow 80/tcp')
+        domain_pos = ufw_section.find('if [ -n "${DOMAIN:-}" ]')
+        self.assertLess(port80_pos, domain_pos)
+
+    def test_domain_443_fallback_to_panel_port(self):
+        # cfdns 域名路径：443 被别的服务占了时面板改走 9527，
+        # 地址栏也要带上端口，不能给裸域名地址误导用户。
+        self.assertIn("CERT_PORT", self.text)
+        self.assertIn("write_nginx_lego_domain()", self.text)
+        self.assertIn('https://${DOMAIN}:${CERT_PORT}/login', self.text)
+
+    def test_health_check_nginx_aware(self):
+        # 健康检查不能只查"端口在听"：443 可能被 xray 占着，
+        # 要查 nginx 进程占着 9527 或 443 才算反代起来了。
+        self.assertIn('ss -ltnp 2>/dev/null | grep nginx | grep -qE ":(${PANEL_PORT}|443) "',
+                      self.text)
+
+    def test_nginx_official_repo(self):
+        # nginx 必须装最新版：加 nginx.org 官方仓库（stable 分支），
+        # 不是发行版自带旧版；仓库 URL 里发行版名按系统换，不能
+        # 写死 debian；密钥放专用 keyring + signed-by；加不上时
+        # 回落发行版版本，安装不中断。
+        self.assertIn("setup_nginx_repo()", self.text)
+        self.assertIn("https://nginx.org/keys/nginx_signing.key", self.text)
+        self.assertIn("nginx.org/packages/", self.text)
+        self.assertIn("lsb_release", self.text)
+        self.assertIn("apt-transport-https", self.text)
+        self.assertIn("nginx-archive-keyring.gpg", self.text)
+        self.assertIn("Pin-Priority: 900", self.text)
+        self.assertIn("setup_nginx_repo || true", self.text)
+        self.assertIn("nginx 用发行版自带版本", self.text)
+
+    def test_nginx_install_preserves_config(self):
+        # 机器上已有 nginx 配置时不覆盖（--force-confold）。
+        self.assertIn("--force-confold", self.text)
+
+    def test_nginx_version_logged(self):
+        # 装完把实际装上的 nginx 版本打出来，用户一眼确认是不是最新。
+        deps = self.text.split("install_deps()")[1].split(
+            "# ----------")[0]
+        self.assertIn("nginx -v", deps)
+
+    def test_cfdns_reads_oci_config(self):
+        # cfdns 凭据先看 OCI 配置文件 [cloudflare] 段（cf_token，或
+        # cf_key/cf_account_key + cf_email），有就直接用，不用再问；
+        # Key + 邮箱也要写进 lego env（不止 Token）。
+        self.assertIn("read_cf_from_oci_config()", self.text)
+        self.assertIn("$HOME/oci_config", self.text)
+        self.assertIn('s.lower() == "cloudflare"', self.text)
+        self.assertIn("cf_account_key", self.text)
+        self.assertIn("CF_API_KEY=%s", self.text)
+        self.assertIn("CF_API_EMAIL=%s", self.text)
+        self.assertIn("MBOT_INSTALL_CF_API_KEY", self.text)
 
 
 if __name__ == "__main__":

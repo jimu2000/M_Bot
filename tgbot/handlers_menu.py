@@ -47,7 +47,8 @@ from tgbot.config import update_env_file_vars
 from tgbot.handlers_client import (
     OCI_CONFIG_PATH, add_profile_compartments,
     build_oci_profiles_confirm_text, build_oci_profiles_result_text,
-    commit_oci_profiles, parse_oci_config_text, prepare_oci_profiles)
+    commit_cf_section, commit_oci_profiles, parse_oci_config_text,
+    prepare_oci_profiles, _has_section_ci)
 from tgbot.services import fmt_error, require_allowed, run_sync
 from web import config as web_config
 
@@ -282,6 +283,8 @@ async def oci_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"{OCI_CONFIG_PATH}（root 家目录）。\n\n"
         "Azure 配置格式：含 [azure] 段 + subscription_id / tenant_id / "
         "client_id / client_secret 四个键，校验后写进机器人 env 文件。\n\n"
+        "配置里如有 [cloudflare] 段（cf_token，或 cf_key + cf_email），"
+        "会一并保存，/domain 与证书 DNS 验证会用它。\n\n"
         "key_file 已在 /root 下的保留原路径（如 /root/1.pem），其余自动"
         "改成 /root/<PROFILE>.pem。\n\n"
         "⚠️ 只传 config 文本；私钥文件（.pem）不经过 Telegram，请自行 "
@@ -305,16 +308,22 @@ async def _handle_oci_config_text(update, context, text):
     if error_text:
         await _reply(update, f"❌ {error_text}")
         return
-    if not new_profiles:
+    cloudflare = parsed.get("cloudflare")
+    cf_exists = bool(cloudflare) and _has_section_ci(OCI_CONFIG_PATH,
+                                                     "cloudflare")
+    if not new_profiles and not (cloudflare and not cf_exists):
         _clear_oci_pending(context)
         await _reply(update,
                      f"⚠️ profile「{'、'.join(skipped)}」已存在，不会覆盖。\n"
                      "请改名后重传（改 [PROFILE] 段名）。")
         return
     context.user_data["oci_pending"] = {"kind": "oci",
-                                        "profiles": new_profiles}
+                                        "profiles": new_profiles,
+                                        "cloudflare": cloudflare}
     await _reply(update, build_oci_profiles_confirm_text(new_profiles,
-                                                         skipped),
+                                                         skipped,
+                                                         cloudflare,
+                                                         cf_exists),
                  reply_markup=InlineKeyboardMarkup([
                      [InlineKeyboardButton("✅ 确认添加",
                                            callback_data="oci:confirm")],
@@ -363,26 +372,38 @@ async def oci_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _confirm_oci_azure(update, context, pending)
         return
     profiles = pending.get("profiles") or []
-    if not profiles:
+    cloudflare = pending.get("cloudflare")
+    if not profiles and not cloudflare:
         await _reply(update, "待添加的配置已过期，请重新发送 /oci。")
         return
-    try:
-        results = await run_sync(commit_oci_profiles, profiles)
-    except (ValueError, OSError) as exc:
-        await _reply(update, f"❌ 写入失败：{exc}")
-        return
-    try:
-        added_vars = await run_sync(add_profile_compartments, profiles)
-    except OSError as exc:
-        await _reply(update,
-                     f"✅ 配置已写入，但账号切换变量添加失败：{exc}\n"
-                     "请手动在 env 文件里加 MBOT_COMPARTMENT_<PROFILE> "
-                     "后重启机器人。")
-        _clear_oci_pending(context)
-        return
+    results = []
+    added_vars = {}
+    if profiles:
+        try:
+            results = await run_sync(commit_oci_profiles, profiles)
+        except (ValueError, OSError) as exc:
+            await _reply(update, f"❌ 写入失败：{exc}")
+            return
+    cf_saved = None
+    if cloudflare:
+        try:
+            cf_saved = await run_sync(commit_cf_section, cloudflare)
+        except OSError as exc:
+            await _reply(update, f"❌ Cloudflare 凭据写入失败：{exc}")
+            return
+    if profiles:
+        try:
+            added_vars = await run_sync(add_profile_compartments, profiles)
+        except OSError as exc:
+            await _reply(update,
+                         f"✅ 配置已写入，但账号切换变量添加失败：{exc}\n"
+                         "请手动在 env 文件里加 MBOT_COMPARTMENT_<PROFILE> "
+                         "后重启机器人。")
+            _clear_oci_pending(context)
+            return
     _clear_oci_pending(context)
     text = build_oci_profiles_result_text(results, added_vars,
-                                          OCI_CONFIG_PATH)
+                                          OCI_CONFIG_PATH, cf_saved)
     await _reply(update, text + "\n\n生效方法：重启机器人服务"
                  "（/admin 里可重启），之后可在菜单里切换到新账号。")
 

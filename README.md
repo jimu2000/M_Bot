@@ -1,6 +1,6 @@
 # M_Bot Oracle开源管理面板
 
-> **当前版本：v1.28.0** · 更新记录见 [CHANGELOG.md](CHANGELOG.md)（[英文版 / English](CHANGELOG.en.md)）
+> **当前版本：v1.30.0** · 更新记录见 [CHANGELOG.md](CHANGELOG.md)（[英文版 / English](CHANGELOG.en.md)）
 
 [中文](#中文) | [English](#english)
 
@@ -20,7 +20,7 @@ M_Bot 是一个开源的 Oracle Cloud 管理面板：Telegram 机器人 + Web �
 1. 一台 Debian / Ubuntu 服务器（root 权限，1 核 1GB 以上即可）。
 2. Telegram 机器人 Token：找 @BotFather 新建机器人拿到。
 3. 你的 Telegram 用户 ID：找 @userinfobot 发 `/start` 拿到（纯数字）。
-4. OCI API 密钥：安装后在机器人里用 `/uploadapi` 上传，或手动放到服务器的 `~/.oci/`。
+4. OCI API 密钥：安装后在机器人里用 `/uploadapi` 上传，或手动放到服务器的 `/root/` 下（配置 `~/oci_config`，私钥 `/root/xxx.pem`）。
 
 一条命令安装（root 运行，首次运行是安装，再次运行是更新并重启）：
 
@@ -28,10 +28,16 @@ M_Bot 是一个开源的 Oracle Cloud 管理面板：Telegram 机器人 + Web �
 wget -O install.sh https://raw.githubusercontent.com/jimu2000/M_Bot/main/install.sh && chmod +x install.sh && bash install.sh
 ```
 
-安装时会问你 Token、用户 ID、面板密码（留空自动生成 16 位随机密码，只显示一次）、域名（留空则用自签证书 + IP 访问）。装完后：
+安装时会问你 Token、用户 ID、面板密码（留空自动生成 16 位随机密码，只显示一次）、域名（留空则自动申请 IP 证书）。装完后：
 
 - 有域名：打开 `https://你的域名/login`（Let's Encrypt 证书，自动申请）。
-- 没域名：打开 `https://服务器IP:9527/login`（自签证书，浏览器提示不受信任时点"继续访问"）。
+  安装时选验证方式：`http`（80 端口验证，默认）或 `cfdns`（Cloudflare
+  DNS 验证，需 CF API Token，要有 Zone:DNS:Edit + Zone:Zone:Read 权限；
+  验证不占端口，443 被别的服务占了时面板改走 9527 端口）。
+- 没域名：自动用服务器公网 IP 申请 Let's Encrypt IP 证书（shortlived，
+  有效期约 6 天，cron 每 2 天自动续期），打开 `https://服务器IP:9527/login`
+  （正规证书，浏览器不报警；申请失败时回落自签证书，浏览器提示不受信任
+  时点"继续访问"；IP 证书验证要走 80 端口，云上安全组要放行 80）。
 - 用户名 `admin`，密码是你输入的或自动生成的（存在 `/root/.mbot-admin-password`）。
 
 管理命令：`bash install.sh start|stop|restart|status|log|upgrade|uninstall`。
@@ -141,8 +147,12 @@ pip install oci-cli          # OCI 调用走官方 CLI
 ```bash
 # 方式一：oci setup config 交互生成（推荐）
 oci setup config
-# 方式二：手写 ~/.oci/config，填 user / fingerprint / tenancy / region / key_file
+# 方式二：手写 ~/oci_config，填 user / fingerprint / tenancy / region / key_file
 ```
+
+方式一生成的是旧路径 `~/.oci/config`，M_Bot 会自动兼容读取；首次用 `/uploadapi` 导入新账号时会迁移到 `~/oci_config`。
+
+`~/oci_config` 里还可以加 `[cloudflare]` 段放 Cloudflare 凭据（`cf_token`，或 `cf_key` + `cf_email`），机器人 `/domain` 与面板 DNS 页会用它；安装时选 `cfdns` 证书验证也会先读它。凭据优先级：机器人/面板里保存的 > OCI 配置 `[cloudflare]` 段 > 环境变量。
 
 API 私钥（key_file）说明：私钥文件是 OCI 控制台生成的 `.pem` 文件，下载后放到
 服务器上，例如 `/root/1.pem`（路径可自定），权限设 600。
@@ -246,7 +256,8 @@ Prerequisites (all required):
 2. A Telegram bot token: create a bot with @BotFather.
 3. Your Telegram user ID: send `/start` to @userinfobot (digits only).
 4. An OCI API key: upload it in the bot with `/uploadapi` after installing,
-   or place it in `~/.oci/` on the server manually.
+   or place it in `/root/` on the server manually (config `~/oci_config`,
+   key `/root/xxx.pem`).
 
 One command to install (run as root; first run installs, later runs update
 and restart):
@@ -257,12 +268,20 @@ wget -O install.sh https://raw.githubusercontent.com/jimu2000/M_Bot/main/install
 
 The installer asks for your token, user ID, panel password (leave empty to
 auto-generate a 16-character random password, shown once), and domain
-(leave empty for a self-signed certificate + IP access). After installing:
+(leave empty to get an IP certificate automatically). After installing:
 
 - With a domain: open `https://your-domain/login` (Let's Encrypt
-  certificate, requested automatically).
-- Without a domain: open `https://server-IP:9527/login` (self-signed
-  certificate; click through the browser warning).
+  certificate, requested automatically). Pick a validation method during
+  install: `http` (port-80 validation, default) or `cfdns` (Cloudflare DNS
+  validation; needs a CF API token with Zone:DNS:Edit + Zone:Zone:Read;
+  validation uses no ports, and the panel moves to port 9527 if 443 is
+  already taken by another service).
+- Without a domain: a Let's Encrypt IP certificate is requested for the
+  server's public IP automatically (shortlived, ~6 days validity, renewed
+  by cron every 2 days); open `https://server-IP:9527/login` (a real
+  certificate, no browser warning; falls back to self-signed if issuance
+  fails — click through the browser warning then; IP validation needs
+  port 80 open in the cloud security list).
 - Username `admin`; the password is the one you entered or the generated one
   (also saved in `/root/.mbot-admin-password`).
 
@@ -394,8 +413,17 @@ pip install oci-cli          # OCI calls go through the official CLI
 ```bash
 # Option 1: interactive setup (recommended)
 oci setup config
-# Option 2: write ~/.oci/config by hand (user / fingerprint / tenancy / region / key_file)
+# Option 2: write ~/oci_config by hand (user / fingerprint / tenancy / region / key_file)
 ```
+
+Option 1 creates the legacy path `~/.oci/config`, which M_Bot still reads;
+the first `/uploadapi` import migrates it to `~/oci_config`.
+
+`~/oci_config` can also hold a `[cloudflare]` section for Cloudflare
+credentials (`cf_token`, or `cf_key` + `cf_email`); the bot's `/domain` and
+the panel DNS page use it, and the installer reads it first for `cfdns`
+certificate verification. Precedence: saved in bot/panel > OCI config
+`[cloudflare]` section > environment variables.
 
 API private key (`key_file`): the `.pem` file generated in the OCI console.
 Download it to your server, e.g. `/root/1.pem` (any path works), `chmod 600`.

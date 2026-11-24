@@ -9,6 +9,45 @@
 
 ## [Unreleased]
 
+## [1.30.0] - 2026-11-24
+
+### 新增
+- OCI 配置文件可放 Cloudflare 凭据：`~/oci_config`（即 `/root/oci_config`）里加 `[cloudflare]` 段（`cf_token`，或 `cf_key`/`cf_account_key` + `cf_email`），机器人 `/domain` 与面板 DNS 页会用它；凭据优先级：机器人/面板里保存的 > OCI 配置 `[cloudflare]` 段 > 环境变量；凭据管理页来源文案同步显示
+- `/uploadapi` 与 `/oci` 导入时保留 `[cloudflare]` 段：R-Bot 格式配置里如有该段，确认后一并追加到配置文件（已有该段时不覆盖；只有该段、没有新 profile 时也可单独确认保存；凭据值绝不在聊天里回显）
+- 安装时 cfdns 凭据先读 OCI 配置：`cfdns` 验证方式下，凭据优先级是环境变量 > `~/oci_config` 的 `[cloudflare]` 段 > 交互输入；Key + 邮箱组合也会写进 `/etc/lego/env`（之前只支持 Token）
+- nginx 从 nginx.org 官方仓库装最新版：安装脚本加官方仓库（stable 分支，仓库 URL 按系统自动区分 debian/ubuntu），不再用发行版自带的旧版；密钥放专用 keyring + `signed-by`（只信任 nginx.org 的包），apt pinning 900 保证以后升级也走官方仓库；仓库加不上时回落发行版版本，安装不中断；装完把实际版本号打出来
+- 安装 nginx 时保留已有配置：`apt-get install` 加 `--force-confold`，机器上已有改过的 nginx 配置时不覆盖（新装时没影响）
+
+### 验证
+- 全量测试 2450 个全过（新增 29 个：OCI 配置 CF 来源 9 个、[cloudflare] 段解析与保存 12 个、install.sh 静态测试 4 个、DNS 凭据接口 2 个、凭据管理页文案 2 个）
+- 真机验证（.160）：部署后机器人 `/domain` 正常（凭据仍走环境变量，来源显示正确）；OCI 配置 CF 来源与段保存走生产代码路径验证通过
+- nginx 官方仓库与 IP 证书真实签发留待用户在 .101 上安装测试验证
+
+## [1.29.0] - 2026-11-24
+
+### 新增
+- 无域名自动申请 Let's Encrypt IP 证书：安装时不填域名，改用服务器公网 IP 申请证书（lego v5.7.0，`shortlived`，有效期 160 小时约 6 天），面板 `https://IP:9527` 不再报证书警告；验证走 http-01（nginx 80 端口 serve webroot），申请失败时回落自签证书，安装不中断
+- IP 证书自动续期：续期脚本 + cron 每 2 天凌晨 3 点跑一次（lego v5 里 `run` 兼续期，短效证书默认剩一半寿命时续；deploy hook 在证书更新后重载 nginx）；80 端口验证 vhost 保留，续期不用停 nginx
+- 有域名新增 `cfdns` 验证方式：安装时选 `http`（80 端口验证，默认，certbot，老路不变）或 `cfdns`（Cloudflare DNS-01，lego，需 CF API Token，Zone:DNS:Edit + Zone:Zone:Read 权限；验证不占端口；Token 只存 `/etc/lego/env`，600 权限，续期也用它）
+- 域名面板 443 被占时改走 9527：cfdns 发证后若 443 已被 xray 之类服务占了，面板改监听 9527（证书照样有效），安装完成提示给带端口的地址，不误导
+
+### 修复
+- 健康检查不再只查端口在听：443 可能被 xray 占着，只查端口会误报正常；现查 nginx 进程占着 9527 或 443 才算反代起来了（此前域名部署下健康检查还会对 9527 误报）
+- UFW 改成始终放行 80 端口：IP 证书 http-01 验证（申请与续期）都要用 80，不能只在有域名时放行
+
+### 验证
+- 全量测试 2421 个全过（install.sh 静态测试新增 8 个：lego 版本与架构、IP 证书 shortlived/webroot、cfdns 提问与 Token、续期自动化、IP nginx 配置、UFW 放行 80、443 回落、健康检查）
+- lego v5.7.0 真实二进制已核实：`--profile`、`--http.webroot`、`--dns cloudflare`、`--deploy-hook` 均在；不带 `--email` 也能在 LE staging 注册账号（lego 用 `noemail@example.com` 占位）；IP 证书真实签发留待用户在 .101 上安装测试验证
+
+## [1.28.1] - 2026-11-24
+
+### 修复
+- 文档里的 OCI 配置路径跟上 v1.28.0：安装脚本（头部说明与安装完成提示）与 README（中英两节的准备清单与手动安装说明）里的 `~/.oci/` 改成 `/root/` 下（配置 `~/oci_config`，私钥 `/root/xxx.pem`）；`oci setup config` 生成的旧路径 `~/.oci/config` 仍可读、首次用 `/uploadapi` 导入时自动迁移，现已在文档里写明
+- 认证失败提示里的配置路径同步改成 `~/oci_config`
+
+### 验证
+- 全量测试 2413 个全过
+
 ## [1.28.0] - 2026-11-24
 
 ### 新增

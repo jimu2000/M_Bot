@@ -4,7 +4,11 @@
 凭据来源（优先级从高到低）：
   1. 配置文件 tgbot/data/cloudflare.json（机器人/面板手动添加或提取后
      保存，0600 权限，只存 api_token / api_key / email 三个字段）
-  2. 环境变量 CF_API_TOKEN（优先）或 CF_API_KEY + CF_EMAIL
+  2. OCI 配置文件（~/oci_config，即 /root/oci_config）的 [cloudflare] 段
+     （v1.30.0：cf_token，或 cf_key/cf_account_key + cf_email；
+     /uploadapi 与 /oci 导入 R-Bot 格式配置时会自动把里面的
+     [cloudflare] 段一并保存进去）
+  3. 环境变量 CF_API_TOKEN（优先）或 CF_API_KEY + CF_EMAIL
 
 安全说明：
   - 凭据值绝不写日志、绝不在机器人回复或网页响应里回显；
@@ -18,11 +22,12 @@
 
 用法：
     from tgbot.cf_config import get_cf_client, validate_and_save
-    client = get_cf_client()  # 文件优先，环境变量兜底
+    client = get_cf_client()  # 文件 > OCI 配置 [cloudflare] 段 > 环境变量
     ok, zones, err = validate_and_save(api_token="...", api_key="",
                                        email="")
 """
 
+import configparser
 import json
 import os
 import re
@@ -52,6 +57,8 @@ SCRIPT_PATHS = ("/usr/local/etc/xray/1.sh", "/root/1.sh")
 ENV_API_TOKEN = "CF_API_TOKEN"
 ENV_API_KEY = "CF_API_KEY"
 ENV_EMAIL = "CF_EMAIL"
+# OCI 配置文件里的 CF 凭据段名（v1.30.0；段名大小写不敏感）。
+CF_OCI_SECTION = "cloudflare"
 # =====================================================
 
 # 1.sh 里的凭据行：export CF_Key="..." / CF_Email='...' / 不带 export 也行。
@@ -133,17 +140,58 @@ def cf_auth_mode(cfg=None):
     return None
 
 
-def resolve_cf_credentials(path=None):
-    """解析最终生效的凭据：配置文件优先，环境变量兜底。
+def load_cf_from_oci_config(path=None):
+    """从 OCI 配置文件的 [cloudflare] 段读凭据（v1.30.0）。
+
+    键名（configparser 会把键小写，大小写都行）：
+      cf_token（优先）/ cf_key 或 cf_account_key（R-Bot 叫法）
+      / cf_email。path 不传时按 resolve_oci_config_path 解析
+    （~/oci_config 优先，旧部署回退 ~/.oci/config）。
+    文件缺失 / 无该段 / 解析失败时返回空配置（不抛异常）。
+    """
+    cfg = _default_config()
+    if path is None:
+        try:
+            from oci.client import resolve_oci_config_path
+            path = resolve_oci_config_path()
+        except Exception:  # noqa: BLE001 - 解析失败就当没配
+            return cfg
+    if not path or not os.path.exists(path):
+        return cfg
+    parser = configparser.ConfigParser(
+        default_section="__cf_no_defaults__", interpolation=None)
+    try:
+        parser.read(path, encoding="utf-8")
+    except configparser.Error:
+        return cfg
+    section = next((s for s in parser.sections()
+                    if s.lower() == CF_OCI_SECTION), None)
+    if section is None:
+        return cfg
+    items = {key: value.strip()
+             for key, value in parser.items(section)}
+    cfg["api_token"] = items.get("cf_token", "")
+    cfg["api_key"] = (items.get("cf_key")
+                      or items.get("cf_account_key", ""))
+    cfg["email"] = items.get("cf_email", "")
+    return cfg
+
+
+def resolve_cf_credentials(path=None, oci_path=None):
+    """解析最终生效的凭据：配置文件 > OCI 配置 [cloudflare] 段 > 环境变量。
 
     返回 (api_token, api_key, email, source)；source 是 "file" /
-    "env" / None（都没配）。调用方只拿返回值构造客户端，不要
-    把返回值写日志。
+    "oci_config" / "env" / None（都没配）。调用方只拿返回值构造
+    客户端，不要把返回值写日志。
     """
     cfg = load_cf_config(path)
     if cf_configured(cfg):
         return (cfg.get("api_token") or "", cfg.get("api_key") or "",
                 cfg.get("email") or "", "file")
+    oci_cfg = load_cf_from_oci_config(oci_path)
+    if cf_configured(oci_cfg):
+        return (oci_cfg.get("api_token") or "", oci_cfg.get("api_key") or "",
+                oci_cfg.get("email") or "", "oci_config")
     token = os.environ.get(ENV_API_TOKEN) or ""
     key = os.environ.get(ENV_API_KEY) or ""
     email = os.environ.get(ENV_EMAIL) or ""
@@ -152,19 +200,21 @@ def resolve_cf_credentials(path=None):
     return "", "", "", None
 
 
-def get_cf_client(path=None):
-    """取 Cloudflare 客户端（文件优先，环境变量兜底）。
+def get_cf_client(path=None, oci_path=None):
+    """取 Cloudflare 客户端（文件 > OCI 配置 [cloudflare] 段 > 环境变量）。
 
     clouds/cloudflare.py 只接受显式参数，这里把解析出的凭据
     显式传进去；都没配时抛 CloudflareError(kind="config")。
     """
     if CloudflareClient is None:
         raise CloudflareError("Cloudflare 客户端未就绪", kind="config")
-    api_token, api_key, email, _source = resolve_cf_credentials(path)
+    api_token, api_key, email, _source = resolve_cf_credentials(
+        path, oci_path)
     if not (api_token or (api_key and email)):
         raise CloudflareError(
             f"未配置 Cloudflare 凭据：请设置环境变量 {ENV_API_TOKEN}，"
             f"或同时设置 {ENV_API_KEY} 与 {ENV_EMAIL}，"
+            "或在 OCI 配置文件里加 [cloudflare] 段，"
             "或在机器人/面板里手动添加",
             kind="config",
         )

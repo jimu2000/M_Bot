@@ -858,13 +858,17 @@ def parse_oci_config_text(text):
     返回 {"profiles": [{"profile", "fields", "missing"}],
           "profile": 首个 profile 名, "fields": 首个字段 dict,
           "missing": 首个缺失键, "error": str|None,
-          "extra_profiles": []}。
+          "extra_profiles": [], "cloudflare": dict|None}。
     profiles 按文件里的顺序排，全部导入（旧版只取第一个；
     extra_profiles 保留作兼容，恒为空列表）。
+    [cloudflare] 段不是 OCI profile：跳过不进 profiles，
+    凭据提出来放 cloudflare（{"api_token","api_key","email"}，
+    有 Token 或 Key+邮箱齐全时才有值；键名 cf_token / cf_key /
+    cf_account_key（R-Bot 叫法）/ cf_email）。
     任一 profile 名不合法时 error 说明是哪个名字。
     """
     result = {"profiles": [], "profile": None, "fields": {}, "missing": [],
-              "error": None, "extra_profiles": []}
+              "error": None, "extra_profiles": [], "cloudflare": None}
     text = (text or "").lstrip("\ufeff").strip()
     if not text:
         result["error"] = "内容为空。"
@@ -888,6 +892,17 @@ def parse_oci_config_text(text):
         result["error"] = "没有找到 [PROFILE] 段。"
         return result
     for profile in sections:
+        if profile.lower() == "cloudflare":
+            # [cloudflare] 段不是 OCI profile：只提凭据，不进账号列表。
+            fields = {key: value.strip()
+                      for key, value in parser.items(profile)}
+            cf = {"api_token": fields.get("cf_token", ""),
+                  "api_key": (fields.get("cf_key")
+                              or fields.get("cf_account_key", "")),
+                  "email": fields.get("cf_email", "")}
+            if cf["api_token"] or (cf["api_key"] and cf["email"]):
+                result["cloudflare"] = cf
+            continue
         if not PROFILE_NAME_RE.match(profile):
             result["error"] = (f"profile 名「{profile}」不合法，"
                                "只能含字母、数字、下划线、点、横线。")
@@ -897,6 +912,9 @@ def parse_oci_config_text(text):
         missing = [key for key in REQUIRED_OCI_KEYS if not fields.get(key)]
         result["profiles"].append({"profile": profile, "fields": fields,
                                    "missing": missing})
+    if not result["profiles"]:
+        result["error"] = "没有找到 [PROFILE] 段。"
+        return result
     first = result["profiles"][0]
     result["profile"] = first["profile"]
     result["fields"] = first["fields"]
@@ -927,6 +945,90 @@ def profile_exists_in_config(profile, path=None):
     return False
 
 
+def _has_section_ci(path, name):
+    """配置文件里有没有某段（段名大小写不敏感）。
+
+    给 [cloudflare] 段用：R-Bot 与手写配置的段名大小写不统一，
+    [Cloudflare] 与 [cloudflare] 应视为同一段。
+    """
+    if not path or not os.path.exists(path):
+        return False
+    parser = configparser.ConfigParser(
+        default_section="__oci_no_defaults__", interpolation=None)
+    try:
+        parser.read(path, encoding="utf-8")
+    except configparser.Error:
+        return False
+    return any(s.lower() == name.lower() for s in parser.sections())
+
+
+def _append_config_block(block, path=None):
+    """把一段 config 文本追加到 OCI 配置文件（迁移 + 分隔 + 600 权限）。
+
+    目标默认 ~/oci_config；目标不存在但旧文件 ~/.oci/config 存在时，
+    先把旧文件内容原样迁移过去（旧文件保留作备份），再追加。
+    返回写入的文件路径。
+    """
+    target = path or OCI_CONFIG_PATH
+    try:
+        same_as_legacy = (os.path.abspath(target)
+                          == os.path.abspath(OCI_CONFIG_LEGACY_PATH))
+    except (OSError, ValueError):
+        same_as_legacy = False
+    parent = os.path.dirname(target)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    if (path is None and not same_as_legacy
+            and not os.path.exists(target)
+            and os.path.exists(OCI_CONFIG_LEGACY_PATH)):
+        shutil.copyfile(OCI_CONFIG_LEGACY_PATH, target)
+    existing = ""
+    if os.path.exists(target):
+        with open(target, encoding="utf-8") as f:
+            existing = f.read()
+    sep = "" if (not existing or existing.endswith("\n")) else "\n"
+    with open(target, "a", encoding="utf-8") as f:
+        f.write(sep + block)
+    try:
+        os.chmod(target, 0o600)
+    except OSError:
+        pass
+    return target
+
+
+def commit_cf_section(cloudflare, path=None):
+    """把 [cloudflare] 段追加到 OCI 配置文件。
+
+    cloudflare 是 parse 出的 {"api_token","api_key","email"}。
+    已有该段（大小写不敏感）时不覆盖；没凭据可写时什么都不做。
+    返回 "saved" / "exists" / "empty"。
+    """
+    if not cloudflare:
+        return "empty"
+    token = (cloudflare.get("api_token") or "").strip()
+    key = (cloudflare.get("api_key") or "").strip()
+    email = (cloudflare.get("email") or "").strip()
+    if not (token or (key and email)):
+        return "empty"
+    target = path or OCI_CONFIG_PATH
+    if _has_section_ci(target, "cloudflare"):
+        return "exists"
+    if (path is None and not os.path.exists(target)
+            and _has_section_ci(OCI_CONFIG_LEGACY_PATH, "cloudflare")):
+        # 目标不存在时写入会自动迁移旧文件（里面已有该段），
+        # 再追加会造成重复段；且解析本就会回退读旧文件，凭据已生效。
+        return "exists"
+    lines = ["[cloudflare]"]
+    if token:
+        lines.append(f"cf_token = {token}")
+    if key:
+        lines.append(f"cf_key = {key}")
+    if email:
+        lines.append(f"cf_email = {email}")
+    _append_config_block("\n".join(lines) + "\n", path)
+    return "saved"
+
+
 def append_oci_profile(profile, fields, path=None):
     """把新 profile 追加到 OCI 配置文件（已有内容原样不动）。
 
@@ -940,18 +1042,6 @@ def append_oci_profile(profile, fields, path=None):
         raise ValueError(f"profile「{profile}」已存在，请改名后重传。")
     if path is None and profile_exists_in_config(profile):
         raise ValueError(f"profile「{profile}」已存在，请改名后重传。")
-    try:
-        same_as_legacy = (os.path.abspath(target)
-                          == os.path.abspath(OCI_CONFIG_LEGACY_PATH))
-    except (OSError, ValueError):
-        same_as_legacy = False
-    parent = os.path.dirname(target)
-    if parent:
-        os.makedirs(parent, exist_ok=True)
-    if (path is None and not same_as_legacy
-            and not os.path.exists(target)
-            and os.path.exists(OCI_CONFIG_LEGACY_PATH)):
-        shutil.copyfile(OCI_CONFIG_LEGACY_PATH, target)
     lines = [f"[{profile}]"]
     for key in REQUIRED_OCI_KEYS:
         if key in fields:
@@ -959,19 +1049,7 @@ def append_oci_profile(profile, fields, path=None):
     for key, value in fields.items():
         if key not in REQUIRED_OCI_KEYS:
             lines.append(f"{key} = {value}")
-    block = "\n".join(lines) + "\n"
-    existing = ""
-    if os.path.exists(target):
-        with open(target, encoding="utf-8") as f:
-            existing = f.read()
-    sep = "" if (not existing or existing.endswith("\n")) else "\n"
-    with open(target, "a", encoding="utf-8") as f:
-        f.write(sep + block)
-    try:
-        os.chmod(target, 0o600)
-    except OSError:
-        pass
-    return target
+    return _append_config_block("\n".join(lines) + "\n", path)
 
 
 def normalize_oci_key_file(profile, fields):
@@ -1108,6 +1186,8 @@ async def uploadapi_command(update, context):
                  "[PROFILE]，一次全部导入。\n\n"
                  "格式要求：每个 [PROFILE] 段含 user / fingerprint / "
                  "tenancy / region / key_file 五个键。\n\n"
+                 "配置里如有 [cloudflare] 段（cf_token，或 cf_key + "
+                 "cf_email），会一并保存，/domain 与证书 DNS 验证会用它。\n\n"
                  "配置写入 ~/oci_config（root 家目录）；key_file 已在 /root "
                  "下的保留原路径（如 /root/1.pem），其余自动改成 "
                  "/root/<PROFILE>.pem。\n\n"
@@ -1116,41 +1196,74 @@ async def uploadapi_command(update, context):
                  "的，写入后自动复制）。")
 
 
-def build_oci_profiles_confirm_text(profiles, skipped=None):
-    """多 profile 导入的确认文案：逐个列 profile、区域、key_file。"""
-    lines = [f"📤 确认添加 OCI API 配置？（{len(profiles)} 个账号）", ""]
-    for i, entry in enumerate(profiles, 1):
-        fields = entry["fields"]
-        user_tail = (fields.get("user") or "")[-4:]
-        lines.append(f"{i}. {entry['profile']}"
-                     f"（{fields.get('region')}）")
-        lines.append(f"   用户：…{user_tail}")
-        lines.append(f"   key_file：{fields.get('key_file')}")
-        original = entry.get("original_key_file") or ""
-        if original and original != fields.get("key_file"):
-            lines.append(f"   （原 key_file：{original}）")
+def build_oci_profiles_confirm_text(profiles, skipped=None, cloudflare=None,
+                                    cf_exists=False):
+    """多 profile 导入的确认文案：逐个列 profile、区域、key_file。
+
+    cloudflare 非空时追加一行（凭据值绝不回显）；profiles 为空
+    且只有 cloudflare 时，确认文案只问 CF 段保存。
+    """
+    lines = []
+    if profiles:
+        lines.append(f"📤 确认添加 OCI API 配置？（{len(profiles)} 个账号）")
+        lines.append("")
+        for i, entry in enumerate(profiles, 1):
+            fields = entry["fields"]
+            user_tail = (fields.get("user") or "")[-4:]
+            lines.append(f"{i}. {entry['profile']}"
+                         f"（{fields.get('region')}）")
+            lines.append(f"   用户：…{user_tail}")
+            lines.append(f"   key_file：{fields.get('key_file')}")
+            original = entry.get("original_key_file") or ""
+            if original and original != fields.get("key_file"):
+                lines.append(f"   （原 key_file：{original}）")
+    else:
+        lines.append("📤 确认保存 Cloudflare 凭据？")
+        lines.append("")
+    if cloudflare:
+        if profiles:
+            lines.append("")
+        if cf_exists:
+            lines.append("配置里已有 [cloudflare] 段，本次不覆盖。")
+        elif profiles:
+            lines.append("同时保存 Cloudflare 凭据到 [cloudflare] 段"
+                         "（/domain 与证书 DNS 验证会用它）。")
+        else:
+            lines.append("保存到 [cloudflare] 段"
+                         "（/domain 与证书 DNS 验证会用它）。")
     if skipped:
         lines.append("")
         lines.append(f"注意：profile「{'、'.join(skipped)}」已存在，"
                      "本次跳过。")
-    lines.append("")
-    lines.append("⚠️ 私钥文件请自行 scp 到服务器上对应的 key_file 路径；"
-                 "原 key_file 已在服务器上的，写入后自动复制。")
+    if profiles:
+        lines.append("")
+        lines.append("⚠️ 私钥文件请自行 scp 到服务器上对应的 key_file 路径；"
+                     "原 key_file 已在服务器上的，写入后自动复制。")
     return "\n".join(lines)
 
 
-def build_oci_profiles_result_text(results, added_vars, target_path):
-    """多 profile 导入完成后的结果文案。"""
-    names = "、".join(r["profile"] for r in results)
-    lines = [f"✅ 已添加 {len(results)} 个 profile 到 {target_path}：{names}。"]
-    key_lines = []
-    for r in results:
-        if r["key_ready"]:
-            key_lines.append(f"{r['profile']} 私钥已就位：{r['key_file']}")
-        else:
-            key_lines.append(f"{r['profile']} 私钥需 scp 到：{r['key_file']}")
-    if key_lines:
-        lines.append("🔑 " + "；".join(key_lines) + "。")
+def build_oci_profiles_result_text(results, added_vars, target_path,
+                                   cf_saved=None):
+    """多 profile 导入完成后的结果文案。
+
+    cf_saved 是 commit_cf_section 的返回值（"saved"/"exists"/None）。
+    """
+    lines = []
+    if results:
+        names = "、".join(r["profile"] for r in results)
+        lines.append(f"✅ 已添加 {len(results)} 个 profile 到 {target_path}：{names}。")
+        key_lines = []
+        for r in results:
+            if r["key_ready"]:
+                key_lines.append(f"{r['profile']} 私钥已就位：{r['key_file']}")
+            else:
+                key_lines.append(f"{r['profile']} 私钥需 scp 到：{r['key_file']}")
+        if key_lines:
+            lines.append("🔑 " + "；".join(key_lines) + "。")
+    if cf_saved == "saved":
+        lines.append("✅ Cloudflare 凭据已保存到 [cloudflare] 段。")
+    elif cf_saved == "exists":
+        lines.append("Cloudflare 凭据段已存在，未覆盖。")
     if added_vars:
         var_names = "、".join(sorted(added_vars))
         lines.append(f"✅ 已自动配置账号切换（{var_names}），"
@@ -1168,15 +1281,21 @@ async def _handle_uploadapi_text(update, context, text):
     if error_text:
         await _reply(update, f"❌ {error_text}")
         return
-    if not new_profiles:
+    cloudflare = parsed.get("cloudflare")
+    cf_exists = bool(cloudflare) and _has_section_ci(OCI_CONFIG_PATH,
+                                                     "cloudflare")
+    if not new_profiles and not (cloudflare and not cf_exists):
         context.user_data.pop("ua_awaiting", None)
         await _reply(update,
                      f"⚠️ profile「{'、'.join(skipped)}」已存在，不会覆盖。\n"
                      "请改名后重传（改 [PROFILE] 段名）。")
         return
-    context.user_data["ua_pending"] = {"profiles": new_profiles}
+    context.user_data["ua_pending"] = {"profiles": new_profiles,
+                                       "cloudflare": cloudflare}
     await _reply(update, build_oci_profiles_confirm_text(new_profiles,
-                                                         skipped),
+                                                         skipped,
+                                                         cloudflare,
+                                                         cf_exists),
                  reply_markup=InlineKeyboardMarkup([
                      [InlineKeyboardButton("✅ 确认添加",
                                            callback_data="ua:confirm")],
@@ -1190,29 +1309,42 @@ async def uploadapi_callback(update, context):
         await _reply(update, "参数错误，请重新发送 /uploadapi。")
         return
     pending = context.user_data.get("ua_pending")
-    if not pending or not pending.get("profiles"):
+    if not pending or (not pending.get("profiles")
+                       and not pending.get("cloudflare")):
         await _reply(update, "待添加的配置已过期，请重新发送 /uploadapi。")
         return
-    profiles = pending["profiles"]
-    try:
-        results = await run_sync(commit_oci_profiles, profiles)
-    except (ValueError, OSError) as exc:
-        await _reply(update, f"❌ 写入失败：{exc}")
-        return
-    try:
-        added_vars = await run_sync(add_profile_compartments, profiles)
-    except OSError as exc:
-        await _reply(update,
-                     f"✅ 配置已写入，但账号切换变量添加失败：{exc}\n"
-                     "请手动在 env 文件里加 MBOT_COMPARTMENT_<PROFILE> "
-                     "后重启机器人。")
-        context.user_data.pop("ua_pending", None)
-        context.user_data.pop("ua_awaiting", None)
-        return
+    profiles = pending.get("profiles") or []
+    cloudflare = pending.get("cloudflare")
+    results = []
+    added_vars = {}
+    if profiles:
+        try:
+            results = await run_sync(commit_oci_profiles, profiles)
+        except (ValueError, OSError) as exc:
+            await _reply(update, f"❌ 写入失败：{exc}")
+            return
+    cf_saved = None
+    if cloudflare:
+        try:
+            cf_saved = await run_sync(commit_cf_section, cloudflare)
+        except OSError as exc:
+            await _reply(update, f"❌ Cloudflare 凭据写入失败：{exc}")
+            return
+    if profiles:
+        try:
+            added_vars = await run_sync(add_profile_compartments, profiles)
+        except OSError as exc:
+            await _reply(update,
+                         f"✅ 配置已写入，但账号切换变量添加失败：{exc}\n"
+                         "请手动在 env 文件里加 MBOT_COMPARTMENT_<PROFILE> "
+                         "后重启机器人。")
+            context.user_data.pop("ua_pending", None)
+            context.user_data.pop("ua_awaiting", None)
+            return
     context.user_data.pop("ua_pending", None)
     context.user_data.pop("ua_awaiting", None)
     await _reply(update, build_oci_profiles_result_text(
-        results, added_vars, OCI_CONFIG_PATH))
+        results, added_vars, OCI_CONFIG_PATH, cf_saved))
 
 
 @require_allowed

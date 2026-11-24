@@ -3594,7 +3594,7 @@ def _resolve_iam_user(context, idx):
 def _is_current_api_user(context, user_id):
     """目标用户是不是机器人当前 profile 正在用的 API 用户。
 
-    从 ~/.oci/config 里读当前 profile 的 user OCID 比对；读不到时
+    从 OCI 配置文件（~/oci_config）里读当前 profile 的 user OCID 比对；读不到时
     返回 False（配置缺失时 OCI 调用本身也会失败，删操作到不了 OCI）。
     """
     if not user_id:
@@ -6169,12 +6169,14 @@ def fmt_cf_status():
                 "手动添加 API Token（推荐）或 Global API Key + 邮箱，"
                 "也可以从服务器的证书脚本（1.sh）自动提取。")
     mode = "API Token" if api_token else "Global API Key"
-    where = "机器人/面板里保存的" if source == "file" else "服务器环境变量里的"
+    where = {"file": "机器人/面板里保存的",
+             "oci_config": "OCI 配置文件 ~/oci_config 里的",
+             "env": "服务器环境变量里的"}.get(source, "服务器环境变量里的")
     lines = [f"⚙️ Cloudflare 凭据：已配置（{where}，{mode}）。"]
     if email and mask_cf_email is not None:
         lines.append(f"账号邮箱：{mask_cf_email(email)}")
     if source == "file":
-        lines.append("删除已保存的凭据后，会回落到环境变量（如果里面有）。")
+        lines.append("删除已保存的凭据后，会回落到 OCI 配置或环境变量（如果里面有）。")
     return "\n".join(lines)
 
 

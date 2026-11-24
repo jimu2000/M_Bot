@@ -348,7 +348,7 @@ def fmt_error(exc):
     if isinstance(exc, QuotaExceededError):
         return "❌ 配额不足：免费额度已用完，继续重试也没用，请先释放资源或换账号。"
     if isinstance(exc, AuthError):
-        return "❌ 认证失败：请检查 ~/.oci/config 与 API 密钥是否正确。"
+        return "❌ 认证失败：请检查 ~/oci_config 与 API 密钥是否正确。"
     if isinstance(exc, NotFoundError):
         return "❌ 资源不存在：可能已被删除，请刷新列表后再试。"
     if isinstance(exc, OCIError):
