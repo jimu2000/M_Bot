@@ -101,7 +101,7 @@ ORACLE_MENU_ITEMS = [
     ("workflows", "12. 工作流错误"),
     ("clients", "14. 客户端管理"),
     ("health", "15. 一键测活"),
-    ("autoip", "16. 监控(自动换ip)"),
+    ("autoip", "16. GFW自动换IP"),
     ("presets", "17. 快捷开机"),
     ("subscription", "18. 订阅信息"),
     ("traffic", "19. 本月流量"),
@@ -566,4 +566,39 @@ def bark_input_cancel_keyboard():
     """Bark 设置等用户回复文字时的取消键盘。"""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("❌ 取消", callback_data="bark:cancel_input")],
+    ])
+
+
+def gfw_keyboard(instances, enabled_ids, configured):
+    """GFW 自动换 IP（菜单 16）键盘：每台实例一个开关按钮。
+
+    instances：当前账号/区域的 RUNNING 实例 list（带 public-ip，
+    下标与 user_data["gfw_instances"] 对应）；enabled_ids：已开启
+    监控的实例 id 集合；configured：是否已设置 Atlas API Key。
+    没配 Key 时“立即检查”按钮不出现（点了也跑不起来，先去设置 Key）。
+    """
+    rows = []
+    for idx, inst in enumerate(instances):
+        name = inst.get("display-name") or "?"
+        ip = inst.get("public-ip") or "无公网 IP"
+        mark = "✅" if inst.get("id") in enabled_ids else "☐"
+        rows.append([InlineKeyboardButton(
+            f"{mark} {name} · {ip}",
+            callback_data=f"gfw:toggle:{idx}")])
+    action_row = []
+    if configured:
+        action_row.append(InlineKeyboardButton(
+            "🔍 立即检查", callback_data="gfw:check"))
+    action_row.append(InlineKeyboardButton(
+        "🔑 设置 API Key", callback_data="gfw:key"))
+    rows.append(action_row)
+    rows.append([InlineKeyboardButton("◀ Oracle 菜单",
+                                     callback_data="o:menu")])
+    return InlineKeyboardMarkup(rows)
+
+
+def gfw_input_cancel_keyboard():
+    """GFW 设置等用户回复 API Key 时的取消键盘。"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("❌ 取消", callback_data="gfw:cancel_input")],
     ])

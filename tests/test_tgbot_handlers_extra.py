@@ -42,11 +42,12 @@ IMPLEMENTED_ITEMS = [
     "cost", "mfa", "daily", "emails", "regions", "logs",
     "memballoon", "memclear",
     "openport", "clients", "restart", "upgrade",
-    "objectstorage", "email", "plans", "bark",
+    "objectstorage", "email", "plans", "bark", "autoip",
 ]
 # 本模块不实现的项（dispatch 应返回 False）。
+# autoip（菜单 16 GFW 自动换 IP）v1.10.0 已实现，不在这里。
 NOT_IMPLEMENTED_ITEMS = [
-    "delapi", "autoip", "disable", "instances", "nosuchkey",
+    "delapi", "disable", "instances", "nosuchkey",
 ]
 
 FAKE_SUMMARY = {

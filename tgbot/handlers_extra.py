@@ -101,6 +101,8 @@ from tgbot.keyboards import (
     confirm_keyboard,
     domain_records_keyboard,
     domain_zones_keyboard,
+    gfw_input_cancel_keyboard,
+    gfw_keyboard,
     instance_list_keyboard,
     keepalive_keyboard,
     oracle_menu_keyboard,
@@ -112,6 +114,16 @@ from tgbot.keyboards import (
     ssl_watch_keyboard,
     task_list_keyboard,
     traffic_guard_keyboard,
+)
+from tgbot.gfw import (
+    GFW_CHECK_INTERVAL_MINUTES,
+    is_gfw_configured,
+    load_gfw_config,
+    mask_api_key,
+    record_last_check,
+    run_monitor_cycle,
+    set_api_key,
+    set_instance_enabled,
 )
 from tgbot.handlers_client import run_remote_command
 from tgbot.notify import (DEFAULT_BOOT_DISK_GB, fmt_paid_instance_alert,
@@ -3637,6 +3649,233 @@ async def _handle_bark_key_input(update, context, text):
                                             bark_configured(cfg)))
 
 
+# ---- 16. GFW 自动换 IP ----
+
+def _gfw_last_check_line(cfg, instance_id):
+    """某实例最近一次检查的一行摘要（无记录时返回空串）。"""
+    entry = (cfg.get("last_check") or {}).get(instance_id)
+    if not entry:
+        return ""
+    status = entry.get("status") or ""
+    mark = {"healthy": "✅ 正常", "recovered": "🔁 已换 IP 恢复",
+            "exhausted": "⚠️ 换满仍被墙", "unknown": "❓ 检测无结论",
+            "error": "❌ 换 IP 失败", "skipped": "⏭️ 跳过",
+            }.get(status, status)
+    detail = entry.get("detail") or ""
+    at = (entry.get("at") or "")[:16].replace("T", " ")
+    return f"  上次检查：{mark}（{at} UTC）{detail}"
+
+
+def fmt_gfw_status(cfg, instances):
+    """GFW 自动换 IP 设置页全文（Key 脱敏显示，绝不回显原文）。"""
+    cfg = cfg or {}
+    enabled = cfg.get("enabled") or {}
+    configured = is_gfw_configured(cfg)
+    lines = [
+        "🛡️ GFW 自动换 IP：",
+        "",
+        f"RIPE Atlas API Key："
+        f"{'✅ 已设置（' + mask_api_key(cfg.get('api_key')) + '）' if configured else '❌ 未设置'}",
+        f"已开启监控：{len(enabled)} 台，每 {GFW_CHECK_INTERVAL_MINUTES} 分钟检查一次",
+        "",
+    ]
+    if not configured:
+        lines.append("先设置 API Key 才能检测：在 atlas.ripe.net 注册账号，"
+                     "领 5 万免费积分，在 Keys 页面创建一个"
+                     "“create a new user-defined measurement”类型的 Key，"
+                     "发给机器人（Key 只存本机，不回显）。")
+        lines.append("检测从中国大陆探针 ping 实例公网 IP，多数探针不通"
+                     "就判定被墙，自动换 IP 再检测，直到换到可用的为止；"
+                     "每次换 IP 都发通知（TG + Bark，没设 Bark 就只发 TG）。")
+    elif not instances:
+        lines.append("当前账号/区域没有运行中的实例。")
+    else:
+        lines.append("点实例开关监控；开启后定时检查，被墙自动换 IP 并通知。")
+        for inst in instances:
+            line = _gfw_last_check_line(cfg, inst.get("id"))
+            if line:
+                lines.append(line)
+    return "\n".join(lines)
+
+
+@require_allowed
+async def handle_autoip(update, context):
+    """菜单 16：GFW 自动换 IP——Atlas Key 设置 + 逐台开关监控。"""
+    try:
+        instances = await run_sync(
+            list_instances, get_cli(context), get_compartment(context))
+        instances = await run_sync(
+            attach_public_ips, get_cli(context), instances)
+    except Exception as exc:  # noqa: BLE001
+        await _reply(update, fmt_error(exc))
+        return
+    running = [i for i in (instances or [])
+               if i.get("lifecycle-state") == "RUNNING"
+               and i.get("public-ip")]
+    context.user_data["gfw_instances"] = running
+    cfg = load_gfw_config()
+    await _reply(update, fmt_gfw_status(cfg, running),
+                 reply_markup=gfw_keyboard(
+                     running, set((cfg.get("enabled") or {}).keys()),
+                     is_gfw_configured(cfg)))
+
+
+def _notify_chat_id(context):
+    """通知用的 chat_id（与账单预警同一优先级：Bark 配置里记的 >
+    监控/每日报告里记的 > 白名单第一个用户 ID）。"""
+    chat_id = (load_bark_config().get("chat_id")
+               or (context.bot_data.get("monitor") or {}).get("chat_id")
+               or (context.bot_data.get("daily_report") or {}).get("chat_id"))
+    if not chat_id and bot_config.ALLOWED_USER_IDS:
+        chat_id = next(iter(bot_config.ALLOWED_USER_IDS))
+    return chat_id
+
+
+def _gfw_check_thread(token, chat_id):
+    """手动“立即检查”的后台线程体：跑一轮监控，完事后发汇总通知。
+
+    检测本身慢（每台约 1-2 分钟），不能在回调里等；结果走
+    notify_dual 发（换 IP 的过程通知由循环里直接发，这里只发汇总）。
+    """
+    results = run_monitor_cycle(
+        lambda title, body: notify_dual(token, chat_id, title, body,
+                                        group="gfw-check"))
+    if not results:
+        notify_dual(token, chat_id, "🛡️ GFW 检查",
+                    "没有可检查的实例（未设置 API Key 或未开启任何实例）。",
+                    group="gfw-check")
+        return
+    lines = ["🛡️ GFW 检查完成：", ""]
+    for res in results:
+        name = (res.get("name") or res.get("instance_id") or "?")
+        status = res.get("status")
+        if status == "healthy":
+            lines.append(f"✅ {name}：正常（{res.get('detail')}）")
+        elif status == "recovered":
+            lines.append(f"🔁 {name}：换了 {res.get('changes')} 次 IP 已恢复，"
+                         f"现 IP {res.get('ip')}")
+        elif status == "exhausted":
+            lines.append(f"⚠️ {name}：换了 {res.get('changes')} 次仍被墙，"
+                         f"已暂停，下个周期继续")
+        elif status == "unknown":
+            lines.append(f"❓ {name}：检测无结论（{res.get('detail')}）")
+        elif status == "error":
+            lines.append(f"❌ {name}：{res.get('detail')}")
+        else:
+            lines.append(f"⏭️ {name}：{res.get('detail')}")
+    notify_dual(token, chat_id, "🛡️ GFW 检查完成", "\n".join(lines),
+                group="gfw-check")
+
+
+@require_allowed
+async def gfw_callback(update, context):
+    """回调 gfw:toggle:<idx> / gfw:check / gfw:key / gfw:cancel_input。"""
+    parts = _callback_data(update).split(":")
+    action = parts[1] if len(parts) > 1 else ""
+    if action == "key":
+        context.user_data["pending_input"] = {"kind": "gfw_key"}
+        await _reply_prompt(
+            update, context,
+            "请发送 RIPE Atlas API Key（在 atlas.ripe.net 注册账号后，"
+            "领 5 万免费积分，在 Keys 页面创建"
+            "“create a new user-defined measurement”类型的 Key）：\n"
+            "直接发文字消息即可（Key 只存本机，不回显）。",
+            reply_markup=gfw_input_cancel_keyboard())
+        return
+    if action == "cancel_input":
+        context.user_data.pop("pending_input", None)
+        chat_id = update.effective_chat.id if update.effective_chat else None
+        if chat_id is not None:
+            await _delete_tracked_prompts(context, chat_id)
+        await handle_autoip(update, context)
+        return
+    if action == "check":
+        if not is_gfw_configured():
+            await _reply(update, "❌ 还没设置 RIPE Atlas API Key，"
+                         "请先点“🔑 设置 API Key”。")
+            return
+        cfg = load_gfw_config()
+        if not cfg.get("enabled"):
+            await _reply(update, "❌ 还没开启任何实例的监控，"
+                         "请先点实例打开开关。")
+            return
+        chat_id = update.effective_chat.id if update.effective_chat else None
+        await _reply(update, "🔍 已开始检查（每台约 1-2 分钟），"
+                     "完成后发通知告诉你。")
+        if chat_id is not None:
+            thread = threading.Thread(
+                target=_gfw_check_thread,
+                args=(bot_config.TELEGRAM_BOT_TOKEN, chat_id),
+                daemon=True)
+            thread.start()
+        return
+    if action == "toggle":
+        try:
+            idx = int(parts[2]) if len(parts) > 2 else -1
+        except ValueError:
+            idx = -1
+        instances = context.user_data.get("gfw_instances") or []
+        if idx < 0 or idx >= len(instances):
+            await _reply(update, "实例列表已过期，请重新打开菜单 16。")
+            return
+        inst = instances[idx]
+        inst_id = inst.get("id")
+        cfg = load_gfw_config()
+        enabled = bool((cfg.get("enabled") or {}).get(inst_id))
+        set_instance_enabled(
+            inst_id, not enabled,
+            profile=get_current_profile(context),
+            region=get_current_region(context),
+            name=inst.get("display-name"),
+            ip=inst.get("public-ip"))
+        await handle_autoip(update, context)
+        return
+
+
+async def _handle_gfw_key_input(update, context, text):
+    """text_input_callback 的 gfw_key 分支：校验后保存 Atlas Key。
+
+    Key 值绝不回显（只显示脱敏后的首尾）。Atlas Key 是 UUID 格式
+    （36 位含横杠），这里只做宽松校验：去空白后长度至少 8 位且
+    不含空白字符；真正的有效性由第一次检测验证（失败会记进
+    last_check，不换 IP）。
+    """
+    key = text.strip()
+    if len(key) < 8 or any(ch.isspace() for ch in key):
+        await _reply(update,
+                     "API Key 格式不正确（太短或含有空白字符）。\n"
+                     "请重新点“🔑 设置 API Key”再试。",
+                     reply_markup=back_to_oracle_keyboard())
+        return
+    masked = set_api_key(key)
+    await _reply(update,
+                 f"✅ API Key 已保存（{masked}）。\n"
+                 "点实例打开监控开关，每 30 分钟自动检查一次；"
+                 "也可以点“🔍 立即检查”马上测一次。",
+                 reply_markup=back_to_oracle_keyboard())
+
+
+async def gfw_check_job(context):
+    """每 30 分钟跑一次：对已开启的实例做 GFW 检测，被墙自动换 IP。
+
+    没配 Key 或没开启任何实例时静默跳过；本来就正常的实例不发
+    通知（只记 last_check），换 IP / 换满暂停 / 换 IP 失败时才由
+    循环里发双通道通知（TG + Bark，没设 Bark 就只发 TG）。
+    """
+    cfg = load_gfw_config()
+    if not is_gfw_configured(cfg) or not cfg.get("enabled"):
+        return
+    chat_id = _notify_chat_id(context)
+    if not chat_id:
+        logger.warning("GFW 检查有开启的实例但未找到通知 chat_id，跳过")
+        return
+    await run_sync(
+        run_monitor_cycle,
+        lambda title, body: notify_dual(
+            bot_config.TELEGRAM_BOT_TOKEN, chat_id, title, body,
+            group="gfw-check"))
+
+
 # ---- 26. 清除所有 2FA 设备 ----
 
 @require_allowed
@@ -3928,6 +4167,11 @@ async def text_input_callback(update, context):
         # Bark 设置加密 Key：不关联实例，直接处理。
         context.user_data.pop("pending_input", None)
         await _handle_bark_key_input(update, context, text)
+        return
+    if kind == "gfw_key":
+        # GFW 设置 Atlas API Key：不关联实例，直接处理。
+        context.user_data.pop("pending_input", None)
+        await _handle_gfw_key_input(update, context, text)
         return
     if kind == "email_sender":
         # Email 发件人：不关联实例，校验邮箱格式后弹二次确认。
@@ -5586,8 +5830,9 @@ async def handle_upgrade(update, context):
 # "console" 不是菜单项，是实例操作 "i:<act>:<idx>" 的转发项）。
 # 未列出的项 dispatch 返回 False：
 #   - instances：核心项，由 handlers.py 处理，不在本模块；
-#   - autoip / disable / delapi：不实现（原因见 docs/phase2-todo.md；
+#   - disable / delapi：不实现（原因见 docs/phase2-todo.md；
 #     其中 delapi 是故意不做——会删机器人自己的 API 密钥）。
+#   - autoip（菜单 16 GFW 自动换 IP）：v1.10.0 已实现，见下表。
 # 菜单 23/24（memballoon / memclear）由 tgbot.handlers_client 实现，
 # 分发表里直接指向该模块的 handler。
 # 阶段 5 工作包 D 已实现 openport / clients / restart / upgrade /
@@ -5608,6 +5853,7 @@ _DISPATCH = {
     "profiles": handle_profiles,
     "clients": handle_clients,
     "health": handle_health,
+    "autoip": handle_autoip,
     "presets": handle_presets,
     "subscription": handle_subscription,
     "traffic": handle_traffic,

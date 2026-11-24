@@ -123,6 +123,13 @@ def volumes_page(request: Request):
     return redirect or _render(request, "volumes.html", "启动盘")
 
 
+@router.get("/gfw")
+def gfw_page(request: Request):
+    """GFW 自动换 IP 页（菜单 16 的网页版）。"""
+    redirect = _require_login(request)
+    return redirect or _render(request, "gfw.html", "GFW 自动换 IP")
+
+
 @router.get("/tasks")
 def tasks_page(request: Request):
     """任务管理页。"""

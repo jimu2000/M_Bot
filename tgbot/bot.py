@@ -229,6 +229,8 @@ def build_application():
     application.add_handler(CallbackQueryHandler(
         handlers_extra.traffic_guard_callback, pattern=r"^g:"))
     application.add_handler(CallbackQueryHandler(
+        handlers_extra.gfw_callback, pattern=r"^gfw:"))
+    application.add_handler(CallbackQueryHandler(
         handlers_extra.keepalive_callback, pattern=r"^k:"))
     application.add_handler(CallbackQueryHandler(
         handlers_extra.ssl_watch_callback, pattern=r"^s:"))
@@ -315,10 +317,16 @@ def build_application():
             handlers_extra.billing_check_job,
             time=BILLING_CHECK_TIME,
             name="billing_check")
+        job_queue.run_repeating(
+            handlers_extra.gfw_check_job,
+            interval=datetime.timedelta(
+                minutes=handlers_extra.GFW_CHECK_INTERVAL_MINUTES),
+            first=datetime.timedelta(seconds=60),
+            name="gfw_check")
     else:
         logging.getLogger(__name__).warning(
             "job_queue 不可用（未安装 python-telegram-bot[job-queue]），"
-            "监控、每日报告与 SSL 检查定时任务未注册。")
+            "监控、每日报告、SSL 检查、账单预警与 GFW 检查定时任务未注册。")
 
     return application
 

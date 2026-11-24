@@ -1,6 +1,6 @@
 # M_Bot Oracle开源管理面板
 
-> **当前版本：v1.9.0** · 更新记录见 [CHANGELOG.md](CHANGELOG.md)
+> **当前版本：v1.10.0** · 更新记录见 [CHANGELOG.md](CHANGELOG.md)
 
 [中文](#中文) | [English](#english)
 
@@ -33,6 +33,9 @@ M_Bot 是一个开源的 Oracle Cloud 管理面板：Telegram 机器人 + Web �
 - `/oracle` 菜单 42 项：开机抢机、IP 管理、实例管理、磁盘管理、云账户、
   监控通知、配额、流量、费用、批量操作、A1 体检、流量守护、停机保活、
   SSL 到期提醒、对象存储、Email 发件人、抢机计划……
+- GFW 自动换 IP（菜单 16）：每 30 分钟从中国大陆探针（RIPE Atlas）
+  ping 已开启的实例公网 IP，被墙自动换 IP 再检测，直到换到可用的为止；
+  每次换 IP 发双通道通知（TG + Bark，没设 Bark 就只发 TG）
 - `/domain`：Cloudflare Zone 与 DNS 记录查询
 - 客户端工具：`/command` 远程 Shell（危险命令黑名单）、`/pubkey` 公钥管理、
   `/oproxy` 代理设置、`/uploadapi` 上传 OCI 配置
@@ -42,8 +45,8 @@ M_Bot 是一个开源的 Oracle Cloud 管理面板：Telegram 机器人 + Web �
 **Web 面板（`web/`，FastAPI + WebSocket + Paramiko + xterm.js）**
 - 登录（pbkdf2 哈希、失败锁定翻倍最长 30 分钟、图形验证码可选、
   Telegram 验证码登录可选）
-- 页面：总览 / 实例 / 创建实例 / 配额 / 启动盘 / 任务 / 终端 / DNS 管理 /
-  对象存储 / 邮件服务 / 证书管理 / 巡检计划 / 云报告
+- 页面：总览 / 实例 / 创建实例 / 配额 / 启动盘 / 任务 / GFW 换 IP /
+  终端 / DNS 管理 / 对象存储 / 邮件服务 / 证书管理 / 巡检计划 / 云报告
 - Web SSH：多标签、断线重连 + 快照回放、会话挂起、空闲清理
 - SFTP 文件面板：列表 / 下载 / 上传（分块上传带进度）/ 新建目录 / 删除 /
   重命名 / 在线编辑，三层路径穿越防护
@@ -57,6 +60,37 @@ M_Bot 是一个开源的 Oracle Cloud 管理面板：Telegram 机器人 + Web �
 
 **其他云**：`clouds/` 下有 AWS / GCP / Azure / DigitalOcean / SolusVM 的
 抽象接口与 stub（待实现，需对应云账号才能真实验证）。
+
+### GFW 自动换 IP（菜单 16，v1.10.0 新增）
+
+代理服务器的公网 IP 被墙后，国内客户端就连不上了。这个功能自动盯着它：
+
+- **检测**：每 30 分钟用 [RIPE Atlas](https://atlas.ripe.net) 从中国大陆
+  探针（电信/联通/移动混合，5 个探针各发 3 个 ping 包）ping 已开启的实例
+  公网 IP；上报探针少于 3 个时结论为“未知”，不换 IP；多数探针不通即判定被墙。
+- **换 IP**：被墙就自动换 IP（先删旧临时 IP 再绑新保留 IP），换完重新检测；
+  新 IP 还是被墙就继续换；单轮最多换 5 次，换满仍被墙就暂停，等下个周期。
+- **通知**：每次换 IP 都发双通道通知（Telegram + Bark）；Bark 是可选项，
+  没设置就只发 Telegram。本来就正常时不发通知，不打扰。
+- **开关**：逐台开启/关闭（机器人菜单 16 或面板“GFW 换 IP”页，两边共用配置）；
+  也可以点“立即检查”马上测一次。
+
+设置 RIPE Atlas API Key（一次，免费）：
+
+1. 在 [atlas.ripe.net](https://atlas.ripe.net) 注册账号（RIPE NCC Access 账号）；
+2. 在 My Credits 页面点 **Claim 50,000 free credits** 领 5 万免费积分
+   （一次检测约几十积分，够用几个月；长期用可以在自己服务器上跑一个
+   RIPE Atlas 软件探针，每天赚约 2 万积分）；
+3. 在 [Keys 页面](https://atlas.ripe.net/keys/) 创建一个
+   “create a new user-defined measurement” 类型的 Key；
+4. 把 Key 发给机器人（菜单 16 → 设置 API Key）或填到面板“GFW 换 IP”页。
+   Key 只存服务器本机（`tgbot/data/gfw.json`，0600），不回显、不记日志。
+
+为什么选 RIPE Atlas：itdog 自 2026-10 起任务端点强制点选人机验证，
+无人值守的定时监控没法用；17CE / BOCE 的官方 API 要账号 + 付费积分；
+Atlas 是 RIPE NCC 的正规免费服务，有稳定 REST API。注意：ping 不通
+不等于百分百被墙（也可能是线路问题），这里的结论是“疑似被墙”；
+实例本身必须回 ping（ICMP 没被安全组禁掉），否则检测永远是“被墙”。
 
 ### 快速开始
 
@@ -194,6 +228,10 @@ fully visible and auditable.
   management, disk management, cloud accounts, monitoring, quotas, traffic,
   costs, batch operations, A1 health check, traffic guard, keep-alive,
   SSL expiry alerts, object storage, email senders, grabber plans…
+- GFW auto IP change (menu 16): every 30 minutes, pings enabled instances'
+  public IPs from mainland China probes (RIPE Atlas); if blocked, changes
+  the IP and re-checks until one works; notifies on every change via
+  Telegram + Bark (Bark optional — Telegram only if not configured)
 - `/domain`: Cloudflare zone and DNS record lookup
 - Client tools: `/command` remote shell (dangerous-command blocklist),
   `/pubkey` key management, `/oproxy` proxy settings, `/uploadapi` OCI config upload
@@ -204,8 +242,8 @@ fully visible and auditable.
 - Login (pbkdf2 hashing, doubling lockout up to 30 minutes, optional image
   captcha, optional Telegram code login)
 - Pages: overview / instances / create / quota / boot volumes / tasks /
-  terminal / DNS / object storage / email / certificates / inspection plans /
-  cloud report
+  GFW IP change / terminal / DNS / object storage / email / certificates /
+  inspection plans / cloud report
 - Web SSH: multi-tab, reconnect with snapshot replay, session suspend, idle cleanup
 - SFTP file panel: list / download / chunked upload with progress / mkdir /
   delete / rename / online edit, three-layer path traversal protection
@@ -221,6 +259,45 @@ fully visible and auditable.
 **Other clouds**: `clouds/` has an abstract interface plus stubs for
 AWS / GCP / Azure / DigitalOcean / SolusVM (not implemented yet — real
 verification needs accounts on those clouds).
+
+### GFW auto IP change (menu 16, new in v1.10.0)
+
+When a proxy server's public IP gets blocked from mainland China, clients
+there can't connect. This feature watches for that:
+
+- **Check**: every 30 minutes, pings enabled instances' public IPs from
+  mainland China probes via [RIPE Atlas](https://atlas.ripe.net)
+  (5 probes, 3 packets each, mixed telecom/unicom/mobile). Fewer than 3
+  reporting probes means "unknown" — no action. A majority failing means
+  blocked.
+- **Change**: on blocked, changes the public IP (delete the old ephemeral
+  IP, attach a new reserved one) and re-checks; keeps changing while the
+  new IP is still blocked; at most 5 changes per cycle, then pauses until
+  the next cycle.
+- **Notify**: every IP change sends a dual notification (Telegram + Bark;
+  Bark is optional — Telegram only if not configured). Healthy checks stay
+  silent.
+- **Toggle**: per-instance on/off from menu 16 in the bot or the
+  "GFW 换 IP" page in the web panel (shared config).
+
+One-time RIPE Atlas API key setup (free):
+
+1. Register at [atlas.ripe.net](https://atlas.ripe.net) (RIPE NCC Access account);
+2. Click **Claim 50,000 free credits** on the My Credits page (one check
+   costs tens of credits; for long-term use, run a RIPE Atlas software
+   probe on your own server to earn ~21,600 credits per day);
+3. Create a key of type "create a new user-defined measurement" on the
+   [Keys page](https://atlas.ripe.net/keys/);
+4. Send the key to the bot (menu 16 → Set API Key) or paste it on the
+   web panel's "GFW 换 IP" page. The key is stored only on the server
+   (`tgbot/data/gfw.json`, 0600), never echoed or logged.
+
+Why RIPE Atlas: itdog has forced click-captcha verification on its task
+endpoints since 2026-10 (unusable for unattended monitoring), and 17CE /
+BOCE require paid credits; Atlas is a free service from RIPE NCC with a
+stable REST API. Note that ping failing is evidence of "suspected"
+blocking, not proof, and the instance itself must answer ICMP (not
+blocked by its security list), otherwise every check reports blocked.
 
 ### Quick start
 

@@ -33,6 +33,7 @@ from web.routes import create as create_routes
 from web.routes import dns as dns_routes
 from web.routes import email as email_routes
 from web.routes import favorites as favorites_routes
+from web.routes import gfw as gfw_routes
 from web.routes import hosts as hosts_routes
 from web.routes import inspect as inspect_routes
 from web.routes import instances as instances_routes
@@ -111,6 +112,7 @@ def create_app():
     app.include_router(instances_routes.router)
     app.include_router(volumes_routes.router)
     app.include_router(boot_backups_routes.router)
+    app.include_router(gfw_routes.router)
     app.include_router(quota_routes.router)
     app.include_router(dns_routes.router)
     app.include_router(create_routes.router)

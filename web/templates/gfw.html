@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{# GFW 自动换 IP 页：菜单 16 的网页版。数据来自 GET /api/gfw/status 与
+   GET /api/gfw/instances；开关走 POST /api/gfw/toggle，Key 走
+   POST /api/gfw/key，立即检查走 POST /api/gfw/check-now。
+   与机器人端共用 tgbot/data/gfw.json，两边改的开关互相可见。 #}
+{% block title %}GFW 自动换 IP · M_Bot Oracle开源管理面板{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1>GFW 自动换 IP</h1>
+  <label for="profile-select" style="color: var(--text-muted);">Profile</label>
+  <select id="profile-select" style="width: auto;" aria-label="切换账号"></select>
+  <div class="spacer"></div>
+  <button type="button" class="btn" id="btn-refresh-gfw">↻ 刷新</button>
+</div>
+
+<p style="color: var(--text-muted); margin-top: -8px;">
+  每 30 分钟从中国大陆探针（RIPE Atlas）ping 已开启的实例公网 IP，
+  多数探针不通就判定被墙，自动换 IP 再检测，直到换到可用的为止；
+  每次换 IP 都发通知（TG + Bark，没设 Bark 就只发 TG）。
+</p>
+
+<div id="gfw-loading" class="card" style="text-align: center; color: var(--text-muted);">
+  加载中…
+</div>
+
+<div id="gfw-error" class="card" hidden>
+  <p id="gfw-error-text" style="color: var(--danger);"></p>
+</div>
+
+<div id="gfw-body" hidden>
+  <div class="card">
+    <h2>RIPE Atlas API Key</h2>
+    <p style="color: var(--text-muted);">
+      检测走 RIPE Atlas：在
+      <a href="https://atlas.ripe.net/keys/" target="_blank" rel="noopener">atlas.ripe.net</a>
+      注册账号，领 5 万免费积分，创建一个
+      “create a new user-defined measurement” 类型的 Key，粘贴到下面。
+      Key 只存服务器本机（0600），页面只显示脱敏后的首尾。
+    </p>
+    <p>当前状态：<span id="gfw-key-status">—</span></p>
+    <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+      <input type="password" id="gfw-key-input" placeholder="粘贴 Atlas API Key"
+             autocomplete="off" style="flex: 1; min-width: 240px;">
+      <button type="button" class="btn btn-primary" id="btn-save-gfw-key">保存 Key</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>监控开关 <span id="gfw-enabled-count" style="color: var(--text-muted); font-size: 14px;"></span></h2>
+    <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+      <button type="button" class="btn btn-primary" id="btn-gfw-check-now" disabled>🔍 立即检查</button>
+      <span style="color: var(--text-muted); align-self: center;">检查每台约 1-2 分钟，完成后发通知。</span>
+    </div>
+    <table class="table">
+      <thead>
+        <tr><th>实例</th><th>公网 IP</th><th>监控</th><th>上次检查</th></tr>
+      </thead>
+      <tbody id="gfw-tbody">
+        <tr><td colspan="4" style="color: var(--text-muted);">加载中…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="/static/js/gfw.js"></script>
+{% endblock %}

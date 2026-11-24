@@ -179,7 +179,7 @@ class TestOracleMenuDynamicStates(MonitoringBotTestCase):
         self.assertIn("10. 实例状态监控自启 (关闭)", texts)
         # 非监控项不带后缀。
         self.assertIn("6. 实例管理", texts)
-        self.assertIn("16. 监控(自动换ip)", texts)
+        self.assertIn("16. GFW自动换IP", texts)
 
     def test_guard_keepalive_states_on_last_page(self):
         states = {"monitor": False, "autostart": False,
