@@ -9,6 +9,11 @@
 
 ## [Unreleased]
 
+## [1.16.0] - 2026-11-24
+
+### 功能
+- 本月流量（菜单 19）自动安装依赖（用户要求 2026-11-24：每个 VPS 里如果没有安装 vnstat / python3 都需要默认安装）：查流量时某台主机没装 vnstat（stderr 含 "vnstat ... not found" 才认，其他失败不触发），机器人自动 SSH 上去跑 `apt-get update && apt-get install -y vnstat python3 curl && systemctl enable --now vnstat`（非交互，三件套齐了直接返回不碰 apt），装好重试一次查询；刚装好的主机在流量行下标注"vnstat 刚自动安装，数据从现在开始统计"（新装的 vnstat 没有历史数据）；安装失败时显示"vnstat 未安装，自动安装失败"（apt 被占用或无网络时稍后重试），不影响其他台。只支持 Debian/Ubuntu（apt-get 系）；安装超时 300 秒
+
 ## [1.15.0] - 2026-11-24
 
 ### 修复

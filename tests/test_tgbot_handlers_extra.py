@@ -438,6 +438,70 @@ class TestInstanceTraffic(HandlersExtraTestCase):
         mock_cmd.assert_not_called()
         self.assertEqual(entries[0]["error"], "未配置 SSH 密钥")
 
+    async def test_fetch_traffic_auto_installs_vnstat(self):
+        """v1.16.0：vnstat 没装时自动安装后重试，成功后标 installed。"""
+        instances = [{"display-name": "new", "lifecycle-state": "RUNNING",
+                      "public-ip": "1.2.3.4"}]
+        context = make_context()
+        calls = []
+        with patch.object(bot_config, "GUARD_SSH_KEY",
+                          "/root/.ssh/rbot_guard"), \
+                patch.object(he, "fetch_city_for_ip",
+                             return_value="首尔"), \
+                patch.object(he, "run_remote_command") as mock_cmd:
+            def _cmd(host, command, timeout=30):
+                calls.append(command)
+                if "apt-get install" in command:
+                    return (0, "", "")
+                if len([c for c in calls if "apt-get" not in c]) == 1:
+                    return (127, "", "sh: 1: vnstat: not found")
+                return (0, self.VNSTAT_SAMPLE, "")
+            mock_cmd.side_effect = _cmd
+            entries = await he._fetch_instance_traffic(context, instances)
+        self.assertEqual(len(calls), 3)
+        self.assertTrue(any("apt-get install -y vnstat python3 curl" in c
+                            for c in calls))
+        self.assertTrue(entries[0]["installed"])
+        self.assertIsNone(entries[0]["error"])
+        self.assertAlmostEqual(entries[0]["rx_gb"], 3.21, places=2)
+        text = he.fmt_instance_traffic(entries)
+        self.assertIn("vnstat 刚自动安装", text)
+
+    async def test_fetch_traffic_install_failure(self):
+        """v1.16.0：自动安装失败时标明原因，不再重试查询。"""
+        instances = [{"display-name": "new", "lifecycle-state": "RUNNING",
+                      "public-ip": "1.2.3.4"}]
+        context = make_context()
+        with patch.object(bot_config, "GUARD_SSH_KEY",
+                          "/root/.ssh/rbot_guard"), \
+                patch.object(he, "fetch_city_for_ip",
+                             return_value="首尔"), \
+                patch.object(he, "run_remote_command") as mock_cmd:
+            def _cmd(host, command, timeout=30):
+                if "apt-get install" in command:
+                    return (100, "", "E: Unable to fetch archives")
+                return (127, "", "vnstat: command not found")
+            mock_cmd.side_effect = _cmd
+            entries = await he._fetch_instance_traffic(context, instances)
+        self.assertEqual(mock_cmd.call_count, 2)
+        self.assertIsNone(entries[0].get("installed"))
+        self.assertEqual(entries[0]["error"], "vnstat 未安装，自动安装失败")
+
+    async def test_fetch_traffic_other_failure_no_install(self):
+        """v1.16.0：非“没装”原因的查询失败不触发自动安装。"""
+        instances = [{"display-name": "web", "lifecycle-state": "RUNNING",
+                      "public-ip": "1.2.3.4"}]
+        context = make_context()
+        with patch.object(bot_config, "GUARD_SSH_KEY",
+                          "/root/.ssh/rbot_guard"), \
+                patch.object(he, "fetch_city_for_ip",
+                             return_value="新加坡"), \
+                patch.object(he, "run_remote_command",
+                             return_value=(1, "", "GUARD-ERROR no-interface")) as mock_cmd:
+            entries = await he._fetch_instance_traffic(context, instances)
+        mock_cmd.assert_called_once()
+        self.assertEqual(entries[0]["error"], "vnstat 查询失败")
+
 
 class TestHealthTasksProfiles(HandlersExtraTestCase):
 

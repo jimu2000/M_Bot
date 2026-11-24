@@ -271,6 +271,31 @@ def guard_vnstat_command():
     return _GUARD_IFACE_DETECT + "; vnstat -i \"$IF\" --json m"
 
 
+# 自动安装流量依赖的最长等待（秒）：apt update + 装 vnstat /
+# python3 / curl 三件套，新机实测约 1-3 分钟，300 秒留足余量。
+GUARD_ENSURE_INSTALL_TIMEOUT_SECONDS = 300
+
+
+def guard_ensure_vnstat_command():
+    """确保 vnstat / python3 / curl 已安装，并启用 vnstat 服务。
+
+    三件套齐了直接返回 0，不动 apt；缺任一时跑
+    apt-get update && apt-get install -y vnstat python3 curl
+    && systemctl enable --now vnstat（DEBIAN_FRONTEND=noninteractive，
+    避免交互提问挂住；apt-get 而不是 apt——apt 不是给脚本用的）。
+    只支持 Debian/Ubuntu（apt-get 系）；其他发行版会直接失败，
+    调用方按失败处理。用户要求：每个 VPS 缺了就默认安装。
+    """
+    check = ("for _c in vnstat python3 curl; do "
+             "command -v \"$_c\" >/dev/null 2>&1 || _missing=1; done; "
+             "[ -z \"$_missing\" ] && exit 0")
+    install = ("DEBIAN_FRONTEND=noninteractive apt-get update "
+               "&& DEBIAN_FRONTEND=noninteractive apt-get install -y "
+               "vnstat python3 curl "
+               "&& systemctl enable --now vnstat")
+    return check + "; " + install
+
+
 def parse_vnstat_monthly_gb(json_text, now=None):
     """解析 vnstat --json m 的输出，返回 (入站 GiB, 出站 GiB)。
 

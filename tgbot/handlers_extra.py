@@ -139,7 +139,9 @@ from tgbot.monitoring import (
     current_month_transfer_gb,
     fetch_city_for_ip,
     fmt_threshold_gb,
+    GUARD_ENSURE_INSTALL_TIMEOUT_SECONDS,
     guard_block_command,
+    guard_ensure_vnstat_command,
     guard_limit_command,
     guard_unblock_command,
     guard_vnstat_command,
@@ -1883,11 +1885,25 @@ def fmt_instance_traffic(entries):
             counted += 1
         else:
             lines.append(f"流量：查不到（{entry.get('error') or '未知原因'}）")
+        if entry.get("installed"):
+            # 刚自动装的 vnstat：数据从服务启动那一刻开始统计。
+            lines.append("（vnstat 刚自动安装，数据从现在开始统计）")
         lines.append("")
     if counted:
         lines.append(f"合计：入站 {total_rx:.2f} GiB / "
                      f"出站 {total_tx:.2f} GiB（{counted} 台）")
     return "\n".join(lines).rstrip("\n")
+
+
+def _vnstat_not_installed(exit_code, stderr):
+    """vnstat 查询失败是否因为没装 vnstat。
+
+    精确信号：stderr 里同时出现 vnstat 与 not found（bash：
+    “vnstat: command not found”；dash：“sh: 1: vnstat: not found”）。
+    只认这个信号，其他失败（如网卡识别失败）不触发自动安装。
+    """
+    text = (stderr or "").lower()
+    return "vnstat" in text and "not found" in text
 
 
 async def _fetch_instance_traffic(context, instances=None):
@@ -1896,6 +1912,8 @@ async def _fetch_instance_traffic(context, instances=None):
     返回 fmt_instance_traffic 用的 entries 列表。instances 不传时现查
     （并补公网 IP）；城市名经 ip-api.com 查（本机直接查，不走 SSH）。
     单台失败不影响其他台（该台 error 说明原因）。
+    某台没装 vnstat 时自动安装依赖（vnstat / python3 / curl）并启用
+    vnstat 服务，再重试一次查询（用户要求：缺了就默认安装）。
     """
     if instances is None:
         instances = await run_sync(
@@ -1922,12 +1940,38 @@ async def _fetch_instance_traffic(context, instances=None):
             entries.append(entry)
             continue
         try:
-            exit_code, out, _err = await run_sync(
+            exit_code, out, err = await run_sync(
                 run_remote_command, host, guard_vnstat_command())
         except Exception:  # noqa: BLE001 - 单台失败不影响其他台
             entry["error"] = "SSH 连不上该实例"
             entries.append(entry)
             continue
+        if exit_code != 0 and _vnstat_not_installed(exit_code, err):
+            # vnstat 没装：自动安装依赖后重试一次查询。
+            try:
+                install_code, _o, install_err = await run_sync(
+                    run_remote_command, host,
+                    guard_ensure_vnstat_command(),
+                    GUARD_ENSURE_INSTALL_TIMEOUT_SECONDS)
+            except Exception as exc:  # noqa: BLE001 - 安装超时也算安装失败
+                logger.warning("自动安装 vnstat 失败（%s）：%s", public_ip, exc)
+                entry["error"] = "vnstat 未安装，自动安装失败"
+                entries.append(entry)
+                continue
+            if install_code != 0:
+                logger.warning("自动安装 vnstat 失败（%s）：%s",
+                               public_ip, (install_err or "").strip()[-200:])
+                entry["error"] = "vnstat 未安装，自动安装失败"
+                entries.append(entry)
+                continue
+            entry["installed"] = True
+            try:
+                exit_code, out, err = await run_sync(
+                    run_remote_command, host, guard_vnstat_command())
+            except Exception:  # noqa: BLE001 - 单台失败不影响其他台
+                entry["error"] = "SSH 连不上该实例"
+                entries.append(entry)
+                continue
         if exit_code != 0:
             entry["error"] = "vnstat 查询失败"
             entries.append(entry)

@@ -634,6 +634,19 @@ class TestTrafficGuardCommands(MonitoringBotTestCase):
         self.assertIsNone(mon.parse_vnstat_monthly_gb(
             '{"interfaces": [{"traffic": {"month": []}}]}'))
 
+    def test_ensure_vnstat_command(self):
+        """v1.16.0：缺依赖时 apt 安装三件套并启用 vnstat 服务。"""
+        cmd = mon.guard_ensure_vnstat_command()
+        # 先检查三件套是否齐全，齐了直接返回 0 不动 apt。
+        self.assertIn("command -v", cmd)
+        self.assertIn("vnstat python3 curl", cmd)
+        self.assertIn("exit 0", cmd)
+        # 缺了就安装：非交互 apt + 启用服务。
+        self.assertIn("DEBIAN_FRONTEND=noninteractive apt-get update", cmd)
+        self.assertIn("apt-get install -y vnstat python3 curl", cmd)
+        self.assertIn("systemctl enable --now vnstat", cmd)
+        self.assertEqual(mon.GUARD_ENSURE_INSTALL_TIMEOUT_SECONDS, 300)
+
     def test_fetch_city_for_ip(self):
         resp = MagicMock()
         resp.read.return_value = (

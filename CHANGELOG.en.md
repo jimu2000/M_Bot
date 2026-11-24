@@ -9,6 +9,11 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [1.16.0] - 2026-11-24
+
+### Features
+- Monthly traffic (menu 19) auto-installs its dependencies (user request, 2026-11-24: every VPS missing vnstat / python3 must get them installed by default): when a host has no vnstat (only when stderr contains "vnstat ... not found"; other failures do not trigger it), the bot SSHes in and runs `apt-get update && apt-get install -y vnstat python3 curl && systemctl enable --now vnstat` (non-interactive; no-op when all three are already present), then retries the query once; a freshly installed host is annotated "vnstat 刚自动安装，数据从现在开始统计" under its traffic line (a fresh vnstat has no history yet); on install failure it reports "vnstat 未安装，自动安装失败" (retry later if apt is busy or the network is down) without affecting other hosts. Debian/Ubuntu (apt-get) only; install timeout 300 seconds
+
 ## [1.15.0] - 2026-11-24
 
 ### Fixed
