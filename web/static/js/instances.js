@@ -202,7 +202,8 @@
     }
     try {
       var url = MBot.withProfile("/api/instances", currentProfile, currentRegion);
-      if (force) url += (url.indexOf("?") === -1 ? "?" : "&") + "refresh=1";
+      url += (url.indexOf("?") === -1 ? "?" : "&") + "state=all";
+      if (force) url += "&refresh=1";
       var volUrl = MBot.withProfile("/api/volumes", currentProfile, currentRegion);
       if (force) volUrl += (volUrl.indexOf("?") === -1 ? "?" : "&") + "refresh=1";
       var volPromise = MBot.cachedApi("vol:list:" + (currentProfile || "DEFAULT") + ":" + (currentRegion || ""), volUrl, !!force).catch(function () { return null; });
@@ -254,7 +255,7 @@
     var regionAtStart = currentRegion;
     try {
       var url = MBot.withProfile("/api/instances", currentProfile, currentRegion);
-      url += (url.indexOf("?") === -1 ? "?" : "&") + "refresh=1";
+      url += (url.indexOf("?") === -1 ? "?" : "&") + "state=all&refresh=1";
       var data = await MBot.api(url);
       if (profileAtStart !== currentProfile || regionAtStart !== currentRegion) return;
       (data.instances || []).forEach(function (fresh) {

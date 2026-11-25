@@ -97,6 +97,9 @@ from tgbot.services import (
 )
 
 # ================= 配置区（改这里） =================
+# M_Bot 开源仓库地址（/start 主菜单 GitHub 按钮与欢迎词共用）。
+GITHUB_URL = "https://github.com/jimu2000/M_Bot"
+
 # /oracle menu: (callback key, display text); items 1-34 are the numbered menu (source: docs/references.md), items 35+ were added later. /oracle 菜单：(callback key, 显示文字)，1-34 项是菜单编号（来源：docs/references.md）；35 项以后是后续新增。
 # key is a short identifier; the display text carries the original number. key 是短标识，显示文字带原编号。
 # Note: item 13 was removed (the menu top row already has a "切换账号" button, so menu item 13. profile管理 was a duplicate entry); the other numbers stay as-is and are never renumbered (1-34 are the numbers users call by habit, e.g. "菜单 19 流量"). Account switching itself is still there (the o:profiles callback + the top-row button). 注意：13 号已删（菜单顶行已有“切换账号”按钮，菜单里的 13. profile管理 是重复入口，没必要留）；其余编号保持不动，不重新编号（1-34 是用户叫惯的编号，如“菜单 19 流量”这类叫法都不变）。切换账号功能本身还在（o:profiles 回调 + 顶行按钮）。
@@ -226,8 +229,8 @@ def main_menu_keyboard(lang="zh"):
                               callback_data="o:traffic")],
         [InlineKeyboardButton(bot_i18n.t(lang, "menu.main_tasks"),
                               callback_data="o:tasks"),
-         InlineKeyboardButton(bot_i18n.t(lang, "menu.main_health"),
-                              callback_data="o:health")],
+         InlineKeyboardButton(bot_i18n.t(lang, "menu.main_github"),
+                              url=GITHUB_URL)],
         [InlineKeyboardButton(
             bot_i18n.t(lang, "lang.toggle_en" if lang == "zh"
                        else "lang.toggle_zh"),
@@ -696,15 +699,28 @@ def domain_add_cancel_keyboard(zone_id):
     ])
 
 
-def domain_delete_pick_keyboard(zone_id, records):
+def domain_delete_pick_keyboard(zone_id, records, bound_map=None):
     """`/domain` 删除记录：每条记录一个按钮（只列前 20 条，与展示一致）。
 
     records 是 user_data 里存的当前 Zone 记录列表；idx 是下标。
+    bound_map（公网 IP -> 实例名）给出时，已绑定到实例的 A 记录排
+    在前面并带 🔗 实例名，方便用户先找到要删的绑定记录。
     """
+    bound_map = bound_map or {}
+    shown = list(enumerate(records[:DOMAIN_RECORDS_LIMIT]))
+
+    def _is_bound(item):
+        _, record = item
+        return (record.get("type") == "A"
+                and record.get("content") in bound_map)
+
+    shown.sort(key=lambda item: (not _is_bound(item), item[0]))
     rows = []
-    for idx, record in enumerate(records[:DOMAIN_RECORDS_LIMIT]):
+    for idx, record in shown:
         label = (f"🗑️ {record.get('type', '?')} "
                  f"{record.get('name', '?')}")
+        if _is_bound((idx, record)):
+            label += f" 🔗{bound_map[record['content']]}"
         rows.append([InlineKeyboardButton(
             label, callback_data=f"domain:del:{zone_id}:{idx}")])
     rows.append([InlineKeyboardButton(

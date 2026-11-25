@@ -4,7 +4,7 @@
 覆盖：
 - A1 云报告状态中文显示（overview.js + i18n.js 的状态映射表）
 - A2 Web 中英文切换（lang-select、翻译字典、localStorage 持久化）
-- A3 GitHub 链接补齐（登录页“GitHub开源主页”、顶栏图标手机/电脑可见）
+- A3 GitHub 链接补齐（2.02：登录页只留一个 GitHub 链接，改名“GitHub 免费开源项目”；顶栏图标手机/电脑可见）
 - A4 版本号 2.01（VERSION、README、双语 CHANGELOG）
 
 只读本地文件与模板渲染，不碰服务器、不写密码字面量。
@@ -96,6 +96,32 @@ class TestCloudReportChineseStates(unittest.TestCase):
         inst = read("web/static/js/instances.js")
         self.assertIn("instanceStateLabel(state)", inst)
         self.assertIn("MBotI18n", inst)
+
+    def test_instances_list_uses_state_all(self):
+        """实例列表拉取 state=all：STOPPED 的实例也在列表里，能点启动。
+
+        2.02 Bug 1：后端 state=all 早就支持，但前端一直调默认
+        state=running，停掉的实例从列表消失、没法从面板再启动。
+        """
+        inst = read("web/static/js/instances.js")
+        self.assertEqual(inst.count("state=all"), 2,
+                         "列表加载与 CPU 型号补拉都要带 state=all")
+        self.assertIn('data-act="start">启动</button>', inst)
+        self.assertIn('var stopped = state === "STOPPED"', inst)
+
+    def test_create_form_checks_image_arch(self):
+        """建抢机表单提交前校验镜像架构与形状（2.02 Bug 6）。
+
+        没填自定义镜像时，下拉选项的 data-arch 对形状要求的架构
+        （E2 要 x86_64、A1 要 aarch64），不匹配直接报错，
+        不等 OCI 报 InvalidParameter。
+        """
+        create_js = read("web/static/js/create.js")
+        self.assertIn('getAttribute("data-arch")', create_js)
+        self.assertIn('payload.shape === SHAPE_E2 ? "x86_64" : "aarch64"',
+                      create_js)
+        self.assertIn("镜像架构与形状不匹配", create_js)
+
 
 
 class TestI18nSwitch(unittest.TestCase):
@@ -209,33 +235,36 @@ class TestI18nSwitch(unittest.TestCase):
 
 
 class TestGithubLinks(unittest.TestCase):
-    """A3：GitHub 链接补齐。"""
+    """A3：GitHub 链接补齐（2.02：登录页只留一个，改名“GitHub 免费开源项目”）。"""
 
     @classmethod
     def setUpClass(cls):
         cls.login = read("web/templates/login.html")
         cls.base = read("web/templates/base.html")
         cls.css = read("web/static/css/base.css")
+        cls.dict = parse_i18n_dict(read("web/static/js/i18n.js"))
 
-    def test_login_github_home_above_default_credentials(self):
-        """登录页“GitHub开源主页”在“默认凭据请查看部署文档”那行上方，
-        带链接，新标签页打开。"""
-        self.assertIn("GitHub开源主页", self.login)
-        home_pos = self.login.index("GitHub开源主页")
-        cred_pos = self.login.index("默认凭据请查看部署文档")
-        self.assertLess(home_pos, cred_pos, "GitHub开源主页应在默认凭据那行上方")
+    def test_login_github_link_only_once_with_new_name(self):
+        """登录页 GitHub 链接只出现一次、文案是新名字，新标签页打开。
+
+        2.02：删掉了 2.01 加的“GitHub开源主页”那行（与页脚重复），
+        页脚“GitHub 项目”改名“GitHub 免费开源项目”，链接地址不变。
+        """
+        self.assertNotIn("GitHub开源主页", self.login)
+        self.assertNotIn("login.github_home", self.login)
+        self.assertEqual(self.login.count(">GitHub 免费开源项目</a>"), 1)
+        self.assertEqual(
+            self.login.count("https://github.com/jimu2000/M_Bot"), 1)
         m = re.search(r'<a href="https://github\.com/jimu2000/M_Bot" target="_blank"[^>]*>'
-                      r'[^<]*GitHub开源主页</a>', self.login)
-        self.assertIsNotNone(m, "GitHub开源主页应是新标签页打开的链接")
+                      r'[^<]*GitHub 免费开源项目</a>', self.login)
+        self.assertIsNotNone(m, "GitHub 链接应是新标签页打开的新名字链接")
 
-    def test_login_footer_github_link_kept(self):
-        """页脚已有的“GitHub 项目”保留，不搞出重复的两行同文案。"""
-        self.assertIn("GitHub 项目", self.login)
-        # Only count rendered link text (Jinja comments in the template do not count). 只数渲染出的链接文本（模板里的 Jinja 注释不算）。
-        self.assertEqual(self.login.count(">GitHub开源主页</a>"), 1)
-        self.assertEqual(self.login.count(">GitHub 项目</a>"), 1)
-        self.assertGreaterEqual(
-            self.login.count("https://github.com/jimu2000/M_Bot"), 2)
+    def test_login_github_i18n_names(self):
+        """i18n：登录页 GitHub 文案中英文都是新名字，旧键已删。"""
+        self.assertNotIn("login.github_home", self.dict)
+        self.assertEqual(self.dict["login.github_project"],
+                         ("GitHub 免费开源项目",
+                          "GitHub Free Open Source Project"))
 
     def test_topbar_github_icon_present(self):
         """内页顶栏 GitHub 图标（Feather 描边）在 base.html 里。"""
@@ -468,14 +497,14 @@ class TestFollowBrowserLanguage(unittest.TestCase):
 
 
 class TestVersion200(unittest.TestCase):
-    """A4：版本号 2.01。"""
+    """A4：版本号 2.02。"""
 
     def test_version_file(self):
-        self.assertEqual(read("VERSION").strip(), "2.01")
+        self.assertEqual(read("VERSION").strip(), "2.02")
 
     def test_readme_top_version(self):
         readme = read("README.md")
-        self.assertIn("**当前版本：v2.01**", readme)
+        self.assertIn("**当前版本：v2.02**", readme)
 
     def test_changelogs_cover_v200(self):
         for rel, needles in (

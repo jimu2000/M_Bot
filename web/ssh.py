@@ -71,12 +71,12 @@ except Exception:
 # ================================================================
 
 # ASCII art in the welcome banner. 欢迎横幅里的 ASCII 艺术字。
-R_BOT_ART = r"""
- ____       ____   ___ _____
-|  _ \     | __ ) / _ \_   _|
-| |_) |    |  _ \| | | || |
-|  _ <     | |_) | |_| || |
-|_| \_\    |____/ \___/ |_|
+M_BOT_ART = r"""
+ __  __           ____     ___    _____
+|  \/  |         | __ )   / _ \  |_   _|
+| |\/| |         |  _ \  | | | |   | |
+| |  | |         | |_) | | |_| |   | |
+|_|  |_|  _____  |____/   \___/    |_|
 """
 
 # System-info commands run in the welcome banner. 欢迎横幅里跑的系统信息命令。
@@ -86,8 +86,8 @@ BANNER_COMMAND = "uname -a; uptime; df -h /; free -h"
 def build_banner(sysinfo: str) -> str:
     """拼欢迎横幅：ASCII 艺术字 + 系统信息（uname 黄、uptime 绿）。"""
     lines = [""]
-    lines.append("\x1b[1;36m" + R_BOT_ART.strip("\n") + "\x1b[0m")
-    lines.append("\x1b[1;35mR-BOT · Web SSH\x1b[0m")
+    lines.append("\x1b[1;36m" + M_BOT_ART.strip("\n") + "\x1b[0m")
+    lines.append("\x1b[1;35mM_Bot · Web SSH\x1b[0m")
     lines.append("")
     info_lines = [line for line in sysinfo.splitlines() if line.strip()]
     if info_lines:

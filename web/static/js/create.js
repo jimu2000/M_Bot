@@ -141,6 +141,15 @@
     e.preventDefault();
     hideError();
     var payload = collectPayload();
+    // Image arch vs shape pre-check (ARM panel full test Bug 6): with no custom image OCID, the dropdown option's data-arch is compared against the shape's required arch (E2 needs x86_64, A1 needs aarch64); a mismatch is rejected here instead of failing in Oracle with InvalidParameter. 镜像架构与形状事前校验：没填自定义镜像时，用下拉选项的 data-arch 对形状要求的架构（E2 要 x86_64，A1 要 aarch64），不匹配直接报错，不等 OCI 报 InvalidParameter。
+    if (!$("image-id-custom").value.trim()) {
+      var selArch = $("image-id").selectedOptions[0].getAttribute("data-arch");
+      var needArch = payload.shape === SHAPE_E2 ? "x86_64" : "aarch64";
+      if (selArch && selArch !== needArch) {
+        showError("镜像架构与形状不匹配：选的镜像是 " + selArch + "，形状 " + payload.shape + " 需要 " + needArch + " 镜像。请换镜像或改形状。");
+        return;
+      }
+    }
     var diskRaw = parseInt($("disk-gb").value, 10);
     if (!isNaN(diskRaw) && diskRaw > 47 && diskRaw < 50) {
       showError("硬盘显式指定最少 50GB：47 表示用镜像默认大小，48/49 不可用。");

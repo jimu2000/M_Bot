@@ -66,13 +66,13 @@ def _make_mock_client(sysinfo=b"Linux testhost 6.1.0 x86_64\n"
 class TestBuildBanner(unittest.TestCase):
     def test_banner_contains_art_and_sysinfo(self):
         banner = build_banner("Linux testhost 6.1.0\n 10:00 up 1 day\nFilesystem\nMem:")
-        self.assertIn("R-BOT", banner)
+        self.assertIn("M_Bot", banner)
         self.assertIn("Linux testhost", banner)
         self.assertIn("10:00 up 1 day", banner)
 
     def test_banner_empty_sysinfo(self):
         banner = build_banner("")
-        self.assertIn("R-BOT", banner)
+        self.assertIn("M_Bot", banner)
         self.assertIn("系统信息获取失败", banner)
 
 
@@ -102,7 +102,7 @@ class TestSSHSession(unittest.TestCase):
         with patch.object(ssh_module.paramiko, "SSHClient", return_value=client):
             session = SSHSession()
             banner = session.connect(TEST_HOST, 22, "root", password="s3cret")
-        self.assertIn("R-BOT", banner)
+        self.assertIn("M_Bot", banner)
         self.assertIn("Linux testhost", banner)
         self.assertIs(session.channel, channel)
         self.assertTrue(session.is_active())
@@ -578,7 +578,7 @@ class TestLoopbackSSH(unittest.TestCase):
                 banner = session.connect("127.0.0.1", self.port,
                                          "testuser", password="testpass")
                 try:
-                    self.assertIn("R-BOT", banner)
+                    self.assertIn("M_Bot", banner)
                     self.assertIn("Linux testhost", banner)
                     self.assertIn("up 1 day", banner)
                     self.assertTrue(session.is_active())

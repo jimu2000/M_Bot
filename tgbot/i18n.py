@@ -73,6 +73,8 @@ STRINGS = {
                       "我可以帮你管理 Oracle Cloud 免费层实例：查看实例、启停、"
                       "换 IP、查配额、抢机等。\n"
                       "\n"
+                      "GitHub 免费开源项目：https://github.com/jimu2000/M_Bot\n"
+                      "\n"
                       "常用命令：\n"
                       "/oracle — Oracle 菜单（{count} 项功能）\n"
                       "/instances — 实例列表\n"
@@ -83,6 +85,9 @@ STRINGS = {
                       "I can manage your Oracle Cloud free-tier instances: "
                       "list instances, start/stop, change IP, check quota, "
                       "grab instances, and more.\n"
+                      "\n"
+                      "GitHub Free Open Source Project: "
+                      "https://github.com/jimu2000/M_Bot\n"
                       "\n"
                       "Common commands:\n"
                       "/oracle — Oracle menu ({count} features)\n"
@@ -177,7 +182,8 @@ STRINGS = {
     "menu.main_quota": {"zh": "📊 查询配额", "en": "📊 Quota"},
     "menu.main_traffic": {"zh": "📈 本月流量", "en": "📈 This Month's Traffic"},
     "menu.main_tasks": {"zh": "📋 运行中的任务", "en": "📋 Running Tasks"},
-    "menu.main_health": {"zh": "❤️ 一键测活", "en": "❤️ Health Check"},
+    "menu.main_github": {"zh": "GitHub 免费开源项目",
+                         "en": "GitHub Free Open Source Project"},
     # ---- /oracle 菜单项（编号与 keyboards.ORACLE_MENU_ITEMS 一致） ----
     "menu.boot": {"zh": "1. 开机(刷机)", "en": "1. Boot (Grab)"},
     "menu.ip": {"zh": "2. ip管理", "en": "2. IP Management"},
@@ -408,6 +414,11 @@ STRINGS = {
                          "en": "❌ OCI call failed: {detail}"},
     "error.generic": {"zh": "❌ 出错了：{detail}",
                       "en": "❌ Something went wrong: {detail}"},
+    "error.message_gone": {"zh": "⚠️ 你点的那条消息已经不在了（可能已被清理），"
+                                 "请重新发送命令打开菜单再点。",
+                           "en": "⚠️ That message is gone (it may have been "
+                                 "cleaned up). Please send the command again "
+                                 "to reopen the menu."},
     # ---- 开机表单（菜单 1） ----
     "boot.form_title": {"zh": "🚀 开机配置（按钮矩阵）：",
                         "en": "🚀 Boot configuration (button matrix):"},

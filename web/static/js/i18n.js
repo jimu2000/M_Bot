@@ -73,8 +73,7 @@
     "login.tg_code": { zh: "6 位验证码", en: "6-digit code" },
     "login.tg_submit": { zh: "验证码登录", en: "Log in with code" },
     "login.default_cred": { zh: "默认凭据请查看部署文档", en: "See the deployment docs for the default credentials" },
-    "login.github_home": { zh: "GitHub开源主页", en: "GitHub Home" },
-    "login.github_project": { zh: "GitHub 项目", en: "GitHub Project" },
+    "login.github_project": { zh: "GitHub 免费开源项目", en: "GitHub Free Open Source Project" },
     /* ---- 概览页 / 云报告 ---- */
     "overview.saved": { zh: "已保存会话", en: "Saved Sessions" },
     "overview.search_ph": { zh: "按名称 / IP 搜索", en: "Search by name / IP" },

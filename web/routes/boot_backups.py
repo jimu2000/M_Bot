@@ -59,6 +59,7 @@ from web.deps import (
     oci_error_response,
     resolve_profile,
 )
+from web.routes.cloudreport import clear_cloud_report_cache
 from web.routes.instances import clear_instance_list_cache
 from web.routes.volumes import clear_volumes_cache
 from web.tasks import PLAN_DEFAULTS
@@ -317,16 +318,30 @@ def create(body: CreateBackupBody,
     return result
 
 
+class DeleteBackupBody(BaseModel):
+    """删除备份确认体：confirm=true（与 query 参数二选一）。"""
+    confirm: bool = False
+
+
 @router.delete("/api/boot-backups/{backup_id}")
 def delete(backup_id: str,
            profile: str = Query(default=None),
            region: str = Query(default=None),
            confirm: bool = Query(default=False),
+           body: DeleteBackupBody = None,
            username: str = Depends(get_current_user)):
-    """删除备份（须 confirm=true；删了不可恢复）。"""
-    if not confirm:
-        return error_response("删除备份需要确认：请传 confirm=true",
-                              status_code=400)
+    """删除备份（须 confirm=true；删了不可恢复）。
+
+    confirm 可走 query 参数（?confirm=true）或 DELETE 请求体
+    （{"confirm": true}），二选一；都不传时报错并写明两种传法。
+    """
+    confirmed = confirm or (body is not None and body.confirm)
+    if not confirmed:
+        return error_response(
+            "删除备份需要确认：请传 confirm=true"
+            "（query 参数 ?confirm=true，或 DELETE 请求体 "
+            '{"confirm": true}）',
+            status_code=400)
     try:
         cli, _compartment_id = resolve_profile(profile, region)
         delete_boot_volume_backup(cli, backup_id)
@@ -398,6 +413,7 @@ def restore(backup_id: str,
         clear_instance_list_cache(profile or config.DEFAULT_PROFILE)
         # Restore built a new boot volume, so the boot volume list cache must be cleared too. 恢复新建了一块启动盘，启动盘列表缓存也要清。
         clear_volumes_cache(profile or config.DEFAULT_PROFILE)
+        clear_cloud_report_cache()
     except ValueError as exc:
         return error_response(str(exc), status_code=400)
     except OCIError as exc:

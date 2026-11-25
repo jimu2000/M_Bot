@@ -297,33 +297,36 @@ def build_application():
 
     # ---- 文字输入（改名 / 重装确认，见 handlers_extra.text_input_callback） ----
     # Only plain text messages are handled here; commands still go to unknown_command below. 只处理纯文字消息；命令仍走下面的 unknown_command。
+    # 三个文字输入 handler 必须分在不同 group：PTB 每 group 只跑第一个
+    # 匹配的 handler，同 group 下后注册的永远收不到消息（v2.01 的教训：
+    # 绑定域名输二级域名后无反馈，就是 text_input_callback 在同 group
+    # 先注册、把消息吞了）。各 handler 只认自己的 user_data 状态。
     application.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND,
         handlers_extra.text_input_callback))
-    # ---- Bind-domain subdomain input ----
-    # Only handled when user_data has bind_domain_pending and a Zone is already selected; other text input returns False and does not affect the two handlers above. 只在 user_data 有 bind_domain_pending 且已选 Zone 时处理，其他文字输入返回 False，不影响上面两个 handler。
+    # ---- Bind-domain subdomain input (group 1) ----
     application.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND,
-        bind_domain.bind_domain_text_input))
-    # ---- 客户端工具的待输入消息（阶段 5 工作包 B） ----
+        bind_domain.bind_domain_text_input), group=1)
+    # ---- 客户端工具的待输入消息（阶段 5 工作包 B，group 2） ----
     # Plain text is dispatched by the pending-input state in user_data (silently ignored when there is no state; coexists with text_input_callback above, each handling only its own state); 纯文本按 user_data 里的待输入状态分发（无状态时静默忽略，与上面的 text_input_callback 共存，各自只处理自己的状态）；
     # files are only handled while /uploadapi is waiting for an upload. 文件只在 /uploadapi 等待上传时处理。
     application.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND,
-        handlers_client.handle_client_text_input))
+        handlers_client.handle_client_text_input), group=2)
     application.add_handler(MessageHandler(
         filters.Document.ALL, handlers_client.handle_client_document))
     # ---- 开机表单的脚本文件上传（菜单 1 表单） ----
     # Boot-script file upload for the menu-1 boot form: only handled while pending_input is boot_script, coexisting with handle_client_document above (each recognizes only its own state). 开机表单的脚本文件上传（菜单 1 表单）：只在 pending_input 是 boot_script 时处理，与上面的 handle_client_document 共存（各自只认自己的状态）。
     application.add_handler(MessageHandler(
         filters.Document.ALL, handlers_extra.boot_form_document_callback))
-    # ---- /oci 的 config 文件上传与粘贴文本 ----
-    # /oci config file upload and pasted text: only handled in the oci_awaiting state, coexisting with the document/text handlers above (each recognizes only its own state; ua_awaiting takes priority over oci_awaiting). /oci 的 config 文件上传与粘贴文本：只在 oci_awaiting 状态时处理，与上面的 document/text 处理共存（各自只认自己的状态；ua_awaiting 优先于 oci_awaiting）。
+    # ---- /oci 的 config 文件上传与粘贴文本（文字输入 group 3） ----
+    # /oci config file upload and pasted text: only handled in the oci_awaiting state, coexisting with the document/text handlers above (each recognizes only its own state; ua_awaiting takes priority over oci_awaiting). /oci 的 config 文件上传与粘贴文本：只在 oci_awaiting 状态时处理，与上面的 document/text 处理共存（各自只认自己的状态；ua_awaiting 优先于 oci_awaiting）。文字输入放 group 3：同 group 下先注册的 text_input_callback 会吞掉它（与绑定域名同一根因）。
     application.add_handler(MessageHandler(
         filters.Document.ALL, handlers_menu.handle_oci_document))
     application.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND,
-        handlers_menu.handle_oci_text_input))
+        handlers_menu.handle_oci_text_input), group=3)
 
     # ---- 未知命令 / 未知消息 ----
     application.add_handler(MessageHandler(filters.COMMAND,

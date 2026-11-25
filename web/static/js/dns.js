@@ -78,6 +78,10 @@
 
       var nameCell = document.createElement("td");
       nameCell.appendChild(el("b", rec.name || "—"));
+      if (rec.bound_instance) {
+        nameCell.appendChild(document.createElement("br"));
+        nameCell.appendChild(el("span", "🔗 已绑定到实例 " + rec.bound_instance, "badge badge-green"));
+      }
       tr.appendChild(nameCell);
 
       // Render content with textContent, never innerHTML, to prevent XSS. 内容用 textContent 渲染，不走 innerHTML，防 XSS。
@@ -187,10 +191,18 @@
   /* ---------- 删除 / 代理切换 ---------- */
 
   function deleteRecord(rec) {
+    var warning = "";
+    if (rec.bound_instance) {
+      warning = "<p>⚠️ 删除后实例 " + MBot.escapeHtml(rec.bound_instance) +
+        " 将失去域名指向。</p>";
+    } else if (["MX", "TXT", "CNAME"].indexOf(rec.type) !== -1) {
+      warning = "<p>⚠️ 这是 " + MBot.escapeHtml(rec.type) +
+        " 记录（非实例绑定），删除可能影响邮件/验证等服务。</p>";
+    }
     MBot.confirmDialog(
       "删除 DNS 记录",
       "<p>确定删除记录 <b>" + MBot.escapeHtml(rec.type + " " + rec.name) +
-        "</b> 吗？此操作不可撤销。</p>",
+        "</b> 吗？此操作不可撤销。</p>" + warning,
       "确认删除", true
     ).then(function (ok) {
       if (!ok) return;

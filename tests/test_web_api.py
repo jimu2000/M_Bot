@@ -768,6 +768,61 @@ class TestCreateAndTasksApi(WebApiTestCase):
         self.assertIn("E2 已满", r.json()["error"])
         mock_grabber_cls.assert_not_called()
 
+    @patch("web.tasks.Grabber")
+    @patch("web.routes.create.get_image_arch", return_value="aarch64")
+    @patch("web.routes.create.can_launch", return_value=(True, "可以创建"))
+    def test_create_image_arch_mismatch_400(self, mock_can, mock_arch,
+                                            mock_grabber_cls):
+        """aarch64 镜像 + E2 形状：事前校验 400，不启动 Grabber。"""
+        r = self.client.post("/api/create", json=CREATE_BODY)
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("镜像架构与形状不匹配", r.json()["error"])
+        self.assertIn("x86_64", r.json()["error"])
+        mock_grabber_cls.assert_not_called()
+
+    @patch("web.tasks.Grabber")
+    @patch("web.routes.create.get_image_arch", return_value="x86_64")
+    @patch("web.routes.create.can_launch", return_value=(True, "可以创建"))
+    def test_create_image_arch_match_passes(self, mock_can, mock_arch,
+                                            mock_grabber_cls):
+        """x86_64 镜像 + E2 形状：校验通过，任务正常创建。"""
+        mock_grabber_cls.return_value.run.return_value = GrabResult(
+            instance_id=FAKE_INSTANCE, attempts=1, releases=0,
+            elapsed_seconds=1.0)
+        r = self.client.post("/api/create", json=CREATE_BODY)
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.json()["task_id"])
+
+    @patch("web.tasks.Grabber")
+    @patch("web.routes.create.get_image_arch", return_value=None)
+    @patch("web.routes.create.can_launch", return_value=(True, "可以创建"))
+    def test_create_image_arch_unknown_skips_check(self, mock_can, mock_arch,
+                                                   mock_grabber_cls):
+        """镜像架构推断不出时不阻塞创建（抢机失败时 OCI 自己报错）。"""
+        mock_grabber_cls.return_value.run.return_value = GrabResult(
+            instance_id=FAKE_INSTANCE, attempts=1, releases=0,
+            elapsed_seconds=1.0)
+        r = self.client.post("/api/create", json=CREATE_BODY)
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.json()["task_id"])
+
+    @patch("web.tasks.Grabber")
+    @patch("web.routes.create.get_image_arch")
+    @patch("web.routes.create.can_launch", return_value=(True, "可以创建"))
+    def test_create_placeholder_arch_mismatch_no_oci_call(
+            self, mock_can, mock_arch, mock_grabber_cls):
+        """占位符镜像的架构取自后缀：aarch64 占位符 + E2 直接 400，
+        且不调 OCI 查镜像（mock 未被调用）。"""
+        body = dict(CREATE_BODY)
+        body["image_id"] = "ocid1.image.oc1..xxxxxxxx-aarch64"
+        with patch.dict("web.routes.create.config.IMAGE_IDS",
+                        {"aarch64": "ocid1.image.oc1..realxxxx"}):
+            r = self.client.post("/api/create", json=body)
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("镜像架构与形状不匹配", r.json()["error"])
+        mock_arch.assert_not_called()
+        mock_grabber_cls.assert_not_called()
+
     def test_create_missing_field_422(self):
         """缺必填字段返回 422（信封格式）。"""
         body = dict(CREATE_BODY)

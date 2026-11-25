@@ -40,6 +40,7 @@ from tgbot.notify import (
     start_ip_followup,
 )
 from web import config
+from web.routes.cloudreport import clear_cloud_report_cache
 
 try:
     # APScheduler: cron scheduling for grabber plans (an explicit dependency in requirements.txt; when not installed, plans can still be added/edited/removed, but the scheduler cannot start and validate_cron reports the error explicitly). APScheduler：抢机计划的 cron 调度（requirements.txt 里有显式依赖；未安装时计划仍可增删改，但调度器无法启动，validate_cron 会明确报错）。
@@ -410,6 +411,7 @@ def _run_grabber(registry, task_id, cli, compartment_id, params,
         f"释放 {result.releases} 台 CPU 不符，"
         f"总耗时 {result.elapsed_seconds:.0f} 秒。")
     registry.set_status(task_id, "done")
+    clear_cloud_report_cache()
     if notify:
         notify_with_flag = dict(notify)
         notify_with_flag["cpu_unverified"] = cpu_unverified
@@ -627,6 +629,7 @@ def _run_bootswap(registry, task_id, cli, compartment_id, instance_id,
         task_id,
         f"换盘成功：新盘 …{new_tail}，旧盘 …{old_tail}（{old_note}）。")
     registry.set_status(task_id, "done")
+    clear_cloud_report_cache()
     if notify:
         body = (
             f"✅ 实例「{instance_name}」引导卷恢复成功。\n"

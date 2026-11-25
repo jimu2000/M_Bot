@@ -655,6 +655,33 @@ class TestCancelUnknownError(HandlersTestCase):
         context.error = OCIError("boom")
         await handlers.error_handler(None, context)
 
+    async def test_error_handler_not_modified_silent(self):
+        """“Message is not modified” 只记 debug：不刷 ERROR、不打扰用户。"""
+        from telegram.error import BadRequest
+        update = make_message_update()
+        context = make_context()
+        context.error = BadRequest(
+            "Message is not modified: specified new message content "
+            "and reply markup are exactly the same")
+        with patch.object(handlers.logger, "exception") as exc_log:
+            await handlers.error_handler(update, context)
+            exc_log.assert_not_called()
+        update.effective_message.reply_text.assert_not_awaited()
+        context.bot.send_message.assert_not_awaited()
+
+    async def test_error_handler_message_gone_human_text(self):
+        """“Message to edit not found” 发人话提示，不发 Telegram 原文。"""
+        from telegram.error import BadRequest
+        update = make_message_update()
+        context = make_context()
+        context.error = BadRequest("Message to edit not found")
+        await handlers.error_handler(update, context)
+        context.bot.send_message.assert_awaited_once()
+        sent = context.bot.send_message.await_args.kwargs.get("text", "")
+        self.assertNotIn("Message to edit not found", sent)
+        self.assertIn("已经不在了", sent)
+        update.effective_message.reply_text.assert_not_awaited()
+
 
 if __name__ == "__main__":
     unittest.main()

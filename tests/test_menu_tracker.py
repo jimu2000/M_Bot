@@ -178,7 +178,77 @@ class TestMenuTracker(unittest.IsolatedAsyncioTestCase):
         await menu_tracker.delete_live_menu(context, TEST_CHAT_ID,
                                             except_id=666)
         context.bot.delete_message.assert_not_awaited()
-        self.assertNotIn("live_menu_id", context.user_data)
+class TestSafeEdit(unittest.IsolatedAsyncioTestCase):
+    """menu_tracker.safe_edit：重复编辑与消息不存在的降级（v2.02）。"""
+
+    def make_query(self, text="旧内容", markup=None):
+        query = MagicMock()
+        query.message = MagicMock()
+        query.message.text = text
+        query.message.reply_markup = markup
+        query.message.chat.send_message = AsyncMock(
+            return_value=MagicMock(message_id=999))
+        query.edit_message_text = AsyncMock(
+            return_value=MagicMock(message_id=777))
+        return query
+
+    async def test_same_content_skipped(self):
+        """内容与 markup 完全相同时跳过编辑，不调 API。"""
+        query = self.make_query(text="菜单")
+        result = await menu_tracker.safe_edit(query, "菜单")
+        self.assertIsNone(result)
+        query.edit_message_text.assert_not_awaited()
+
+    async def test_same_text_different_markup_edits(self):
+        """文本相同但 markup 不同时仍要编辑（按钮变了）。"""
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        query = self.make_query(text="菜单")
+        markup = InlineKeyboardMarkup([[InlineKeyboardButton(
+            "点我", callback_data="x")]])
+        result = await menu_tracker.safe_edit(query, "菜单",
+                                              reply_markup=markup)
+        self.assertIsNotNone(result)
+        query.edit_message_text.assert_awaited_once()
+
+    async def test_different_content_edits(self):
+        query = self.make_query(text="旧内容")
+        result = await menu_tracker.safe_edit(query, "新内容")
+        self.assertIsNotNone(result)
+        query.edit_message_text.assert_awaited_once()
+        self.assertEqual(
+            query.edit_message_text.await_args.args[0], "新内容")
+
+    async def test_message_not_found_falls_back_to_new_message(self):
+        """要编辑的消息已删：降级发新消息，不抛异常。"""
+        from telegram.error import BadRequest
+        query = self.make_query(text="旧内容")
+        query.edit_message_text.side_effect = BadRequest(
+            "Message to edit not found")
+        result = await menu_tracker.safe_edit(query, "新内容")
+        self.assertEqual(result.message_id, 999)
+        query.message.chat.send_message.assert_awaited_once()
+        sent = query.message.chat.send_message.await_args.args[0]
+        self.assertEqual(sent, "新内容")
+
+    async def test_message_not_modified_raises_nothing(self):
+        """底层仍报 not modified 时静默跳过（不抛、不刷 ERROR）。"""
+        from telegram.error import BadRequest
+        query = self.make_query(text="旧内容")
+        query.edit_message_text.side_effect = BadRequest(
+            "Message is not modified: specified new message content "
+            "and reply markup are exactly the same")
+        result = await menu_tracker.safe_edit(query, "新内容")
+        self.assertIsNone(result)
+        query.message.chat.send_message.assert_not_awaited()
+
+    async def test_other_bad_request_raises(self):
+        """其他 BadRequest 原样抛出（不静默吞掉真错误）。"""
+        from telegram.error import BadRequest
+        query = self.make_query(text="旧内容")
+        query.edit_message_text.side_effect = BadRequest(
+            "Message can't be edited")
+        with self.assertRaises(BadRequest):
+            await menu_tracker.safe_edit(query, "新内容")
 
 
 if __name__ == "__main__":

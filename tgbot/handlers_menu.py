@@ -466,6 +466,11 @@ async def handle_oci_text_input(update: Update,
         return
     if context.user_data.get("ua_awaiting"):
         return
+    # 绑定域名流程优先：bind_domain_pending 已选 Zone 时，这条文字归
+    # 绑定域名处理（group=1），这里不消费，避免双重处理。
+    bd_pending = context.user_data.get("bind_domain_pending") or {}
+    if bd_pending.get("zone_id"):
+        return
     if not context.user_data.get("oci_awaiting"):
         return
     message = update.effective_message
@@ -662,7 +667,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         version_text = "未知" if version == "未知" else f"v{version}"
         web_state = service_status(WEB_SERVICE)
         bot_state = service_status(BOT_SERVICE)
-        await query.edit_message_text(
+        await menu_tracker.safe_edit(query, 
             "📊 面板状态\n\n"
             f"面板版本：{version_text}\n"
             f"面板服务（{WEB_SERVICE}）：{web_state}\n"
@@ -673,13 +678,13 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "adm:version":
         version = read_panel_version()
         version_text = "未知" if version == "未知" else f"v{version}"
-        await query.edit_message_text(
+        await menu_tracker.safe_edit(query, 
             f"📌 当前版本：{version_text}",
             reply_markup=admin_keyboard())
         return
 
     if data == "adm:restart-web":
-        await query.edit_message_text(
+        await menu_tracker.safe_edit(query, 
             "确定要重启面板服务吗？重启期间面板约几秒不可用，"
             "机器人不受影响。",
             reply_markup=_confirm_keyboard("adm:confirm-web",
@@ -687,20 +692,20 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "adm:confirm-web":
-        await query.edit_message_text("正在重启面板服务…")
+        await menu_tracker.safe_edit(query, "正在重启面板服务…")
         try:
             await run_sync(restart_service, WEB_SERVICE)
         except RuntimeError as exc:
-            await query.edit_message_text(
+            await menu_tracker.safe_edit(query, 
                 f"❌ 重启面板服务失败：{exc}",
                 reply_markup=admin_keyboard())
             return
-        await query.edit_message_text("✅ 面板服务已重启。",
+        await menu_tracker.safe_edit(query, "✅ 面板服务已重启。",
                                       reply_markup=admin_keyboard())
         return
 
     if data == "adm:restart-bot":
-        await query.edit_message_text(
+        await menu_tracker.safe_edit(query, 
             "确定要重启机器人服务吗？重启后机器人会断开本次会话几秒，"
             "之后自动恢复。",
             reply_markup=_confirm_keyboard("adm:confirm-bot",
@@ -709,17 +714,17 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "adm:confirm-bot":
         # Send the message first, then restart: the restart kills the current process, so any later reply never goes out. 先发消息再重启：重启会杀掉当前进程，之后的回复发不出去。
-        await query.edit_message_text("正在重启机器人服务，几秒后恢复…")
+        await menu_tracker.safe_edit(query, "正在重启机器人服务，几秒后恢复…")
         try:
             await run_sync(restart_service, BOT_SERVICE)
         except RuntimeError as exc:
-            await query.edit_message_text(
+            await menu_tracker.safe_edit(query, 
                 f"❌ 重启机器人服务失败：{exc}",
                 reply_markup=admin_keyboard())
             return
         # Normally the process is already killed and this line is never reached; keep it just in case. 正常情况进程已被杀掉，走不到这里；以防万一补一句。
-        await query.edit_message_text("✅ 机器人服务重启命令已发出。",
+        await menu_tracker.safe_edit(query, "✅ 机器人服务重启命令已发出。",
                                       reply_markup=admin_keyboard())
         return
 
-    await query.edit_message_text("参数错误，请重新发送 /admin。")
+    await menu_tracker.safe_edit(query, "参数错误，请重新发送 /admin。")

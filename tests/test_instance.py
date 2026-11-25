@@ -12,8 +12,9 @@ from unittest.mock import MagicMock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from oci.client import NotFoundError
-from oci.instance import (find_instance_by_name, get_instance,
-                          get_instance_state, launch_instance,
+from oci.instance import (find_instance_by_name, get_image_arch,
+                          get_instance, get_instance_state,
+                          image_arch_from_name, launch_instance,
                           list_instances, restart_instance, start_instance,
                           stop_instance, terminate_instance)
 
@@ -243,6 +244,39 @@ class TestFindInstanceByName(unittest.TestCase):
         cli = _mock_cli(FAKE_LIST_RESPONSE)
         self.assertIsNone(
             find_instance_by_name(cli, FAKE_COMPARTMENT, "no-such-name"))
+
+
+class TestImageArch(unittest.TestCase):
+    """镜像架构推断（Bug 6：建抢机前校验镜像架构与形状）。"""
+
+    def test_aarch64_from_name(self):
+        self.assertEqual(
+            image_arch_from_name("Canonical-Ubuntu-24.04-aarch64-2026.11.05-0"),
+            "aarch64")
+
+    def test_x86_64_from_name(self):
+        self.assertEqual(
+            image_arch_from_name("Oracle-Linux-9.5-x86_64-2026.10.01-0"),
+            "x86_64")
+        self.assertEqual(image_arch_from_name("CentOS-8-amd64"), "x86_64")
+
+    def test_no_marker_returns_none(self):
+        self.assertIsNone(image_arch_from_name("my-custom-image"))
+        self.assertIsNone(image_arch_from_name(None))
+        self.assertIsNone(image_arch_from_name(123))
+
+    def test_get_image_arch_queries_image_get(self):
+        cli = MagicMock()
+        cli.run.return_value = {
+            "display-name": "Canonical-Ubuntu-24.04-aarch64-2026.11.05-0"}
+        self.assertEqual(get_image_arch(cli, FAKE_IMAGE), "aarch64")
+        cli.run.assert_called_once_with(
+            ["compute", "image", "get", "--image-id", FAKE_IMAGE])
+
+    def test_get_image_arch_failure_returns_none(self):
+        cli = MagicMock()
+        cli.run.side_effect = Exception("NotAuthorizedOrNotFound")
+        self.assertIsNone(get_image_arch(cli, FAKE_IMAGE))
 
 
 if __name__ == "__main__":

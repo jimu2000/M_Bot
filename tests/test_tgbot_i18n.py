@@ -364,6 +364,42 @@ class TestStartHelpOracle(HandlersI18nTestCase):
         self.assertIn("Command list", text)
         self.assertIn("/lang", text)
         self.assertNotIn("命令清单", text)
+        """/start 中文：主菜单 GitHub URL 按钮 + 欢迎词里 GitHub 链接明文，
+        一键测活不在主菜单（仍在 /oracle 菜单第 15 项）。"""
+        update = make_message_update()
+        await handlers.start_command(update, make_context())
+        text = reply_text_of(update)
+        self.assertIn("GitHub 免费开源项目："
+                      "https://github.com/jimu2000/M_Bot", text)
+        markup = reply_markup_of(update)
+        texts = button_texts(markup)
+        self.assertIn("GitHub 免费开源项目", texts)
+        self.assertNotIn("❤️ 一键测活", texts)
+        urls = [btn.url for row in markup.inline_keyboard for btn in row]
+        self.assertIn("https://github.com/jimu2000/M_Bot", urls)
+        github_btn = [btn for row in markup.inline_keyboard for btn in row
+                      if btn.url == "https://github.com/jimu2000/M_Bot"]
+        self.assertEqual(len(github_btn), 1)
+        self.assertEqual(github_btn[0].text, "GitHub 免费开源项目")
+
+    async def test_start_github_button_and_welcome_url_en(self):
+        """/start 英文：主菜单 GitHub URL 按钮 + 欢迎词里 GitHub 链接明文。"""
+        update = make_message_update()
+        await handlers.start_command(update, make_context(lang="en"))
+        text = reply_text_of(update)
+        self.assertIn("GitHub Free Open Source Project: "
+                      "https://github.com/jimu2000/M_Bot", text)
+        markup = reply_markup_of(update)
+        texts = button_texts(markup)
+        self.assertIn("GitHub Free Open Source Project", texts)
+        urls = [btn.url for row in markup.inline_keyboard for btn in row]
+        self.assertIn("https://github.com/jimu2000/M_Bot", urls)
+
+    def test_health_still_in_oracle_menu(self):
+        """一键测活仍可从 /oracle 菜单进入（第 15 项，o:health）。"""
+        markup = kb.oracle_menu_keyboard()
+        self.assertIn("o:health", button_data(markup))
+        self.assertIn("15. 一键测活", button_texts(markup))
 
     async def test_oracle_en(self):
         """/oracle 英文：标题与菜单项英文，带语言切换按钮。"""

@@ -153,6 +153,25 @@ class DomainTestCase(unittest.IsolatedAsyncioTestCase):
                                           return_value=self.cf)
         self._cf_cfg_patch.start()
         self.addCleanup(self._cf_cfg_patch.stop)
+        # ensure_instances_cached 拉实例只为给 DNS 记录标已绑定：测试里
+        # 不碰真实 OCI，默认返回空实例列表（已绑定测试自行放缓存实例）。
+        self._cli_patch = patch.object(he, "get_cli",
+                                       return_value=MagicMock())
+        self._cli_patch.start()
+        self.addCleanup(self._cli_patch.stop)
+        self._compartment_patch = patch.object(
+            he, "get_compartment", return_value="fake-compartment")
+        self._compartment_patch.start()
+        self.addCleanup(self._compartment_patch.stop)
+        self._list_patch = patch.object(he, "list_instances",
+                                        return_value=[])
+        self._list_patch.start()
+        self.addCleanup(self._list_patch.stop)
+        self._attach_patch = patch.object(
+            he, "attach_public_ips",
+            side_effect=lambda cli, instances: instances)
+        self._attach_patch.start()
+        self.addCleanup(self._attach_patch.stop)
 
 
 class TestDomainCommand(DomainTestCase):
@@ -943,6 +962,137 @@ class TestDnsDeleteFlow(DomainTestCase):
         context = self._stored_context()
         await he.domain_callback(update, context)
         self.assertIn("不存在", reply_text_of(update))
+
+
+class TestBoundMap(unittest.TestCase):
+    """bound_map_from_instances：只认未终止且有公网 IP 的实例。"""
+
+    def test_running_with_ip_mapped(self):
+        instances = [
+            {"display-name": "inst-1", "lifecycle-state": "RUNNING",
+             "public-ip": "203.0.113.10"},
+            {"display-name": "inst-2", "lifecycle-state": "STOPPED",
+             "public-ip": "203.0.113.11"},
+        ]
+        self.assertEqual(
+            he.bound_map_from_instances(instances),
+            {"203.0.113.10": "inst-1", "203.0.113.11": "inst-2"})
+
+    def test_terminated_and_no_ip_skipped(self):
+        instances = [
+            {"display-name": "gone", "lifecycle-state": "TERMINATED",
+             "public-ip": "203.0.113.10"},
+            {"display-name": "noip", "lifecycle-state": "RUNNING",
+             "public-ip": None},
+            {"display-name": "ok", "lifecycle-state": "RUNNING",
+             "public-ip": "203.0.113.12"},
+        ]
+        self.assertEqual(
+            he.bound_map_from_instances(instances),
+            {"203.0.113.12": "ok"})
+
+    def test_empty_and_none(self):
+        self.assertEqual(he.bound_map_from_instances([]), {})
+        self.assertEqual(he.bound_map_from_instances(None), {})
+
+
+class TestBoundAnnotation(unittest.TestCase):
+    """fmt_domain_records：已绑定 A 记录标出实例，未绑定/非 A 不标。"""
+
+    def test_bound_a_record_annotated(self):
+        bmap = {"203.0.113.10": "inst-1"}
+        text = he.fmt_domain_records("example.com", FAKE_RECORDS,
+                                     bound_map=bmap)
+        self.assertIn("🔗 已绑定到实例 inst-1", text)
+        self.assertIn("其中 1 条已绑定到实例", text)
+
+    def test_unbound_and_non_a_not_annotated(self):
+        text = he.fmt_domain_records("example.com", FAKE_RECORDS,
+                                     bound_map={})
+        self.assertNotIn("已绑定到实例", text)
+        self.assertIn("TXT example.com -> v=spf1 -all", text)
+
+    def test_other_ip_not_annotated(self):
+        bmap = {"203.0.113.99": "inst-9"}
+        text = he.fmt_domain_records("example.com", FAKE_RECORDS,
+                                     bound_map=bmap)
+        self.assertNotIn("已绑定到实例", text)
+
+    def test_fmt_domain_record_line_bound(self):
+        line = he.fmt_domain_record_line(FAKE_RECORDS[0],
+                                         bound_name="inst-1")
+        self.assertIn("🔗 已绑定到实例 inst-1", line)
+
+
+class TestDeletePickKeyboardBound(unittest.TestCase):
+    """domain_delete_pick_keyboard：已绑定排前面、带 🔗 实例名。"""
+
+    def test_bound_first_with_label(self):
+        from tgbot.keyboards import domain_delete_pick_keyboard
+        bmap = {"203.0.113.10": "inst-1"}
+        markup = domain_delete_pick_keyboard(FAKE_ZONE_ID, FAKE_RECORDS,
+                                             bmap)
+        rows = markup.inline_keyboard
+        first = rows[0][0]
+        self.assertIn("🔗inst-1", first.text)
+        self.assertIn("A", first.text)
+        self.assertEqual(first.callback_data,
+                         f"domain:del:{FAKE_ZONE_ID}:0")
+        # 未绑定的 MX/TXT 排在后面，callback_data 仍用原始下标。
+        callbacks = [btn.callback_data
+                     for row in rows for btn in row]
+        self.assertIn(f"domain:del:{FAKE_ZONE_ID}:1", callbacks)
+        self.assertIn(f"domain:del:{FAKE_ZONE_ID}:2", callbacks)
+
+    def test_no_bound_map_keeps_order(self):
+        from tgbot.keyboards import domain_delete_pick_keyboard
+        markup = domain_delete_pick_keyboard(FAKE_ZONE_ID, FAKE_RECORDS)
+        rows = markup.inline_keyboard
+        self.assertEqual(rows[0][0].callback_data,
+                         f"domain:del:{FAKE_ZONE_ID}:0")
+        self.assertNotIn("🔗", rows[0][0].text)
+
+
+class TestDeleteConfirmWarnings(DomainTestCase):
+    """删除确认页：已绑定 / MX 等关键记录有警告，普通 A 记录没有。"""
+
+    def _bound_context(self):
+        context = make_context()
+        context.user_data["domain_zones"] = FAKE_ZONES
+        context.user_data["domain_records"] = {
+            FAKE_ZONE_ID: list(FAKE_RECORDS)}
+        context.user_data["instances"] = [
+            {"display-name": "inst-1", "lifecycle-state": "RUNNING",
+             "public-ip": "203.0.113.10"}]
+        return context
+
+    async def test_bound_record_warning(self):
+        update = make_update(callback_data=f"domain:del:{FAKE_ZONE_ID}:0")
+        await he.domain_callback(update, self._bound_context())
+        text = reply_text_of(update)
+        self.assertIn("已绑定到实例 inst-1", text)
+        self.assertIn("将失去这个域名指向", text)
+
+    async def test_mx_record_warning(self):
+        update = make_update(callback_data=f"domain:del:{FAKE_ZONE_ID}:2")
+        await he.domain_callback(update, self._bound_context())
+        text = reply_text_of(update)
+        self.assertIn("MX 记录", text)
+        self.assertIn("可能影响邮件、验证等服务", text)
+
+    async def test_plain_a_record_no_warning(self):
+        context = make_context()
+        context.user_data["domain_zones"] = FAKE_ZONES
+        context.user_data["domain_records"] = {
+            FAKE_ZONE_ID: list(FAKE_RECORDS)}
+        context.user_data["instances"] = [
+            {"display-name": "other", "lifecycle-state": "RUNNING",
+             "public-ip": "203.0.113.99"}]
+        update = make_update(callback_data=f"domain:del:{FAKE_ZONE_ID}:0")
+        await he.domain_callback(update, context)
+        text = reply_text_of(update)
+        self.assertNotIn("已绑定到实例", text)
+        self.assertNotIn("可能影响邮件", text)
 
 
 if __name__ == "__main__":

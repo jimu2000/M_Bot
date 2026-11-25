@@ -424,6 +424,20 @@ class TestNetbootGuide(unittest.TestCase):
                             for s in guide["menu_steps"]))
         self.assertTrue(guide["dd_steps"])
 
+    def test_tftp_node_from_env(self):
+        """MBOT_TFTP_NODE 设了自己的 TFTP 节点时，向导默认用它
+        （真实 IP 只放部署环境变量，不写进公开代码）。"""
+        import importlib
+
+        import oci.rescue
+        with patch.dict(os.environ,
+                        {"MBOT_TFTP_NODE": "203.0.113.55"}):
+            importlib.reload(oci.rescue)
+            guide = oci.rescue.netboot_guide(
+                FAKE_INSTANCE, region="ap-singapore-1")
+            self.assertEqual(guide["tftp_server"], "203.0.113.55")
+        importlib.reload(oci.rescue)
+
 
 class TestConsoleConnections(unittest.TestCase):
     """控制台连接：RSA 校验与 CRUD 命令。"""

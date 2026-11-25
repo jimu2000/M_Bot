@@ -106,7 +106,7 @@ class TestWebPages(unittest.TestCase):
             "M_Bot Oracle开源管理面板",
             "/static/js/login.js",
             "https://github.com/jimu2000/M_Bot",
-            "GitHub 项目",
+            "GitHub 免费开源项目",
             'target="_blank"',
         ])
         self.assertNotIn('class="sidebar"', self.pages["/login"].text)
@@ -336,7 +336,7 @@ class TestRealBackendIntegration(unittest.TestCase):
         resp = self.client.get("/login")
         self.assertEqual(resp.status_code, 200)
         self.assertIn("https://github.com/jimu2000/M_Bot", resp.text)
-        self.assertIn("GitHub 项目", resp.text)
+        self.assertIn("GitHub 免费开源项目", resp.text)
         self.assertIn('target="_blank"', resp.text)
         resp = self.client.post("/api/auth/login", json={
             "username": "admin", "password": "test-password-123"})

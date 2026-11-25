@@ -144,6 +144,46 @@ class TestCloudReport(CloudReportTestCase):
         r = self.anon.get("/api/cloud-report/summary")
         self.assertEqual(r.status_code, 401)
 
+    @patch("web.routes.cloudreport.get_e2_usage")
+    @patch("web.routes.cloudreport.get_a1_usage")
+    @patch("web.routes.cloudreport.list_boot_volumes")
+    @patch("web.routes.cloudreport.list_instances")
+    def test_terminate_invalidates_report_cache(
+            self, mock_insts, mock_vols, mock_a1, mock_e2):
+        """ARM 全功能测试 Bug 4：终止实例后云报告立即变新数，
+        不等 60 秒缓存过期（启动盘 4 块/188GB -> 3 块/141GB）。"""
+        mock_insts.return_value = [
+            {"id": FAKE_INSTANCE, "lifecycle-state": "RUNNING"},
+            {"id": FAKE_INSTANCE_2, "lifecycle-state": "RUNNING"},
+        ]
+        mock_a1.return_value = {"ocpu_used": 2, "ocpu_limit": 4,
+                                "memory_used_gb": 12, "memory_limit_gb": 24,
+                                "instances": []}
+        mock_e2.return_value = {"count": 1, "limit": 2, "instances": []}
+        mock_vols.return_value = [
+            {"id": f"v{i}", "size-in-gbs": 47,
+             "lifecycle-state": "AVAILABLE"} for i in range(4)]
+        r = self.client.get("/api/cloud-report/summary")
+        self.assertEqual(r.json()["groups"][0]["volumes"],
+                         {"count": 4, "totalGB": 188})
+        # 终止后真实情况：只剩 3 块盘。
+        mock_vols.return_value = [
+            {"id": f"v{i}", "size-in-gbs": 47,
+             "lifecycle-state": "AVAILABLE"} for i in range(3)]
+        mock_insts.return_value = [
+            {"id": FAKE_INSTANCE, "lifecycle-state": "RUNNING"},
+        ]
+        with patch("web.routes.instances.resolve_profile",
+                   return_value=(MagicMock(), "compartment")), \
+                patch("web.routes.instances.terminate_instance"):
+            r = self.client.post(
+                f"/api/instances/{FAKE_INSTANCE_2}/terminate",
+                json={"confirm": True})
+        self.assertEqual(r.status_code, 200)
+        r = self.client.get("/api/cloud-report/summary")
+        self.assertEqual(r.json()["groups"][0]["volumes"],
+                         {"count": 3, "totalGB": 141})
+
 
 if __name__ == "__main__":
     unittest.main()

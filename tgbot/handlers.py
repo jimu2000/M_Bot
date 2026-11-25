@@ -284,7 +284,7 @@ async def oracle_menu_callback(update: Update,
         new_lang = toggle_user_lang(user.id if user else None)
         set_lang_context(context, new_lang)
         await _cleanup_switch_messages(update, context)
-        await query.edit_message_text(
+        await menu_tracker.safe_edit(query, 
             _oracle_menu_text(new_lang),
             reply_markup=oracle_menu_keyboard(
                 0, states=_menu_states(context),
@@ -294,7 +294,7 @@ async def oracle_menu_callback(update: Update,
 
     if data == "o:menu":
         await _cleanup_switch_messages(update, context)
-        await query.edit_message_text(
+        await menu_tracker.safe_edit(query, 
             _oracle_menu_text(lang),
             reply_markup=oracle_menu_keyboard(
                 0, states=_menu_states(context),
@@ -307,7 +307,7 @@ async def oracle_menu_callback(update: Update,
             page = int(parts[2])
         except ValueError:
             page = 0
-        await query.edit_message_text(
+        await menu_tracker.safe_edit(query, 
             _oracle_menu_text(lang),
             reply_markup=oracle_menu_keyboard(
                 page, states=_menu_states(context),
@@ -317,12 +317,12 @@ async def oracle_menu_callback(update: Update,
 
     if data == "o:instances":
         text, keyboard = await _load_instance_list(context, lang=lang)
-        await query.edit_message_text(text, reply_markup=keyboard)
+        await menu_tracker.safe_edit(query, text, reply_markup=keyboard)
         return
 
     item = parts[1] if len(parts) >= 2 else ""
     if not await _dispatch_extra(item, update, context):
-        await query.edit_message_text(
+        await menu_tracker.safe_edit(query, 
             bot_i18n.t(lang, "common.not_implemented"),
             reply_markup=back_to_oracle_keyboard(lang=lang))
 
@@ -337,7 +337,7 @@ async def instance_list_callback(update: Update,
     await query.answer()
     text, keyboard = await _load_instance_list(
         context, lang=lang_of(update, context))
-    await query.edit_message_text(text, reply_markup=keyboard)
+    await menu_tracker.safe_edit(query, text, reply_markup=keyboard)
 
 
 @require_allowed
@@ -361,7 +361,7 @@ async def instance_detail_callback(update: Update,
     inst = resolve_instance(context, idx)
     lang = lang_of(update, context)
     if inst is None:
-        await query.edit_message_text(
+        await menu_tracker.safe_edit(query, 
             bot_i18n.t(lang, "common.instance_gone"),
             reply_markup=back_to_oracle_keyboard(lang=lang))
         return
@@ -372,7 +372,7 @@ async def instance_detail_callback(update: Update,
         detail = await run_sync(get_instance, cli, instance_id)
     except Exception as exc:  # noqa: BLE001 - OCI 异常统一转提示
         logger.warning("查实例详情失败：%s", exc)
-        await query.edit_message_text(
+        await menu_tracker.safe_edit(query, 
             fmt_error(exc, lang=lang),
             reply_markup=back_to_oracle_keyboard(lang=lang))
         return
@@ -393,7 +393,7 @@ async def instance_detail_callback(update: Update,
                 run_remote_command)
         except Exception as exc:  # noqa: BLE001 - 检测失败只记日志
             logger.warning("查 CPU 型号失败：%s", exc)
-    await query.edit_message_text(
+    await menu_tracker.safe_edit(query, 
         fmt_instance_detail(detail, public_ip, cpu_model, lang=lang),
         reply_markup=instance_actions_keyboard(int(idx), state,
                                                lang=lang))
@@ -418,7 +418,7 @@ async def instance_action_callback(update: Update,
     inst = resolve_instance(context, idx)
     lang = lang_of(update, context)
     if inst is None:
-        await query.edit_message_text(
+        await menu_tracker.safe_edit(query, 
             bot_i18n.t(lang, "common.instance_gone"),
             reply_markup=back_to_oracle_keyboard(lang=lang))
         return
@@ -432,13 +432,13 @@ async def instance_action_callback(update: Update,
         context.user_data["pending_idx"] = idx
         item = "changeip" if action == "ip" else action
         if not await _dispatch_extra(item, update, context):
-            await query.edit_message_text(
+            await menu_tracker.safe_edit(query, 
                 bot_i18n.t(lang, "common.not_implemented"),
                 reply_markup=back_to_oracle_keyboard(lang=lang))
         return
 
     if action not in ("start", "stop", "restart", "terminate"):
-        await query.edit_message_text(
+        await menu_tracker.safe_edit(query, 
             bot_i18n.t(lang, "common.not_implemented"),
             reply_markup=back_to_oracle_keyboard(lang=lang))
         return
@@ -449,12 +449,12 @@ async def instance_action_callback(update: Update,
         text = bot_i18n.t(
             lang, "instances.confirm_terminate",
             name=html.escape(name, quote=False))
-        await query.edit_message_text(
+        await menu_tracker.safe_edit(query, 
             text, parse_mode="HTML",
             reply_markup=confirm_keyboard(action, idx, lang=lang))
         return
 
-    await query.edit_message_text(
+    await menu_tracker.safe_edit(query, 
         bot_i18n.t(lang, f"instances.confirm_{action}", name=name),
         reply_markup=confirm_keyboard(action, idx, lang=lang))
 
@@ -477,14 +477,14 @@ async def confirm_callback(update: Update,
 
     if action not in ("start", "stop", "restart", "terminate"):
         if not await _handle_confirm_extra(action, idx, update, context):
-            await query.edit_message_text(
+            await menu_tracker.safe_edit(query, 
                 bot_i18n.t(lang, "common.not_implemented"),
                 reply_markup=back_to_oracle_keyboard(lang=lang))
         return
 
     inst = resolve_instance(context, idx)
     if inst is None:
-        await query.edit_message_text(
+        await menu_tracker.safe_edit(query, 
             bot_i18n.t(lang, "common.instance_gone"),
             reply_markup=back_to_oracle_keyboard(lang=lang))
         return
@@ -506,7 +506,7 @@ async def confirm_callback(update: Update,
             await run_sync(terminate_instance, cli, instance_id)
     except Exception as exc:  # noqa: BLE001 - OCI 异常统一转提示
         logger.warning("%s实例失败：%s", verb, exc)
-        await query.edit_message_text(
+        await menu_tracker.safe_edit(query, 
             fmt_error(exc, lang=lang),
             reply_markup=back_to_oracle_keyboard(lang=lang))
         return
@@ -516,7 +516,7 @@ async def confirm_callback(update: Update,
         text = bot_i18n.t(lang, "instances.done_terminate", name=name)
     else:
         text = bot_i18n.t(lang, f"instances.done_{action}", name=name)
-    await query.edit_message_text(text,
+    await menu_tracker.safe_edit(query, text,
                                   reply_markup=back_to_oracle_keyboard(
                                       lang=lang))
 
@@ -529,7 +529,7 @@ async def cancel_callback(update: Update,
     """处理 x 回调：取消当前操作。"""
     query = update.callback_query
     await query.answer()
-    await query.edit_message_text(bot_i18n.t(lang_of(update, context),
+    await menu_tracker.safe_edit(query, bot_i18n.t(lang_of(update, context),
                                             "common.cancel"))
     # The message is now a plain-text result, no longer a selection box; clear the tracking. 消息已变成纯文字结果，不再是选择框，清空跟踪。
     menu_tracker.forget_live_menu(context)
@@ -552,12 +552,27 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     两种常规 Telegram API 情况只记日志、不打扰用户：
     - "Message is not modified"：重复点同一菜单项，编辑内容与当前一致；
     - "Query is too old"：点了过期的旧按钮（回调已失效）。
+    "Message to edit not found"：要编辑的消息已删，只发一句人话提示，
+    不把 Telegram 原文报错发给用户。
     """
-    logger.exception("处理 Telegram 更新时出错：%s", context.error)
     err_text = str(context.error)
     if ("Message is not modified" in err_text
             or "Query is too old" in err_text):
+        logger.debug("常规 Telegram 情况，不打扰用户：%s", err_text)
         return
+    if "Message to edit not found" in err_text:
+        logger.warning("要编辑的消息已不在：%s", err_text)
+        chat = getattr(update, "effective_chat", None)
+        if chat is not None:
+            try:
+                lang = lang_of(update) if update is not None else "zh"
+                await context.bot.send_message(
+                    chat_id=chat.id,
+                    text=bot_i18n.t(lang, "error.message_gone"))
+            except Exception:  # noqa: BLE001 - 通知失败也不要再抛
+                logger.exception("向用户发送错误通知失败")
+        return
+    logger.exception("处理 Telegram 更新时出错：%s", context.error)
     message = getattr(update, "effective_message", None)
     if message is not None:
         try:

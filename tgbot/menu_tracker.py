@@ -17,7 +17,57 @@
 
 import logging
 
+from telegram.error import BadRequest
+
 logger = logging.getLogger(__name__)
+
+
+def _markup_equal(old, new):
+    """比对两份 inline 键盘是否相同（None 与空键盘视为相同）。"""
+    def _norm(markup):
+        if markup is None:
+            return None
+        to_dict = getattr(markup, "to_dict", None)
+        if callable(to_dict):
+            data = to_dict()
+            if not data.get("inline_keyboard"):
+                return None
+            return data
+        return markup
+    return _norm(old) == _norm(new)
+
+
+async def safe_edit(query, text, reply_markup=None, parse_mode=None):
+    """编辑回调消息（编辑前比对，消息不存在时改发新消息）。
+
+    新内容与 markup 和当前消息完全相同时跳过编辑，不调 API，
+    不抛 "Message is not modified"；消息已删/不存在时降级为发
+    一条新消息，不把 Telegram 原文报错抛给调用方；其他
+    BadRequest 原样抛出。返回编辑后或新发的消息；跳过时返回 None。
+    """
+    message = getattr(query, "message", None)
+    if message is not None:
+        if (message.text == text
+                and _markup_equal(message.reply_markup, reply_markup)):
+            logger.debug("编辑内容与当前消息相同，跳过")
+            return None
+    try:
+        return await query.edit_message_text(
+            text, reply_markup=reply_markup, parse_mode=parse_mode)
+    except BadRequest as exc:
+        err = str(exc)
+        if "Message is not modified" in err:
+            logger.debug("编辑内容未变化，跳过")
+            return None
+        if "Message to edit not found" in err:
+            logger.warning("要编辑的消息已不在，改发新消息")
+            chat = getattr(message, "chat", None)
+            if chat is not None:
+                return await chat.send_message(
+                    text, reply_markup=reply_markup, parse_mode=parse_mode)
+            return None
+        raise
+
 
 # user_data key: the message id of the currently active picker. user_data 里的键：当前活动的选择框消息 ID。
 LIVE_MENU_KEY = "live_menu_id"

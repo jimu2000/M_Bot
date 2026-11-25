@@ -119,6 +119,7 @@ from tgbot.watchdog import (
     probe_command,
 )
 from web import config
+from web.routes.cloudreport import clear_cloud_report_cache
 from web.routes.volumes import clear_volumes_cache
 from web.deps import (
     error_response,
@@ -452,6 +453,7 @@ def batch(body: BatchBody,
     except OCIError as exc:
         return oci_error_response(exc)
     clear_instance_list_cache(profile or config.DEFAULT_PROFILE)
+    clear_cloud_report_cache()
     if body.action == "terminate":
         # Batch terminate permanently deletes boot volumes by default, so the boot-volume list cache must be cleared too. 批量终止默认永删引导卷，启动盘列表缓存也要清。
         clear_volumes_cache(profile or config.DEFAULT_PROFILE)
@@ -510,6 +512,7 @@ def _action(instance_id, profile, func, action_name, region=None):
     except OCIError as exc:
         return oci_error_response(exc)
     clear_instance_list_cache(profile or config.DEFAULT_PROFILE)
+    clear_cloud_report_cache()
     if action_name == "terminate":
         delete_cpu_model(instance_id)
     return {"ok": True, "instance_id": instance_id, "action": action_name}
@@ -642,6 +645,7 @@ def terminate(instance_id: str,
     clear_instance_list_cache(profile or config.DEFAULT_PROFILE)
     # Terminate permanently deletes the boot volume by default (keeping it leaves an orphan volume), so the boot-volume list cache must be cleared too. 终止默认永删引导卷（保留时变孤儿盘），启动盘列表缓存也要清。
     clear_volumes_cache(profile or config.DEFAULT_PROFILE)
+    clear_cloud_report_cache()
     return {"ok": True, "instance_id": instance_id, "action": "terminate",
             "preserve_boot_volume": body.preserve_boot_volume}
 

@@ -221,6 +221,36 @@ class TestRunGrabberCpuFilter(unittest.TestCase):
         logs = [c.args[1] for c in self.registry.append_log.call_args_list]
         self.assertTrue(any("未配置 guard 密钥" in m for m in logs))
 
+    def test_explicit_target_cpu_no_guard_notify_unverified(self):
+        # ARM 全功能测试 Bug 2 核实：显式传 target_cpu=7J13 但 guard 未配，
+        # 抢机不静默放行——通知带 CPU 未验明，任务日志记下筛选未生效。
+        params = dict(self.params)
+        params["target_cpu"] = "7J13"
+        fake = self._fake_grabber()
+        notify = {"token": "T", "chat_id": 654321,
+                  "profile_label": "新加坡", "region_label": "新加坡",
+                  "root_password": "pw" + "123"}
+        with patch.object(web_tasks, "Grabber",
+                          return_value=fake) as mock_grabber_cls, \
+                patch.object(web_tasks, "combined_boot_keys",
+                             self._combined_keys("/tmp/user_keys.pub",
+                                                 False)), \
+                patch.object(web_tasks, "get_allowed_cpu_models",
+                             return_value=["7J13"]), \
+                patch.object(web_tasks, "make_cpu_check_hook") as mock_hook_fn, \
+                patch.object(web_tasks, "wait_for_public_ip",
+                             return_value="203.0.113.10"), \
+                patch.object(web_tasks, "notify_boot_success",
+                             return_value={"telegram": True, "bark": False,
+                                           "errors": []}) as notify_fn:
+            web_tasks._run_grabber(self.registry, "t1", MagicMock(),
+                                   "comp", params, notify=notify)
+        self.assertIsNone(mock_grabber_cls.call_args[1]["target_cpu"])
+        mock_hook_fn.assert_not_called()
+        self.assertTrue(notify_fn.call_args[1]["cpu_unverified"])
+        logs = [c.args[1] for c in self.registry.append_log.call_args_list]
+        self.assertTrue(any("未配置 guard 密钥" in m for m in logs))
+
     def test_wrong_cpu_released_by_default_filter(self):
         # 默认筛选下抢到 7742：M_Bot 自己验出并释放（永删引导卷），
         # 继续抢到 7J13 才留，全程不用人工 SSH 核查。

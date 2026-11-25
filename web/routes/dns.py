@@ -31,11 +31,22 @@ Cloudflare 客户端约定（clouds/cloudflare.py，另一工人并行编写）�
 """
 
 from typing import Literal, Optional
+import logging
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
-from web.deps import error_response, get_current_user, get_oci_client
+from web.deps import (error_response, get_current_user, get_oci_client,
+                      resolve_profile)
+
+logger = logging.getLogger(__name__)
+
+try:
+    from oci.instance import list_instances
+    from oci.network import attach_public_ips
+except ImportError:
+    list_instances = None
+    attach_public_ips = None
 
 try:
     from clouds.cloudflare import (  # noqa: F401  (CloudflareClient 供类型参考)
@@ -140,6 +151,30 @@ def _cf_error_response(exc):
     status = _CF_STATUS.get(kind, 502)
     message = _CF_MESSAGE.get(kind, "Cloudflare 调用失败")
     return error_response(message, status_code=status)
+
+
+def _bound_instance_by_ip():
+    """公网 IP -> 实例显示名（默认账号主区）。
+
+    OCI 查不到时返回空映射，调用方降级为不带标注返回。
+    """
+    if list_instances is None or attach_public_ips is None:
+        return {}
+    try:
+        cli, compartment_id = resolve_profile()
+        instances = attach_public_ips(
+            cli, list_instances(cli, compartment_id) or [])
+    except Exception:
+        logger.warning("DNS bound-instance lookup failed",
+                       exc_info=True)
+        return {}
+    mapping = {}
+    for inst in instances:
+        ip = inst.get("public-ip")
+        name = inst.get("display-name")
+        if ip and name and ip not in mapping:
+            mapping[ip] = name
+    return mapping
 
 
 # ================= 凭据管理（v1.26.0） =================
@@ -281,7 +316,16 @@ def list_records(zone_id: str,
                                                  name=name)
     except CloudflareError as exc:
         return _cf_error_response(exc)
-    return {"ok": True, "zone_id": zone_id, "records": records}
+    ip_to_instance = _bound_instance_by_ip()
+    annotated = []
+    for rec in records or []:
+        bound = None
+        if isinstance(rec, dict) \
+                and (rec.get("type") or "").upper() == "A":
+            bound = ip_to_instance.get((rec.get("content") or "").strip())
+        annotated.append(dict(rec, bound_instance=bound)
+                         if isinstance(rec, dict) else rec)
+    return {"ok": True, "zone_id": zone_id, "records": annotated}
 
 
 @router.post("/api/dns/zones/{zone_id}/records")

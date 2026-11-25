@@ -590,7 +590,7 @@ async def _show_oracle_menu_after_switch(update, context, confirm_line):
         except Exception:
             pass
         try:
-            await query.edit_message_text(text, reply_markup=keyboard)
+            await menu_tracker.safe_edit(query, text, reply_markup=keyboard)
             return
         except Exception as exc:  # noqa: BLE001 - 编辑失败就新发一条
             logger.debug("切换后编辑主菜单失败，改发新消息：%s", exc)
@@ -1379,7 +1379,7 @@ async def _edit_boot_form(update, context, notice=None):
     except Exception:
         pass
     try:
-        await query.edit_message_text(
+        await menu_tracker.safe_edit(query, 
             fmt_form_text(form, lang=lang_of(update, context)), reply_markup=boot_form_keyboard(form, lang=lang_of(update, context)))
     except Exception:
         pass
@@ -2191,7 +2191,7 @@ async def boot_cpu_callback(update, context):
         except Exception:
             pass
         try:
-            await query.edit_message_text(
+            await menu_tracker.safe_edit(query, 
                 text, reply_markup=boot_confirm_keyboard(preset, lang=lang_of(update, context)))
         except Exception:
             pass
@@ -2589,7 +2589,7 @@ async def watchdog_callback(update, context):
         return
     entries = context.user_data.get("traffic_entries") or []
     if idx < 0 or idx >= len(entries):
-        await query.edit_message_text(
+        await menu_tracker.safe_edit(query, 
             "列表已过期，请重新打开菜单 19（本月流量）。",
             reply_markup=back_to_oracle_keyboard())
         return
@@ -2603,13 +2603,13 @@ async def watchdog_callback(update, context):
     guard = entry.get("guard") or {}
     try:
         if guard.get("enabled"):
-            await query.edit_message_text(f"正在关闭 {name} 的看门狗…")
+            await menu_tracker.safe_edit(query, f"正在关闭 {name} 的看门狗…")
             result = await run_sync(
                 disable_watchdog, host, run_remote_command)
             done_text = ("已经是关闭状态。" if result.get("action") == "already_off"
                          else "已关闭（cron 已摘，熔断/限速已解除）。")
         else:
-            await query.edit_message_text(f"正在给 {name} 安装看门狗…")
+            await menu_tracker.safe_edit(query, f"正在给 {name} 安装看门狗…")
             result = await run_sync(
                 install_watchdog, host, load_bark_config(),
                 run_remote_command, put_remote_file,
@@ -2625,24 +2625,24 @@ async def watchdog_callback(update, context):
             if not result.get("test_ok"):
                 done_text += "（测试推送没发出去，请检查 Bark 配置。）"
     except WatchdogError as exc:
-        await query.edit_message_text(
+        await menu_tracker.safe_edit(query, 
             f"❌ {name} 看门狗操作失败：{exc}",
             reply_markup=traffic_keyboard(entries))
         return
     except Exception as exc:  # noqa: BLE001 - SSH 失败等统一展示
-        await query.edit_message_text(
+        await menu_tracker.safe_edit(query, 
             f"❌ {name} 看门狗操作失败：{fmt_error(exc)}",
             reply_markup=traffic_keyboard(entries))
         return
     try:
         fresh = await _fetch_instance_traffic(context)
     except Exception as exc:  # noqa: BLE001 - 刷新失败时只报操作结果
-        await query.edit_message_text(
+        await menu_tracker.safe_edit(query, 
             f"{name} 看门狗{done_text}\n（列表刷新失败：{fmt_error(exc)}）",
             reply_markup=traffic_keyboard(entries))
         return
     context.user_data["traffic_entries"] = fresh
-    await query.edit_message_text(
+    await menu_tracker.safe_edit(query, 
         f"{name} 看门狗{done_text}\n\n{fmt_instance_traffic(fresh)}",
         reply_markup=traffic_keyboard(fresh))
 
@@ -2781,7 +2781,7 @@ async def handle_profiles(update, context):
         except Exception:
             pass
         try:
-            await query.edit_message_text(text, reply_markup=keyboard)
+            await menu_tracker.safe_edit(query, text, reply_markup=keyboard)
             return
         except Exception as exc:  # noqa: BLE001 - 编辑失败就新发一条
             logger.debug("切换账号列表就地编辑失败，改发新消息：%s", exc)
@@ -2827,7 +2827,7 @@ async def profile_callback(update, context):
         query = update.callback_query
         if query is not None:
             try:
-                await query.edit_message_text(text, reply_markup=keyboard)
+                await menu_tracker.safe_edit(query, text, reply_markup=keyboard)
                 return
             except Exception as exc:  # noqa: BLE001 - 编辑失败就新发一条
                 logger.debug("区域列表就地编辑失败，改发新消息：%s", exc)
@@ -3381,11 +3381,11 @@ async def _edit_boot_backups(query, context):
         count, limit, full, _oldest = await run_sync(
             check_backup_quota, cli, compartment)
     except Exception as exc:  # noqa: BLE001
-        await query.edit_message_text(fmt_error(exc))
+        await menu_tracker.safe_edit(query, fmt_error(exc))
         return
     store_boot_backups(context, backups)
     context.user_data.pop("bb_ms_selected", None)
-    await query.edit_message_text(
+    await menu_tracker.safe_edit(query, 
         fmt_boot_backup_list(backups, count, limit, full, paid),
         reply_markup=boot_backup_list_keyboard(backups, paid))
 
@@ -3657,7 +3657,7 @@ async def instance_boot_backup_mstoggle_callback(update, context):
         selected.discard(idx)
     else:
         selected.add(idx)
-    await query.edit_message_text(
+    await menu_tracker.safe_edit(query, 
         _fmt_boot_backup_multiselect(
             backups, selected,
             title=context.user_data.get("ib_title")),
@@ -3702,7 +3702,7 @@ async def instance_boot_backup_mscancel_callback(update, context):
         rows.append([InlineKeyboardButton(
             "◀ 返回实例详情", callback_data=f"i:detail:{idx}")])
     rows.append([InlineKeyboardButton("◀ 实例列表", callback_data="i:list")])
-    await query.edit_message_text("已退出多选。",
+    await menu_tracker.safe_edit(query, "已退出多选。",
                                   reply_markup=InlineKeyboardMarkup(rows))
 
 
@@ -3902,7 +3902,7 @@ async def boot_backup_multiselect_callback(update, context):
         await query.answer("没有可删除的备份")
         return
     context.user_data["bb_ms_selected"] = set()
-    await query.edit_message_text(
+    await menu_tracker.safe_edit(query, 
         _fmt_boot_backup_multiselect(backups, set()),
         reply_markup=boot_backup_multiselect_keyboard(backups, set()))
 
@@ -3928,7 +3928,7 @@ async def boot_backup_mstoggle_callback(update, context):
         selected.discard(idx)
     else:
         selected.add(idx)
-    await query.edit_message_text(
+    await menu_tracker.safe_edit(query, 
         _fmt_boot_backup_multiselect(backups, selected),
         reply_markup=boot_backup_multiselect_keyboard(backups, selected))
 
@@ -5300,7 +5300,7 @@ async def batch_toggle_callback(update, context):
     keyboard = batch_select_keyboard(instances, selected)
     if query is not None and query.message is not None:
         try:
-            await query.edit_message_text(text, reply_markup=keyboard)
+            await menu_tracker.safe_edit(query, text, reply_markup=keyboard)
             return
         except Exception:  # noqa: BLE001 - 编辑失败时改发新消息
             pass
@@ -5492,6 +5492,11 @@ async def text_input_callback(update, context):
     """
     pending = context.user_data.get("pending_input")
     if not pending:
+        return
+    # 绑定域名流程优先：bind_domain_pending 已选 Zone 时，这条文字归
+    # 绑定域名处理（group=1），这里不消费，避免双重处理。
+    bd_pending = context.user_data.get("bind_domain_pending") or {}
+    if bd_pending.get("zone_id"):
         return
     text = (update.effective_message.text or "").strip()
     kind = pending.get("kind")
@@ -6626,22 +6631,74 @@ def fmt_domain_zones(zones):
     return "\n".join(lines)
 
 
-def fmt_domain_record_line(record):
-    """记录列表里的一行：类型 名称 -> 内容，proxied 的标 🟠。"""
+def fmt_domain_record_line(record, bound_name=None):
+    """记录列表里的一行：类型 名称 -> 内容，proxied 的标 🟠，已绑定到实例的标 🔗。"""
     rtype = record.get("type", "?")
     name = record.get("name", "?")
     content = record.get("content", "?")
     mark = " 🟠" if record.get("proxied") else ""
-    return f"• {rtype} {name} -> {content}{mark}"
+    bound = f" 🔗 已绑定到实例 {bound_name}" if bound_name else ""
+    return f"• {rtype} {name} -> {content}{mark}{bound}"
 
 
-def fmt_domain_records(zone_name, records, limit=DOMAIN_RECORDS_LIMIT):
-    """某 Zone 的记录列表全文；超过 limit 条时截断并提示总数。"""
+def bound_map_from_instances(instances):
+    """由实例列表建公网 IP -> 实例名的映射，只认未终止且有公网 IP 的实例。"""
+    bound = {}
+    for inst in instances or []:
+        if (inst.get("lifecycle-state") or "").upper() in (
+                "TERMINATED", "TERMINATING"):
+            continue
+        ip = inst.get("public-ip")
+        if ip:
+            bound[ip] = (inst.get("display-name")
+                         or inst.get("id") or "?")
+    return bound
+
+
+def bound_map(context):
+    """已绑定映射：由缓存的实例列表算出，不调 OCI。"""
+    return bound_map_from_instances(context.user_data.get("instances"))
+
+
+async def ensure_instances_cached(context):
+    """实例缓存为空时尽力从 OCI 拉一次；失败只记日志、不阻塞 DNS 列表。"""
+    if context.user_data.get("instances"):
+        return True
+    try:
+        cli = get_cli(context)
+        compartment = get_compartment(context)
+        instances = await run_sync(list_instances, cli, compartment)
+        instances = await run_sync(attach_public_ips, cli, instances)
+        store_instances(context, instances)
+        return True
+    except Exception:  # noqa: BLE001 - 降级为无标注，不阻塞列表
+        logger.warning("为 DNS 列表拉取实例失败，已降级为无标注", exc_info=True)
+        return False
+
+
+def fmt_domain_records(zone_name, records, limit=DOMAIN_RECORDS_LIMIT,
+                       bound_map=None):
+    """某 Zone 的记录列表全文；超过 limit 条时截断并提示总数。
+
+    bound_map（公网 IP -> 实例名）给出时，A 记录且内容 IP 在映射里
+    的行标出已绑定的实例，并在末尾汇总已绑定条数。
+    """
     if not records:
         return f"🌐 {zone_name} 下没有 DNS 记录。"
     lines = [f"🌐 {zone_name} 的 DNS 记录（共 {len(records)} 条）：", ""]
     shown = records[:limit]
-    lines.extend(fmt_domain_record_line(r) for r in shown)
+    bound_count = 0
+    for record in shown:
+        bound_name = None
+        if (bound_map and record.get("type") == "A"
+                and record.get("content") in bound_map):
+            bound_name = bound_map[record["content"]]
+            bound_count += 1
+        lines.append(fmt_domain_record_line(record, bound_name))
+    if bound_count:
+        lines.append("")
+        lines.append(f"其中 {bound_count} 条已绑定到实例，"
+                     "删前请到「🗑️ 删除记录」里确认。")
     if len(records) > limit:
         lines.append("")
         lines.append(f"…还有 {len(records) - limit} 条未显示，"
@@ -6757,7 +6814,10 @@ async def _show_domain_records(update, context, zone_id):
     stored = context.user_data.setdefault("domain_records", {})
     stored[zone_id] = list(records)
     zone_name = _resolve_zone_name(context, zone_id, records)
-    await _reply(update, context, fmt_domain_records(zone_name, records),
+    await ensure_instances_cached(context)
+    bmap = bound_map(context)
+    await _reply(update, context,
+                 fmt_domain_records(zone_name, records, bound_map=bmap),
                  reply_markup=domain_records_keyboard(zone_id, records))
 
 
@@ -6813,9 +6873,14 @@ async def _dns_delete_pick(update, context, zone_id):
                      reply_markup=domain_records_keyboard(zone_id, records))
         return
     zone_name = _resolve_zone_name(context, zone_id, records)
+    await ensure_instances_cached(context)
+    bmap = bound_map(context)
     await _reply(update, context,
-                 f"🗑️ 删除 {zone_name} 的 DNS 记录：\n点一条记录进入确认。",
-                 reply_markup=domain_delete_pick_keyboard(zone_id, records))
+                 f"🗑️ 删除 {zone_name} 的 DNS 记录：\n"
+                 "已绑定到实例的记录排在前面（带 🔗）。\n"
+                 "点一条记录进入确认，只删选中的那一条。",
+                 reply_markup=domain_delete_pick_keyboard(
+                     zone_id, records, bmap))
 
 
 async def _dns_delete_confirm(update, context, zone_id, idx_text):
@@ -6828,11 +6893,24 @@ async def _dns_delete_confirm(update, context, zone_id, idx_text):
         await _reply(update, context, "记录不存在或已过期，请刷新列表后再试。")
         return
     zone_name = _resolve_zone_name(context, zone_id, records)
+    bmap = bound_map(context)
+    bound_name = None
+    if record.get("type") == "A" and record.get("content") in bmap:
+        bound_name = bmap[record["content"]]
+    warning = ""
+    if bound_name:
+        warning = (f"\n⚠️ 这条记录已绑定到实例 {bound_name}，"
+                   "删除后该实例将失去这个域名指向。")
+    elif record.get("type") not in ("A", "AAAA"):
+        warning = (f"\n⚠️ 这是一条 {record.get('type')} 记录"
+                   "（不是实例绑定），删除可能影响邮件、验证等服务，"
+                   "请确认这条确实不要了。")
     await _reply(
         update, context,
         "⚠️ 确认删除这条 DNS 记录？\n\n"
         f"Zone：{zone_name}\n"
-        f"{fmt_domain_record_line(record)}\n\n"
+        f"{fmt_domain_record_line(record, bound_name)}\n"
+        f"{warning}\n"
         "删除后立即生效，不可恢复。",
         reply_markup=domain_delete_confirm_keyboard(zone_id, idx))
 

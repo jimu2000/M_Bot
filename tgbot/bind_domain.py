@@ -177,6 +177,9 @@ def _clear_pending(context):
 
 async def _start(update, context, idx, lang):
     """bd:start：入口。无公网 IP 或未配凭据时只提示，不进 Zone 选择。"""
+    # 绑定域名开始即接管文字输入：清掉之前流程残留的 pending_input，
+    # 否则 group=0 的 text_input_callback 会先消费用户输的二级域名。
+    context.user_data.pop("pending_input", None)
     inst = resolve_instance(context, idx)
     if inst is None:
         await _reply(update, context,

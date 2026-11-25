@@ -226,7 +226,7 @@ def _resolve_rescue_backup(context, idx):
 async def _show_menu(update, context, edit=False):
     query = update.callback_query if update else None
     if edit and query is not None:
-        await query.edit_message_text(RESCUE_MENU_TEXT,
+        await menu_tracker.safe_edit(query, RESCUE_MENU_TEXT,
                                       reply_markup=rescue_menu_keyboard())
         return
     await _reply(update, context, RESCUE_MENU_TEXT,
@@ -266,11 +266,11 @@ async def rescue_callback(update: Update,
             instances = await run_sync(_load_instances, context)
         except Exception as exc:  # noqa: BLE001 - OCI 异常统一转中文提示
             logger.warning("救机查实例列表失败：%s", exc)
-            await query.edit_message_text(fmt_error(exc),
+            await menu_tracker.safe_edit(query, fmt_error(exc),
                                           reply_markup=_back_keyboard())
             return
         if not instances:
-            await query.edit_message_text(
+            await menu_tracker.safe_edit(query, 
                 "当前账号下没有实例。", reply_markup=_back_keyboard())
             return
         titles = {
@@ -287,7 +287,7 @@ async def rescue_callback(update: Update,
             "netboot": "rs:nbi",
             "console": "rs:coni",
         }
-        await query.edit_message_text(
+        await menu_tracker.safe_edit(query, 
             titles[action],
             reply_markup=_instance_picker_keyboard(prefixes[action],
                                                    instances))
@@ -297,7 +297,7 @@ async def rescue_callback(update: Update,
         inst = _resolve_rescue_instance(context, parts[2] if len(parts) > 2
                                         else "")
         if inst is None:
-            await query.edit_message_text("实例已失效，请回救机菜单重选。",
+            await menu_tracker.safe_edit(query, "实例已失效，请回救机菜单重选。",
                                           reply_markup=_back_keyboard())
             return
         idx = parts[2]
@@ -306,7 +306,7 @@ async def rescue_callback(update: Update,
                 for key, label in PREFLIGHT_ACTIONS]
         rows.append([InlineKeyboardButton("⬅️ 回救机菜单",
                                           callback_data="rs:menu")])
-        await query.edit_message_text(
+        await menu_tracker.safe_edit(query, 
             f"🔍 前置检查：实例「{name}」，要检查哪个操作？",
             reply_markup=InlineKeyboardMarkup(rows))
         return
@@ -316,7 +316,7 @@ async def rescue_callback(update: Update,
                                         else "")
         op = parts[3] if len(parts) > 3 else ""
         if inst is None:
-            await query.edit_message_text("实例已失效，请回救机菜单重选。",
+            await menu_tracker.safe_edit(query, "实例已失效，请回救机菜单重选。",
                                           reply_markup=_back_keyboard())
             return
         try:
@@ -325,10 +325,10 @@ async def rescue_callback(update: Update,
                 get_compartment(context), inst["id"], op)
         except Exception as exc:  # noqa: BLE001 - OCI 异常统一转中文提示
             logger.warning("前置检查失败：%s", exc)
-            await query.edit_message_text(fmt_error(exc),
+            await menu_tracker.safe_edit(query, fmt_error(exc),
                                           reply_markup=_back_keyboard())
             return
-        await query.edit_message_text(format_preflight_text(result),
+        await menu_tracker.safe_edit(query, format_preflight_text(result),
                                       reply_markup=_back_keyboard())
         return
 
@@ -336,7 +336,7 @@ async def rescue_callback(update: Update,
         inst = _resolve_rescue_instance(context, parts[2] if len(parts) > 2
                                         else "")
         if inst is None:
-            await query.edit_message_text("实例已失效，请回救机菜单重选。",
+            await menu_tracker.safe_edit(query, "实例已失效，请回救机菜单重选。",
                                           reply_markup=_back_keyboard())
             return
         try:
@@ -345,13 +345,13 @@ async def rescue_callback(update: Update,
                 get_compartment(context))
         except Exception as exc:  # noqa: BLE001 - OCI 异常统一转中文提示
             logger.warning("救机查备份列表失败：%s", exc)
-            await query.edit_message_text(fmt_error(exc),
+            await menu_tracker.safe_edit(query, fmt_error(exc),
                                           reply_markup=_back_keyboard())
             return
         backups = [b for b in backups
                    if b.get("lifecycle-state") == "AVAILABLE"]
         if not backups:
-            await query.edit_message_text(
+            await menu_tracker.safe_edit(query, 
                 "当前没有任何可用备份，无法安全恢复。请先给启动盘建备份。",
                 reply_markup=_back_keyboard())
             return
@@ -365,7 +365,7 @@ async def rescue_callback(update: Update,
                 callback_data=f"rs:safeb:{idx}:{bidx}")])
         rows.append([InlineKeyboardButton("⬅️ 回救机菜单",
                                           callback_data="rs:menu")])
-        await query.edit_message_text(
+        await menu_tracker.safe_edit(query, 
             f"♻️ 安全恢复：实例「{inst.get('display-name') or '?'}」，选一个备份：",
             reply_markup=InlineKeyboardMarkup(rows))
         return
@@ -376,14 +376,14 @@ async def rescue_callback(update: Update,
         backup = _resolve_rescue_backup(context, parts[3] if len(parts) > 3
                                         else "")
         if inst is None or backup is None:
-            await query.edit_message_text("选择已失效，请回救机菜单重选。",
+            await menu_tracker.safe_edit(query, "选择已失效，请回救机菜单重选。",
                                           reply_markup=_back_keyboard())
             return
         rows = [[InlineKeyboardButton(
             "✅ 确认恢复（先建后删，实例会停机一次）",
             callback_data=f"rs:safeok:{parts[2]}:{parts[3]}")],
             [InlineKeyboardButton("❌ 取消", callback_data="rs:menu")]]
-        await query.edit_message_text(
+        await menu_tracker.safe_edit(query, 
             "♻️ 确认安全恢复？\n\n"
             f"实例：{inst.get('display-name') or '?'}\n"
             f"备份：{backup.get('display-name') or '?'}\n\n"
@@ -398,17 +398,17 @@ async def rescue_callback(update: Update,
         backup = _resolve_rescue_backup(context, parts[3] if len(parts) > 3
                                         else "")
         if inst is None or backup is None:
-            await query.edit_message_text("选择已失效，请回救机菜单重选。",
+            await menu_tracker.safe_edit(query, "选择已失效，请回救机菜单重选。",
                                           reply_markup=_back_keyboard())
             return
-        await query.edit_message_text("♻️ 安全恢复进行中（约 3 分钟），请稍等…")
+        await menu_tracker.safe_edit(query, "♻️ 安全恢复进行中（约 3 分钟），请稍等…")
         try:
             result = await run_sync(
                 safe_restore, get_cli(context),
                 get_compartment(context), inst["id"], backup["id"])
         except Exception as exc:  # noqa: BLE001 - OCI 异常统一转中文提示
             logger.warning("安全恢复失败：%s", exc)
-            await query.edit_message_text(f"❌ 安全恢复失败：{fmt_error(exc)}",
+            await menu_tracker.safe_edit(query, f"❌ 安全恢复失败：{fmt_error(exc)}",
                                           reply_markup=_back_keyboard())
             return
         lines = ["✅ 安全恢复完成。",
@@ -417,7 +417,7 @@ async def rescue_callback(update: Update,
                                   else "否（见警告）")]
         for warning in result.get("warnings") or []:
             lines.append(f"⚠️ {warning}")
-        await query.edit_message_text("\n".join(lines),
+        await menu_tracker.safe_edit(query, "\n".join(lines),
                                       reply_markup=_back_keyboard())
         return
 
@@ -425,7 +425,7 @@ async def rescue_callback(update: Update,
         inst = _resolve_rescue_instance(context, parts[2] if len(parts) > 2
                                         else "")
         if inst is None:
-            await query.edit_message_text("实例已失效，请回救机菜单重选。",
+            await menu_tracker.safe_edit(query, "实例已失效，请回救机菜单重选。",
                                           reply_markup=_back_keyboard())
             return
         try:
@@ -433,7 +433,7 @@ async def rescue_callback(update: Update,
                                   get_compartment(context), inst["id"])
         except Exception as exc:  # noqa: BLE001 - OCI 异常统一转中文提示
             logger.warning("无盘救机方案查询失败：%s", exc)
-            await query.edit_message_text(fmt_error(exc),
+            await menu_tracker.safe_edit(query, fmt_error(exc),
                                           reply_markup=_back_keyboard())
             return
         context.user_data["rescue_backups"] = plan.get("backups") or []
@@ -446,7 +446,7 @@ async def rescue_callback(update: Update,
                 callback_data=f"rs:dlb:{idx}:{bidx}")])
         rows.append([InlineKeyboardButton("⬅️ 回救机菜单",
                                           callback_data="rs:menu")])
-        await query.edit_message_text(format_diskless_plan_text(plan),
+        await menu_tracker.safe_edit(query, format_diskless_plan_text(plan),
                                       reply_markup=InlineKeyboardMarkup(rows)
                                       if rows else _back_keyboard())
         return
@@ -457,14 +457,14 @@ async def rescue_callback(update: Update,
         backup = _resolve_rescue_backup(context, parts[3] if len(parts) > 3
                                         else "")
         if inst is None or backup is None:
-            await query.edit_message_text("选择已失效，请回救机菜单重选。",
+            await menu_tracker.safe_edit(query, "选择已失效，请回救机菜单重选。",
                                           reply_markup=_back_keyboard())
             return
         rows = [[InlineKeyboardButton(
             "✅ 确认新建实例",
             callback_data=f"rs:dlok:{parts[2]}:{parts[3]}")],
             [InlineKeyboardButton("❌ 取消", callback_data="rs:menu")]]
-        await query.edit_message_text(
+        await menu_tracker.safe_edit(query, 
             "🆘 确认从备份新建实例？\n\n"
             f"原实例：{inst.get('display-name') or '?'}（不动，事后手动终止）\n"
             f"备份：{backup.get('display-name') or '?'}\n\n"
@@ -479,10 +479,10 @@ async def rescue_callback(update: Update,
         backup = _resolve_rescue_backup(context, parts[3] if len(parts) > 3
                                         else "")
         if inst is None or backup is None:
-            await query.edit_message_text("选择已失效，请回救机菜单重选。",
+            await menu_tracker.safe_edit(query, "选择已失效，请回救机菜单重选。",
                                           reply_markup=_back_keyboard())
             return
-        await query.edit_message_text("🆘 正在从备份新建实例（约 2 分钟），请稍等…")
+        await menu_tracker.safe_edit(query, "🆘 正在从备份新建实例（约 2 分钟），请稍等…")
         try:
             from web.tasks import PLAN_DEFAULTS
             name = (inst.get("display-name") or "instance") + "-rescued"
@@ -495,10 +495,10 @@ async def rescue_callback(update: Update,
                 ssh_keys_file=PLAN_DEFAULTS["ssh_keys_file"])
         except Exception as exc:  # noqa: BLE001 - OCI 异常统一转中文提示
             logger.warning("无盘救机新建实例失败：%s", exc)
-            await query.edit_message_text(f"❌ 新建实例失败：{fmt_error(exc)}",
+            await menu_tracker.safe_edit(query, f"❌ 新建实例失败：{fmt_error(exc)}",
                                           reply_markup=_back_keyboard())
             return
-        await query.edit_message_text(
+        await menu_tracker.safe_edit(query, 
             "✅ 新实例已创建：\n\n"
             f"实例 OCID：{result.get('instance_id')}\n"
             f"形状：{result.get('shape')}，"
@@ -514,7 +514,7 @@ async def rescue_callback(update: Update,
                                    get_compartment(context))
         except Exception as exc:  # noqa: BLE001 - OCI 异常统一转中文提示
             logger.warning("孤儿盘查询失败：%s", exc)
-            await query.edit_message_text(fmt_error(exc),
+            await menu_tracker.safe_edit(query, fmt_error(exc),
                                           reply_markup=_back_keyboard())
             return
         context.user_data["rescue_orphans"] = found
@@ -527,7 +527,7 @@ async def rescue_callback(update: Update,
                 callback_data=f"rs:odel:{idx}")])
         rows.append([InlineKeyboardButton("⬅️ 回救机菜单",
                                           callback_data="rs:menu")])
-        await query.edit_message_text(
+        await menu_tracker.safe_edit(query, 
             format_orphan_list_text(found, total_gb),
             reply_markup=InlineKeyboardMarkup(rows)
             if found else _back_keyboard())
@@ -539,14 +539,14 @@ async def rescue_callback(update: Update,
             idx = int(parts[2])
             orphan = orphans[idx]
         except (IndexError, TypeError, ValueError):
-            await query.edit_message_text("选择已失效，请回救机菜单重选。",
+            await menu_tracker.safe_edit(query, "选择已失效，请回救机菜单重选。",
                                           reply_markup=_back_keyboard())
             return
         rows = [[InlineKeyboardButton(
             "✅ 确认删除",
             callback_data=f"rs:odelok:{parts[2]}")],
             [InlineKeyboardButton("❌ 取消", callback_data="rs:menu")]]
-        await query.edit_message_text(
+        await menu_tracker.safe_edit(query, 
             "🧹 确认删除这块孤儿盘腾额度？\n\n"
             f"{orphan.get('display-name') or '?'}"
             f"（{orphan.get('size-in-gbs')} GB）\n\n"
@@ -560,7 +560,7 @@ async def rescue_callback(update: Update,
             idx = int(parts[2])
             orphan = orphans[idx]
         except (IndexError, TypeError, ValueError):
-            await query.edit_message_text("选择已失效，请回救机菜单重选。",
+            await menu_tracker.safe_edit(query, "选择已失效，请回救机菜单重选。",
                                           reply_markup=_back_keyboard())
             return
         try:
@@ -569,10 +569,10 @@ async def rescue_callback(update: Update,
                            confirm=True)
         except Exception as exc:  # noqa: BLE001 - OCI 异常统一转中文提示
             logger.warning("删除孤儿盘失败：%s", exc)
-            await query.edit_message_text(f"❌ 删除失败：{fmt_error(exc)}",
+            await menu_tracker.safe_edit(query, f"❌ 删除失败：{fmt_error(exc)}",
                                           reply_markup=_back_keyboard())
             return
-        await query.edit_message_text(
+        await menu_tracker.safe_edit(query, 
             f"✅ 孤儿盘「{orphan.get('display-name') or '?'}」已删除，"
             f"腾出 {orphan.get('size-in-gbs')} GB 额度。",
             reply_markup=_back_keyboard())
@@ -582,7 +582,7 @@ async def rescue_callback(update: Update,
         inst = _resolve_rescue_instance(context, parts[2] if len(parts) > 2
                                         else "")
         if inst is None:
-            await query.edit_message_text("实例已失效，请回救机菜单重选。",
+            await menu_tracker.safe_edit(query, "实例已失效，请回救机菜单重选。",
                                           reply_markup=_back_keyboard())
             return
         guide = netboot_guide(inst["id"])
@@ -591,7 +591,7 @@ async def rescue_callback(update: Update,
             callback_data=f"rs:console:{parts[2]}")],
             [InlineKeyboardButton("⬅️ 回救机菜单",
                                   callback_data="rs:menu")]]
-        await query.edit_message_text(format_netboot_text(guide),
+        await menu_tracker.safe_edit(query, format_netboot_text(guide),
                                       reply_markup=InlineKeyboardMarkup(rows))
         return
 
@@ -599,20 +599,20 @@ async def rescue_callback(update: Update,
         inst = _resolve_rescue_instance(context, parts[2] if len(parts) > 2
                                         else "")
         if inst is None:
-            await query.edit_message_text("实例已失效，请回救机菜单重选。",
+            await menu_tracker.safe_edit(query, "实例已失效，请回救机菜单重选。",
                                           reply_markup=_back_keyboard())
             return
-        await query.edit_message_text("🖥️ 正在创建串行控制台连接（约 11 秒）…")
+        await menu_tracker.safe_edit(query, "🖥️ 正在创建串行控制台连接（约 11 秒）…")
         try:
             console = await run_sync(create_console, get_cli(context),
                                      inst["id"])
         except Exception as exc:  # noqa: BLE001 - OCI 异常统一转中文提示
             logger.warning("创建控制台连接失败：%s", exc)
-            await query.edit_message_text(f"❌ 创建失败：{fmt_error(exc)}",
+            await menu_tracker.safe_edit(query, f"❌ 创建失败：{fmt_error(exc)}",
                                           reply_markup=_back_keyboard())
             return
         name = inst.get("display-name") or "?"
-        await query.edit_message_text(format_console_text(name, console),
+        await menu_tracker.safe_edit(query, format_console_text(name, console),
                                       reply_markup=_back_keyboard())
         return
 
@@ -622,7 +622,7 @@ async def rescue_callback(update: Update,
             query.data = f"rs:coni:{parts[2]}"
             await rescue_callback(update, context)
             return
-        await query.edit_message_text(
+        await menu_tracker.safe_edit(query, 
             "请先在“控制台连接”里选一台实例。",
             reply_markup=_back_keyboard())
         return
@@ -633,12 +633,12 @@ async def rescue_callback(update: Update,
                                          get_compartment(context))
         except Exception as exc:  # noqa: BLE001 - OCI 异常统一转中文提示
             logger.warning("控制台连接查询失败：%s", exc)
-            await query.edit_message_text(fmt_error(exc),
+            await menu_tracker.safe_edit(query, fmt_error(exc),
                                           reply_markup=_back_keyboard())
             return
         context.user_data["rescue_consoles"] = connections
         if not connections:
-            await query.edit_message_text(
+            await menu_tracker.safe_edit(query, 
                 "当前没有串行控制台连接。", reply_markup=_back_keyboard())
             return
         lines = ["🖥️ 串行控制台连接：", ""]
@@ -651,7 +651,7 @@ async def rescue_callback(update: Update,
                 callback_data=f"rs:condel:{idx}")])
         rows.append([InlineKeyboardButton("⬅️ 回救机菜单",
                                           callback_data="rs:menu")])
-        await query.edit_message_text("\n".join(lines),
+        await menu_tracker.safe_edit(query, "\n".join(lines),
                                       reply_markup=InlineKeyboardMarkup(rows))
         return
 
@@ -661,14 +661,14 @@ async def rescue_callback(update: Update,
             idx = int(parts[2])
             conn = connections[idx]
         except (IndexError, TypeError, ValueError):
-            await query.edit_message_text("选择已失效，请回救机菜单重选。",
+            await menu_tracker.safe_edit(query, "选择已失效，请回救机菜单重选。",
                                           reply_markup=_back_keyboard())
             return
         rows = [[InlineKeyboardButton(
             "✅ 确认删除",
             callback_data=f"rs:condelok:{parts[2]}")],
             [InlineKeyboardButton("❌ 取消", callback_data="rs:menu")]]
-        await query.edit_message_text(
+        await menu_tracker.safe_edit(query, 
             "🖥️ 确认删除这个串行控制台连接？\n\n"
             f"连接：{conn.get('id') or '?'}",
             reply_markup=InlineKeyboardMarkup(rows))
@@ -680,19 +680,19 @@ async def rescue_callback(update: Update,
             idx = int(parts[2])
             conn = connections[idx]
         except (IndexError, TypeError, ValueError):
-            await query.edit_message_text("选择已失效，请回救机菜单重选。",
+            await menu_tracker.safe_edit(query, "选择已失效，请回救机菜单重选。",
                                           reply_markup=_back_keyboard())
             return
         try:
             await run_sync(delete_console, get_cli(context), conn["id"])
         except Exception as exc:  # noqa: BLE001 - OCI 异常统一转中文提示
             logger.warning("删除控制台连接失败：%s", exc)
-            await query.edit_message_text(f"❌ 删除失败：{fmt_error(exc)}",
+            await menu_tracker.safe_edit(query, f"❌ 删除失败：{fmt_error(exc)}",
                                           reply_markup=_back_keyboard())
             return
-        await query.edit_message_text("✅ 串行控制台连接已删除。",
+        await menu_tracker.safe_edit(query, "✅ 串行控制台连接已删除。",
                                       reply_markup=_back_keyboard())
         return
 
-    await query.edit_message_text("参数错误，请回救机菜单重试。",
+    await menu_tracker.safe_edit(query, "参数错误，请回救机菜单重试。",
                                   reply_markup=_back_keyboard())

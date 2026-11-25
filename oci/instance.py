@@ -81,6 +81,37 @@ def get_instance_state(cli, instance_id):
     return result.get("lifecycle-state")
 
 
+def image_arch_from_name(display_name):
+    """从镜像显示名推断架构：含 aarch64/arm64 -> aarch64；含
+    x86_64/amd64 -> x86_64；否则返回 None（推断不出）。
+
+    OCI 的 image get 没有 architecture 字段，只能看名字
+    （如 Canonical-Ubuntu-24.04-aarch64-...）。
+    """
+    if not isinstance(display_name, str):
+        return None
+    name = display_name.lower()
+    if "aarch64" in name or "arm64" in name:
+        return "aarch64"
+    if "x86_64" in name or "amd64" in name:
+        return "x86_64"
+    return None
+
+
+def get_image_arch(cli, image_id):
+    """查镜像的架构（image get 的 display-name 推断）。
+
+    查不到、镜像不存在或推断不出时返回 None——调用方跳过校验
+    不阻塞创建（抢机失败时 OCI 自己报错）。
+    """
+    try:
+        image = cli.run(["compute", "image", "get",
+                         "--image-id", image_id])
+        return image_arch_from_name((image or {}).get("display-name"))
+    except Exception:  # noqa: BLE001 - 查不到就跳过校验
+        return None
+
+
 def launch_instance(cli, compartment_id, availability_domain, shape,
                     image_id, subnet_id, display_name, ssh_keys_file,
                     assign_public_ip=True, no_retry=True):

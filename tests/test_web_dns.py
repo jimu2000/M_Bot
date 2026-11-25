@@ -98,6 +98,21 @@ class DnsApiTestCase(unittest.TestCase):
             dns_routes, "get_configured_cf_client", return_value=self.cf)
         self._cf_cfg_patch.start()
         self.addCleanup(self._cf_cfg_patch.stop)
+        # list_records also looks up instances for the bound_instance label; keep that lookup hermetic (no real OCI calls) by default. 默认把实例标注的 OCI 查询也 mock 掉（不跑真实 OCI），需要真标注的测试类自己再覆盖。
+        self._dns_oci_patch = patch.object(
+            dns_routes, "resolve_profile",
+            return_value=(MagicMock(), "ocid1.compartment.oc1..fake"))
+        self._dns_oci_patch.start()
+        self.addCleanup(self._dns_oci_patch.stop)
+        self._dns_list_patch = patch.object(
+            dns_routes, "list_instances", return_value=[])
+        self._dns_list_patch.start()
+        self.addCleanup(self._dns_list_patch.stop)
+        self._dns_attach_patch = patch.object(
+            dns_routes, "attach_public_ips",
+            side_effect=lambda cli, instances: instances)
+        self._dns_attach_patch.start()
+        self.addCleanup(self._dns_attach_patch.stop)
 
     def _login(self, username="admin", password=TEST_PASSWORD):
         return self.client.post("/api/auth/login",
@@ -281,6 +296,110 @@ class TestDnsRecords(DnsApiTestCase):
             f"/api/dns/zones/{FAKE_ZONE_ID}/records/{FAKE_RECORD_ID}/proxied",
             json={})
         self.assertEqual(r.status_code, 422)
+
+
+class TestDnsRecordsBound(DnsApiTestCase):
+    """GET /api/dns/zones/{zone_id}/records 的 bound_instance 标注。"""
+
+    FAKE_INSTANCES = [
+        {"id": "ocid1.instance.oc1..fake0001",
+         "display-name": "ARM_2026-11-25", "shape": "VM.Standard.A1.Flex",
+         "lifecycle-state": "RUNNING", "time-created": "2026-11-25T00:00:00Z"},
+        {"id": "ocid1.instance.oc1..fake0002",
+         "display-name": "AMD_2026-11-24", "shape": "VM.Standard.E2.1.Micro",
+         "lifecycle-state": "RUNNING", "time-created": "2026-11-24T00:00:00Z"},
+    ]
+    FAKE_INSTANCE_IPS = {
+        "ocid1.instance.oc1..fake0001": "203.0.113.10",
+        "ocid1.instance.oc1..fake0002": "203.0.113.99",
+    }
+
+    def setUp(self):
+        super().setUp()
+        self._resolve_patch = patch.object(
+            dns_routes, "resolve_profile",
+            return_value=(MagicMock(), "ocid1.compartment.oc1..fake"))
+        self._resolve_patch.start()
+        self.addCleanup(self._resolve_patch.stop)
+        self._list_patch = patch.object(
+            dns_routes, "list_instances",
+            side_effect=lambda cli, compartment_id: [
+                dict(inst) for inst in self.FAKE_INSTANCES])
+        self._list_patch.start()
+        self.addCleanup(self._list_patch.stop)
+
+        def _fake_attach(cli, instances):
+            for inst in instances:
+                inst["public-ip"] = self.FAKE_INSTANCE_IPS.get(inst["id"])
+            return instances
+
+        self._attach_patch = patch.object(
+            dns_routes, "attach_public_ips", side_effect=_fake_attach)
+        self._attach_patch.start()
+        self.addCleanup(self._attach_patch.stop)
+
+    def test_bound_a_record_annotated_unbound_is_null(self):
+        self.cf.list_dns_records.return_value = [
+            {"id": FAKE_RECORD_ID, "type": "A", "name": "www.example.com",
+             "content": "203.0.113.10", "proxied": True, "ttl": 1},
+            {"id": "recid000000000000000000000002", "type": "A",
+             "name": "api.example.com", "content": "203.0.113.20",
+             "proxied": False, "ttl": 1},
+            {"id": "recid000000000000000000000003", "type": "TXT",
+             "name": "example.com", "content": "v=spf1 -all",
+             "proxied": False, "ttl": 3600},
+        ]
+        r = self.client.get(f"/api/dns/zones/{FAKE_ZONE_ID}/records")
+        self.assertEqual(r.status_code, 200)
+        records = r.json()["records"]
+        self.assertEqual(records[0]["bound_instance"], "ARM_2026-11-25")
+        self.assertIsNone(records[1]["bound_instance"])
+        self.assertIsNone(records[2]["bound_instance"])
+
+    def test_non_a_record_never_bound(self):
+        """TXT/AAAA 的 content 即使等于实例 IP 也不标注。"""
+        self.cf.list_dns_records.return_value = [
+            {"id": FAKE_RECORD_ID, "type": "TXT", "name": "example.com",
+             "content": "203.0.113.10", "proxied": False, "ttl": 3600},
+            {"id": "recid000000000000000000000002", "type": "AAAA",
+             "name": "v6.example.com", "content": "203.0.113.10",
+             "proxied": False, "ttl": 1},
+        ]
+        r = self.client.get(f"/api/dns/zones/{FAKE_ZONE_ID}/records")
+        self.assertEqual(r.status_code, 200)
+        for rec in r.json()["records"]:
+            self.assertIsNone(rec["bound_instance"])
+
+    def test_oci_failure_falls_back_to_unannotated(self):
+        """OCI 查实例失败时记录列表仍返回，bound_instance 全 null。"""
+        dns_routes.resolve_profile.side_effect = Exception("mock oci down")
+        r = self.client.get(f"/api/dns/zones/{FAKE_ZONE_ID}/records")
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.json()["ok"])
+        for rec in r.json()["records"]:
+            self.assertIsNone(rec["bound_instance"])
+
+
+class TestDnsJsDeleteWarnings(unittest.TestCase):
+    """删除确认文案（dns.js）：已绑定 / MX-TXT-CNAME 警告都在。"""
+
+    @classmethod
+    def setUpClass(cls):
+        js_path = os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "web", "static", "js", "dns.js")
+        with open(js_path, encoding="utf-8") as f:
+            cls.js = f.read()
+
+    def test_bound_badge_rendered_with_text_content(self):
+        self.assertIn("已绑定到实例", self.js)
+        self.assertIn("badge badge-green", self.js)
+
+    def test_delete_warns_bound_instance(self):
+        self.assertIn("将失去域名指向", self.js)
+
+    def test_delete_warns_non_bound_mail_record(self):
+        self.assertIn("非实例绑定", self.js)
+        self.assertIn("删除可能影响邮件/验证等服务", self.js)
 
 
 class TestDnsPage(DnsApiTestCase):

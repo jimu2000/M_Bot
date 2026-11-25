@@ -329,6 +329,25 @@ class TestDeleteApi(BootBackupTestCase):
         self.assertTrue(r.json()["ok"])
         mock_delete.assert_called_once_with(ANY, FAKE_BACKUP)
 
+    @patch("web.routes.boot_backups.delete_boot_volume_backup")
+    def test_delete_body_confirm_accepted(self, mock_delete):
+        """ARM 全功能测试 Bug 5：confirm 写 DELETE body 里也要接受。"""
+        r = self.client.request(
+            "DELETE", f"/api/boot-backups/{FAKE_BACKUP}",
+            json={"confirm": True})
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.json()["ok"])
+        mock_delete.assert_called_once_with(ANY, FAKE_BACKUP)
+
+    @patch("web.routes.boot_backups.delete_boot_volume_backup")
+    def test_delete_no_confirm_error_names_both_ways(self, mock_delete):
+        """都不传时 400 报错写明两种传法。"""
+        r = self.client.delete(f"/api/boot-backups/{FAKE_BACKUP}")
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("?confirm=true", r.json()["error"])
+        self.assertIn('{"confirm": true}', r.json()["error"])
+        mock_delete.assert_not_called()
+
 
 class TestDeleteBatchApi(BootBackupTestCase):
     """POST /api/boot-backups/delete-batch：批量删除。"""

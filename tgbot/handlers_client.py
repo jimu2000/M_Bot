@@ -1408,6 +1408,11 @@ async def handle_client_text_input(update, context):
     """
     if context.user_data.get("pending_input"):
         return
+    # 绑定域名流程优先：bind_domain_pending 已选 Zone 时，这条文字归
+    # 绑定域名处理（group=1），这里不消费，避免双重处理。
+    bd_pending = context.user_data.get("bind_domain_pending") or {}
+    if bd_pending.get("zone_id"):
+        return
     message = update.effective_message
     text = (message.text or "") if message is not None else ""
     if context.user_data.get("cmd_awaiting"):

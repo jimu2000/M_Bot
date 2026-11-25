@@ -33,6 +33,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
 from oci.client import OCIError
+from oci.instance import get_image_arch
 from oci.quota import can_launch, check_a1_single_instance_cap
 from tgbot import config as bot_config
 from tgbot.bark import load_bark_config
@@ -61,6 +62,37 @@ _IMAGE_PLACEHOLDER_SUFFIX = {
     "-aarch64": "aarch64",
     "-x86": "x86_64",
 }
+
+# Shape -> required image architecture (only the two free shapes are supported). 形状 -> 要求的镜像架构（只支持两种免费形状）。
+_SHAPE_ARCH = {
+    "VM.Standard.A1.Flex": "aarch64",
+    "VM.Standard.E2.1.Micro": "x86_64",
+}
+
+# Shape to suggest when the image architecture matches the other shape. 镜像架构对上另一个形状时，建议换成的形状。
+_ARCH_SHAPE = {
+    "aarch64": "VM.Standard.A1.Flex",
+    "x86_64": "VM.Standard.E2.1.Micro",
+}
+
+
+def check_image_shape_match(shape, image_arch):
+    """镜像架构与形状事前校验（ARM 全功能测试 Bug 6）。
+
+    image_arch 是已知的镜像架构（占位符取自后缀，真实 OCID 由
+    get_image_arch 查 display-name 推断）；推断不出（None）或形状
+    不在免费形状表里时不校验、不阻塞。不匹配时抛 ValueError，
+    路由转成 400 明文报错，不等抢机任务跑到 OCI 才报 InvalidParameter。
+    """
+    required_arch = _SHAPE_ARCH.get(shape)
+    if not image_arch or not required_arch or image_arch == required_arch:
+        return
+    arch_label = "ARM" if image_arch == "aarch64" else "x86"
+    raise ValueError(
+        f"镜像架构与形状不匹配：镜像是 {image_arch}（{arch_label}），"
+        f"形状 {shape} 需要 {required_arch} 镜像。"
+        f"请换成 {required_arch} 镜像，或把形状改成 "
+        f"{_ARCH_SHAPE[image_arch]}。")
 
 
 def resolve_image_id(image_id):
@@ -223,6 +255,14 @@ def create_instance(body: CreateBody,
         if not ok:
             return error_response(f"配额预检不通过：{reason}", status_code=400)
         image_id = resolve_image_id(body.image_id)
+        # Image arch vs shape pre-check: the placeholder's arch comes from its suffix (no OCI call); a real OCID is looked up via image get and inferred from its display name. 镜像架构与形状事前校验：占位符的架构取自后缀（不调 OCI），真实 OCID 查 image get 从显示名推断。
+        placeholder_arch = None
+        for suffix, arch in _IMAGE_PLACEHOLDER_SUFFIX.items():
+            if body.image_id.endswith(suffix):
+                placeholder_arch = arch
+                break
+        check_image_shape_match(
+            body.shape, placeholder_arch or get_image_arch(cli, image_id))
         # Root password: when enabled and empty, the backend generates a UUID; it is combined with the boot script into the same cloud-init (a script that is itself #cloud-config conflicts and returns 400). root 密码：开启时为空则后端生成 UUID；与开机脚本拼进同一份 cloud-init（脚本本身是 #cloud-config 时冲突，报 400）。
         root_password = None
         if body.root_login:

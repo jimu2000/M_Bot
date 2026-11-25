@@ -32,6 +32,7 @@ from oci.volume import (
     update_boot_volume_vpus,
 )
 from web import config
+from web.routes.cloudreport import clear_cloud_report_cache
 from web.deps import (
     error_response,
     get_current_user,
@@ -285,6 +286,7 @@ def resize(volume_id: str,
     except OCIError as exc:
         return oci_error_response(exc)
     clear_volumes_cache(profile or config.DEFAULT_PROFILE)
+    clear_cloud_report_cache()
     return {"ok": True, "volume": volume}
 
 
@@ -323,4 +325,5 @@ def delete(volume_id: str,
     except OCIError as exc:
         return oci_error_response(exc)
     clear_volumes_cache(profile or config.DEFAULT_PROFILE)
+    clear_cloud_report_cache()
     return {"ok": True, "volume_id": volume_id}

@@ -17,6 +17,8 @@ ARM 实测结论（2026-11-25，测试机 ARM_2026-11-25），本模块按实测
   - 控制台连接须用 RSA 密钥，ed25519 会被 OCI 拒绝（见 oci/console.py）。
 """
 
+import os
+
 from oci.boot_backup import (
     list_boot_volume_backups,
     restore_boot_volume_backup,
@@ -48,9 +50,10 @@ DEFAULT_COMPARTMENT_ID = "ocid1.tenancy.oc1..xxxxxxxx"
 
 PREFLIGHT_ACTIONS = ("start", "restore", "delete_volume", "terminate",
                      "rebuild_from_backup")
-# Netboot guide TFTP nodes: pick the nearest. The first one is the user's own node in Singapore. Netboot 向导的 TFTP 节点：就近选择。首个是用户在新加坡自备的节点。
+# Netboot guide TFTP nodes: pick the nearest. Your own node goes in the MBOT_TFTP_NODE environment variable (never hard-code a real IP here: this repo is public); without it the example placeholder below is shown. Netboot 向导的 TFTP 节点：就近选择；自己的节点填环境变量 MBOT_TFTP_NODE（不要把真实 IP 写进代码：本仓库是公开的），不填时显示下面的示例占位地址。
+_TFTP_NODE = os.environ.get("MBOT_TFTP_NODE", "").strip()
 NETBOOT_TFTP_NODES = [
-    {"label": "新加坡（用户节点）", "host": "203.0.113.10"},
+    {"label": "新加坡（自备节点）", "host": _TFTP_NODE or "203.0.113.10"},
     {"label": "netboot.xyz 官方演示节点", "host": "boot.netboot.xyz"},
 ]
 # Rescue commands for the EFI Shell (in execution order). EFI Shell 里救机用的命令（按执行顺序）。
