@@ -27,7 +27,7 @@ from oci.client import OCIClient, get_oci_proxy, proxy_env
 from web.app import create_app
 from web.auth import LOGIN_GUARD, SESSIONS, hash_password
 
-# 测试密码：运行时随机生成（不在代码里写任何固定口令）。
+# Test password: generated randomly at runtime (no fixed password is ever written in code). 测试密码：运行时随机生成（不在代码里写任何固定口令）。
 TEST_PASSWORD = secrets.token_urlsafe(16)
 PROXY = "http://127.0.0.1:7890"
 
@@ -104,7 +104,6 @@ class OciClientProxyTest(unittest.TestCase):
         self.assertEqual(env["HTTPS_PROXY"], PROXY)
         self.assertEqual(env["HTTP_PROXY"], PROXY)
         self.assertEqual(env["SUPPRESS_LABEL_WARNING"], "True")
-        # 全局环境没被改。
         self.assertNotEqual(os.environ.get("HTTPS_PROXY"), PROXY)
 
     @patch("oci.client.subprocess.run")
@@ -112,7 +111,7 @@ class OciClientProxyTest(unittest.TestCase):
         """无代理配置时不向子进程 env 注入代理变量。"""
         mock_run.return_value = SimpleNamespace(returncode=0, stdout="{}",
                                                 stderr="")
-        # 用干净环境（本机沙箱自己设了 HTTPS_PROXY，会被原样继承）。
+        # Use a clean environment (this sandbox sets HTTPS_PROXY itself, which would otherwise be inherited verbatim). 用干净环境（本机沙箱自己设了 HTTPS_PROXY，会被原样继承）。
         with patch("oci.client.get_oci_proxy", return_value=None), \
              patch.dict(os.environ, {}, clear=True):
             cli = OCIClient()
@@ -166,10 +165,8 @@ class ProxySettingsApiTest(unittest.TestCase):
         self.assertEqual(r.json()["proxy"], PROXY)
         self.assertEqual(r.json()["source"], "file")
         self.assertIn("立即生效", r.json()["message"])
-        # 文件落盘。
         with open(os.path.join(self._tmp.name, "oci_proxy.json")) as f:
             self.assertEqual(json.load(f)["proxy"], PROXY)
-        # GET 读回。
         with patch.dict(os.environ, {}, clear=True):
             r = self.client.get("/api/settings/oci-proxy")
         self.assertEqual(r.json()["proxy"], PROXY)

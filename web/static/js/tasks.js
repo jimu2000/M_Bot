@@ -7,7 +7,7 @@
   "use strict";
   var MBot = window.MBot;
   var tasks = [];
-  var expandedId = null; // 当前展开的任务 id
+  var expandedId = null;
   var pollTimer = null;
 
   function taskStatus(t) {
@@ -49,9 +49,7 @@
       var cancelBtn = isRunning(t)
         ? '<button type="button" class="btn btn-sm btn-danger" data-act="cancel">取消</button>'
         : "";
-      // 后端任务字段：label（显示说明，如"抢机：xxx"或规格·实例名）
-      // / kind（类型，旧任务无 label 时退回它）/ detail（说明）
-      // / status（pending/running/done/failed/cancelled）/ created_at（秒级时间戳）
+      // Backend task fields: label (display text, e.g. "抢机：xxx" or shape + instance name) / kind (type; falls back to this when an old task has no label) / detail (description) / status (pending/running/done/failed/cancelled) / created_at (second-level timestamp). 后端任务字段：label（显示说明，如“抢机：xxx”或规格·实例名）/ kind（类型，旧任务无 label 时退回它）/ detail（说明）/ status（pending/running/done/failed/cancelled）/ created_at（秒级时间戳）。
       var sub = t.detail || t.display_name || "";
       var row =
         '<tr class="task-row' + (expanded ? " expanded" : "") + '" data-task-id="' + esc(id) + '">' +
@@ -68,7 +66,6 @@
       }
       return row;
     }).join("");
-    // 展开行需要加载日志
     if (expandedId) loadLogs(expandedId);
   }
 
@@ -77,7 +74,7 @@
       var data = await MBot.api("/api/tasks");
       tasks = data.tasks || [];
       render();
-      // 有运行中的任务时自动轮询，否则停掉轮询
+      // Auto-poll only while a task is running; stop polling otherwise. 有运行中的任务时自动轮询，否则停掉轮询。
       var anyRunning = tasks.some(isRunning);
       if (anyRunning && !pollTimer) {
         pollTimer = setInterval(loadTasks, 5000);
@@ -223,11 +220,10 @@
       var rowEl = e.target.closest(".task-row");
       if (!rowEl) return;
       var id = rowEl.getAttribute("data-task-id");
-      expandedId = expandedId === id ? null : id; // 再点一次收起
+      expandedId = expandedId === id ? null : id;
       render();
     });
 
-    // 抢机计划表操作按钮
     document.getElementById("plan-tbody").addEventListener("click", function (e) {
       var btn = e.target.closest("[data-act]");
       if (!btn) return;
@@ -242,7 +238,6 @@
       }
     });
 
-    // 添加抢机计划
     document.getElementById("add-plan-form").addEventListener("submit", async function (e) {
       e.preventDefault();
       var cron = document.getElementById("plan-cron").value.trim();

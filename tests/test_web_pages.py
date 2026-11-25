@@ -30,7 +30,6 @@ def build_test_app():
     app.mount("/static", StaticFiles(directory=os.path.join(WEB_DIR, "static")), name="static")
     templates = Jinja2Templates(directory=os.path.join(WEB_DIR, "templates"))
 
-    # 页面路由：与正式后端约定的 URL 一致
     PAGES = {
         "/login": ("login.html", None),
         "/overview": ("overview.html", "overview"),
@@ -58,7 +57,6 @@ class TestWebPages(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.client = TestClient(build_test_app())
-        # 渲染每个页面并存到 /tmp/mbot-pages/ 供协调员检查
         os.makedirs(DUMP_DIR, exist_ok=True)
         cls.pages = {}
         for path in ("/login", "/overview", "/instances", "/volumes", "/create", "/tasks"):
@@ -85,14 +83,13 @@ class TestWebPages(unittest.TestCase):
         import re
         ipv4_re = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
         for path, resp in self.pages.items():
-            # 允许出现的 IP 只有文档网段 203.0.113.x（TEST-NET-3）
+            # The only IPs allowed to appear are the documentation range 203.0.113.x (TEST-NET-3). 允许出现的 IP 只有文档网段 203.0.113.x（TEST-NET-3）。
             for ip in ipv4_re.findall(resp.text):
                 self.assertTrue(
                     ip.startswith("203.0.113."),
                     f"{path} 出现了非文档网段 IP：{ip}",
                 )
-            # 占位 OCID 允许出现（ocid1.<类型>.oc1..xxxxxxxx，允许 -arch 后缀），
-            # 但不允许出现真实 OCID 形态（长串 base64 后缀）
+            # Placeholder OCIDs are allowed (ocid1.<type>.oc1..xxxxxxxx, with an optional -arch suffix), but real-OCID shapes (long base64 suffixes) are not. 占位 OCID 允许出现（ocid1.<类型>.oc1..xxxxxxxx，允许 -arch 后缀），但不允许出现真实 OCID 形态（长串 base64 后缀）。
             placeholder_re = re.compile(r"ocid1\.[a-z]+\.oc1\.\.x+(?:-[a-z0-9]+)?")
             stripped = placeholder_re.sub("", resp.text)
             self.assertNotIn("ocid1.", stripped, f"{path} 出现了非占位 OCID")
@@ -108,12 +105,10 @@ class TestWebPages(unittest.TestCase):
             "默认凭据请查看部署文档",
             "M_Bot Oracle开源管理面板",
             "/static/js/login.js",
-            # v1.45.0 修 12：登录页加 GitHub 项目链接（新标签页打开）
             "https://github.com/jimu2000/M_Bot",
             "GitHub 项目",
             'target="_blank"',
         ])
-        # 登录页不继承 base，不应有侧边栏
         self.assertNotIn('class="sidebar"', self.pages["/login"].text)
 
     def test_base_layout_elements(self):
@@ -134,7 +129,6 @@ class TestWebPages(unittest.TestCase):
                 "/static/js/app.js",
                 "/static/css/base.css",
                 "/static/css/themes.css",
-                # v1.45.0 修 12：内页顶栏加 GitHub 链接（新标签页打开）
                 "https://github.com/jimu2000/M_Bot",
                 'target="_blank"',
             ])
@@ -180,7 +174,6 @@ class TestWebPages(unittest.TestCase):
             'id="boot-volume-modal"',
             "/static/js/instances.js",
         ])
-        # 下拉是空的动态填充容器，不含写死的选项
         resp = self.client.get("/instances")
         self.assertNotIn('<option value="DEFAULT"', resp.text)
 
@@ -248,6 +241,7 @@ class TestWebPages(unittest.TestCase):
             "/static/css/base.css",
             "/static/css/themes.css",
             "/static/js/app.js",
+            "/static/js/i18n.js",
             "/static/js/login.js",
             "/static/js/overview.js",
             "/static/js/instances.js",
@@ -280,7 +274,7 @@ class TestRealBackendIntegration(unittest.TestCase):
             from web.auth import hash_password
         except Exception as exc:  # noqa: BLE001 - 后端未就绪时跳过
             raise unittest.SkipTest(f"真实后端未就绪，跳过集成测试：{exc}")
-        # 测试用密码哈希（仅测试进程内有效，不写文件）
+        # Test password hash (valid only inside the test process, never written to a file). 测试用密码哈希（仅测试进程内有效，不写文件）。
         config.ADMIN_PASSWORD_HASH = hash_password("test-password-123")
         cls.app = create_app()
         cls.client = TestClient(cls.app, raise_server_exceptions=False)
@@ -291,9 +285,14 @@ class TestRealBackendIntegration(unittest.TestCase):
         self.assertIn('id="login-btn"', resp.text)
         self.assertIn("M_Bot Oracle开源管理面板", resp.text)
 
+    def test_static_files_send_no_cache(self):
+        # Static files must send Cache-Control: no-cache, or Safari heuristically caches stale JS. 静态文件必须带 Cache-Control: no-cache，否则 Safari 会按启发式缓存旧 JS。
+        for asset in ("/static/js/overview.js", "/static/css/base.css"):
+            resp = self.client.get(asset)
+            self.assertEqual(resp.status_code, 200, asset)
+            self.assertEqual(resp.headers.get("cache-control"), "no-cache", asset)
+
     def test_login_page_clarity_when_configured(self):
-        # 配置了 MBOT_CLARITY_ID 时登录页加载 Clarity 脚本（带项目 ID），
-        # 且不再加载 Clicky。
         from unittest.mock import patch
 
         from web import config
@@ -306,7 +305,6 @@ class TestRealBackendIntegration(unittest.TestCase):
         self.assertNotIn("getclicky.com", resp.text)
 
     def test_login_page_no_clarity_when_unconfigured(self):
-        # 未配置时不加载 Clarity（默认行为，不追踪）。
         from unittest.mock import patch
 
         from web import config
@@ -318,7 +316,7 @@ class TestRealBackendIntegration(unittest.TestCase):
         self.assertNotIn("getclicky.com", resp.text)
 
     def test_overview_redirects_when_anonymous(self):
-        # 用全新 client（不带登录 cookie，避免其他测试的会话串用）
+        # Use a fresh client (no login cookie, so sessions do not leak across tests). 用全新 client（不带登录 cookie，避免其他测试的会话串用）。
         anon = TestClient(self.app, raise_server_exceptions=False)
         resp = anon.get("/overview", follow_redirects=False)
         self.assertEqual(resp.status_code, 302)
@@ -335,7 +333,6 @@ class TestRealBackendIntegration(unittest.TestCase):
         self.assertIn("已保存会话", resp.text)
 
     def test_github_link_on_login_and_overview(self):
-        # v1.45.0 修 12：登录页与内页都有 GitHub 项目链接，新标签页打开。
         resp = self.client.get("/login")
         self.assertEqual(resp.status_code, 200)
         self.assertIn("https://github.com/jimu2000/M_Bot", resp.text)
@@ -350,9 +347,6 @@ class TestRealBackendIntegration(unittest.TestCase):
         self.assertIn('target="_blank"', resp.text)
 
     def test_cloud_report_renders_table(self):
-        # v1.45.0 修 13：云报告改表格。概览页保留卡片容器、刷新按钮与
-        # “生成于”时间戳；overview.js 把每区域渲染成表格的一行，列头
-        # 覆盖全部信息；CSS 保证小屏横向滚动不溢出。
         resp = self.client.post("/api/auth/login", json={
             "username": "admin", "password": "test-password-123"})
         self.assertEqual(resp.status_code, 200)
@@ -365,20 +359,25 @@ class TestRealBackendIntegration(unittest.TestCase):
         with open(os.path.join(ROOT, "web", "static", "js", "overview.js"),
                   encoding="utf-8") as f:
             js = f.read()
-        # 表格骨架：.table-wrap 包着 table.data，每区域一行。
         self.assertIn('<div class="table-wrap"><table class="data cloud-report-table">', js)
-        for header in ("<th>区域</th>", "<th>实例</th>", "<th>启动盘</th>",
-                       "<th>A1</th>", "<th>E2</th>"):
-            self.assertIn(header, js, f"云报告表头应有 {header}")
+        for header in ("cloud.th_region", "cloud.th_instances", "cloud.th_volumes",
+                       "cloud.th_a1", "cloud.th_e2"):
+            self.assertIn('tr("%s")' % header, js, f"云报告表头应走 i18n 键 {header}")
+        with open(os.path.join(ROOT, "web", "static", "js", "i18n.js"),
+                  encoding="utf-8") as f:
+            i18n = f.read()
+        for key, label in (("cloud.th_region", "区域"), ("cloud.th_instances", "实例"),
+                           ("cloud.th_volumes", "启动盘"), ("cloud.th_a1", "A1"),
+                           ("cloud.th_e2", "E2")):
+            self.assertIn('"%s": { zh: "%s"' % (key, label), i18n,
+                          f"字典里 {key} 的中文应为 {label}")
         self.assertIn("groups.map(function (g)", js, "每区域应渲染成一行")
         self.assertIn('"<tr>"', js)
-        # 数据与后端 /api/cloud-report/summary 的形状一致。
         for field in ("g.instances.total", "byState.RUNNING", "byState.TERMINATED",
                       "g.volumes.count", "g.volumes.totalGB",
                       "a1.usedOcpu", "a1.capOcpu", "a1.usedMem", "a1.capMem",
                       "e2.count", "e2.limit", "g.profileLabel", "g.region"):
             self.assertIn(field, js, f"表格应取后端字段 {field}")
-        # 查询失败的账号也占一行，不丢行。
         self.assertIn('colspan="4"', js)
         self.assertIn("查询失败", js)
         with open(os.path.join(ROOT, "web", "static", "css", "base.css"),
@@ -409,25 +408,17 @@ class TestRealBackendIntegration(unittest.TestCase):
         self.assertEqual(resp.json().get("tasks"), [])
 
     def test_api_docs_disabled(self):
-        # v1.45.0 修 6（M-1）：FastAPI 自动文档未授权暴露，关掉后
-        # /docs、/redoc、/openapi.json 都应 404。
         for path in ("/docs", "/redoc", "/openapi.json"):
             resp = self.client.get(path)
             self.assertEqual(resp.status_code, 404, f"{path} 应 404")
 
     def test_login_cookie_secure_only_over_https(self):
-        # v1.45.0 修 7（L-2）：会话 cookie 缺 Secure 标志。
-        # Secure 只在 HTTPS 请求时设（nginx 透传 X-Forwarded-Proto）：
-        # 生产面板走 nginx HTTPS，cookie 必须 Secure；http 直连与
-        # 测试客户端不设，否则会话直接断掉。
-        # http：不带 Secure，HttpOnly 还在。
         resp = self.client.post("/api/auth/login", json={
             "username": "admin", "password": "test-password-123"})
         self.assertEqual(resp.status_code, 200)
         set_cookie = resp.headers.get("set-cookie", "")
         self.assertIn("HttpOnly", set_cookie)
         self.assertNotIn("Secure", set_cookie)
-        # https（X-Forwarded-Proto）：带 Secure。
         resp = self.client.post("/api/auth/login", json={
             "username": "admin", "password": "test-password-123"},
             headers={"X-Forwarded-Proto": "https"})
@@ -437,8 +428,6 @@ class TestRealBackendIntegration(unittest.TestCase):
         self.assertIn("HttpOnly", set_cookie)
 
     def test_422_error_hides_server_paths(self):
-        # v1.45.0 修 8（L-4）：422 校验错误不能泄露服务器文件路径与行号。
-        # 缺字段调登录接口，应 422，且错误里只有字段级信息。
         resp = self.client.post("/api/auth/login", json={})
         self.assertEqual(resp.status_code, 422)
         body = resp.text
@@ -469,7 +458,6 @@ class TestMobileNav(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertIn('id="nav-toggle"', resp.text)
         self.assertIn('id="sidebar-backdrop"', resp.text)
-        # 侧边栏里有 DNS 管理入口。
         self.assertIn('href="/dns"', resp.text)
         self.assertIn("DNS 管理", resp.text)
 

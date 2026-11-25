@@ -23,42 +23,56 @@
 #     暴露到公网；外网访问请在前面加反向代理 + HTTPS。
 #   - 升级前会自动备份当前版本到 $INSTALL_DIR/.backup/，回滚用 rollback。
 #   - 升级不会动 web/data/（hosts.json、任务记录等运行时数据）。
+#
+# English summary: M_Bot deploy script (template). Design points:
+# 1. systemd units use Restart=always + RestartSec=10 (auto-restart 10s
+# after a crash); 2. atomic upgrade: download the new version into a temp
+# dir on the same filesystem -> verify -> mv over (avoids /tmp running out
+# of space and non-atomic cross-filesystem mv); 3. upgrade lock: flock
+# prevents concurrent upgrades (lock file inside the install dir);
+# 4. port resolution priority: CLI arg > running process command line >
+# port file > default 9527. Usage (placeholders; edit the config section
+# before deploying): ./deploy.sh install (first deploy), upgrade (atomic
+# upgrade to the latest version, backs up first, rollback available),
+# rollback, start|stop|restart|status, health (process-level check, since
+# /api/system/health needs a login session). Notes: this script is a
+# template with no real IPs / passwords / tokens; real values go in
+# /root/.rbot-clone.env (mode 600), read by systemd via EnvironmentFile.
+# The panel listens on 127.0.0.1 only (see web/config.py); do not expose
+# 9527 directly to the internet, put a reverse proxy + HTTPS in front.
 
 set -euo pipefail
 
 # ================= 配置区（部署前改这里） =================
-# 安装目录（M_Bot 代码放这里；不要用 /tmp，重启会丢）。
+# Install directory (M_Bot code lives here; not /tmp, it is wiped on reboot). 安装目录（M_Bot 代码放这里；不要用 /tmp，重启会丢）。
 INSTALL_DIR="/opt/rbot-clone"
-# 代码来源（git 仓库地址，占位符；或改成发布包 URL）。
+# Code source (git repo URL, placeholder; or change to a release package URL). 代码来源（git 仓库地址，占位符；或改成发布包 URL）。
 REPO_URL="https://github.com/<你的账号>/M_Bot.git"
-# 运行用户（建议用专用用户；root 运行也可以，但不要用 nobody）。
+# Run user (a dedicated user is recommended; root also works, but never nobody). 运行用户（建议用专用用户；root 运行也可以，但不要用 nobody）。
 SERVICE_USER="root"
-# systemd 服务名。
+# systemd service names. systemd 服务名。
 SERVICE_NAME="rbot-clone-web"
-# 环境文件（管理员密码哈希、会话密钥等，600 权限，systemd 读入）。
+# Env file (admin password hash, session key, etc.; mode 600, read by systemd). 环境文件（管理员密码哈希、会话密钥等，600 权限，systemd 读入）。
 ENV_FILE="/root/.rbot-clone.env"
-# Python 虚拟环境目录（install 时创建）。
+# Python virtualenv directory (created during install). Python 虚拟环境目录（install 时创建）。
 VENV_DIR="$INSTALL_DIR/venv"
-# 端口文件（端口解析优先级第 3 级；文件不存在时用默认端口）。
+# Port file (priority level 3 of port resolution; the default port is used when the file does not exist). 端口文件（端口解析优先级第 3 级；文件不存在时用默认端口）。
 PORT_FILE="$INSTALL_DIR/.port"
-# 默认端口（端口解析优先级最后一级，9527）。
+# Default port (last level of port resolution, 9527). 默认端口（端口解析优先级最后一级，9527）。
 DEFAULT_PORT=9527
-# 升级锁文件（flock 用，防并发升级）。
+# Upgrade lock file (for flock, prevents concurrent upgrades). 升级锁文件（flock 用，防并发升级）。
 UPGRADE_LOCK="$INSTALL_DIR/.upgrade.lock"
-# 备份目录（升级前把当前版本拷一份到这里，回滚用）。
+# Backup directory (the current version is copied here before an upgrade, for rollback). 备份目录（升级前把当前版本拷一份到这里，回滚用）。
 BACKUP_DIR="$INSTALL_DIR/.backup"
 # =====================================================
 
 # ---------- 端口解析（优先级：参数 > 进程命令行 > 文件 > 默认） ----------
-# 端口解析优先级：参数 > 进程命令行 > 文件 > 默认 9527。
 resolve_port() {
-    # 第 1 级：命令行参数 --port=xxxx（deploy.sh 的第一个参数透传时用）。
     for arg in "$@"; do
         case "$arg" in
             --port=*) echo "${arg#--port=}"; return 0 ;;
         esac
     done
-    # 第 2 级：运行中进程的命令行（uvicorn --port xxxx）。
     local pid
     pid="$(pgrep -f "uvicorn.*web.app" | head -n 1 || true)"
     if [ -n "$pid" ] && [ -r "/proc/$pid/cmdline" ]; then
@@ -67,19 +81,15 @@ resolve_port() {
             | sed -n 's/.*--port[= ]\([0-9]*\).*/\1/p' | head -n 1)"
         if [ -n "$port" ]; then echo "$port"; return 0; fi
     fi
-    # 第 3 级：端口文件。
     if [ -r "$PORT_FILE" ]; then
         local file_port
         file_port="$(tr -d ' \n' < "$PORT_FILE")"
         if [ -n "$file_port" ]; then echo "$file_port"; return 0; fi
     fi
-    # 第 4 级：默认端口。
     echo "$DEFAULT_PORT"
 }
 
 # ---------- systemd 单元 ----------
-# Restart=always + RestartSec=10：进程崩了 10 秒后自动拉起
-# （Type=simple，Restart=always，RestartSec=10）。
 write_systemd_unit() {
     local port="$1"
     cat > "/etc/systemd/system/${SERVICE_NAME}.service" <<EOF
@@ -103,8 +113,7 @@ EOF
 }
 
 # ---------- 健康检查 ----------
-# 面板 /api/system/health 需要登录会话，这里做进程级检查：
-# 服务在跑 + 端口在监听即算健康（登录后的接口级检查请手动调 API）。
+# The panel's /api/system/health needs a login session, so do a process-level check here: the service is running + the port is listening means healthy (for a post-login API-level check, call the API manually). 面板 /api/system/health 需要登录会话，这里做进程级检查：服务在跑 + 端口在监听即算健康（登录后的接口级检查请手动调 API）。
 health_check() {
     local port
     port="$(resolve_port "$@")"
@@ -148,10 +157,9 @@ cmd_install() {
 }
 
 # ---------- 原子升级 ----------
-# 原子升级：下载到安装目录内的临时目录（与目标同文件系统，
-# mv 才原子，避开 /tmp 空间不足）-> 校验 -> mv 覆盖；升级锁防并发。
+# Atomic upgrade: download into a temp dir inside the install dir (same filesystem as the target, so mv is atomic and /tmp size limits are avoided) -> verify -> mv over; the upgrade lock prevents concurrency. 原子升级：下载到安装目录内的临时目录（与目标同文件系统，mv 才原子，避开 /tmp 空间不足）-> 校验 -> mv 覆盖；升级锁防并发。
 cmd_upgrade() {
-    # 升级锁：拿不到锁说明已有升级在进行，直接退出（flock 非阻塞）。
+    # Upgrade lock: failing to get the lock means another upgrade is running, so exit directly (flock is non-blocking). 升级锁：拿不到锁说明已有升级在进行，直接退出（flock 非阻塞）。
     exec 9>"$UPGRADE_LOCK"
     if ! flock -n 9; then
         echo "已有升级在进行（锁：$UPGRADE_LOCK），本次退出。"
@@ -161,25 +169,22 @@ cmd_upgrade() {
     port="$(resolve_port "$@")"
     tmp_dir="$(mktemp -d "$INSTALL_DIR/.upgrade.XXXXXX")"
     echo "升级：临时目录 $tmp_dir"
-    # 清理函数：成功或失败都删临时目录（trap 保证执行）。
     cleanup_tmp() { rm -rf "$tmp_dir"; }
     trap cleanup_tmp EXIT
     git clone --depth 1 "$REPO_URL" "$tmp_dir/new"
-    # 校验：关键文件齐全才继续（缺了就停，不动线上版本）。
+    # Verify: continue only when the key files are all present (stop when any is missing; the live version is untouched). 校验：关键文件齐全才继续（缺了就停，不动线上版本）。
     for required in web/app.py requirements.txt web/config.py; do
         if [ ! -f "$tmp_dir/new/$required" ]; then
             echo "升级失败：新版本缺关键文件 $required，已停止，未动线上版本。"
             exit 1
         fi
     done
-    # 备份当前版本（回滚用；只备代码，不备 web/data 与 venv）。
     rm -rf "$BACKUP_DIR"
     mkdir -p "$BACKUP_DIR"
     for entry in web oci tgbot clouds mcp_server.py requirements.txt; do
         [ -e "$INSTALL_DIR/$entry" ] && cp -a "$INSTALL_DIR/$entry" "$BACKUP_DIR/"
     done
     echo "当前版本已备份到 $BACKUP_DIR"
-    # 停服务 -> mv 覆盖（同文件系统，原子）-> 装依赖 -> 起服务。
     systemctl stop "$SERVICE_NAME" || true
     for entry in web oci tgbot clouds mcp_server.py requirements.txt; do
         rm -rf "$INSTALL_DIR/$entry"

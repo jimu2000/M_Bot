@@ -96,7 +96,7 @@ class TestCpuMatches(_PolicyPathMixin):
 
     def test_default_allowed_when_none(self):
         self.assertTrue(cpu_matches("AMD EPYC 7J13"))
-        # 默认只留 7J13：7745 不再是默认允许型号。
+        # Only 7J13 is allowed by default: 7745 is no longer a default allowed model. 默认只留 7J13：7745 不再是默认允许型号。
         self.assertFalse(cpu_matches("AMD EPYC 7745"))
         self.assertFalse(cpu_matches("AMD EPYC 7551"))
 
@@ -193,7 +193,7 @@ class TestCombinedBootKeys(unittest.TestCase):
             self.assertIn(FAKE_USER_PUB, content)
             self.assertIn(FAKE_GUARD_PUB, content)
             temp_path = boot_keys.path
-        # 退出后临时文件已删，原文件未动
+        # After exiting, the temp file is deleted and the original file is untouched. 退出后临时文件已删，原文件未动。
         self.assertFalse(os.path.exists(temp_path))
         with open(self.user_keys, encoding="utf-8") as f:
             self.assertNotIn(FAKE_GUARD_PUB, f.read())

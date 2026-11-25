@@ -22,6 +22,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from tgbot import config as bot_config
+from tgbot import i18n as bot_i18n
 from tgbot import task_store
 from oci.client import (
     AuthError,
@@ -33,7 +34,7 @@ from oci.client import (
 )
 
 # ================= 配置区（改这里） =================
-# 实例详情里 OCID 只显示后 4 位（防聊天记录泄露完整 OCID）。
+# In instance details, only the last 4 chars of the OCID are shown (so a full OCID never leaks into chat history). 实例详情里 OCID 只显示后 4 位（防聊天记录泄露完整 OCID）。
 OCID_TAIL_LEN = 4
 # =====================================================
 
@@ -47,7 +48,8 @@ def require_allowed(handler):
         user = update.effective_user
         user_id = user.id if user else None
         if not bot_config.is_allowed(user_id):
-            text = "⛔ 未授权：你的 Telegram 账号不在白名单里，无法使用本机器人。"
+            text = bot_i18n.t(bot_i18n.get_user_lang(user_id),
+                              "common.denied")
             if update.effective_message:
                 await update.effective_message.reply_text(text)
             elif update.callback_query:
@@ -70,7 +72,7 @@ def set_current_profile(context, profile):
     切换账号时工作区域重置为新账号的主区（旧区域不带过去，避免
     新加坡的首尔区域泄漏到芝加哥账号上）。
     """
-    bot_config.get_profile_config(profile)  # 未知 profile 抛 ValueError
+    bot_config.get_profile_config(profile)
     context.user_data["profile"] = profile
     context.user_data["region"] = bot_config.get_region(profile)
 
@@ -180,36 +182,36 @@ def short_shape(shape):
     return shape.split(".")[0]
 
 
-def fmt_shape_spec(shape, ocpus, memory):
-    """规格行：E2.1.Micro 后面加“永久免费”。
+def fmt_shape_spec(shape, ocpus, memory, lang="zh"):
+    """规格行：E2.1.Micro 后面加“永久免费”/ "Free forever"。
 
     如 E2.1.Micro（1 核 / 1GB）永久免费；其他规格不加。
     shape 可带 VM.Standard. 前缀，也可已是简称。
     """
     short = (shape or "?").replace("VM.Standard.", "")
-    text = f"{short}（{ocpus} 核 / {memory}GB）"
+    unit = bot_i18n.t(lang, "boot.spec_a1", ocpus=ocpus, memory=memory)
+    text = f"{short}（{unit}）"
     if short == "E2.1.Micro":
-        text += "永久免费"
+        text += bot_i18n.t(lang, "instances.detail_free_forever")
     return text
 
 
-# 实例列表分组：组顺序与组头（fmt_instance_list 与
-# instance_list_keyboard 共用，保证文字与按钮顺序一致）。
-# 已终止（TERMINATED）不在组里：sort_instances_by_group 直接
-# 把它过滤掉，不显示（用户要求：列表里一堆已终止的看着乱）。
+# Instance list grouping: group order and headers are shared by fmt_instance_list and instance_list_keyboard, so the text and button order always agree. 实例列表分组：组顺序与组头（fmt_instance_list 与 instance_list_keyboard 共用，保证文字与按钮顺序一致）。
+# TERMINATED instances are not in any group: sort_instances_by_group filters them out and does not show them (a list full of terminated instances is unreadable). 已终止（TERMINATED）不在组里：sort_instances_by_group 直接把它过滤掉，不显示（列表里一堆已终止的看着乱）。
 INSTANCE_GROUP_ORDER = ("RUNNING", "STOPPED")
 INSTANCE_GROUP_TITLES = {
-    "RUNNING": "🟢 运行中",
-    "STOPPED": "🟡 已停止",
-    "TERMINATED": "⚫ 已终止",
+    "RUNNING": "instances.group_running",
+    "STOPPED": "instances.group_stopped",
+    "TERMINATED": "instances.group_terminated",
 }
-INSTANCE_GROUP_OTHER_TITLE = "❓ 其他"
+INSTANCE_GROUP_OTHER_TITLE_KEY = "instances.group_other"
 
 
-def instance_group_title(state):
+def instance_group_title(state, lang="zh"):
     """状态对应的分组标题（不含数量）；未知状态归入“其他”。"""
     state = (state or "").upper()
-    return INSTANCE_GROUP_TITLES.get(state, INSTANCE_GROUP_OTHER_TITLE)
+    key = INSTANCE_GROUP_TITLES.get(state, INSTANCE_GROUP_OTHER_TITLE_KEY)
+    return bot_i18n.t(lang, key)
 
 
 def sort_instances_by_group(instances):
@@ -232,11 +234,8 @@ def sort_instances_by_group(instances):
     return indexed
 
 
-# 启动盘列表分组：组顺序与组头（fmt_volume_list 与
-# volume_list_keyboard 共用，保证文字与按钮顺序一致）。
-# TERMINATED 的盘是已删除的墓碑记录（不占额度、不能操作），
-# 必须和可用盘分开，否则 11 块旧测试盘会把 3 块在用的盘淹没
-# （2026-11-24 用户截图反馈）。
+# Boot volume list grouping: group order and headers are shared by fmt_volume_list and volume_list_keyboard, so the text and button order always agree. 启动盘列表分组：组顺序与组头（fmt_volume_list 与 volume_list_keyboard 共用，保证文字与按钮顺序一致）。
+# TERMINATED volumes are deleted tombstone records (no quota, no operations) and must be kept apart from usable volumes, or the old test volumes would drown out the ones in use. TERMINATED 的盘是已删除的墓碑记录（不占额度、不能操作），必须和可用盘分开，否则旧测试盘会把在用的盘淹没。
 VOLUME_GROUP_ORDER = ("AVAILABLE", "TERMINATING", "TERMINATED")
 VOLUME_GROUP_TITLES = {
     "AVAILABLE": "🟢 可用",
@@ -269,7 +268,7 @@ def sort_volumes_by_group(volumes):
     return indexed
 
 
-def fmt_instance_list(instances, profile):
+def fmt_instance_list(instances, profile, lang="zh"):
     """实例列表的文字部分：只剩标题 + 各组数量 + 操作提示。
 
     每台实例的信息（名称 / A1·E2 / 公网 IP）都在按钮上
@@ -278,34 +277,41 @@ def fmt_instance_list(instances, profile):
     空组不显示。已终止的实例已过滤，不计入总数。
     """
     if not instances:
-        return f"[{profile}] 该账号下没有实例。"
+        return bot_i18n.t(lang, "instances.list_empty", profile=profile)
     ordered = sort_instances_by_group(instances)
     if not ordered:
-        return (f"[{profile}] 没有可显示的实例"
-                "（已终止的实例已隐藏）。")
+        return bot_i18n.t(lang, "instances.list_none_visible",
+                          profile=profile)
     counts = {}
     for _idx, inst in ordered:
-        title = instance_group_title(inst.get("lifecycle-state"))
+        title = instance_group_title(inst.get("lifecycle-state"), lang=lang)
         counts[title] = counts.get(title, 0) + 1
-    # 按组顺序排数量，如“🟢 运行中 3 台 · 🟡 已停止 1 台”。
     parts = []
     for state in INSTANCE_GROUP_ORDER:
-        title = INSTANCE_GROUP_TITLES[state]
+        title = instance_group_title(state, lang=lang)
         if title in counts:
-            parts.append(f"{title} {counts[title]} 台")
-    other = counts.get(INSTANCE_GROUP_OTHER_TITLE)
+            if lang == "zh":
+                parts.append(f"{title} {counts[title]} 台")
+            else:
+                parts.append(f"{title} {counts[title]}")
+    other_title = instance_group_title("OTHER", lang=lang)
+    other = counts.get(other_title)
     if other:
-        parts.append(f"{INSTANCE_GROUP_OTHER_TITLE} {other} 台")
+        if lang == "zh":
+            parts.append(f"{other_title} {other} 台")
+        else:
+            parts.append(f"{other_title} {other}")
     lines = [
-        f"[{profile}] 实例列表（{len(ordered)} 台）：",
+        bot_i18n.t(lang, "instances.list_title", profile=profile,
+                   count=len(ordered)),
         " · ".join(parts),
         "",
-        "点下面按钮查看详情或操作。",
+        bot_i18n.t(lang, "instances.list_hint"),
     ]
     return "\n".join(lines)
 
 
-def fmt_instance_detail(inst, public_ip=None, cpu_model=None):
+def fmt_instance_detail(inst, public_ip=None, cpu_model=None, lang="zh"):
     """实例详情全文。inst 是 get_instance 返回的完整 JSON（已解包 data）。
 
     cpu_model 是缓存/检测到的 CPU 型号（如 "AMD EPYC 7J13"），
@@ -325,49 +331,56 @@ def fmt_instance_detail(inst, public_ip=None, cpu_model=None):
     lines = [
         f"🖥️ {name}",
         f"ID：{_tail(data.get('id'))}",
-        f"状态：{state}",
-        f"规格：{fmt_shape_spec(shape, ocpus, memory)}",
-        f"CPU 型号：{cpu_model or '未知'}",
-        f"可用域：{ad}",
-        f"创建时间：{created}",
+        f"{bot_i18n.t(lang, 'instances.detail_state')}：{state}",
+        f"{bot_i18n.t(lang, 'instances.detail_shape')}："
+        f"{fmt_shape_spec(shape, ocpus, memory, lang=lang)}",
+        f"{bot_i18n.t(lang, 'instances.detail_cpu')}："
+        f"{cpu_model or bot_i18n.t(lang, 'common.unknown')}",
+        f"{bot_i18n.t(lang, 'instances.detail_ad')}：{ad}",
+        f"{bot_i18n.t(lang, 'instances.detail_created')}：{created}",
     ]
     if public_ip:
-        lines.append(f"公网 IP：{public_ip}")
+        lines.append(f"{bot_i18n.t(lang, 'instances.detail_public_ip')}："
+                     f"{public_ip}")
     return "\n".join(lines)
 
 
-def fmt_quota_summary(summary, profile):
+def fmt_quota_summary(summary, profile, lang="zh"):
     """配额汇总全文（quota.get_free_tier_summary 的返回值）。"""
     a1 = summary["a1"]
     e2 = summary["e2"]
     boot = summary["boot_volume"]
-    ok = "✅ 未超限" if summary["overall_ok"] else "⚠️ 已超限"
+    status = bot_i18n.t(lang, "quota.ok" if summary["overall_ok"]
+                        else "quota.over")
     lines = [
-        f"[{profile}] 免费额度（{ok}）：",
+        bot_i18n.t(lang, "quota.title", profile=profile, status=status),
         "",
-        f"A1.Flex：{a1['ocpu_used']}/{a1['ocpu_limit']} 核，"
-        f"{a1['memory_used_gb']}/{a1['memory_limit_gb']}GB",
-        f"E2.1.Micro：{e2['count']}/{e2['limit']} 台",
-        f"启动盘：{boot['used_gb']}/{boot['limit_gb']}GB",
+        bot_i18n.t(lang, "quota.a1", used=a1['ocpu_used'],
+                   limit=a1['ocpu_limit'],
+                   mem_used=a1['memory_used_gb'],
+                   mem_limit=a1['memory_limit_gb']),
+        bot_i18n.t(lang, "quota.e2", count=e2['count'], limit=e2['limit']),
+        bot_i18n.t(lang, "quota.boot_volume", used=boot['used_gb'],
+                   limit=boot['limit_gb']),
     ]
     return "\n".join(lines)
 
 
-def fmt_error(exc):
-    """把 OCI 异常转成用户能看懂的中文提示。"""
+def fmt_error(exc, lang="zh"):
+    """把 OCI 异常转成用户能看懂的提示（按语言）。"""
     if isinstance(exc, OutOfCapacityError):
-        return "❌ 无容量（Out of host capacity）：机房暂时没货，请稍后再试。"
+        return bot_i18n.t(lang, "error.capacity")
     if isinstance(exc, RateLimitError):
-        return "❌ API 限流（429）：请求太频繁，机器人已自动退避，请稍后再试。"
+        return bot_i18n.t(lang, "error.rate_limit")
     if isinstance(exc, QuotaExceededError):
-        return "❌ 配额不足：免费额度已用完，继续重试也没用，请先释放资源或换账号。"
+        return bot_i18n.t(lang, "error.quota")
     if isinstance(exc, AuthError):
-        return "❌ 认证失败：请检查 ~/oci_config 与 API 密钥是否正确。"
+        return bot_i18n.t(lang, "error.auth")
     if isinstance(exc, NotFoundError):
-        return "❌ 资源不存在：可能已被删除，请刷新列表后再试。"
+        return bot_i18n.t(lang, "error.not_found")
     if isinstance(exc, OCIError):
-        return f"❌ OCI 调用失败：{exc}"
-    return f"❌ 出错了：{exc}"
+        return bot_i18n.t(lang, "error.oci_failed", detail=exc)
+    return bot_i18n.t(lang, "error.generic", detail=exc)
 
 
 def fmt_duration(seconds):
@@ -411,7 +424,7 @@ class TaskRegistry:
         """启动时调用：把本进程上次未结束的任务标为已中断。"""
         if self.tasks_file:
             task_store.recover_interrupted(self.tasks_file, self.origin)
-            # 同步内存副本：内存里的任务全是本进程的，同样标为已中断。
+            # Sync the in-memory copy too: every task in memory belongs to this process, so mark them interrupted as well. 同步内存副本：内存里的任务全是本进程的，同样标为已中断。
             with self._lock:
                 for task in self._tasks.values():
                     if task.get("status") in ("pending", "running"):
@@ -586,21 +599,22 @@ class TaskRegistry:
             return task["stop_event"] if task else None
 
 
-# 全局任务注册表（机器人进程内共享；任务记录与网页版共用 tasks.json）。
+# Global task registry (shared inside the bot process; task records are shared with the web panel via tasks.json). 全局任务注册表（机器人进程内共享；任务记录与网页版共用 tasks.json）。
 TASKS = TaskRegistry(tasks_file=task_store.tasks_path())
 
 
-def fmt_task_list(tasks):
+def fmt_task_list(tasks, lang="zh"):
     """任务列表全文：每条显示在抢什么机器 + 最新进度。
 
     不再显示 g1（grab, running, …）这种内部编号与英文类型。
     label 由注册方传入；没有 label 的旧任务退回“任务 <id>”。
     """
     if not tasks:
-        return "当前没有运行中的任务。"
-    lines = ["📋 运行中的任务：", ""]
+        return bot_i18n.t(lang, "tasks.none")
+    lines = [bot_i18n.t(lang, "tasks.title") + "：", ""]
     for task in tasks:
-        label = task.get("label") or f"任务 {task['id']}"
+        label = task.get("label") or bot_i18n.t(
+            lang, "tasks.old_label", task_id=task['id'])
         lines.append(f"• {label}")
         if task.get("detail"):
             lines.append(f"  {task['detail']}")

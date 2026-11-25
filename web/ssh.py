@@ -44,23 +44,22 @@ from pydantic import BaseModel, Field
 logger = logging.getLogger(__name__)
 
 # ================= 配置区（放文件顶端，方便修改）=================
-SSH_CONNECT_TIMEOUT = 10       # SSH 连接超时（秒）
-SSH_BANNER_TIMEOUT = 10        # 欢迎横幅命令执行超时（秒）
-OUTPUT_BUFFER_LINES = 1000     # 每个会话保留的最近输出行数（供重连回放快照）
-MAX_SESSIONS = 20              # 最大并发 SSH 会话数（最大并发 20）
-IDLE_TIMEOUT_MINUTES = 30      # 会话空闲超时（分钟），超时自动关闭
-SESSION_GRACE_MINUTES = 5      # WebSocket 断开后会话保留时长（分钟），供重连
-CLEANUP_INTERVAL_SECONDS = 60  # 空闲清理后台线程的检查间隔（秒）
-WS_OUTPUT_POLL_SECONDS = 0.02  # 输出泵轮询 channel 的间隔（秒）
+SSH_CONNECT_TIMEOUT = 10  # SSH connection timeout (seconds). SSH 连接超时（秒）。
+SSH_BANNER_TIMEOUT = 10  # Welcome-banner command execution timeout (seconds). 欢迎横幅命令执行超时（秒）。
+OUTPUT_BUFFER_LINES = 1000  # Recent output lines kept per session (for reconnect replay snapshots). 每个会话保留的最近输出行数（供重连回放快照）。
+MAX_SESSIONS = 20  # Max concurrent SSH sessions (20 max). 最大并发 SSH 会话数（最大并发 20）。
+IDLE_TIMEOUT_MINUTES = 30  # Session idle timeout (minutes); idle sessions are closed automatically. 会话空闲超时（分钟），超时自动关闭。
+SESSION_GRACE_MINUTES = 5  # How long a session is kept after its WebSocket disconnects (minutes), for reconnects. WebSocket 断开后会话保留时长（分钟），供重连。
+CLEANUP_INTERVAL_SECONDS = 60  # Idle-cleanup background thread check interval (seconds). 空闲清理后台线程的检查间隔（秒）。
+WS_OUTPUT_POLL_SECONDS = 0.02  # Output pump polling interval for the channel (seconds). 输出泵轮询 channel 的间隔（秒）。
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
-KNOWN_HOSTS_PATH = DATA_DIR / "known_hosts"  # AutoAddPolicy 记住的 host key
-HOSTS_FILE = DATA_DIR / "hosts.json"         # 已保存主机列表（host_id 查询用）
-SESSION_COOKIE = "mbot_session"              # 登录会话 cookie 名
+KNOWN_HOSTS_PATH = DATA_DIR / "known_hosts"  # Host keys remembered by AutoAddPolicy. AutoAddPolicy 记住的 host key。
+HOSTS_FILE = DATA_DIR / "hosts.json"  # Saved host list (for host_id lookups). 已保存主机列表（host_id 查询用）。
+SESSION_COOKIE = "mbot_session"  # Login session cookie name. 登录会话 cookie 名。
 
 try:
-    # 与面板其他模块共用配置：hosts.json 在 web.config.DATA_DIR 下，
-    # 登录 cookie 名也在 web.config 里定义。
+    # Config shared with other panel modules: hosts.json lives under web.config.DATA_DIR, and the login cookie name is also defined in web.config. 与面板其他模块共用配置：hosts.json 在 web.config.DATA_DIR 下，登录 cookie 名也在 web.config 里定义。
     from web import config as _web_config
 
     DATA_DIR = Path(_web_config.DATA_DIR)
@@ -68,10 +67,10 @@ try:
     HOSTS_FILE = DATA_DIR / "hosts.json"
     SESSION_COOKIE = _web_config.SESSION_COOKIE
 except Exception:
-    pass  # web.config 不可用时用上面的默认值
+    pass  # Fall back to the defaults above when web.config is unavailable. web.config 不可用时用上面的默认值。
 # ================================================================
 
-# 欢迎横幅里的 ASCII 艺术字
+# ASCII art in the welcome banner. 欢迎横幅里的 ASCII 艺术字。
 R_BOT_ART = r"""
  ____       ____   ___ _____
 |  _ \     | __ ) / _ \_   _|
@@ -80,7 +79,7 @@ R_BOT_ART = r"""
 |_| \_\    |____/ \___/ |_|
 """
 
-# 欢迎横幅里跑的系统信息命令
+# System-info commands run in the welcome banner. 欢迎横幅里跑的系统信息命令。
 BANNER_COMMAND = "uname -a; uptime; df -h /; free -h"
 
 
@@ -92,10 +91,10 @@ def build_banner(sysinfo: str) -> str:
     lines.append("")
     info_lines = [line for line in sysinfo.splitlines() if line.strip()]
     if info_lines:
-        lines.append("\x1b[1;33m" + info_lines[0] + "\x1b[0m")  # uname -a
+        lines.append("\x1b[1;33m" + info_lines[0] + "\x1b[0m")
         if len(info_lines) > 1:
-            lines.append("\x1b[1;32m" + info_lines[1] + "\x1b[0m")  # uptime
-        lines.extend(info_lines[2:])  # df / free 原样输出
+            lines.append("\x1b[1;32m" + info_lines[1] + "\x1b[0m")
+        lines.extend(info_lines[2:])
     else:
         lines.append("(系统信息获取失败)")
     lines.append("")
@@ -164,7 +163,7 @@ def get_session_store():
     return _session_store
 
 
-# 模块级单例（测试可直接 patch web.ssh.session_store）
+# Module-level singleton (tests can patch web.ssh.session_store directly). 模块级单例（测试可直接 patch web.ssh.session_store）。
 session_store = get_session_store()
 
 
@@ -223,7 +222,7 @@ class SSHSession:
     def __init__(self):
         self.client: Optional[paramiko.SSHClient] = None
         self.channel = None
-        self.banner = ""  # 欢迎横幅文本（connect 成功后生成）
+        self.banner = ""
         self._active = False
 
     def connect(self, host: str, port: int = 22, username: str = "root",
@@ -244,7 +243,7 @@ class SSHSession:
                     client.load_host_keys(str(KNOWN_HOSTS_PATH))
                 except Exception as exc:
                     logger.warning("known_hosts 读取失败：%s", exc)
-            # AutoAddPolicy：首次连接自动记住 host key，不用 RejectPolicy
+            # AutoAddPolicy: automatically remember the host key on first connect, instead of RejectPolicy. AutoAddPolicy：首次连接自动记住 host key，不用 RejectPolicy。
             client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
             kwargs = {
                 "hostname": host,
@@ -266,8 +265,8 @@ class SSHSession:
                 client.save_host_keys(str(KNOWN_HOSTS_PATH))
             except Exception as exc:
                 logger.warning("known_hosts 保存失败（不影响连接）：%s", exc)
-            # 先用 exec_command 跑系统信息命令拿横幅内容，再开交互 shell。
-            # 同一个 SSHClient 可以开多个 channel，两者不冲突。
+            # First run the system-info commands via exec_command to get the banner content, then open the interactive shell. 先用 exec_command 跑系统信息命令拿横幅内容，再开交互 shell。
+            # The same SSHClient can open multiple channels; the two do not conflict. 同一个 SSHClient 可以开多个 channel，两者不冲突。
             sysinfo = self._fetch_system_info(client)
             channel = client.invoke_shell(width=cols, height=rows)
             self.client = client
@@ -289,7 +288,7 @@ class SSHSession:
             stdin, stdout, stderr = client.exec_command(
                 BANNER_COMMAND, timeout=SSH_BANNER_TIMEOUT)
             try:
-                stdout.channel.recv_exit_status()  # 等命令跑完
+                stdout.channel.recv_exit_status()
             except Exception:
                 pass
             raw = stdout.read()
@@ -420,8 +419,7 @@ class SSHSessionManager:
                 "output_buffer": output_buffer,
                 "ws_connected": False,
                 "disconnected_at": None,
-                # SFTP 缓存（阶段 3b，web/sftp.py 用）：首次使用时才创建，
-                # close_session 里一并关闭。
+                # SFTP cache (used by web/sftp.py): created only on first use, and closed together with the session in close_session. SFTP 缓存（web/sftp.py 用）：首次使用时才创建，close_session 里一并关闭。
                 "sftp": None,
                 "sftp_home": None,
             }
@@ -439,8 +437,7 @@ class SSHSessionManager:
             entry = self._sessions.pop(session_id, None)
         if entry is None:
             return False
-        # 阶段 3b：先关缓存的 SFTPClient（web/sftp.py 在 entry["sftp"] 里存的），
-        # 再关 SSH 会话本身；老记录可能没有 "sftp" 键，用 .get 兜底。
+        # Close the cached SFTPClient first (stored by web/sftp.py in entry["sftp"]), then the SSH session itself; old records may lack the "sftp" key, so use .get as a fallback. 先关缓存的 SFTPClient（web/sftp.py 在 entry["sftp"] 里存的），再关 SSH 会话本身；老记录可能没有 "sftp" 键，用 .get 兜底。
         sftp_client = entry.get("sftp")
         if sftp_client is not None:
             try:
@@ -508,7 +505,7 @@ class SSHSessionManager:
                     if grace > SESSION_GRACE_MINUTES:
                         victims.append(sid)
                     elif not entry["session"].is_active():
-                        victims.append(sid)  # SSH 已死，等重连也没意义
+                        victims.append(sid)  # The SSH connection is dead; waiting for a reconnect is pointless. SSH 已死，等重连也没意义。
         for sid in victims:
             self.close_session(sid)
         if victims:
@@ -516,7 +513,7 @@ class SSHSessionManager:
         return len(victims)
 
 
-# 模块级单例（测试可直接 patch web.ssh.manager）
+# Module-level singleton (tests can patch web.ssh.manager directly). 模块级单例（测试可直接 patch web.ssh.manager）。
 manager = SSHSessionManager()
 
 
@@ -535,7 +532,7 @@ class ConnectRequest(BaseModel):
     host: Optional[str] = None
     port: Optional[int] = Field(default=None, ge=1, le=65535)
     username: Optional[str] = None
-    password: Optional[str] = None  # 只在内存里用，绝不落盘、不记日志
+    password: Optional[str] = None  # In-memory only; never written to disk or logs. 只在内存里用，绝不落盘、不记日志。
     key_path: Optional[str] = None
     host_id: Optional[str] = None
 
@@ -565,7 +562,7 @@ def api_ssh_connect(body: ConnectRequest, _session=Depends(require_auth)):
         raise HTTPException(status_code=401, detail="SSH 认证失败：用户名或密码/密钥不正确")
     except (paramiko.SSHException, OSError, socket.timeout) as exc:
         raise HTTPException(status_code=502, detail=f"SSH 连接失败：{exc}")
-    # 日志只记 host/username，绝不记密码
+    # Logs record only host/username, never passwords. 日志只记 host/username，绝不记密码。
     logger.info("SSH 连接成功：%s@%s:%s -> %s", username, host, port, session_id)
     return {"session_id": session_id, "host": host, "username": username}
 
@@ -599,11 +596,11 @@ def api_ssh_snapshot(session_id: str, _session=Depends(require_auth)):
 async def ssh_websocket(websocket: WebSocket, session_id: str):
     """WebSocket 终端通道（协议见模块 docstring）。"""
     if _ws_auth(websocket) is None:
-        await websocket.close(code=4401)  # 未登录
+        await websocket.close(code=4401)
         return
     entry = manager.get(session_id)
     if entry is None:
-        await websocket.close(code=4404)  # 会话不存在
+        await websocket.close(code=4404)
         return
     session = entry["session"]
     await websocket.accept()
@@ -643,7 +640,7 @@ async def ssh_websocket(websocket: WebSocket, session_id: str):
                     time.sleep(WS_OUTPUT_POLL_SECONDS)
         finally:
             if not stop_event.is_set():
-                # channel 死了（不是前端主动断开），通知前端
+                # The channel died (not a client-initiated disconnect); notify the frontend. channel 死了（不是前端主动断开），通知前端。
                 _schedule(websocket.send_json(
                     {"type": "closed", "reason": "SSH 会话已断开"}))
 
@@ -679,5 +676,4 @@ async def ssh_websocket(websocket: WebSocket, session_id: str):
         stop_event.set()
         entry["ws_connected"] = False
         entry["disconnected_at"] = datetime.now(timezone.utc)
-        # 注意：不断开 SSH 会话，保留 SESSION_GRACE_MINUTES 供前端重连；
-        # 空闲清理线程到期后才真正关闭。
+        # Note: do not close the SSH session; keep it for SESSION_GRACE_MINUTES so the frontend can reconnect, and let the idle-cleanup thread close it for real when it expires. 注意：不断开 SSH 会话，保留 SESSION_GRACE_MINUTES 供前端重连；空闲清理线程到期后才真正关闭。

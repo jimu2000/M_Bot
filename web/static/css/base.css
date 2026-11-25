@@ -1,6 +1,4 @@
-/* M_Bot Oracle开源管理面板 · 通用样式
- * 布局：顶栏 / 资源栏 / 左侧边栏 + 主内容区
- * 颜色全部走 themes.css 的 CSS 变量，这里不写死色值。 */
+/* M_Bot Oracle management panel · shared styles. Layout: top bar / resource bar / left sidebar + main area. All colors come from themes.css CSS variables; no hardcoded color values here. M_Bot Oracle开源管理面板 · 通用样式。布局：顶栏 / 资源栏 / 左侧边栏 + 主内容区。颜色全部走 themes.css 的 CSS 变量，这里不写死色值。 */
 
 * { box-sizing: border-box; }
 
@@ -73,6 +71,8 @@ code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monosp
 }
 .icon-btn:hover { color: var(--text); background: var(--surface-hover); }
 .icon-btn svg { width: 17px; height: 17px; }
+/* GitHub top-bar icon: never squeezed out or hidden by other top-bar elements; also visible on phones (<=900px), see the .topbar rules in the media query below. GitHub 顶栏图标：永不被顶栏其他元素挤掉或隐藏，手机端（≤900px）同样可见，见下面媒体查询里的 .topbar 规则。 */
+.topbar .github-link { flex-shrink: 0; }
 
 /* ================= 资源栏 ================= */
 .resourcebar {
@@ -92,7 +92,7 @@ code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monosp
 .res-item { display: flex; align-items: center; gap: 7px; white-space: nowrap; }
 .res-label { color: var(--text-muted); font-size: 12px; }
 
-/* 环形仪表（conic-gradient，JS 写 --p 百分比） */
+/* Ring gauge (conic-gradient; JS writes the --p percentage). 环形仪表（conic-gradient，JS 写 --p 百分比）。 */
 .gauge {
   --p: 0;
   width: 30px; height: 30px;
@@ -145,7 +145,7 @@ code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monosp
 }
 .sidebar a svg { width: 17px; height: 17px; flex-shrink: 0; }
 
-/* 手机端导航按钮与抽屉遮罩：桌面端侧边栏常驻，两者都不显示。 */
+/* Mobile nav button and drawer mask: on desktop the sidebar is always shown, so neither is displayed. 手机端导航按钮与抽屉遮罩：桌面端侧边栏常驻，两者都不显示。 */
 .nav-toggle { display: none; }
 .sidebar-backdrop { display: none; }
 
@@ -195,7 +195,6 @@ code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monosp
 .btn-sm { padding: 4px 10px; font-size: 13px; border-radius: 6px; }
 .btn:disabled { opacity: 0.55; cursor: not-allowed; }
 
-/* 卡片 */
 .card {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -211,11 +210,9 @@ code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monosp
 }
 .card-body { padding: 0 18px 18px; }
 
-/* 表格 */
 .table-wrap { overflow-x: auto; }
 table.data { width: 100%; border-collapse: collapse; font-size: 13.5px; }
-/* 云报告表格（v1.45.0 修 13）：每格单行不换行，表身定个最小宽，
-   手机上由 .table-wrap 横向滚动，不溢出、不挤成一团 */
+/* Cloud report table: each cell is a single non-wrapping line, the table body has a minimum width, and phones scroll it horizontally inside .table-wrap instead of overflowing or squeezing together. 云报告表格：每格单行不换行，表身定个最小宽，手机上由 .table-wrap 横向滚动，不溢出、不挤成一团。 */
 table.data.cloud-report-table { min-width: 560px; }
 table.data.cloud-report-table td { white-space: nowrap; }
 table.data th, table.data td {
@@ -228,7 +225,6 @@ table.data th { color: var(--text-muted); font-weight: 600; white-space: nowrap;
 table.data tbody tr:hover { background: var(--surface-hover); }
 table.data .row-actions { white-space: nowrap; display: flex; gap: 6px; flex-wrap: wrap; }
 
-/* 徽标 / 标签 */
 .badge {
   display: inline-block;
   font-size: 11.5px; font-weight: 600;
@@ -253,7 +249,6 @@ table.data .row-actions { white-space: nowrap; display: flex; gap: 6px; flex-wra
   white-space: nowrap;
 }
 
-/* 表单 */
 .form-group { margin-bottom: 14px; }
 .form-group label { display: block; margin-bottom: 5px; color: var(--text-muted); font-size: 13px; }
 .form-group .hint { font-size: 12px; color: var(--text-faint); margin-top: 4px; }
@@ -276,7 +271,6 @@ input:focus, select:focus, textarea:focus {
 input:disabled, select:disabled, textarea:disabled { opacity: 0.6; cursor: not-allowed; }
 textarea { resize: vertical; min-height: 74px; }
 
-/* 开关 */
 .switch { display: inline-flex; align-items: center; gap: 9px; cursor: pointer; user-select: none; }
 .switch input { display: none; }
 .switch-track {
@@ -324,7 +318,7 @@ textarea { resize: vertical; min-height: 74px; }
   padding: 2px 5px; border-radius: 5px; font-size: 12px;
 }
 .copy-btn:hover { background: var(--accent-soft); color: var(--accent); }
-/* 实例名按钮：点开详情弹窗，看起来像可点链接 */
+/* Instance-name button: opens the detail modal and looks like a clickable link. 实例名按钮：点开详情弹窗，看起来像可点链接。 */
 .name-btn {
   border: none; background: transparent; padding: 0;
   font: inherit; font-weight: 700; color: var(--accent);
@@ -388,7 +382,6 @@ textarea { resize: vertical; min-height: 74px; }
   .instance-actions { grid-template-columns: repeat(2, 1fr); }
 }
 
-/* 空状态 */
 .empty-state {
   text-align: center;
   color: var(--text-muted);
@@ -425,7 +418,6 @@ textarea { resize: vertical; min-height: 74px; }
 .submit-row { display: flex; justify-content: center; margin-top: 20px; }
 .submit-row .btn { padding: 10px 44px; font-size: 15px; }
 
-/* 任务日志展开行 */
 .task-logs {
   background: var(--surface-muted);
   border: 1px solid var(--border);
@@ -496,7 +488,6 @@ tr.task-row.expanded { background: var(--surface-hover); }
 .toast.error { border-left-color: var(--danger); }
 @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 
-/* 错误提示条 */
 .alert {
   padding: 10px 14px;
   border-radius: 8px;
@@ -508,8 +499,7 @@ tr.task-row.expanded { background: var(--surface-hover); }
 [hidden] { display: none !important; }
 
 /* ================= 登录页 ================= */
-/* 设计基于 Uiverse 开源组件 "Form by iZOXVL"（silly-moth-15，MIT 许可）：
-   蓝紫渐变卡片 + 下划线浮动标签；纯 CSS 复刻，不引入 Tailwind。 */
+/* Design based on the open-source Uiverse component "Form by iZOXVL" (silly-moth-15, MIT license): blue-purple gradient card + underline floating labels; a pure-CSS recreation, no Tailwind. 设计基于 Uiverse 开源组件 "Form by iZOXVL"（silly-moth-15，MIT 许可）：蓝紫渐变卡片 + 下划线浮动标签；纯 CSS 复刻，不引入 Tailwind。 */
 .login-page {
   min-height: 100vh;
   display: flex;
@@ -530,7 +520,7 @@ tr.task-row.expanded { background: var(--surface-hover); }
 .login-title {
   margin: 0;
   text-align: center;
-  /* 标题是面板全名（较长），字号收小一档保证单行放得下 */
+  /* The title is the panel's full name (long), so the font is one size smaller to keep it on one line. 标题是面板全名（较长），字号收小一档保证单行放得下。 */
   font-size: 1.75rem; line-height: 2.25rem; font-weight: 800;
   color: #fff;
 }
@@ -548,7 +538,7 @@ tr.task-row.expanded { background: var(--surface-hover); }
   cursor: pointer;
 }
 .login-tab.active { background: rgba(255, 255, 255, 0.2); color: #fff; border-color: rgba(255, 255, 255, 0.25); }
-/* 浮动标签输入框：label 在 input 之后，靠 :placeholder-shown 定位 */
+/* Floating-label inputs: the label sits after the input and is positioned via :placeholder-shown. 浮动标签输入框：label 在 input 之后，靠 :placeholder-shown 定位。 */
 .uv-field { position: relative; margin-bottom: 1.5rem; }
 .uv-field input {
   width: 100%; height: 2.5rem;
@@ -561,9 +551,7 @@ tr.task-row.expanded { background: var(--surface-hover); }
   border-radius: 0;
 }
 .uv-field input:focus { border-color: #a855f7; box-shadow: none; }
-/* 上面这行必须带 box-shadow: none：base.css 有全局 input:focus
-   聚焦光环（0 0 0 3px），不盖掉的话登录框聚焦时会出现矩形边框，
-   破坏“仅下划线”的设计（2026-11-24 截图检查发现）。 */
+/* The line above must carry box-shadow: none: base.css has a global input:focus halo (0 0 0 3px), and without this override the login box shows a rectangular border on focus, breaking the "underline only" design. 上面这行必须带 box-shadow: none：base.css 有全局 input:focus 聚焦光环（0 0 0 3px），不盖掉的话登录框聚焦时会出现矩形边框，破坏“仅下划线”的设计。 */
 .uv-field input::placeholder { color: transparent; }
 .uv-field label {
   position: absolute; left: 0; top: -0.875rem;
@@ -582,7 +570,6 @@ tr.task-row.expanded { background: var(--surface-hover); }
   -webkit-box-shadow: 0 0 0 1000px transparent inset;
   transition: background-color 9999s ease-in-out 0s;
 }
-/* 图形验证码：输入框 + 图片同一行 */
 .uv-field-captcha { display: flex; align-items: flex-end; gap: 10px; }
 .uv-field-captcha input { flex: 1; min-width: 0; }
 .uv-field-captcha img { height: 40px; border-radius: 4px; cursor: pointer; flex: none; }
@@ -621,17 +608,20 @@ tr.task-row.expanded { background: var(--surface-hover); }
 }
 .login-note { text-align: center; color: #e5e7eb; font-size: 13px; margin: 0 0 1.5rem; }
 .login-foot { text-align: center; color: #d1d5db; font-size: 0.875rem; margin: 2rem 0 0; }
-/* GitHub 项目链接（v1.45.0）：比脚注更淡，不抢眼 */
+/* GitHub project link: dimmer than the footnote, not eye-catching. GitHub 项目链接：比脚注更淡，不抢眼。 */
 .login-github { text-align: center; margin: 0.5rem 0 0; font-size: 0.8125rem; }
 .login-github a { color: #9ca3af; text-decoration: none; }
 .login-github a:hover { color: #e5e7eb; text-decoration: underline; }
 
 /* ================= 响应式 ================= */
 @media (max-width: 900px) {
-  /* 手机端：侧边栏收进左侧抽屉（默认滑出屏幕外），
-     点顶栏汉堡按钮（.nav-toggle）打开，点遮罩或导航链接关闭。
-     注意：不要再用 display: none 藏侧边栏——那样手机上
-     DNS 管理、配额、任务管理等页面完全没有入口。 */
+  /* Mobile top bar: when space is tight, first collapse the logo subtitle, shrink spacing and padding, and cap the language/theme dropdown widths; the GitHub icon (.github-link) is always kept, never squeezed out or hidden. 手机端顶栏：空间紧张时先收 logo 副标题、缩间距与内边距，语言/主题下拉限宽，GitHub 图标（.github-link）始终保留、不被挤掉或隐藏。 */
+  .topbar { gap: 8px; padding: 0 10px; }
+  .topbar .logo-sub { display: none; }
+  .topbar select { max-width: 108px; }
+  .topbar .github-link { display: inline-flex; flex-shrink: 0; }
+  .topbar .logo-text { font-size: 17px; }
+  /* Mobile: the sidebar moves into a left drawer (slid off-screen by default); open it with the top-bar hamburger (.nav-toggle), close it via the mask or a nav link. Do not hide the sidebar with display: none again — that leaves mobile users with no entry to DNS, quota, task management and other pages. 手机端：侧边栏收进左侧抽屉（默认滑出屏幕外），点顶栏汉堡按钮（.nav-toggle）打开，点遮罩或导航链接关闭。注意：不要再用 display: none 藏侧边栏——那样手机上 DNS 管理、配额、任务管理等页面完全没有入口。 */
   .nav-toggle { display: inline-flex; }
   .sidebar {
     display: block;

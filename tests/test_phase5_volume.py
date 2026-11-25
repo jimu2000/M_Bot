@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from oci.volume import (VALID_VPUS_PER_GB, list_boot_volumes,
                         update_boot_volume_vpus)
 
-# 占位符（测试里不出现真实 OCID）
+# Placeholders (no real OCID in tests). 占位符（测试里不出现真实 OCID）。
 FAKE_COMPARTMENT = "ocid1.tenancy.oc1..xxxxxxxx"
 FAKE_BV = "ocid1.bootvolume.oc1..xxxxxxxx"
 
@@ -37,7 +37,7 @@ class TestUpdateBootVolumeVpus(unittest.TestCase):
         self.assertIn("--boot-volume-id", args)
         self.assertEqual(args[args.index("--boot-volume-id") + 1], FAKE_BV)
         self.assertEqual(args[args.index("--vpus-per-gb") + 1], "20")
-        # --force 必加：不加会交互确认挂到超时
+        # --force is required: without it, interactive confirmation hangs until timeout. --force 必加：不加会交互确认挂到超时。
         self.assertIn("--force", args)
         self.assertEqual(result["vpus-per-gb"], 20)
 

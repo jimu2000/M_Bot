@@ -1,10 +1,5 @@
 <!DOCTYPE html>
-{# 登录页：独立页面，不继承 base.html。
-   样式基于 Uiverse 开源组件 "Form by iZOXVL"（silly-moth-15，MIT 许可），
-   原作：https://uiverse.io/iZOXVL/silly-moth-15
-   蓝紫渐变卡片 + 浮动标签；功能按面板实际改编：用户名登录（非邮箱）、
-   记住我（30 天会话）、忘记密码提示用 Telegram /raninfo 重置、无注册。
-   页面上不写任何真实凭据。 #}
+{# Login page: a standalone page that does not extend base.html. The style is based on the open-source Uiverse component "Form by iZOXVL" (silly-moth-15, MIT license), source: https://uiverse.io/iZOXVL/silly-moth-15 — a blue-purple gradient card + floating labels; the functionality is adapted to the panel: username login (not email), remember me (30-day session), forgot-password hint to reset via Telegram /raninfo, no registration. No real credentials are ever written on the page. 登录页：独立页面，不继承 base.html。样式基于 Uiverse 开源组件 "Form by iZOXVL"（silly-moth-15，MIT 许可），原作：https://uiverse.io/iZOXVL/silly-moth-15。蓝紫渐变卡片 + 浮动标签；功能按面板实际改编：用户名登录（非邮箱）、记住我（30 天会话）、忘记密码提示用 Telegram /raninfo 重置、无注册。页面上不写任何真实凭据。 #}
 <html lang="zh-CN" data-theme="classic" data-mode="dark">
 <head>
 <meta charset="utf-8">
@@ -13,7 +8,7 @@
 <link rel="stylesheet" href="/static/css/themes.css">
 <link rel="stylesheet" href="/static/css/base.css">
 {% if clarity_id %}
-{# Microsoft Clarity 统计：仅配置了 MBOT_CLARITY_ID 时加载（登录页统计） #}
+{# Microsoft Clarity stats: only loaded when MBOT_CLARITY_ID is configured (login-page stats). Microsoft Clarity 统计：仅配置了 MBOT_CLARITY_ID 时加载（登录页统计）。 #}
 <script type="text/javascript">
     (function(c,l,a,r,i,t,y){
         c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
@@ -26,15 +21,22 @@
 <body>
 <div class="login-page">
   <div class="login-card">
+    {# Language switch: the login page has no top bar, so it has its own switcher entry here, sharing the same i18n.js logic and localStorage key as the top-bar #lang-select. 语言切换：登录页没有顶栏，页内放一个切换入口，与顶栏 #lang-select 共用 i18n.js 同一套逻辑与 localStorage 键。 #}
+    <div style="display: flex; justify-content: flex-end; margin-bottom: 8px;">
+      <select id="login-lang-select" title="语言" aria-label="语言" style="width: auto; background: rgba(255,255,255,0.15); border: 1px solid rgba(255,255,255,0.3); color: #fff; border-radius: 8px; padding: 4px 8px;">
+        <option value="zh-CN" selected>简体中文</option>
+        <option value="en">English</option>
+        <option value="auto" data-i18n="app.language_follow">跟随浏览器语言</option>
+      </select>
+    </div>
     <h1 class="login-title">M_Bot Oracle开源管理面板</h1>
-    <p class="login-subtitle">登录到你的账号</p>
+    <p class="login-subtitle" data-i18n="login.subtitle">登录到你的账号</p>
 
     <div class="login-tabs" role="tablist">
-      <button type="button" class="login-tab active" id="tab-password" role="tab" aria-selected="true">密码登录</button>
-      <button type="button" class="login-tab" id="tab-telegram" role="tab" aria-selected="false">Telegram</button>
+      <button type="button" class="login-tab active" id="tab-password" role="tab" aria-selected="true" data-i18n="login.tab_password">密码登录</button>
+      <button type="button" class="login-tab" id="tab-telegram" role="tab" aria-selected="false" data-i18n="login.tab_telegram">Telegram</button>
     </div>
 
-    {# 错误提示区：后端返回的错误或锁定剩余时间 #}
     <div class="login-error" id="login-error" hidden></div>
     <div class="login-error" id="lockout-info" hidden>
       登录尝试过多，账号已锁定，剩余 <span id="lockout-countdown">--:--</span> 后可重试。
@@ -43,50 +45,52 @@
     <form id="login-form" autocomplete="off">
       <div class="uv-field">
         <input type="text" id="username" name="username" placeholder=" " required autofocus>
-        <label for="username">用户名</label>
+        <label for="username" data-i18n="login.username">用户名</label>
       </div>
       <div class="uv-field">
         <input type="password" id="password" name="password" placeholder=" " required>
-        <label for="password">密码</label>
+        <label for="password" data-i18n="login.password">密码</label>
       </div>
-      {# 图形验证码：仅当后端开启 MBOT_CAPTCHA_ENABLED 时显示（login.js 拉取 /api/auth/captcha 决定） #}
+      {# Captcha: only shown when the backend has MBOT_CAPTCHA_ENABLED on (login.js decides by fetching /api/auth/captcha). 图形验证码：仅当后端开启 MBOT_CAPTCHA_ENABLED 时显示（login.js 拉取 /api/auth/captcha 决定）。 #}
       <div id="captcha-block" hidden>
         <div class="uv-field uv-field-captcha">
           <input type="text" id="captcha-answer" name="captcha_answer" placeholder=" " autocomplete="off" maxlength="10">
-          <label for="captcha-answer">图形验证码</label>
+          <label for="captcha-answer" data-i18n="login.captcha">图形验证码</label>
           <img id="captcha-image" alt="图形验证码，点击刷新" title="点击刷新验证码">
         </div>
       </div>
       <div class="login-row">
         <label class="remember-me">
           <input type="checkbox" id="remember-me" name="remember">
-          <span>记住我</span>
+          <span data-i18n="login.remember">记住我</span>
         </label>
-        <a href="#" class="forgot-link" id="forgot-password-link">忘记密码？</a>
+        <a href="#" class="forgot-link" id="forgot-password-link" data-i18n="login.forgot">忘记密码？</a>
       </div>
-      <button type="submit" class="login-btn" id="login-btn">登录</button>
+      <button type="submit" class="login-btn" id="login-btn" data-i18n="login.submit">登录</button>
     </form>
 
-    {# Telegram 验证码登录：点“发送验证码”后到 Telegram 收 6 位码 #}
-    {# 注意：表单不要 autocomplete="off"，否则手机浏览器不会在键盘上方 #}
-    {# 提示短信/邮件里收到的一次性验证码（input 的 one-time-code 失效）。#}
+    {# Telegram code login: tap "发送验证码", then collect the 6-digit code in Telegram. Telegram 验证码登录：点“发送验证码”后到 Telegram 收 6 位码。 #}
+    {# Note: do not put autocomplete="off" on the form, or mobile browsers will not offer the one-time code from SMS/email above the keyboard (the input's one-time-code stops working). 注意：表单不要 autocomplete="off"，否则手机浏览器不会在键盘上方提示短信/邮件里收到的一次性验证码（input 的 one-time-code 失效）。 #}
     <form id="telegram-form" hidden>
-      <p class="login-note">验证码将发送到白名单用户的 Telegram（需面板服务器已配置机器人）。</p>
-      <button type="button" class="login-btn" id="tg-send-btn">发送验证码</button>
+      <p class="login-note" data-i18n="login.tg_note">验证码将发送到白名单用户的 Telegram（需面板服务器已配置机器人）。</p>
+      <button type="button" class="login-btn" id="tg-send-btn" data-i18n="login.tg_send">发送验证码</button>
       <div class="uv-field">
         <input type="text" id="tg-code" name="tg_code" placeholder=" " inputmode="numeric" autocomplete="one-time-code" maxlength="6">
-        <label for="tg-code">6 位验证码</label>
+        <label for="tg-code" data-i18n="login.tg_code">6 位验证码</label>
       </div>
-      <button type="submit" class="login-btn" id="tg-login-btn">验证码登录</button>
+      <button type="submit" class="login-btn" id="tg-login-btn" data-i18n="login.tg_submit">验证码登录</button>
     </form>
 
-    <p class="login-foot">默认凭据请查看部署文档</p>
-    {# GitHub 项目链接（v1.45.0）：开源仓库，新标签页打开 #}
-    <p class="login-github"><a href="https://github.com/jimu2000/M_Bot" target="_blank" rel="noopener">GitHub 项目</a></p>
+    {# GitHub开源主页：在“默认凭据请查看部署文档”那行上方再加一行，带链接、新标签页打开；下方页脚已有的“GitHub 项目”保留，两行文案不同，不重复。GitHub open-source homepage: one more line above the "默认凭据请查看部署文档" line, with a link that opens in a new tab; the footer already has a "GitHub 项目" line, and the two lines use different text so they do not repeat. #}
+    <p class="login-github"><a href="https://github.com/jimu2000/M_Bot" target="_blank" rel="noopener" data-i18n="login.github_home">GitHub开源主页</a></p>
+    <p class="login-foot" data-i18n="login.default_cred">默认凭据请查看部署文档</p>
+    {# GitHub project link: the open-source repo, opens in a new tab. GitHub 项目链接：开源仓库，新标签页打开。 #}
+    <p class="login-github"><a href="https://github.com/jimu2000/M_Bot" target="_blank" rel="noopener" data-i18n="login.github_project">GitHub 项目</a></p>
   </div>
 </div>
 
 <div id="toast-container" aria-live="polite"></div>
+<script src="/static/js/i18n.js"></script>
 <script src="/static/js/app.js"></script>
 <script src="/static/js/login.js"></script>
 </body>

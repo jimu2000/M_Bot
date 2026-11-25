@@ -23,19 +23,16 @@ compartment（tenancy OCID）即查整个租户的用量。
 """
 
 # ================= 配置区（改这里） =================
-# Oracle Always Free 官方额度（来源见模块 docstring）。
-A1_MAX_OCPU = 4            # Ampere A1.Flex：最多 4 个 OCPU
-A1_MAX_MEMORY_GB = 24      # Ampere A1.Flex：最多 24GB 内存
-E2_MAX_INSTANCES = 2       # VM.Standard.E2.1.Micro：最多 2 台
-BOOT_VOLUME_MAX_GB = 200   # 启动盘总量上限：200GB
-# 新建一台实例默认占用的启动盘大小（GB）。创建实例时若不指定
-# --boot-volume-size-in-gbs，OCI 默认 47GB。
+# Oracle Always Free official quotas (source: see the module docstring). Oracle Always Free 官方额度（来源见模块 docstring）。
+A1_MAX_OCPU = 4  # Ampere A1.Flex: at most 4 OCPUs. Ampere A1.Flex：最多 4 个 OCPU。
+A1_MAX_MEMORY_GB = 24  # Ampere A1.Flex: at most 24 GB of memory. Ampere A1.Flex：最多 24GB 内存。
+E2_MAX_INSTANCES = 2  # VM.Standard.E2.1.Micro: at most 2 instances. VM.Standard.E2.1.Micro：最多 2 台。
+BOOT_VOLUME_MAX_GB = 200  # Boot volume total cap: 200 GB. 启动盘总量上限：200GB。
+# Default boot volume size (GB) for a new instance. Without --boot-volume-size-in-gbs, OCI defaults to 47 GB. 新建一台实例默认占用的启动盘大小（GB）。创建实例时若不指定 --boot-volume-size-in-gbs，OCI 默认 47GB。
 BOOT_VOLUME_DEFAULT_GB = 47
-# 规格名
 SHAPE_A1_FLEX = "VM.Standard.A1.Flex"
 SHAPE_E2_MICRO = "VM.Standard.E2.1.Micro"
-# A1 配置体检：单台实例超过该规格即建议降配（常用需求参考值，
-# 如跑代理/网盘等轻负载一般 2 核/12GB 已足够）。
+# A1 config health check: a single instance above this shape gets a downsize suggestion (a reference value for common needs; e.g. a proxy / cloud drive light load usually runs fine on 2 OCPUs / 12 GB). A1 配置体检：单台实例超过该规格即建议降配（常用需求参考值，如跑代理/网盘等轻负载一般 2 核/12GB 已足够）。
 A1_TYPICAL_OCPU = 2
 A1_TYPICAL_MEMORY_GB = 12
 # =====================================================

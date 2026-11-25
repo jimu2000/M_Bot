@@ -26,19 +26,17 @@ from tgbot.cpu_model import get_cpu_model
 from oci.network import wait_for_public_ip
 
 # ================= 配置区（改这里） =================
-# 默认允许的 CPU 型号子串（抢机只留含这些子串的 CPU）。
+# Default allowed CPU model substrings (a grab only keeps CPUs containing one of these). 默认允许的 CPU 型号子串（抢机只留含这些子串的 CPU）。
 DEFAULT_ALLOWED_CPU_MODELS = ["7J13"]
-# 规则文件（tgbot/data/ 下，0600；不存在/损坏时用默认值）。
+# Rule file (under tgbot/data/, mode 0600; defaults are used when missing or corrupt). 规则文件（tgbot/data/ 下，0600；不存在/损坏时用默认值）。
 POLICY_FILENAME = "cpu_policy.json"
-# CPU 检查：等公网 IP 最长 60 秒；SSH 查不到时最多试 10 次、间隔 15 秒
-# （新实例从 RUNNING 到 SSH 能登通常要 1-3 分钟）。
+# CPU check: wait up to 60s for the public IP; when SSH cannot be checked, try at most 10 times, 15s apart (a new instance usually takes 1-3 minutes from RUNNING to SSH-ready). CPU 检查：等公网 IP 最长 60 秒；SSH 查不到时最多试 10 次、间隔 15 秒（新实例从 RUNNING 到 SSH 能登通常要 1-3 分钟）。
 CPU_CHECK_IP_WAIT_SECONDS = 60
 CPU_CHECK_SSH_ATTEMPTS = 10
 CPU_CHECK_SSH_INTERVAL_SECONDS = 15
 # =====================================================
 
-# 开机用的 SSH 公钥文件：path 是传给 Grabber 的文件路径，
-# guard_included 表示 guard 公钥是否已在该文件里（CPU 检查的前提）。
+# The SSH public key file used for booting: path is the file path passed to the Grabber, and guard_included says whether the guard public key is already in that file (a precondition for the CPU check). 开机用的 SSH 公钥文件：path 是传给 Grabber 的文件路径，guard_included 表示 guard 公钥是否已在该文件里（CPU 检查的前提）。
 BootKeys = namedtuple("BootKeys", ["path", "guard_included"])
 
 

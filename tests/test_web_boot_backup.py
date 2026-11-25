@@ -30,7 +30,7 @@ from web.routes.instances import clear_instance_list_cache
 from web.routes.volumes import clear_volumes_cache
 from web.tasks import TASKS
 
-# 占位符（测试里不出现真实 OCID / IP）
+# Placeholders (no real OCID / IP in tests). 占位符（测试里不出现真实 OCID / IP）。
 FAKE_BV = "ocid1.bootvolume.oc1..testxxxx"
 FAKE_BACKUP = "ocid1.bootvolumebackup.oc1..testxxxx"
 FAKE_OLD_BACKUP = "ocid1.bootvolumebackup.oc1..oldxxxx"
@@ -203,7 +203,7 @@ class TestListApi(BootBackupTestCase):
         self.assertTrue(body["ok"])
         self.assertEqual(len(body["backups"]), 2)
         first = body["backups"][0]
-        # camelCase 新字段 + kebab-case 旧字段双写。
+        # camelCase new fields + kebab-case old fields written together. camelCase 新字段 + kebab-case 旧字段双写。
         self.assertEqual(first["backupId"], FAKE_OLD_BACKUP)
         self.assertEqual(first["displayName"], "old-backup")
         self.assertEqual(first["sizeInGBs"], 47)
@@ -247,7 +247,7 @@ class TestCreateApi(BootBackupTestCase):
            return_value=(5, 5, True, FAKE_BACKUPS[0]))
     def test_create_when_full_auto_deletes_oldest(
             self, mock_quota, mock_delete, mock_create, _mock_paid):
-        # 不用传 delete_oldest，服务端自动删最早备份再建。
+        # No need to send delete_oldest; the server deletes the oldest backup and creates a new one automatically. 不用传 delete_oldest，服务端自动删最早备份再建。
         r = self.client.post("/api/boot-backups",
                              json={"boot_volume_id": FAKE_BV})
         self.assertEqual(r.status_code, 200)
@@ -280,7 +280,7 @@ class TestCreateApi(BootBackupTestCase):
            return_value=(5, 5, True, FAKE_BACKUPS[0]))
     def test_create_delete_oldest_deletes_first_then_creates(
             self, mock_quota, mock_delete, mock_create, _mock_paid):
-        # 用共享 manager 校验调用顺序：先删最早备份，再创建新备份。
+        # Use the shared manager to verify call order: delete the oldest backup first, then create the new one. 用共享 manager 校验调用顺序：先删最早备份，再创建新备份。
         manager = MagicMock()
         manager.attach_mock(mock_delete, "delete")
         manager.attach_mock(mock_create, "create")
@@ -390,7 +390,7 @@ class TestRestoreApi(BootBackupTestCase):
         self.assertEqual(r.status_code, 400)
         self.assertIn("配额预检不通过", r.json()["error"])
         mock_restore.assert_not_called()
-        # 启动盘按备份实际大小（50GB）校验，不是默认 47GB。
+        # The boot volume is validated against the backup's actual size (50 GB), not the default 47 GB. 启动盘按备份实际大小（50GB）校验，不是默认 47GB。
         self.assertEqual(
             mock_can.call_args.kwargs.get("boot_volume_size_gbs"), 50)
 

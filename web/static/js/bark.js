@@ -112,7 +112,7 @@
       var result = await MBot.api("/api/bark/generate-key", { method: "POST", body: {} });
       statusData = result;
       render();
-      // Key 只显示这一次（后端保存后不再可查；必须同步到 Bark App）。
+      // The Key is shown only this once (after the backend saves it, it can no longer be looked up; it must be synced into the Bark App). Key 只显示这一次（后端保存后不再可查；必须同步到 Bark App）。
       var body = "<p>请用 Bark App 扫下面的二维码添加（也可以手动复制 Key）。" +
         "App 里的 Key 必须和它一致，否则推送解不开：</p>";
       if (result.qr_png) {

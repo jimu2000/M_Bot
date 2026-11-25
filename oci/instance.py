@@ -21,23 +21,23 @@ import json
 import os
 
 # ================= 配置区（改这里） =================
-# 默认 compartment OCID（根 compartment 即 tenancy OCID，占位符）。
+# Default compartment OCID (the root compartment is the tenancy OCID; placeholder). 默认 compartment OCID（根 compartment 即 tenancy OCID，占位符）。
 DEFAULT_COMPARTMENT_ID = "ocid1.tenancy.oc1..xxxxxxxx"
-# 默认实例规格（免费层常用）。
+# Default instance shape (commonly used on the free tier). 默认实例规格（免费层常用）。
 DEFAULT_SHAPE = "VM.Standard.E2.1.Micro"
-# 默认镜像 OCID（占位符，真实值用 oci compute image list 查）。
+# Default image OCID (placeholder; find the real value with oci compute image list). 默认镜像 OCID（占位符，真实值用 oci compute image list 查）。
 DEFAULT_IMAGE_ID = "ocid1.image.oc1..xxxxxxxx"
-# 默认子网 OCID（占位符）。
+# Default subnet OCID (placeholder). 默认子网 OCID（占位符）。
 DEFAULT_SUBNET_ID = "ocid1.subnet.oc1..xxxxxxxx"
-# 默认可用域（占位符，如 AD-1）。
+# Default availability domain (placeholder, e.g. AD-1). 默认可用域（占位符，如 AD-1）。
 DEFAULT_AVAILABILITY_DOMAIN = "AD-1"
-# 默认分配公网 IP。
+# Assign a public IP by default. 默认分配公网 IP。
 DEFAULT_ASSIGN_PUBLIC_IP = True
-# 实例显示名的最大长度（OCI 限制 255 字符，改名时校验用）。
+# Max instance display-name length (OCI caps at 255 chars; used by the rename check). 实例显示名的最大长度（OCI 限制 255 字符，改名时校验用）。
 MAX_DISPLAY_NAME_LEN = 255
 # =====================================================
 
-# list_instances 返回的精简字段。
+# The slim fields list_instances returns. list_instances 返回的精简字段。
 _LIST_FIELDS = ("id", "display-name", "shape", "lifecycle-state",
                 "time-created")
 

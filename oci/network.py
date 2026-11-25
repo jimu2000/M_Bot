@@ -24,14 +24,11 @@ from concurrent.futures import ThreadPoolExecutor
 import time
 
 # ================= 配置区（改这里） =================
-# change_public_ip() 创建保留 IP 时的默认显示名。
+# Default display name when change_public_ip() creates a reserved IP. change_public_ip() 创建保留 IP 时的默认显示名。
 DEFAULT_CHANGED_IP_NAME = "changed-ip"
-# 创建保留 IP 时的 lifetime：RESERVED（保留 IP，实例释放后仍保留）；
-# EPHEMERAL 是临时 IP，随实例释放而释放，换 IP 场景不要用。
+# lifetime when creating a reserved IP: RESERVED (a reserved IP survives instance termination); EPHEMERAL is an ephemeral IP that is released with the instance — do not use it for IP changes. 创建保留 IP 时的 lifetime：RESERVED（保留 IP，实例释放后仍保留）；EPHEMERAL 是临时 IP，随实例释放而释放，换 IP 场景不要用。
 RESERVED_LIFETIME = "RESERVED"
-# wait_for_public_ip() 等刚开出的实例分配公网 IP：VNIC 刚建好时
-# 可能还没 IP，3 秒查一次、最多等 60 秒（2026-11-24 实测：抢机后
-# 只等 9 秒经常拿不到 IP，通知里写"获取中"后就再也不补发）。
+# wait_for_public_ip() waits for a just-launched instance to get a public IP: the VNIC may have no IP yet right after creation, so check every 3s for up to 60s (waiting only 9s after a grab often missed the IP, and the notice would say "获取中" and never be re-sent). wait_for_public_ip() 等刚开出的实例分配公网 IP：VNIC 刚建好时可能还没 IP，3 秒查一次、最多等 60 秒（实测：抢机后只等 9 秒经常拿不到 IP，通知里写“获取中”后就再也不补发）。
 BOOT_IP_WAIT_TIMEOUT_SECONDS = 60
 BOOT_IP_WAIT_INTERVAL_SECONDS = 5
 # =====================================================
@@ -357,7 +354,7 @@ def change_public_ip(cli, compartment_id, instance_id,
     if primary_private is None:
         raise ValueError(f"VNIC {primary_vnic['id']} 没有主内网 IP，无法换 IP")
 
-    # 先删已绑的旧公网 IP（临时 IP 是可用区级的，需用 AD 作用域列出）。
+    # Delete the old public IP first (an ephemeral IP is availability-domain-scoped and must be listed with the AD scope). 先删已绑的旧公网 IP（临时 IP 是可用区级的，需用 AD 作用域列出）。
     inst = _data(cli.run(["compute", "instance", "get",
                           "--instance-id", instance_id])) or {}
     ad = inst.get("availability-domain")

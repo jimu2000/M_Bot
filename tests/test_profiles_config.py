@@ -23,7 +23,7 @@ FAKE_FILE_PROFILES = {
                  "tenancy": "ocid1.tenancy.oc1..fake2"},
     "SG1": {"region": "ap-singapore-1",
             "tenancy": "ocid1.tenancy.oc1..fake-sg1"},
-    # SG2 有 region 但无 tenancy：推导不出 compartment，不进菜单。
+    # SG2 has a region but no tenancy: no compartment can be derived, so it does not enter the menu. SG2 有 region 但无 tenancy：推导不出 compartment，不进菜单。
     "SG2": {"region": "ap-singapore-1"},
 }
 
@@ -31,7 +31,7 @@ FAKE_FILE_PROFILES = {
 class ProfilesTestMixin:
     """两个 config 模块共用的断言（build 函数与默认 compartment 不同）。"""
 
-    module = None  # 子类指定：bot_config 或 web_config
+    module = None
 
     def _build(self, env, file_profiles=None):
         with patch.dict(os.environ, env, clear=True), \
@@ -43,7 +43,7 @@ class ProfilesTestMixin:
         profiles = self._build({}, FAKE_FILE_PROFILES)
         self.assertIn("DEFAULT", profiles)
         self.assertEqual(profiles["DEFAULT"]["region"], "ap-singapore-1")
-        # env 没配时从配置文件 tenancy 推导 compartment。
+        # When env is unset, derive the compartment from the config file's tenancy. env 没配时从配置文件 tenancy 推导 compartment。
         self.assertEqual(profiles["DEFAULT"]["compartment_id"],
                          "ocid1.tenancy.oc1..fake-default")
 
@@ -55,7 +55,7 @@ class ProfilesTestMixin:
         self.assertEqual(profiles["ACCOUNT2"]["region"], "us-sanjose-1")
         self.assertEqual(profiles["ACCOUNT2"]["compartment_id"],
                          "ocid1.tenancy.oc1..fake2")
-        # ACCOUNT3 在文件里没有 region 记录，回退旧表（芝加哥）。
+        # ACCOUNT3 has no region record in the file, so it falls back to the old table (Chicago). ACCOUNT3 在文件里没有 region 记录，回退旧表（芝加哥）。
         self.assertEqual(profiles["ACCOUNT3"]["region"], "us-chicago-1")
 
     def test_new_profiles_from_env_with_file_region(self):
@@ -74,8 +74,7 @@ class ProfilesTestMixin:
         self.assertEqual(profiles["NEWX"]["region"], "ap-singapore-1")
 
     def test_empty_compartment_value_ignored(self):
-        # env 值为空、配置文件里又没 tenancy 时，推导不出 compartment，
-        # 不进菜单（SG2 有 region 但无 tenancy）。
+        # When the env value is empty and the config file has no tenancy either, no compartment can be derived and it does not enter the menu (SG2 has a region but no tenancy). env 值为空、配置文件里又没 tenancy 时，推导不出 compartment，不进菜单（SG2 有 region 但无 tenancy）。
         profiles = self._build({"MBOT_COMPARTMENT_SG2": ""},
                                FAKE_FILE_PROFILES)
         self.assertNotIn("SG2", profiles)
@@ -89,7 +88,7 @@ class ProfilesTestMixin:
         self.assertEqual(profiles["SG1"]["compartment_id"],
                          "ocid1.tenancy.oc1..fake-sg1")
         self.assertEqual(profiles["SG1"]["region"], "ap-singapore-1")
-        # ACCOUNT2 也一样（env 没配时从 tenancy 推导）。
+        # ACCOUNT2 is the same (derives from tenancy when env is unset). ACCOUNT2 也一样（env 没配时从 tenancy 推导）。
         self.assertEqual(profiles["ACCOUNT2"]["compartment_id"],
                          "ocid1.tenancy.oc1..fake2")
 

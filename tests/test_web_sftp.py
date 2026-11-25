@@ -82,7 +82,7 @@ class TestResolveSafePath(unittest.TestCase):
                          "/home/testuser/a.txt")
 
     def test_internal_dotdot_allowed(self):
-        # 合法的内部 .. 必须放行
+        # A legitimate internal .. must be allowed. 合法的内部 .. 必须放行。
         self.assertEqual(resolve_safe_path(HOME, "a/../b"),
                          "/home/testuser/b")
         self.assertEqual(resolve_safe_path(HOME, "a/b/../../c"),
@@ -103,7 +103,7 @@ class TestResolveSafePath(unittest.TestCase):
             resolve_safe_path(HOME, "/etc/passwd")
 
     def test_sibling_prefix_not_within(self):
-        # /home/testuser2 不是 /home/testuser 的子目录（前缀陷阱）
+        # /home/testuser2 is not a subdirectory of /home/testuser (prefix trap). /home/testuser2 不是 /home/testuser 的子目录（前缀陷阱）。
         with self.assertRaises(ValueError):
             resolve_safe_path(HOME, "/home/testuser2/x")
 
@@ -162,7 +162,6 @@ class TestList(_SFTPTestCase):
         data = resp.json()
         self.assertEqual(data["path"], HOME)
         self.assertEqual(data["home"], HOME)
-        # 目录在前、文件在后
         self.assertEqual([e["name"] for e in data["entries"]],
                          ["docs", "a.txt"])
         self.assertTrue(data["entries"][0]["is_dir"])
@@ -187,7 +186,7 @@ class TestList(_SFTPTestCase):
         self.sftp.listdir_attr.assert_not_called()
 
     def test_list_symlink_outside_marked(self):
-        # escape -> /etc：stat 跟随解析是目录，normalize 解析出 home
+        # escape -> /etc: stat follows the link and resolves to a directory, while normalize resolves to home. escape -> /etc：stat 跟随解析是目录，normalize 解析出 home。
         link = _make_attr("escape", stat.S_IFLNK | 0o777)
         self.sftp.listdir_attr.return_value = [link]
         self.sftp.stat.return_value = _make_attr(
@@ -202,7 +201,7 @@ class TestList(_SFTPTestCase):
         self.assertEqual(resp.status_code, 200)
         entry = resp.json()["entries"][0]
         self.assertTrue(entry["is_symlink"])
-        self.assertTrue(entry["is_dir"])  # 跟随链接，目标是目录
+        self.assertTrue(entry["is_dir"])
         self.assertTrue(entry["outside_home"])
 
     def test_list_broken_symlink(self):
@@ -254,8 +253,7 @@ class TestDownload(_SFTPTestCase):
         self.assertEqual(resp.content, b"hello world")
         self.assertIn("attachment", resp.headers["content-disposition"])
         self.assertIn("a.txt", resp.headers["content-disposition"])
-        mock_file.close.assert_called()  # 流完要关文件
-        # 分块读：CHUNK_SIZE 传入 read
+        mock_file.close.assert_called()
         mock_file.read.assert_called_with(sftp_module.CHUNK_SIZE)
 
     def test_download_symlink_outside_rejected(self):
@@ -334,11 +332,11 @@ class TestUpload(_SFTPTestCase):
                 files={"file": ("big.bin", b"0123456789")},
                 cookies=self._auth_cookies())
         self.assertEqual(resp.status_code, 413)
-        # 超限后删除已写一半的远端文件
+        # After exceeding the limit, delete the half-written remote file. 超限后删除已写一半的远端文件。
         self.sftp.remove.assert_called_once_with("/home/testuser/big.bin")
 
     def test_upload_filename_traversal_sanitized(self):
-        # 文件名里的 ../ 被 basename 剥掉，不会跳出目标目录
+        # ../ in a filename is stripped by basename, so it cannot escape the target directory. 文件名里的 ../ 被 basename 剥掉，不会跳出目标目录。
         self.sftp.open.return_value = MagicMock()
         resp = self.client.post(
             "/api/ssh/sessions/sid-1/sftp/upload?path=docs",
@@ -349,7 +347,7 @@ class TestUpload(_SFTPTestCase):
             "/home/testuser/docs/evil.txt", "wb")
 
     def test_upload_parent_symlink_outside_rejected(self):
-        # 目标目录是跳出 home 的符号链接 -> 403
+        # A target directory that is a symlink escaping home -> 403. 目标目录是跳出 home 的符号链接 -> 403。
         self.sftp.normalize.side_effect = lambda p: (
             "/etc" if p.endswith("/escape") else p)
         resp = self.client.post(
@@ -576,7 +574,7 @@ class TestFileReadWrite(_SFTPTestCase):
             b"new content")
 
     def test_write_new_file_allowed(self):
-        # 新文件：normalize 抛 errno 2，改查父目录后允许创建
+        # New file: normalize raises errno 2, so check the parent directory instead and allow creation. 新文件：normalize 抛 errno 2，改查父目录后允许创建。
         def fake_normalize(p):
             if p.endswith("/new.txt"):
                 raise OSError(2, "No such file")
@@ -629,7 +627,7 @@ class TestSFTPClientLifecycle(_SFTPTestCase):
     """SFTPClient 缓存 / 不可用 502 / 会话关闭时一并关闭。"""
 
     def test_sftp_created_once_and_cached(self):
-        # entry 里没有缓存的 sftp：首次调用创建，第二次复用
+        # No cached sftp in the entry: the first call creates it, the second reuses it. entry 里没有缓存的 sftp：首次调用创建，第二次复用。
         mock_client = MagicMock()
         transport = MagicMock()
         transport.is_active.return_value = True
@@ -685,7 +683,7 @@ class TestSFTPClientLifecycle(_SFTPTestCase):
                                    cookies=self._auth_cookies())
         self.assertEqual(resp.status_code, 502)
         self.assertIn("SFTP", resp.json()["detail"])
-        # 502 里不能漏 paramiko 原始异常细节
+        # A 502 must not leak raw paramiko exception details. 502 里不能漏 paramiko 原始异常细节。
         self.assertNotIn("no sftp", resp.json()["detail"])
 
     def test_dead_transport_502(self):
@@ -703,7 +701,6 @@ class TestSFTPClientLifecycle(_SFTPTestCase):
         self.assertEqual(resp.status_code, 502)
 
     def test_close_session_closes_cached_sftp(self):
-        # 真实 manager：close_session 要一并关闭 entry["sftp"]
         mgr = SSHSessionManager(start_cleanup_thread=False)
         mock_session = MagicMock()
         mock_sftp = MagicMock()
@@ -716,7 +713,7 @@ class TestSFTPClientLifecycle(_SFTPTestCase):
         mock_session.close.assert_called_once()
 
     def test_close_session_without_sftp_key_ok(self):
-        # 老记录没有 "sftp" 键时 close_session 也不能报错
+        # close_session must not error when an old record has no "sftp" key. 老记录没有 "sftp" 键时 close_session 也不能报错。
         mgr = SSHSessionManager(start_cleanup_thread=False)
         mock_session = MagicMock()
         mgr._sessions["sid-1"] = {"session": mock_session}
@@ -742,7 +739,7 @@ class _LoopbackSFTPInterface(paramiko.SFTPServerInterface):
             if path == self.root or path.startswith(self.root + os.sep):
                 rel = os.path.relpath(path, self.root)
                 return os.path.join(self.root, rel)
-            return path  # 家目录外：原样（仅测试，客户端校验会挡）
+            return path  # Outside the home dir: as-is (test-only; client-side validation blocks it). 家目录外：原样（仅测试，客户端校验会挡）。
         return os.path.join(self.root, path)
 
     def canonicalize(self, path):
@@ -783,9 +780,7 @@ class _LoopbackSFTPInterface(paramiko.SFTPServerInterface):
         handle.writefile = f
         return handle
 
-    # 注意：paramiko 的 SFTPServer._process 会把这几个方法的返回值当
-    # SFTP 状态码传给 _send_status，必须返回 SFTP_OK（返回 None 会
-    # 让服务端抛 TypeError，客户端只看到通用 Failure）。
+    # Note: paramiko's SFTPServer._process treats these methods' return values as SFTP status codes passed to _send_status, so they must return SFTP_OK (returning None makes the server raise TypeError and the client only sees a generic Failure). 注意：paramiko 的 SFTPServer._process 会把这几个方法的返回值当 SFTP 状态码传给 _send_status，必须返回 SFTP_OK（返回 None 会让服务端抛 TypeError，客户端只看到通用 Failure）。
     def mkdir(self, path, attr=None):
         os.mkdir(self._real(path))
         return paramiko.SFTP_OK
@@ -833,7 +828,6 @@ class TestLoopbackSFTP(unittest.TestCase):
     def setUpClass(cls):
         cls._tmp = tempfile.TemporaryDirectory()
         cls.root = os.path.realpath(cls._tmp.name)
-        # 预置文件：hello.txt + 空子目录 + 跳出 home 的符号链接
         with open(os.path.join(cls.root, "hello.txt"), "w") as f:
             f.write("hello sftp\n")
         os.mkdir(os.path.join(cls.root, "subdir"))
@@ -876,7 +870,6 @@ class TestLoopbackSFTP(unittest.TestCase):
             except Exception:
                 transport.close()
                 continue
-            # 保持 transport 活着，直到客户端断开或测试结束
             while transport.is_active() and not cls.stop_event.is_set():
                 threading.Event().wait(0.1)
             transport.close()
@@ -890,7 +883,6 @@ class TestLoopbackSFTP(unittest.TestCase):
         self.addCleanup(self._mgr_patch.stop)
         self.client = TestClient(app, raise_server_exceptions=False)
 
-        # 真实 SSHClient 连回环服务器，拼一条 manager 记录
         self.ssh_client = paramiko.SSHClient()
         self.ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         self.ssh_client.connect("127.0.0.1", self.port,
@@ -912,7 +904,6 @@ class TestLoopbackSFTP(unittest.TestCase):
         return {"mbot_session": "good-token"}
 
     def test_full_flow_list_upload_download_rename_delete(self):
-        # 1. list：家目录就是临时目录，预置文件都在
         resp = self.client.get("/api/ssh/sessions/sid-1/sftp/list",
                                cookies=self._cookies())
         self.assertEqual(resp.status_code, 200)
@@ -922,11 +913,9 @@ class TestLoopbackSFTP(unittest.TestCase):
         self.assertIn("hello.txt", names)
         self.assertIn("subdir", names)
         self.assertTrue(names["subdir"]["is_dir"])
-        # 跳出 home 的符号链接被标记
         self.assertTrue(names["escape"]["is_symlink"])
         self.assertTrue(names["escape"]["outside_home"])
 
-        # 2. upload
         resp = self.client.post(
             "/api/ssh/sessions/sid-1/sftp/upload",
             files={"file": ("up.txt", b"uploaded-by-test")},
@@ -934,14 +923,12 @@ class TestLoopbackSFTP(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertTrue(os.path.exists(os.path.join(self.root, "up.txt")))
 
-        # 3. download：内容一致
         resp = self.client.get(
             "/api/ssh/sessions/sid-1/sftp/download?path=up.txt",
             cookies=self._cookies())
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.content, b"uploaded-by-test")
 
-        # 4. rename
         resp = self.client.post(
             "/api/ssh/sessions/sid-1/sftp/rename",
             json={"src": "up.txt", "dst": "renamed.txt"},
@@ -950,7 +937,6 @@ class TestLoopbackSFTP(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(self.root, "up.txt")))
         self.assertTrue(os.path.exists(os.path.join(self.root, "renamed.txt")))
 
-        # 5. delete
         resp = self.client.request(
             "DELETE", "/api/ssh/sessions/sid-1/sftp?path=renamed.txt",
             cookies=self._cookies())
@@ -958,7 +944,6 @@ class TestLoopbackSFTP(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(self.root, "renamed.txt")))
 
     def test_loopback_mkdir_edit_and_symlink_blocked(self):
-        # mkdir + 在线编辑（PUT 新文件 + GET 读回）
         resp = self.client.post(
             "/api/ssh/sessions/sid-1/sftp/mkdir",
             json={"path": "subdir", "name": "inner"},
@@ -978,19 +963,18 @@ class TestLoopbackSFTP(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json()["content"], "回环编辑测试\n")
 
-        # 真实符号链接跳出：下载 escape/passwd 必须被 403 挡住
+        # A real symlink escape: downloading escape/passwd must be blocked with 403. 真实符号链接跳出：下载 escape/passwd 必须被 403 挡住。
         resp = self.client.get(
             "/api/ssh/sessions/sid-1/sftp/download?path=escape/passwd",
             cookies=self._cookies())
         self.assertEqual(resp.status_code, 403)
 
-        # 路径穿越：下载 /etc/passwd 必须被 400 挡住
+        # Path traversal: downloading /etc/passwd must be blocked with 400. 路径穿越：下载 /etc/passwd 必须被 400 挡住。
         resp = self.client.get(
             "/api/ssh/sessions/sid-1/sftp/download?path=/etc/passwd",
             cookies=self._cookies())
         self.assertEqual(resp.status_code, 400)
 
-        # 清理：删掉本测试建的文件/目录
         self.client.request(
             "DELETE", "/api/ssh/sessions/sid-1/sftp?path=subdir/note.txt",
             cookies=self._cookies())

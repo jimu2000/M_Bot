@@ -24,10 +24,8 @@ from oci.client import resolve_oci_config_path
 logger = logging.getLogger(__name__)
 
 # ================= 配置区（改这里） =================
-# OCI CLI 配置文件路径：用 oci/client.py 的统一解析
-# （MBOT_OCI_CONFIG_FILE > OCI_CLI_CONFIG_FILE > ~/oci_config >
-# ~/.oci/config）。旧版的 DEFAULT_OCI_CONFIG_PATH 常量已删除。
-# 用户描述最大长度（OCI 限制 255 字符）。
+# OCI CLI config file path: use oci/client.py's unified resolution (MBOT_OCI_CONFIG_FILE > OCI_CLI_CONFIG_FILE > ~/oci_config > ~/.oci/config). OCI CLI 配置文件路径：用 oci/client.py 的统一解析（MBOT_OCI_CONFIG_FILE > OCI_CLI_CONFIG_FILE > ~/oci_config > ~/.oci/config）。
+# Max user description length (OCI caps at 255 chars). 用户描述最大长度（OCI 限制 255 字符）。
 MAX_DESCRIPTION_LEN = 255
 # =====================================================
 

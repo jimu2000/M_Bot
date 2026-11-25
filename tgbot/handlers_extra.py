@@ -63,8 +63,11 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.helpers import escape_markdown
 
 from tgbot import config as bot_config
-from tgbot import handlers_client  # 菜单 23/24（内存占用/清除）由该模块实现
+from tgbot import handlers_client
+from tgbot import i18n as bot_i18n
 from tgbot import menu_tracker
+from tgbot.rescue import handle_rescue
+from tgbot.i18n import lang_of
 from tgbot.bark import (
     bark_configured,
     generate_bark_key,
@@ -323,17 +326,16 @@ from tgbot.client_ops import (
 from web.tasks import PLAN_DEFAULTS, PLANS
 
 try:
-    # Cloudflare DNS 客户端：clouds/cloudflare.py 由另一工人并行编写。
-    # 约定接口：get_client() -> CloudflareClient；
-    # list_zones() / list_dns_records(zone_id, type=None, name=None)；
-    # CloudflareError 有 .kind 字段（config/auth/not_found/rate_limit/
-    # api/network）。
+    # Cloudflare DNS client: clouds/cloudflare.py, written by a parallel worker. Cloudflare DNS 客户端：clouds/cloudflare.py 由另一工人并行编写。
+    # Agreed interface: get_client() -> CloudflareClient; 约定接口：get_client() -> CloudflareClient；
+    # list_zones() / list_dns_records(zone_id, type=None, name=None); list_zones() / list_dns_records(zone_id, type=None, name=None)；
+    # CloudflareError has a .kind field (config/auth/not_found/rate_limit/api/network). CloudflareError 有 .kind 字段（config/auth/not_found/rate_limit/api/network）。
     from clouds.cloudflare import (
         CloudflareError,
         check_ssl_expiry,
         get_client,
     )
-except ImportError:  # 未落地时 /domain 报配置错误，不让机器人崩掉
+except ImportError:
     get_client = None
     check_ssl_expiry = None
 
@@ -346,8 +348,7 @@ except ImportError:  # 未落地时 /domain 报配置错误，不让机器人崩
 
 
 try:
-    # Cloudflare 凭据管理（v1.26.0）：配置文件优先，环境变量兜底；
-    # 手动添加 / 从服务器 1.sh 提取都走这里。
+    # Cloudflare credential management: config file first, env vars as fallback; manual add and extraction from the server's 1.sh both go through here. Cloudflare 凭据管理：配置文件优先，环境变量兜底；手动添加 / 从服务器 1.sh 提取都走这里。
     from tgbot.cf_config import (
         clear_cf_config,
         extract_cf_from_host,
@@ -356,7 +357,7 @@ try:
         resolve_cf_credentials,
         validate_and_save,
     )
-except ImportError:  # 未落地时 /domain 回落到纯环境变量方式
+except ImportError:
     clear_cf_config = None
     extract_cf_from_host = None
     get_configured_cf_client = None
@@ -368,16 +369,14 @@ except ImportError:  # 未落地时 /domain 回落到纯环境变量方式
 logger = logging.getLogger(__name__)
 
 # ================= 配置区（改这里） =================
-# 开机预设：key 为 e2 / a1small / a1full。
-# image_id / subnet_id / availability_domain / ssh_keys_file 都是占位符，
-# 部署时改成真实值（镜像 ID 用 `oci compute image list` 查，子网 ID 在
-# OCI 控制台 VCN 里看，可用域如 "xxxx:AP-SINGAPORE-1-AD-1"）。
+# Boot presets: keys are e2 / a1small / a1full. 开机预设：key 为 e2 / a1small / a1full。
+# image_id / subnet_id / availability_domain / ssh_keys_file are placeholders; replace with real values at deploy time (image ID via `oci compute image list`, subnet ID in the OCI console under VCN, availability domain like "xxxx:AP-SINGAPORE-1-AD-1"). image_id / subnet_id / availability_domain / ssh_keys_file 都是占位符，部署时改成真实值（镜像 ID 用 `oci compute image list` 查，子网 ID 在 OCI 控制台 VCN 里看，可用域如 "xxxx:AP-SINGAPORE-1-AD-1"）。
 BOOT_PRESETS = {
     "e2": {
         "shape": "VM.Standard.E2.1.Micro",
         "ocpus": 1,
         "memory_gb": 1,
-        "target_cpu": TARGET_CPU,  # 只留 AMD EPYC 7J13 的
+        "target_cpu": TARGET_CPU,  # Keep only AMD EPYC 7J13. 只留 AMD EPYC 7J13 的。
         "display_name": "e2-micro",
         "image_id": "ocid1.image.oc1..xxxxxxxx",
         "subnet_id": "ocid1.subnet.oc1..xxxxxxxx",
@@ -388,7 +387,7 @@ BOOT_PRESETS = {
         "shape": "VM.Standard.A1.Flex",
         "ocpus": 1,
         "memory_gb": 6,
-        "target_cpu": None,  # A1 不筛 CPU，抢到就留
+        "target_cpu": None,  # A1 does not filter by CPU; keep whatever is grabbed. A1 不筛 CPU，抢到就留。
         "display_name": "a1-small",
         "image_id": "ocid1.image.oc1..xxxxxxxx",
         "subnet_id": "ocid1.subnet.oc1..xxxxxxxx",
@@ -407,52 +406,47 @@ BOOT_PRESETS = {
         "ssh_keys_file": "/path/to/keys.pub",
     },
 }
-# 用量查询回溯的月数（流量 / 费用菜单）。
+# Months to look back for usage queries (traffic / cost menus). 用量查询回溯的月数（流量 / 费用菜单）。
 USAGE_MONTHS = 3
-# 日志菜单读取的尾部行数。
+# Tail lines read by the log menu. 日志菜单读取的尾部行数。
 LOG_TAIL_LINES = 30
-# 单条 Telegram 消息的正文上限（留余量，日志超长时截断）。
+# Body limit for a single Telegram message (headroom kept; long logs are truncated). 单条 Telegram 消息的正文上限（留余量，日志超长时截断）。
 LOG_MAX_CHARS = 3500
-# 工作流菜单列出的最近条数。
+# Recent entries listed by the workflow menu. 工作流菜单列出的最近条数。
 WORKFLOW_LIST_LIMIT = 10
-# A1 升/降配预设：(OCPU, 内存 GB)。
+# A1 resize presets: (OCPU, memory GB). A1 升/降配预设：(OCPU, 内存 GB)。
 RESIZE_PRESETS = [(1, 6), (2, 12), (4, 24)]
-# 启动盘扩容目标容量（GB）。
+# Boot volume resize target size (GB). 启动盘扩容目标容量（GB）。
 VOLUME_RESIZE_TARGETS = [100, 200]
-# IP 管理：从菜单创建保留 IP 时的显示名（OCI 要求必填）。
+# IP management: display name for a reserved IP created from the menu (required by OCI). IP 管理：从菜单创建保留 IP 时的显示名（OCI 要求必填）。
 RESERVED_IP_DISPLAY_NAME = "bot-reserved-ip"
-# 规格名（升降配时判断用）。
+# Shape names (used to judge resize). 规格名（升降配时判断用）。
 SHAPE_E2_MICRO = "VM.Standard.E2.1.Micro"
 SHAPE_A1_FLEX = "VM.Standard.A1.Flex"
-# 批量操作的动作中文名（确认提示与结果通知共用）。
+# Chinese names of batch actions (shared by confirm prompts and result notices). 批量操作的动作中文名（确认提示与结果通知共用）。
 _BATCH_ACTION_TEXT = {
     "start": "开机",
     "stop": "关机",
     "restart": "重启",
     "terminate": "删除",
 }
-# A1 体检建议的 severity -> 展示符号。
+# A1 health-check severity -> display symbol. A1 体检建议的 severity -> 展示符号。
 _SEVERITY_MARK = {
     "error": "❌",
     "warning": "⚠️",
     "info": "💡",
     "ok": "✅",
 }
-# ---- 阶段 5 工作包 D 新增配置 ----
-# 云面板端口（开放云面板端口功能放行的端口，与 web/config.py 的 PORT 一致）。
+# Cloud panel port (the port opened by the open-panel-port feature; must match web/config.py PORT). 云面板端口（开放云面板端口功能放行的端口，与 web/config.py 的 PORT 一致）。
 PANEL_PORT = 9527
-# 面板服务器所在子网的安全组 OCID（部署时用环境变量
-# MBOT_PANEL_SECURITY_LIST_ID 填真实值；查法：OCI 控制台 → 网络 →
-# 安全列表，或 oci network security-list list --compartment-id <compartment OCID>）。
-# 未配置（仍是占位符）时“开放云面板端口”菜单会提示先配置，不执行。
+# Security list OCID of the panel server's subnet (fill the real value at deploy time via env var MBOT_PANEL_SECURITY_LIST_ID; find it in the OCI console under Networking -> Security Lists, or via oci network security-list list --compartment-id <compartment OCID>). 面板服务器所在子网的安全组 OCID（部署时用环境变量 MBOT_PANEL_SECURITY_LIST_ID 填真实值；查法：OCI 控制台 → 网络 → 安全列表，或 oci network security-list list --compartment-id <compartment OCID>）。
+# While still a placeholder (unconfigured), the open-panel-port menu prompts for configuration first and does nothing. 未配置（仍是占位符）时“开放云面板端口”菜单会提示先配置，不执行。
 PANEL_SECURITY_LIST_ID = os.environ.get(
     "MBOT_PANEL_SECURITY_LIST_ID", "ocid1.securitylist.oc1..xxxxxxxx")
-# 面板服务器 SSH 地址（UFW 放行用）：空字符串 = 面板就在本机
-# （机器人与面板跑在同一台服务器上，部署现状如此），直接执行 ufw；
-# 否则 ssh 到该主机执行（端口 14422，root 密钥登录，见 client_ops）。
+# Panel server SSH address (for UFW allow): empty string = the panel runs on this machine (bot and panel on the same server, the current deploy setup), so run ufw directly; otherwise ssh to that host (port 14422, root key login, see client_ops). 面板服务器 SSH 地址（UFW 放行用）：空字符串 = 面板就在本机（机器人与面板跑在同一台服务器上，部署现状如此），直接执行 ufw；否则 ssh 到该主机执行（端口 14422，root 密钥登录，见 client_ops）。
 PANEL_SSH_HOST = ""
 # ---- 开机表单矩阵（菜单 1，tgbot/boot_form.py） ----
-# 点"自定义"后提示用户回复的文字（kind 是 pending_input 的 kind）。
+# Prompt text shown after tapping "Custom" (kind is the pending_input kind). 点“自定义”后提示用户回复的文字（kind 是 pending_input 的 kind）。
 _BOOT_CUSTOM_PROMPTS = {
     "boot_cpu": "请输入形状名（例如 VM.Standard.A1.Flex）：",
     "boot_os": "请输入镜像 OCID（例如 ocid1.image.oc1.ap-singapore-1.……）：",
@@ -492,10 +486,10 @@ async def _reply(update, context, text, reply_markup=None,
         parse_mode=parse_mode)
 
 
-# 流程中间消息清理（用户要求 2026-11-24：改完了只留这一条结果信息）。
-# 文字输入提示消息的 ID 存在 user_data["pending_prompt_ids"]；
-# 用户回复文字后提示已无用，text_input_callback 收到文字即删；
-# 二次确认框由 handle_confirm 包装在操作完成后删除。
+# Cleanup of in-flow messages (keep only the final result message). 流程中间消息清理（只留这一条结果信息）。
+# The text-input prompt message ID lives in user_data["pending_prompt_ids"]; 文字输入提示消息的 ID 存在 user_data["pending_prompt_ids"]；
+# once the user replies, the prompt is useless and text_input_callback deletes it on receipt; 用户回复文字后提示已无用，text_input_callback 收到文字即删；
+# the confirm dialog is deleted by handle_confirm after the action completes. 二次确认框由 handle_confirm 包装在操作完成后删除。
 _PROMPT_IDS_KEY = "pending_prompt_ids"
 
 
@@ -515,19 +509,15 @@ async def _delete_tracked_prompts(context, chat_id):
     ids = context.user_data.pop(_PROMPT_IDS_KEY, None) or []
     for message_id in ids:
         await _delete_message_safe(context, chat_id, message_id)
-    # 带取消键盘的提示本身就是活动选择框，删了之后跟踪也要清掉，
-    # 否则下次回复还会去删一条已删的消息。
+    # A prompt with a cancel keyboard is itself a live selection box: delete its tracking too after deleting it, or the next reply will try to delete an already-deleted message. 带取消键盘的提示本身就是活动选择框，删了之后跟踪也要清掉，否则下次回复还会去删一条已删的消息。
     live_id = context.user_data.get(menu_tracker.LIVE_MENU_KEY)
     if live_id is not None and live_id in ids:
         menu_tracker.forget_live_menu(context)
 
 
-# 切换账号/区域流程的中间消息（账号列表 / 区域列表）：切换完成后
-# 统一删除，只留主菜单一条消息（用户要求 2026-11-24：选完直接回
-# 主菜单，中间的回复不要留着）。ID 存在 user_data 里。
+# In-flow messages of the account/region switch (account list / region list): deleted together once the switch completes, leaving only the main menu message. 切换账号/区域流程的中间消息（账号列表 / 区域列表）：切换完成后统一删除，只留主菜单一条消息。ID 存在 user_data 里。
 _SWITCH_IDS_KEY = "switch_msg_ids"
-# 切换回调的防重复点击窗口（秒）：用户双击按钮时 Telegram 会发
-# 两个回调，不拦会连发两条“已切换到账号”（2026-11-24 用户截图）。
+# Anti-double-click window (seconds) for switch callbacks: a double tap sends two callbacks, and without this guard the user gets two "switched to account" messages. 切换回调的防重复点击窗口（秒）：用户双击按钮时 Telegram 会发两个回调，不拦会连发两条“已切换到账号”。
 _SWITCH_DEDUP_SECONDS = 5
 
 
@@ -588,11 +578,12 @@ async def _show_oracle_menu_after_switch(update, context, confirm_line):
     if chat_id is not None:
         await _delete_tracked_switch_messages(context, chat_id,
                                               except_id=current_id)
-    from tgbot.handlers import ORACLE_MENU_TEXT  # 延迟导入，防循环引用
-    text = f"{confirm_line}\n\n{ORACLE_MENU_TEXT}"
+    from tgbot.handlers import _oracle_menu_text  # Deferred import to avoid a circular import. 延迟导入，防循环引用。
+    lang = lang_of(update, context)
+    text = f"{confirm_line}\n\n{_oracle_menu_text(lang)}"
     keyboard = oracle_menu_keyboard(
         0, states=get_menu_states(context),
-        current_account=_switch_menu_account_label(context))
+        current_account=_switch_menu_account_label(context), lang=lang)
     if query is not None:
         try:
             await query.answer()
@@ -742,11 +733,11 @@ def _usage_currency(items, fallback=""):
     return fallback
 
 
-def fmt_usage_monthly(items, months=USAGE_MONTHS):
+def fmt_usage_monthly(items, months=USAGE_MONTHS, lang="zh"):
     """按月汇总费用与流量（service 含 "Data Transfer" 的
     computed-quantity，按 API 返回值以 GB 计）。"""
     if not items:
-        return f"近 {months} 个月没有用量记录。"
+        return bot_i18n.t(lang, "cost.no_usage", months=months)
     by_month = {}
     total = 0.0
     currency = ""
@@ -769,16 +760,17 @@ def fmt_usage_monthly(items, months=USAGE_MONTHS):
     return "\n".join(lines)
 
 
-def fmt_usage_total(items, months=USAGE_MONTHS):
+def fmt_usage_total(items, months=USAGE_MONTHS, lang="zh"):
     """汇总近 N 个月的总费用与币种。"""
     if not items:
-        return f"近 {months} 个月没有用量记录。"
+        return bot_i18n.t(lang, "cost.no_usage", months=months)
     total = sum(float(i.get("computed-amount") or 0) for i in items)
     currency = _usage_currency(items)
-    return f"💰 近 {months} 个月总花费：{total:.2f} {currency}"
+    return bot_i18n.t(lang, "cost.total", months=months, total=total,
+                      currency=currency)
 
 
-def fmt_usage_totals(entries, months=USAGE_MONTHS):
+def fmt_usage_totals(entries, months=USAGE_MONTHS, lang="zh"):
     """多账号近 N 个月总费用：entries 是 [(显示名, items 或 None)]。
 
     显示名是账号的主区中文名（多区账号后缀区数），与订阅信息页一致；
@@ -786,20 +778,22 @@ def fmt_usage_totals(entries, months=USAGE_MONTHS):
     最后附全部账号合计（用户要求 2026-11-24：默认一次查全部账号）。
     """
     if not entries:
-        return "没有配置任何账号。"
-    sections = [f"💰 近 {months} 个月总花费（{len(entries)} 个账号）："]
+        return bot_i18n.t(lang, "cost.no_accounts")
+    sections = [bot_i18n.t(lang, "cost.totals_title", months=months,
+                           count=len(entries))]
     grand_total = 0.0
     currency = ""
     for label, items in entries:
         if items is None:
-            sections.append(f"• {label}：查询失败")
+            sections.append(f"• {label}：{bot_i18n.t(lang, 'cost.failed')}")
             continue
         total = sum(float(i.get("computed-amount") or 0) for i in items)
         currency = _usage_currency(items, currency)
         grand_total += total
         sections.append(f"• {label}：{total:.2f} {currency}".rstrip())
     sections.append("")
-    sections.append(f"合计：{grand_total:.2f} {currency}".rstrip())
+    sections.append(bot_i18n.t(lang, "cost.grand_total",
+                               total=grand_total, currency=currency).rstrip())
     return "\n".join(sections)
 
 
@@ -811,22 +805,24 @@ def get_tenancy(cli, compartment_id):
                             "--tenancy-id", compartment_id])) or {}
 
 
-def fmt_tenancy(data):
+def fmt_tenancy(data, lang="zh"):
     """订阅信息全文。"""
     if not isinstance(data, dict) or not data:
-        return "订阅信息：无法解析返回结果。"
+        return bot_i18n.t(lang, "subscription.unparseable")
     lines = [
-        "📄 订阅信息：",
+        bot_i18n.t(lang, "subscription.title_single") + "：",
         "",
-        f"名称：{data.get('name', '?')}",
-        f"Home 区域：{data.get('home-region-key', '?')}",
+        f"{bot_i18n.t(lang, 'subscription.name')}：{data.get('name', '?')}",
+        f"{bot_i18n.t(lang, 'subscription.home_region')}："
+        f"{data.get('home-region-key', '?')}",
     ]
     if data.get("description"):
-        lines.append(f"描述：{data['description']}")
+        lines.append(f"{bot_i18n.t(lang, 'subscription.description')}："
+                     f"{data['description']}")
     return "\n".join(lines)
 
 
-def fmt_tenancies(entries):
+def fmt_tenancies(entries, lang="zh"):
     """多账号订阅信息全文：entries 是 [(显示名, tenancy dict 或 None)]。
 
     显示名是账号的主区中文名（多区账号后缀区数），与切换菜单一致；
@@ -834,16 +830,20 @@ def fmt_tenancies(entries):
     有几个账号就显示几个（用户要求 2026-11-24）。
     """
     if not entries:
-        return "没有配置任何账号。"
-    sections = [f"📄 订阅信息（{len(entries)} 个账号）："]
+        return bot_i18n.t(lang, "subscription.no_accounts")
+    sections = [bot_i18n.t(lang, "subscription.title_count",
+                           count=len(entries))]
     for label, data in entries:
         if not isinstance(data, dict) or not data:
-            body = "查询失败。"
+            body = bot_i18n.t(lang, "subscription.failed")
         else:
-            parts = [f"名称：{data.get('name', '?')}",
-                     f"Home 区域：{data.get('home-region-key', '?')}"]
+            parts = [f"{bot_i18n.t(lang, 'subscription.name')}："
+                     f"{data.get('name', '?')}",
+                     f"{bot_i18n.t(lang, 'subscription.home_region')}："
+                     f"{data.get('home-region-key', '?')}"]
             if data.get("description"):
-                parts.append(f"描述：{data['description']}")
+                parts.append(f"{bot_i18n.t(lang, 'subscription.description')}："
+                             f"{data['description']}")
             body = "\n".join(parts)
         sections.append(f"{label}\n{body}")
     return "\n\n".join(sections)
@@ -933,9 +933,7 @@ def fmt_regions(regions):
     return "\n".join(lines)
 
 
-# 账号订阅区域缓存：region-subscription 很少变，缓存 1 小时，避免
-# 每次打开切换菜单/额度页都对每个账号调一次 OCI。存完整列表，
-# 区数（切换菜单后缀）与区域名（额度页二级菜单）都从这里派生。
+# Subscription-region cache: region subscriptions rarely change, so cache for 1 hour instead of calling OCI once per account every time the switch menu / quota page opens. Store the full list; the region count (switch menu suffix) and region names (quota page submenu) both derive from it. 账号订阅区域缓存：region-subscription 很少变，缓存 1 小时，避免每次打开切换菜单/额度页都对每个账号调一次 OCI。存完整列表，区数（切换菜单后缀）与区域名（额度页二级菜单）都从这里派生。
 PROFILE_REGION_COUNT_TTL = timedelta(hours=1)
 _profile_regions = {}
 _profile_regions_at = None
@@ -986,8 +984,6 @@ def get_cached_profile_display_name(profile):
 
 
 # ---------------- IPv6 ----------------
-# list_ipv6_for_vnic / create_ipv6 / delete_ipv6 已移到 oci/network.py，
-# 这里从那里导入（Web 面板实例操作也复用同一份实现）。
 
 
 # ---------------- MFA 设备（cli.run 直调） ----------------
@@ -1036,27 +1032,29 @@ def fmt_mfa_devices(devices):
 
 # ---------------- IP / 磁盘 / 负载 / 日志的格式化 ----------------
 
-def fmt_ip_overview(reserved_ips, instance_ips):
+def fmt_ip_overview(reserved_ips, instance_ips, lang="zh"):
     """IP 管理全文。
 
     reserved_ips：list_public_ips 的返回值（保留 IP）。
     instance_ips：[(实例名, 公网 IP 或 None), ...]。
     """
-    lines = ["🌐 IP 管理：", "", "保留 IP："]
+    lines = [bot_i18n.t(lang, "ip.overview_title"), "",
+             bot_i18n.t(lang, "ip.reserved")]
     if not reserved_ips:
-        lines.append("• 无保留 IP")
+        lines.append(bot_i18n.t(lang, "ip.no_reserved"))
     for ip in reserved_ips:
         addr = ip.get("ip-address", "?")
-        bound = "已绑定" if ip.get("assigned-entity") else "未绑定"
+        bound = bot_i18n.t(lang, "ip.bound" if ip.get("assigned-entity")
+                           else "ip.unbound")
         lines.append(f"• {addr}（{ip.get('lifecycle-state', '?')}，{bound}）")
     lines.append("")
-    lines.append("实例公网 IP：")
+    lines.append(bot_i18n.t(lang, "ip.instance_ips"))
     if not instance_ips:
-        lines.append("• 无实例")
+        lines.append(bot_i18n.t(lang, "ip.no_instances"))
     for name, addr in instance_ips:
-        lines.append(f"• {name}：{addr or '无公网 IP'}")
+        lines.append(f"• {name}：{addr or bot_i18n.t(lang, 'instances.no_public_ip')}")
     lines.append("")
-    lines.append("换 IP：请在实例列表里选一台实例，点“换 IP”。")
+    lines.append(bot_i18n.t(lang, "ip.change_hint"))
     return "\n".join(lines)
 
 
@@ -1076,7 +1074,6 @@ def fmt_volume_list(volumes, orphans, total_gb):
     for _idx, vol in ordered:
         title = volume_group_title(vol.get("lifecycle-state"))
         counts[title] = counts.get(title, 0) + 1
-    # 按组顺序排数量，如“🟢 可用 3 块（141GB）· ⚫ 已删除 11 块”。
     parts = []
     for state in VOLUME_GROUP_ORDER:
         title = VOLUME_GROUP_TITLES[state]
@@ -1330,25 +1327,26 @@ def volume_resize_keyboard(idx):
 
 # ---- 1. 开机（刷机） ----
 
-def fmt_boot_preset(preset, ok, reason):
+def fmt_boot_preset(preset, ok, reason, lang="zh"):
     """开机预设的配置摘要 + 配额预检结果。"""
     lines = [
-        "🚀 开机配置：",
+        bot_i18n.t(lang, "boot.preset_title"),
         "",
-        f"规格：{fmt_shape_spec(preset['shape'], preset['ocpus'], preset['memory_gb'])}",
-        f"实例名：{preset['display_name']}",
+        f"{bot_i18n.t(lang, 'boot.label_spec')}："
+        f"{fmt_shape_spec(preset['shape'], preset['ocpus'], preset['memory_gb'], lang=lang)}",
+        f"{bot_i18n.t(lang, 'boot.preset_name')}{preset['display_name']}",
     ]
     if preset.get("shape") == SHAPE_E2_MICRO:
         if preset.get("target_cpu"):
-            lines.append("目标 CPU：只留 " +
-                         "/".join(get_allowed_cpu_models()) +
-                         "，不符就释放继续抢")
+            lines.append(bot_i18n.t(lang, "boot.summary_target_cpu_only",
+                                    models="/".join(get_allowed_cpu_models())))
         else:
-            lines.append("目标 CPU：什么 CPU 都可以，抢到就留")
+            lines.append(bot_i18n.t(lang, "boot.summary_target_cpu_any"))
     lines.append("")
-    lines.append(f"配额预检：{'✅ ' if ok else '❌ '}{reason}")
+    lines.append(bot_i18n.t(lang, "boot.summary_quota_check",
+                            result="✅ " if ok else "❌ ", reason=reason))
     if not ok:
-        lines.append("配额不足，抢机也会停下，请先释放资源或换账号。")
+        lines.append(bot_i18n.t(lang, "boot.summary_quota_short"))
     return "\n".join(lines)
 
 
@@ -1362,8 +1360,8 @@ async def handle_boot(update, context):
     context.user_data.pop("editing_preset_idx", None)
     context.user_data["boot_form"] = new_form()
     form = context.user_data["boot_form"]
-    await _reply(update, context, fmt_form_text(form),
-                 reply_markup=boot_form_keyboard(form))
+    await _reply(update, context, fmt_form_text(form, lang=lang_of(update, context)),
+                 reply_markup=boot_form_keyboard(form, lang=lang_of(update, context)))
 
 
 async def _edit_boot_form(update, context, notice=None):
@@ -1382,7 +1380,7 @@ async def _edit_boot_form(update, context, notice=None):
         pass
     try:
         await query.edit_message_text(
-            fmt_form_text(form), reply_markup=boot_form_keyboard(form))
+            fmt_form_text(form, lang=lang_of(update, context)), reply_markup=boot_form_keyboard(form, lang=lang_of(update, context)))
     except Exception:
         pass
 
@@ -1422,20 +1420,17 @@ async def _boot_form_confirm(update, context, form):
                            region=get_current_region(context),
                            profile=get_current_profile(context))
     if errors:
-        await _reply(update, context,
-                     "❌ 配置还没填完：\n"
-                     + "\n".join(f"• {error}" for error in errors)
-                     + "\n\n请继续点选表单。",
-                     reply_markup=boot_form_keyboard(form))
+        await _reply(update, context, bot_i18n.tr(
+            update, context, "boot.form_incomplete",
+            errors="\n".join(f"• {error}" for error in errors)),
+            reply_markup=boot_form_keyboard(form, lang=lang_of(update, context)))
         return
     try:
         preset = build_preset(form, deploy)
     except ValueError as exc:
-        await _reply(update, context, f"❌ {exc}", reply_markup=boot_form_keyboard(form))
+        await _reply(update, context, f"❌ {exc}", reply_markup=boot_form_keyboard(form, lang=lang_of(update, context)))
         return
-    # root 密码在确认页就生成（UUID，见 boot_form.generate_root_password）：
-    # 确认页显示给用户看，点"开始抢机"后 boot_go_callback 复用同一份
-    # （只存在 pending_boot 里，内存；不进 presets.json）。
+    # The root password is generated on the confirm page (UUID, see boot_form.generate_root_password): shown to the user there, then reused by boot_go_callback from the same copy (kept only in pending_boot, in memory; never written to presets.json). root 密码在确认页就生成（UUID，见 boot_form.generate_root_password）：确认页显示给用户看，点“开始抢机”后 boot_go_callback 复用同一份（只存在 pending_boot 里，内存；不进 presets.json）。
     if preset.get("root_login"):
         preset["root_password"] = generate_root_password()
     context.user_data["pending_boot"] = preset
@@ -1446,9 +1441,9 @@ async def _boot_form_confirm(update, context, form):
             preset["shape"], preset["ocpus"], preset["memory_gb"],
             preset.get("count", 1), preset.get("boot_volume_size_gbs"))
     except Exception as exc:  # noqa: BLE001 - 预检失败也要让用户看到
-        ok, reason = False, fmt_error(exc)
-    await _reply(update, context, fmt_boot_form_summary(preset, ok, reason),
-                 reply_markup=boot_confirm_keyboard(preset))
+        ok, reason = False, fmt_error(exc, lang=lang_of(update, context))
+    await _reply(update, context, fmt_boot_form_summary(preset, ok, reason, lang=lang_of(update, context)),
+                 reply_markup=boot_confirm_keyboard(preset, lang=lang_of(update, context)))
 
 
 async def _boot_form_save(update, context, form):
@@ -1465,24 +1460,22 @@ async def _boot_form_save(update, context, form):
                            region=get_current_region(context),
                            profile=get_current_profile(context))
     if errors:
-        await _reply(update, context,
-                     "❌ 配置还没填完：\n"
-                     + "\n".join(f"• {error}" for error in errors)
-                     + "\n\n请继续点选表单。",
-                     reply_markup=boot_form_keyboard(form))
+        await _reply(update, context, bot_i18n.tr(
+            update, context, "boot.form_incomplete",
+            errors="\n".join(f"• {error}" for error in errors)),
+            reply_markup=boot_form_keyboard(form, lang=lang_of(update, context)))
         return
     try:
         preset = build_preset(form, deploy)
     except ValueError as exc:
-        await _reply(update, context, f"❌ {exc}", reply_markup=boot_form_keyboard(form))
+        await _reply(update, context, f"❌ {exc}", reply_markup=boot_form_keyboard(form, lang=lang_of(update, context)))
         return
     shape = preset["shape"].replace("VM.Standard.", "")
     editing_idx = context.user_data.pop("editing_preset_idx", None)
     if editing_idx is not None:
         presets = load_presets()
         if 0 <= editing_idx < len(presets):
-            # 编辑是改配置不是改名：build_preset 会重算名字（按今天
-            # 日期），这里写回原名。
+            # Editing changes the config, not the name: build_preset recomputes the name (by today's date), so write the original name back here. 编辑是改配置不是改名：build_preset 会重算名字（按今天日期），这里写回原名。
             preset["display_name"] = (
                 presets[editing_idx].get("display_name")
                 or preset["display_name"])
@@ -1494,7 +1487,7 @@ async def _boot_form_save(update, context, form):
                          "菜单 17（快捷开机）里可以一键用它开机。",
                          reply_markup=back_to_oracle_keyboard())
             return
-        # 正在编辑的那条已被删掉（另一端删的）：退化为追加保存。
+        # The entry being edited was deleted elsewhere: fall back to appending a new save. 正在编辑的那条已被删掉（另一端删的）：退化为追加保存。
     save_preset(preset)
     await _reply(update, context,
                  f"💾 已保存为快捷开机：{preset['display_name']}（{shape}，"
@@ -1515,7 +1508,6 @@ async def boot_form_callback(update, context):
     parts = data.split(":")
     action = parts[1] if len(parts) > 1 else ""
     if action == "noop":
-        # 行标签按钮：只消掉转圈。
         if update.callback_query is not None:
             try:
                 await update.callback_query.answer()
@@ -1523,10 +1515,8 @@ async def boot_form_callback(update, context):
                 pass
         return
     if action == "cancel_input":
-        # 取消自定义输入：清 pending_input，重发表单继续填。
-        # （提示发出时旧表单已被选择框清理删掉，不能再像以前那样
-        # 只编辑提示说“表单未变”；重发表单与输入完成后的做法一致，
-        # 提示消息由 _reply 的清理删掉。）
+        # Cancel custom input: clear pending_input and re-post the form to continue. 取消自定义输入：清 pending_input，重发表单继续填。
+        # (The old form was already deleted by the selection-box cleanup when the prompt went out, so it cannot just be edited to say "form unchanged"; re-posting matches what happens after input completes, and the prompt message is deleted by _reply's cleanup.) （提示发出时旧表单已被选择框清理删掉，不能再像以前那样只编辑提示说“表单未变”；重发表单与输入完成后的做法一致，提示消息由 _reply 的清理删掉。）
         context.user_data.pop("pending_input", None)
         form = context.user_data.get("boot_form")
         if form is None:
@@ -1534,12 +1524,11 @@ async def boot_form_callback(update, context):
                          "表单已过期，请重新打开菜单 1（开机）。",
                          reply_markup=back_to_oracle_keyboard())
             return
-        await _reply(update, context, fmt_form_text(form),
-                     reply_markup=boot_form_keyboard(form))
+        await _reply(update, context, fmt_form_text(form, lang=lang_of(update, context)),
+                     reply_markup=boot_form_keyboard(form, lang=lang_of(update, context)))
         return
     if action == "oneclick":
-        # 一键开机（默认 AMD）：预填表单直接进确认页（原菜单 1 预设一键
-        # 的模式），不覆盖用户正在填的表单。
+        # One-click boot (default AMD): prefill the form and go straight to the confirm page (the old menu-1 preset one-click mode), without overwriting a form the user is already filling in. 一键开机（默认 AMD）：预填表单直接进确认页（原菜单 1 预设一键的模式），不覆盖用户正在填的表单。
         await _boot_form_confirm(update, context, default_amd_form())
         return
     form = context.user_data.get("boot_form")
@@ -1608,9 +1597,7 @@ async def boot_preset_load_callback(update, context):
     preset.setdefault("assign_public_ip", True)
     preset.setdefault("assign_ipv6", False)
     preset.setdefault("root_login", False)
-    # 已保存的配置可能是在别的区存的（旧版保存时不带区域），部署值
-    # 与当前工作区域对不上时直接开机 Oracle 会报 CannotParseRequest，
-    # 这里先拦住（2026-11-24 一键开机报错的同类问题）。
+    # A saved config may belong to another region (old saves carry no region); when the deploy values do not match the current working region, booting would fail with Oracle CannotParseRequest, so block it here. 已保存的配置可能是在别的区存的（旧版保存时不带区域），部署值与当前工作区域对不上时直接开机 Oracle 会报 CannotParseRequest，这里先拦住。
     mismatch = deploy_region_mismatch(
         {"availability_domain": preset.get("availability_domain")},
         get_current_region(context), get_current_profile(context))
@@ -1618,8 +1605,6 @@ async def boot_preset_load_callback(update, context):
         await _reply(update, context, f"❌ {mismatch}",
                      reply_markup=back_to_oracle_keyboard())
         return
-    # root 密码在确认页就生成（与 _boot_form_confirm 同逻辑）：
-    # 确认页显示，点"开始抢机"后复用同一份（仅内存）。
     if preset.get("root_login"):
         preset["root_password"] = generate_root_password()
     context.user_data["pending_boot"] = preset
@@ -1631,9 +1616,9 @@ async def boot_preset_load_callback(update, context):
             preset.get("memory_gb", 0), preset.get("count", 1),
             preset.get("boot_volume_size_gbs"))
     except Exception as exc:  # noqa: BLE001 - 预检失败也要让用户看到
-        ok, reason = False, fmt_error(exc)
-    await _reply(update, context, fmt_boot_form_summary(preset, ok, reason),
-                 reply_markup=boot_confirm_keyboard(preset))
+        ok, reason = False, fmt_error(exc, lang=lang_of(update, context))
+    await _reply(update, context, fmt_boot_form_summary(preset, ok, reason, lang=lang_of(update, context)),
+                 reply_markup=boot_confirm_keyboard(preset, lang=lang_of(update, context)))
 
 
 @require_allowed
@@ -1661,8 +1646,8 @@ async def boot_preset_edit_callback(update, context):
                  f"✏️ 正在编辑快捷开机配置："
                  f"{presets[idx].get('display_name', '?')}\n"
                  "改好后点“保存为快捷开机”原地更新，或点“确定开机”"
-                 "直接用改后的配置开机。\n\n" + fmt_form_text(form),
-                 reply_markup=boot_form_keyboard(form))
+                 "直接用改后的配置开机。\n\n" + fmt_form_text(form, lang=lang_of(update, context)),
+                 reply_markup=boot_form_keyboard(form, lang=lang_of(update, context)))
 
 
 @require_allowed
@@ -1724,26 +1709,26 @@ async def _handle_boot_form_input(update, context, kind, text):
     if kind == "boot_script":
         if not text:
             await _reply(update, context, "脚本内容为空，已取消上传。",
-                         reply_markup=boot_form_keyboard(form))
+                         reply_markup=boot_form_keyboard(form, lang=lang_of(update, context)))
             return
         if len(text) > SCRIPT_MAX_CHARS:
             await _reply(update, context,
                          f"脚本太长（{len(text)} 字符，上限 "
                          f"{SCRIPT_MAX_CHARS}），已取消上传。",
-                         reply_markup=boot_form_keyboard(form))
+                         reply_markup=boot_form_keyboard(form, lang=lang_of(update, context)))
             return
         set_script(form, text, name="粘贴的脚本")
-        await _reply(update, context, fmt_form_text(form),
-                     reply_markup=boot_form_keyboard(form))
+        await _reply(update, context, fmt_form_text(form, lang=lang_of(update, context)),
+                     reply_markup=boot_form_keyboard(form, lang=lang_of(update, context)))
         return
     row = kind[len("boot_"):]
     ok, error = set_custom(form, row, text)
     if not ok:
         await _reply(update, context, f"❌ {error}\n请重新点“自定义”再输入。",
-                     reply_markup=boot_form_keyboard(form))
+                     reply_markup=boot_form_keyboard(form, lang=lang_of(update, context)))
         return
-    await _reply(update, context, fmt_form_text(form),
-                 reply_markup=boot_form_keyboard(form))
+    await _reply(update, context, fmt_form_text(form, lang=lang_of(update, context)),
+                 reply_markup=boot_form_keyboard(form, lang=lang_of(update, context)))
 
 
 @require_allowed
@@ -1772,7 +1757,7 @@ async def boot_form_document_callback(update, context):
         await _reply(update, context,
                      f"文件太大（上限 {SCRIPT_MAX_CHARS // 1024}KB），"
                      "已取消上传。",
-                     reply_markup=boot_form_keyboard(form))
+                     reply_markup=boot_form_keyboard(form, lang=lang_of(update, context)))
         return
     try:
         tg_file = await document.get_file()
@@ -1781,12 +1766,12 @@ async def boot_form_document_callback(update, context):
     except Exception as exc:  # noqa: BLE001 - 下载/解码失败都要提示
         context.user_data.pop("pending_input", None)
         await _reply(update, context, f"❌ 读取文件失败：{exc}",
-                     reply_markup=boot_form_keyboard(form))
+                     reply_markup=boot_form_keyboard(form, lang=lang_of(update, context)))
         return
     context.user_data.pop("pending_input", None)
     set_script(form, content, name=document.file_name or "上传的脚本")
-    await _reply(update, context, fmt_form_text(form),
-                 reply_markup=boot_form_keyboard(form))
+    await _reply(update, context, fmt_form_text(form, lang=lang_of(update, context)),
+                 reply_markup=boot_form_keyboard(form, lang=lang_of(update, context)))
 
 
 @require_allowed
@@ -1805,9 +1790,9 @@ async def boot_preset_callback(update, context):
             can_launch, get_cli(context), get_compartment(context),
             preset["shape"], preset["ocpus"], preset["memory_gb"])
     except Exception as exc:  # noqa: BLE001 - 预检失败也要让用户看到
-        ok, reason = False, fmt_error(exc)
+        ok, reason = False, fmt_error(exc, lang=lang_of(update, context))
     text = fmt_boot_preset(preset, ok, reason)
-    await _reply(update, context, text, reply_markup=boot_confirm_keyboard(preset))
+    await _reply(update, context, text, reply_markup=boot_confirm_keyboard(preset, lang=lang_of(update, context)))
 
 
 def _run_grabber_thread(task_id, cli, compartment_id, preset, notify=None,
@@ -1839,12 +1824,11 @@ def _run_grabber_thread(task_id, cli, compartment_id, preset, notify=None,
 
     def on_event(_event_type, message):
         nonlocal cpu_unverified
-        if _event_type == "cpu_check_failed":
+        if _event_type in ("cpu_check_failed", "cpu_filter_unavailable"):
             cpu_unverified = True
         TASKS.update(task_id, detail=message)
 
-    # 跨进程取消监听：网页端点取消时，对方把 cancel_requested 写进
-    # 共享文件，这里轮询到后置 stop_event，抢机循环随即停下。
+    # Cross-process cancel listener: when the web side cancels, the other side writes cancel_requested into a shared file; polling here sets stop_event and the grab loop stops. 跨进程取消监听：网页端点取消时，对方把 cancel_requested 写进共享文件，这里轮询到后置 stop_event，抢机循环随即停下。
     start_cancel_watcher(TASKS.tasks_file, task_id,
                          TASKS.stop_event(task_id))
 
@@ -1912,8 +1896,7 @@ def _run_grabber_thread(task_id, cli, compartment_id, preset, notify=None,
                 total_attempts += result.attempts
                 total_releases += result.releases
                 total_elapsed += result.elapsed_seconds
-                # 每抢到一台就更新规格里的已抢列表：中途重启时
-                # 恢复线程按它算剩余台数，已抢的不重抢。
+                # Update the grabbed list in the spec on every grab: after a mid-run restart, the recovery thread computes the remaining count from it and never re-grabs what is already grabbed. 每抢到一台就更新规格里的已抢列表：中途重启时恢复线程按它算剩余台数，已抢的不重抢。
                 if spec is not None and TASKS.tasks_file:
                     try:
                         spec["successes"] = [
@@ -1999,6 +1982,9 @@ def _notify_boot_success(cli, preset, successes, notify, task_id=None):
             ocpus = 1
         if memory_gb is None:
             memory_gb = 1 if shape == "VM.Standard.E2.1.Micro" else 6
+        cpu_model = next(
+            (getattr(r, "cpu_model", None) for r in successes
+             if getattr(r, "cpu_model", None)), None)
         result = notify_boot_success(
             notify.get("token"), notify.get("chat_id"),
             notify.get("profile_label") or "?",
@@ -2009,7 +1995,8 @@ def _notify_boot_success(cli, preset, successes, notify, task_id=None):
             root_password=notify.get("root_password"),
             region_code=notify.get("region_code"),
             ssh_key_set=bool(preset.get("ssh_keys_file")),
-            cpu_unverified=notify.get("cpu_unverified", False))
+            cpu_unverified=notify.get("cpu_unverified", False),
+            cpu_model=cpu_model)
         if result.get("errors"):
             line = "开机成功通知部分失败：" + "; ".join(result["errors"])
             logger.warning("%s", line)
@@ -2018,8 +2005,7 @@ def _notify_boot_success(cli, preset, successes, notify, task_id=None):
             logger.info("%s", line)
         if task_id is not None:
             TASKS.append_log(task_id, line)
-        # 付费规格实例：额外发一条置顶提醒 + Bark（用户要求 2026-11-24，
-        # 一定做）。免费形状（A1.Flex / E2.1.Micro）不发。
+        # Paid-shape instance: send an extra pinned reminder + Bark. Free shapes (A1.Flex / E2.1.Micro) do not get one. 付费规格实例：额外发一条置顶提醒 + Bark。免费形状（A1.Flex / E2.1.Micro）不发。
         if shape not in FREE_SHAPES:
             paid = notify_dual(
                 notify.get("token"), notify.get("chat_id"),
@@ -2156,7 +2142,6 @@ def resume_interrupted_grabs():
             _finish_resumed_grab(record, spec, successes)
         else:
             relaunch.append((record, spec))
-    # 其余本来源未结束任务标为已中断（要重跑的跳过）。
     task_store.recover_interrupted(
         path, TASKS.origin, keep_ids=[r["id"] for r, _ in relaunch])
     for record, spec in relaunch:
@@ -2177,8 +2162,10 @@ async def boot_cpu_callback(update, context):
     preset = context.user_data.get("pending_boot")
     query = update.callback_query
     if preset is None:
-        await _reply(update, context, "配置已过期，请重新打开菜单 1（开机）。",
-                     reply_markup=back_to_oracle_keyboard())
+        await _reply(update, context, bot_i18n.tr(
+            update, context, "boot.config_expired"),
+            reply_markup=back_to_oracle_keyboard(
+                lang=lang_of(update, context)))
         return
     if choice == "7j13":
         preset["target_cpu"] = TARGET_CPU
@@ -2193,11 +2180,11 @@ async def boot_cpu_callback(update, context):
             preset.get("memory_gb", 0), preset.get("count", 1),
             preset.get("boot_volume_size_gbs"))
     except Exception as exc:  # noqa: BLE001 - 预检失败也要让用户看到
-        ok, reason = False, fmt_error(exc)
+        ok, reason = False, fmt_error(exc, lang=lang_of(update, context))
     if context.user_data.get("pending_boot_summary") == "preset":
         text = fmt_boot_preset(preset, ok, reason)
     else:
-        text = fmt_boot_form_summary(preset, ok, reason)
+        text = fmt_boot_form_summary(preset, ok, reason, lang=lang_of(update, context))
     if query is not None:
         try:
             await query.answer()
@@ -2205,11 +2192,11 @@ async def boot_cpu_callback(update, context):
             pass
         try:
             await query.edit_message_text(
-                text, reply_markup=boot_confirm_keyboard(preset))
+                text, reply_markup=boot_confirm_keyboard(preset, lang=lang_of(update, context)))
         except Exception:
             pass
         return
-    await _reply(update, context, text, reply_markup=boot_confirm_keyboard(preset))
+    await _reply(update, context, text, reply_markup=boot_confirm_keyboard(preset, lang=lang_of(update, context)))
 
 
 @require_allowed
@@ -2226,10 +2213,10 @@ async def boot_go_callback(update, context):
     """
     preset = context.user_data.get("pending_boot")
     if not preset:
-        await _reply(update, context, "请先在菜单 1 里配好开机表单。")
+        await _reply(update, context, bot_i18n.tr(
+            update, context, "boot.need_form"))
         return
-    # 最后一道防线：确认页出来后用户可能切了账号/区域，pending_boot
-    # 里还是旧区的部署值，直接开机会报 CannotParseRequest，这里拦住。
+    # Last line of defense: after the confirm page appears the user may have switched account/region, but pending_boot still holds the old region's deploy values; booting directly would fail with CannotParseRequest, so block it here. 最后一道防线：确认页出来后用户可能切了账号/区域，pending_boot 里还是旧区的部署值，直接开机会报 CannotParseRequest，这里拦住。
     mismatch = deploy_region_mismatch(
         {"availability_domain": preset.get("availability_domain")},
         get_current_region(context), get_current_profile(context))
@@ -2239,8 +2226,7 @@ async def boot_go_callback(update, context):
         return
     root_password = None
     if preset.get("root_login"):
-        # 优先复用确认页生成的密码（用户已在确认页看到同一份），
-        # 旧路径没有预生成时现场生成。
+        # Prefer reusing the password generated on the confirm page (the user already saw that same one); generate one on the spot when the old path has none. 优先复用确认页生成的密码（用户已在确认页看到同一份），旧路径没有预生成时现场生成。
         root_password = preset.get("root_password") or generate_root_password()
     script = preset.get("startup_script")
     if root_password or script:
@@ -2249,9 +2235,7 @@ async def boot_go_callback(update, context):
         except ValueError as exc:
             await _reply(update, context, f"❌ {exc}")
             return
-    # 实例名去重：日期格式（AMD_YYYY-MM-DD）同日再开会重名，先查已有
-    # 实例名，冲突时加 -2、-3 后缀。查不到也不阻塞开机（Grabber 的
-    # 15 分钟防重复建窗口是兜底）。
+    # Instance name dedup: date-format names (AMD_YYYY-MM-DD) collide when booting twice on the same day, so check existing names first and append -2, -3 on conflict. A failed lookup does not block booting (the Grabber's 15-minute anti-duplicate window is the backstop). 实例名去重：日期格式（AMD_YYYY-MM-DD）同日再开会重名，先查已有实例名，冲突时加 -2、-3 后缀。查不到也不阻塞开机（Grabber 的 15 分钟防重复建窗口是兜底）。
     try:
         existing = await run_sync(list_instances, get_cli(context),
                                   get_compartment(context))
@@ -2260,8 +2244,7 @@ async def boot_go_callback(update, context):
             preset["display_name"], preset.get("count", 1) or 1, names)
     except Exception:  # noqa: BLE001 - 去重失败不阻塞开机
         pass
-    # 任务说明：抢什么机器（规格 + 区域 + 实例名），菜单 21 与
-    # 取消按钮都用它，不再暴露 g1 / grab 这类内部编号与类型。
+    # Task description: what machine is being grabbed (shape + region + instance name); menu 21 and the cancel button use it, and internal IDs/types like g1 / grab are no longer exposed. 任务说明：抢什么机器（规格 + 区域 + 实例名），菜单 21 与取消按钮都用它，不再暴露 g1 / grab 这类内部编号与类型。
     shape_short = preset["shape"].replace("VM.Standard.", "")
     region_label = bot_config.get_region_label(get_current_region(context))
     grab_label = (f"{shape_short}（{region_label}）· "
@@ -2269,7 +2252,7 @@ async def boot_go_callback(update, context):
     task_id = TASKS.register(
         "grab", detail=f"抢机准备中：{preset['display_name']}…",
         label=grab_label)
-    # 成功通知信息（只在内存里传给线程：密码不落盘，通知完即丢）。
+    # Success notice payload (passed to the thread in memory only: the password is never written to disk and is dropped right after the notice). 成功通知信息（只在内存里传给线程：密码不落盘，通知完即丢）。
     notify = {
         "token": bot_config.TELEGRAM_BOT_TOKEN,
         "chat_id": update.effective_chat.id if update.effective_chat else None,
@@ -2285,22 +2268,21 @@ async def boot_go_callback(update, context):
               notify),
         daemon=True)
     thread.start()
-    # 启动后立即清除 pending_boot（里面含带密码的 user-data，不留内存）。
+    # Clear pending_boot right after boot starts (it holds password-bearing user-data; do not keep it in memory). 启动后立即清除 pending_boot（里面含带密码的 user-data，不留内存）。
     context.user_data.pop("pending_boot", None)
-    # 有 root 密码时整条消息走 Markdown 解析（密码放代码段）：实例名
-    # 里的下划线（AMD_2026-11-25）会被当成斜体标记、整条消息发送失败
-    # （2026-11-24 真实报错 Can't parse entities: can't find end of the
-    # entity），先转义动态部分；无密码时走纯文本，不转义。
+    # When a root password exists, the whole message goes through Markdown parsing (password in a code span): underscores in the instance name (AMD_2026-11-25) would be read as italic markers and the whole send fails, so escape the dynamic parts first; without a password use plain text, no escaping. 有 root 密码时整条消息走 Markdown 解析（密码放代码段）：实例名里的下划线（AMD_2026-11-25）会被当成斜体标记、整条消息发送失败，先转义动态部分；无密码时走纯文本，不转义。
     label_text = (escape_markdown(grab_label, version=1)
                   if root_password else grab_label)
-    text = (f"🚀 抢机已启动：{label_text}。"
-            "用菜单 21（查看运行中的任务）查看进度。")
+    text = bot_i18n.tr(update, context, "boot.grab_started",
+                       label=label_text)
     parse_mode = None
     if root_password:
-        # 密码字符集不含反引号，可安全放进 Markdown 代码段。
-        text += ("\n\n🔑 root 登录密码（只显示这一次，请立即记下）：\n"
+        # The password charset has no backticks, so it is safe inside a Markdown code span. 密码字符集不含反引号，可安全放进 Markdown 代码段。
+        text += ("\n\n" + bot_i18n.tr(update, context,
+                                      "boot.root_password_once") + "\n"
                  f"`{root_password}`\n"
-                 "实例创建完成后用 root + 该密码登录。")
+                 + bot_i18n.tr(update, context,
+                               "boot.root_password_after"))
         parse_mode = "Markdown"
     await _reply(update, context, text, parse_mode=parse_mode)
 
@@ -2313,8 +2295,10 @@ async def handle_quota(update, context):
     counts = await run_sync(get_profile_region_counts)
     labels = {name: bot_config.profile_display_name(name, counts.get(name))
               for name in bot_config.PROFILES}
-    await _reply(update, context, "免费额度：点下面账号查看：",
-                 reply_markup=quota_accounts_keyboard(labels))
+    await _reply(update, context, bot_i18n.tr(update, context,
+                                              "quota.choose_account"),
+                 reply_markup=quota_accounts_keyboard(
+                     labels, lang=lang_of(update, context)))
 
 
 @require_allowed
@@ -2335,19 +2319,23 @@ async def quota_callback(update, context):
     if action == "region" and len(parts) == 4:
         await _quota_region(update, context, parts[2], parts[3])
         return
-    await _reply(update, context, "无效的额度操作。",
-                 reply_markup=back_to_oracle_keyboard())
+    await _reply(update, context, bot_i18n.tr(update, context,
+                                              "quota.invalid_op"),
+                 reply_markup=back_to_oracle_keyboard(
+                     lang=lang_of(update, context)))
 
 
 async def _quota_account(update, context, profile):
     """点开账号：多区订阅出二级区域菜单；单区直接显示该区额度。"""
     if profile not in bot_config.PROFILES:
-        await _reply(update, context, "账号不存在，请重新打开免费额度。",
-                     reply_markup=back_to_oracle_keyboard())
+        await _reply(update, context, bot_i18n.tr(update, context,
+                                                  "quota.no_account"),
+                     reply_markup=back_to_oracle_keyboard(
+                         lang=lang_of(update, context)))
         return
     regions = (await run_sync(get_profile_regions)).get(profile)
     if not regions:
-        # 查不到订阅列表（API 失败）：直接按主区显示额度。
+        # Subscription list unreachable (API failure): show the quota by home region directly. 查不到订阅列表（API 失败）：直接按主区显示额度。
         cfg = bot_config.get_profile_config(profile)
         await _show_quota(update, context, profile, cfg["region"],
                           multi=False)
@@ -2357,43 +2345,51 @@ async def _quota_account(update, context, profile):
         await _show_quota(update, context, profile, code, multi=False)
         return
     label = bot_config.profile_display_name(profile, len(regions))
-    await _reply(update, context, f"{label} 的订阅区域：点下面区域查看额度：",
-                 reply_markup=quota_regions_keyboard(profile, regions))
+    await _reply(update, context, bot_i18n.tr(update, context,
+                                              "quota.choose_region",
+                                              label=label),
+                 reply_markup=quota_regions_keyboard(
+                     profile, regions, lang=lang_of(update, context)))
 
 
 async def _quota_region(update, context, profile, region):
     """点开区域：显示该账号在该区域的免费额度。"""
     if profile not in bot_config.PROFILES:
-        await _reply(update, context, "账号不存在，请重新打开免费额度。",
-                     reply_markup=back_to_oracle_keyboard())
+        await _reply(update, context, bot_i18n.tr(update, context,
+                                                  "quota.no_account"),
+                     reply_markup=back_to_oracle_keyboard(
+                         lang=lang_of(update, context)))
         return
     await _show_quota(update, context, profile, region, multi=True)
 
 
 async def _show_quota(update, context, profile, region, multi):
     """查并显示某账号在某区域的免费额度（multi 时返回按钮回区域菜单）。"""
+    lang = lang_of(update, context)
     try:
         cfg = bot_config.get_profile_config(profile)
         cli = bot_config.get_oci_client(profile=profile, region=region)
         summary = await run_sync(get_free_tier_summary, cli,
                                  cfg["compartment_id"])
-    except Exception as exc:  # noqa: BLE001 - 任何 OCI 异常都转成中文提示
-        await _reply(update, context, fmt_error(exc))
+    except Exception as exc:  # noqa: BLE001 - 任何 OCI 异常都转成提示
+        await _reply(update, context, fmt_error(exc, lang=lang))
         return
     label = bot_config.get_region_label(cfg["region"])
     if region != cfg["region"]:
         label = f"{label} · {bot_config.get_region_label(region)}"
     rows = [[InlineKeyboardButton(
-        "◀ 返回" + ("区域菜单" if multi else "账号列表"),
+        bot_i18n.t(lang, "quota.back_regions" if multi
+                   else "quota.back_accounts"),
         callback_data=(f"q:acct:{profile}" if multi else "q:list"))],
-        [InlineKeyboardButton("◀ Oracle 菜单", callback_data="o:menu")]]
-    await _reply(update, context, fmt_quota_summary(summary, label),
+        [InlineKeyboardButton(bot_i18n.t(lang, "common.back_oracle"),
+                              callback_data="o:menu")]]
+    await _reply(update, context, fmt_quota_summary(summary, label, lang=lang),
                  reply_markup=InlineKeyboardMarkup(rows))
 
 
 # ---- 19. 近 3 月流量查询 / 25. 近 3 月花费查询 ----
 
-def fmt_instance_traffic(entries):
+def fmt_instance_traffic(entries, lang="zh"):
     """本月流量全文（vnstat 自然月统计，格式照用户自己的脚本）。
 
     entries：每台 {"name", "public_ip", "city", "rx_gb", "tx_gb",
@@ -2401,32 +2397,33 @@ def fmt_instance_traffic(entries):
     无运行中实例时返回提示。
     """
     if not entries:
-        return "当前账号/区域没有运行中的实例。"
-    lines = ["📈 本月流量（vnstat）：", ""]
+        return bot_i18n.t(lang, "traffic.empty")
+    lines = [bot_i18n.t(lang, "traffic.title_line"), ""]
     total_rx = 0.0
     total_tx = 0.0
     counted = 0
     for entry in entries:
-        ip = entry.get("public_ip") or "无公网 IP"
-        city = entry.get("city") or "未知地区"
+        ip = entry.get("public_ip") or bot_i18n.t(lang, "instances.no_public_ip")
+        city = entry.get("city") or bot_i18n.t(lang, "traffic.unknown_city")
         lines.append(f"IP: {ip}（{city}）")
         if entry.get("rx_gb") is not None and entry.get("tx_gb") is not None:
-            lines.append(f"当月入站: {entry['rx_gb']:.2f} GiB / "
-                         f"当月出站: {entry['tx_gb']:.2f} GiB")
+            lines.append(bot_i18n.t(lang, "traffic.in_out",
+                                    rx=entry['rx_gb'], tx=entry['tx_gb']))
             total_rx += entry["rx_gb"]
             total_tx += entry["tx_gb"]
             counted += 1
         else:
-            lines.append(f"流量：查不到（{entry.get('error') or '未知原因'}）")
+            lines.append(bot_i18n.t(lang, "traffic.no_data", reason=(
+                entry.get("error") or bot_i18n.t(lang, "traffic.unknown_reason"))))
         if entry.get("guard") is not None:
             lines.append(guard_status_label(entry["guard"]))
         if entry.get("installed"):
-            # 刚自动装的 vnstat：数据从服务启动那一刻开始统计。
-            lines.append("（vnstat 刚自动安装，数据从现在开始统计）")
+            # A freshly auto-installed vnstat only counts from the moment its service started. 刚自动装的 vnstat：数据从服务启动那一刻开始统计。
+            lines.append(bot_i18n.t(lang, "traffic.vnstat_fresh"))
         lines.append("")
     if counted:
-        lines.append(f"合计：入站 {total_rx:.2f} GiB / "
-                     f"出站 {total_tx:.2f} GiB（{counted} 台）")
+        lines.append(bot_i18n.t(lang, "traffic.total", rx=total_rx,
+                                tx=total_tx, count=counted))
     return "\n".join(lines).rstrip("\n")
 
 
@@ -2482,7 +2479,6 @@ async def _fetch_instance_traffic(context, instances=None):
             entries.append(entry)
             continue
         if exit_code != 0 and _vnstat_not_installed(exit_code, err):
-            # vnstat 没装：自动安装依赖后重试一次查询。
             try:
                 install_code, _o, install_err = await run_sync(
                     run_remote_command, host,
@@ -2511,7 +2507,6 @@ async def _fetch_instance_traffic(context, instances=None):
             entry["error"] = "vnstat 查询失败"
             entries.append(entry)
             continue
-        # SSH 通：顺带查这台的看门狗状态（脚本+cron+熔断/限速）。
         try:
             _code, probe_out, _err = await run_sync(
                 run_remote_command, host, probe_command())
@@ -2539,14 +2534,17 @@ async def handle_traffic(update, context):
     try:
         entries = await _fetch_instance_traffic(context)
     except Exception as exc:  # noqa: BLE001
-        await _reply(update, context, fmt_error(exc))
+        await _reply(update, context, fmt_error(
+            exc, lang=lang_of(update, context)))
         return
     context.user_data["traffic_entries"] = entries
-    await _reply(update, context, fmt_instance_traffic(entries),
-                 reply_markup=traffic_keyboard(entries))
+    await _reply(update, context, fmt_instance_traffic(
+        entries, lang=lang_of(update, context)),
+        reply_markup=traffic_keyboard(entries,
+                                      lang=lang_of(update, context)))
 
 
-def traffic_keyboard(entries):
+def traffic_keyboard(entries, lang="zh"):
     """菜单 19 键盘：每台一个看门狗开关按钮 + 返回按钮。
 
     有公网 IP 且配了 SSH 密钥的才给按钮（没法 SSH 的装不了）；
@@ -2558,11 +2556,14 @@ def traffic_keyboard(entries):
             continue
         guard = entry.get("guard") or {}
         name = entry.get("name") or entry.get("public_ip") or f"实例 {idx + 1}"
-        action = "关闭" if guard.get("enabled") else "开启"
+        action = bot_i18n.t(lang, "traffic.guard_off" if guard.get("enabled")
+                            else "traffic.guard_on")
         rows.append([InlineKeyboardButton(
-            f"🛡️ {name}：{action}看门狗",
+            bot_i18n.t(lang, "traffic.guard_toggle", name=name,
+                       action=action),
             callback_data=f"wd:toggle:{idx}")])
-    rows.append([InlineKeyboardButton("◀ Oracle 菜单", callback_data="o:menu")])
+    rows.append([InlineKeyboardButton(bot_i18n.t(lang, "common.back_oracle"),
+                                      callback_data="o:menu")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -2633,7 +2634,6 @@ async def watchdog_callback(update, context):
             f"❌ {name} 看门狗操作失败：{fmt_error(exc)}",
             reply_markup=traffic_keyboard(entries))
         return
-    # 刷新：重新查流量与看门狗状态。
     try:
         fresh = await _fetch_instance_traffic(context)
     except Exception as exc:  # noqa: BLE001 - 刷新失败时只报操作结果
@@ -2666,8 +2666,10 @@ async def handle_cost(update, context):
             entries.append((label, items))
         except Exception:  # noqa: BLE001 - 单账号失败不影响其他账号
             entries.append((label, None))
-    await _reply(update, context, fmt_usage_totals(entries),
-                 reply_markup=back_to_oracle_keyboard())
+    await _reply(update, context, fmt_usage_totals(
+        entries, lang=lang_of(update, context)),
+        reply_markup=back_to_oracle_keyboard(
+            lang=lang_of(update, context)))
 
 
 # ---- 18. 订阅信息 ----
@@ -2687,8 +2689,10 @@ async def handle_subscription(update, context):
             entries.append((label, tenancy))
         except Exception:  # noqa: BLE001 - 单账号失败不影响其他账号
             entries.append((label, None))
-    await _reply(update, context, fmt_tenancies(entries),
-                 reply_markup=back_to_oracle_keyboard())
+    await _reply(update, context, fmt_tenancies(
+        entries, lang=lang_of(update, context)),
+        reply_markup=back_to_oracle_keyboard(
+            lang=lang_of(update, context)))
 
 
 # ---- 15. 一键测活 ----
@@ -2701,7 +2705,8 @@ async def handle_health(update, context):
     v1.15.0 修：原来直接显示 DEFAULT / ACCOUNT2 等配置键名）。
     """
     counts = await run_sync(get_profile_region_counts)
-    lines = ["❤️ 一键测活：", ""]
+    lang = lang_of(update, context)
+    lines = [bot_i18n.t(lang, "health.title_line"), ""]
     for name in bot_config.PROFILES:
         label = bot_config.profile_display_name(name, counts.get(name))
         try:
@@ -2711,12 +2716,12 @@ async def handle_health(update, context):
                                        cfg["compartment_id"])
             running = sum(1 for i in instances
                           if i.get("lifecycle-state") == "RUNNING")
-            lines.append(f"• {label}：{len(instances)} 台实例，"
-                         f"{running} 台运行中 ✅")
+            lines.append(bot_i18n.t(lang, "health.line", label=label,
+                                    total=len(instances), running=running))
         except Exception as exc:  # noqa: BLE001 - 单账号报错不影响其他账号
-            lines.append(f"• {label}：{fmt_error(exc)}")
+            lines.append(f"• {label}：{fmt_error(exc, lang=lang)}")
     await _reply(update, context, "\n".join(lines),
-                 reply_markup=back_to_oracle_keyboard())
+                 reply_markup=back_to_oracle_keyboard(lang=lang))
 
 
 # ---- 21. 查看运行中的任务 ----
@@ -2725,8 +2730,9 @@ async def handle_health(update, context):
 async def handle_tasks(update, context):
     """菜单 21：任务列表 + 取消按钮。"""
     tasks = TASKS.list_all()
-    await _reply(update, context, fmt_task_list(tasks),
-                 reply_markup=task_list_keyboard(tasks))
+    lang = lang_of(update, context)
+    await _reply(update, context, fmt_task_list(tasks, lang=lang),
+                 reply_markup=task_list_keyboard(tasks, lang=lang))
 
 
 @require_allowed
@@ -2737,9 +2743,11 @@ async def task_cancel_callback(update, context):
     task = TASKS.get(task_id)
     label = (task or {}).get("label") or task_id
     if TASKS.cancel(task_id):
-        await _reply(update, context, f"✅ 已取消：{label}。")
+        await _reply(update, context, bot_i18n.tr(
+            update, context, "tasks.cancelled", label=label))
     else:
-        await _reply(update, context, f"⚠️ {label} 不存在或已结束，无法取消。")
+        await _reply(update, context, bot_i18n.tr(
+            update, context, "tasks.cancel_failed", label=label))
 
 
 # ---- profile 管理（账号切换，/oracle 菜单顶行按钮） ----
@@ -2757,16 +2765,15 @@ async def handle_profiles(update, context):
         current, counts.get(current))
     if current_region != home_region:
         current_label += f" · {bot_config.get_region_label(current_region)}"
-    # 先清掉上次切换流程残留的中间消息（来回点切换攒下的）。
     chat_id = update.effective_chat.id if update.effective_chat else None
     if chat_id is not None:
         await _delete_tracked_switch_messages(context, chat_id)
-    text = (f"当前账号：{current_label}\n点下面切换账号"
-            "（多区账号点开可切换工作区域）：")
+    text = bot_i18n.tr(update, context, "profiles.current",
+                       label=current_label)
     keyboard = profile_keyboard(
-        list(bot_config.PROFILES), current, labels)
-    # 在原来那条消息里改，不弹新框（用户要求 2026-11-24）；没有回调
-    # 消息（命令触发）或编辑失败时退回新发一条。
+        list(bot_config.PROFILES), current, labels,
+        lang=lang_of(update, context))
+    # Edit the same message instead of popping a new one; when there is no callback message (triggered by command) or the edit fails, fall back to sending a new one. 在原来那条消息里改，不弹新框；没有回调消息（命令触发）或编辑失败时退回新发一条。
     query = update.callback_query
     if query is not None:
         try:
@@ -2803,7 +2810,8 @@ async def profile_callback(update, context):
     try:
         bot_config.get_profile_config(name)
     except ValueError as exc:
-        await _reply(update, context, f"❌ 切换失败：{exc}")
+        await _reply(update, context, bot_i18n.tr(
+            update, context, "profiles.switch_failed", detail=exc))
         return
     regions = await run_sync(get_profile_regions)
     subs = regions.get(name) or []
@@ -2812,9 +2820,10 @@ async def profile_callback(update, context):
         current = (current_region if get_current_profile(context) == name
                    else None)
         label = bot_config.profile_display_name(name, len(subs))
-        text = f"账号：{label}\n点下面切换工作区域："
-        keyboard = profile_regions_keyboard(name, subs, current)
-        # 在原来那条消息里改，不弹新框（用户要求 2026-11-24）。
+        text = bot_i18n.tr(update, context, "profiles.choose_region2",
+                           label=label)
+        keyboard = profile_regions_keyboard(
+            name, subs, current, lang=lang_of(update, context))
         query = update.callback_query
         if query is not None:
             try:
@@ -2828,11 +2837,13 @@ async def profile_callback(update, context):
     try:
         set_current_profile(context, name)
     except ValueError as exc:
-        await _reply(update, context, f"❌ 切换失败：{exc}")
+        await _reply(update, context, bot_i18n.tr(
+            update, context, "profiles.switch_failed", detail=exc))
         return
     label = get_cached_profile_display_name(name)
     await _show_oracle_menu_after_switch(
-        update, context, f"✅ 已切换到账号：{label}")
+        update, context, bot_i18n.tr(update, context, "profiles.switched",
+                                     account=label))
 
 
 @require_allowed
@@ -2854,28 +2865,34 @@ async def profile_region_callback(update, context):
         return
     parts = data.split(":")
     if len(parts) != 3:
-        await _reply(update, context, "❌ 无效的区域切换。")
+        await _reply(update, context, bot_i18n.tr(
+            update, context, "profiles.invalid_region"))
         return
     name, region = parts[1], parts[2]
     regions = await run_sync(get_profile_regions)
     subs = regions.get(name) or []
     region_ids = {sub.get("region-name") for sub in subs}
     if subs and region not in region_ids:
-        await _reply(update, context, f"❌ 账号未订阅该区域：{region}")
+        await _reply(update, context, bot_i18n.tr(
+            update, context, "profiles.region_not_subscribed",
+            region=region))
         return
     try:
         set_current_profile(context, name)
         set_current_region(context, region)
     except ValueError as exc:
-        await _reply(update, context, f"❌ 切换失败：{exc}")
+        await _reply(update, context, bot_i18n.tr(
+            update, context, "profiles.switch_failed", detail=exc))
         return
     label = get_cached_profile_display_name(name)
     region_label = bot_config.get_region_label(region)
     home = bot_config.get_region(name)
     if region == home:
-        confirm = f"✅ 已切换到账号：{label}"
+        confirm = bot_i18n.tr(update, context, "profiles.switched",
+                              account=label)
     else:
-        confirm = f"✅ 已切换到账号：{label} · {region_label}"
+        confirm = bot_i18n.tr(update, context, "profiles.region_switched",
+                              account=label, region=region_label)
     await _show_oracle_menu_after_switch(update, context, confirm)
 
 
@@ -2892,9 +2909,10 @@ async def handle_changeip_prompt(update, context):
     idx = context.user_data.get("pending_idx")
     inst = resolve_instance(context, idx)
     if inst is None:
-        await _reply(update, context, "请先在实例列表里选一台实例，"
-                     "再点“换 IP”。",
-                     reply_markup=back_to_oracle_keyboard())
+        await _reply(update, context, bot_i18n.tr(
+            update, context, "changeip.pick_first"),
+            reply_markup=back_to_oracle_keyboard(
+                lang=lang_of(update, context)))
         return
     name = inst.get("display-name") or "?"
     try:
@@ -2902,12 +2920,16 @@ async def handle_changeip_prompt(update, context):
                                     inst["id"])
     except Exception:  # noqa: BLE001 - 查不到当前 IP 也不阻塞换 IP
         current_ip = None
-    text = (f"🔁 确认给实例 {name} 换公网 IP？\n\n"
-            f"当前 IP：{current_ip or '无公网 IP'}\n"
-            "⚠️ 换 IP 后旧 IP 立即释放，无法找回；"
-            "请同步更新 DNS 记录、反代与客户端配置。")
+    text = bot_i18n.tr(update, context, "changeip.confirm_detail",
+                       name=name,
+                       ip=current_ip or bot_i18n.tr(
+                           update, context, "instances.no_public_ip"))
     await _reply(update, context, text,
-                 reply_markup=confirm_keyboard("changeip", idx, "🔁 确认换 IP"))
+                 reply_markup=confirm_keyboard(
+                     "changeip", idx,
+                     bot_i18n.tr(update, context,
+                                 "changeip.confirm_button"),
+                     lang=lang_of(update, context)))
 
 
 @require_allowed
@@ -2932,22 +2954,25 @@ async def handle_ip(update, context):
             ip = await run_sync(get_public_ip, cli, inst["id"])
             instance_ips.append((inst.get("display-name") or "?", ip))
     except Exception as exc:  # noqa: BLE001
-        await _reply(update, context, fmt_error(exc))
+        await _reply(update, context, fmt_error(
+            exc, lang=lang_of(update, context)))
         return
     deletable = [{"id": ip.get("id"), "ip": ip.get("ip-address", "?")}
                  for ip in reserved
                  if ip.get("lifecycle-state") == "AVAILABLE"
                  and not ip.get("assigned-entity")]
     context.user_data["ip_reserved"] = deletable
-    rows = [[InlineKeyboardButton("➕ 创建保留 IP",
+    lang = lang_of(update, context)
+    rows = [[InlineKeyboardButton(bot_i18n.t(lang, "ip.create_button"),
                                   callback_data="ip_create")]]
     for idx, entry in enumerate(deletable):
         rows.append([InlineKeyboardButton(
-            f"🗑 删除 {entry['ip']}",
+            bot_i18n.t(lang, "ip.delete_button", ip=entry['ip']),
             callback_data=f"ip_delete:{idx}")])
-    rows.append([InlineKeyboardButton("◀ Oracle 菜单",
+    rows.append([InlineKeyboardButton(bot_i18n.t(lang, "common.back_oracle"),
                                       callback_data="o:menu")])
-    await _reply(update, context, fmt_ip_overview(reserved, instance_ips),
+    await _reply(update, context, fmt_ip_overview(reserved, instance_ips,
+                                                 lang=lang),
                  reply_markup=InlineKeyboardMarkup(rows))
 
 
@@ -3124,7 +3149,6 @@ async def handle_resume(update, context):
         await _reply(update, context, "没有被暂停（STOPPED）的实例。",
                      reply_markup=back_to_oracle_keyboard())
         return
-    # 补公网 IP（并行查，单台失败记 None），再存、再格式化。
     stopped = await run_sync(attach_public_ips, get_cli(context), stopped)
     store_instances(context, stopped)
     await _reply(update, context, fmt_instance_list(stopped,
@@ -3190,7 +3214,8 @@ async def resize_preset_callback(update, context):
         return
     inst = resolve_instance(context, idx)
     if inst is None:
-        await _reply(update, context, "实例不存在或已过期，请重新打开实例列表。")
+        await _reply(update, context, bot_i18n.tr(
+                update, context, "common.instance_gone_short"))
         return
     context.user_data["pending_resize"] = target
     context.user_data["pending_idx"] = idx
@@ -3425,8 +3450,7 @@ async def volume_backup_callback(update, context):
                     return
                 await run_sync(delete_boot_volume_backup, cli, oldest["id"])
                 deleted_oldest = oldest.get("display-name") or "?"
-                # 删完立即创建可能撞上 OCI 配额同步延迟（LimitExceeded），
-                # 用带重试的创建（实测 2026-11-24 芝加哥）。
+                # Creating right after a delete can hit OCI quota-sync lag (LimitExceeded), so create with retries. 删完立即创建可能撞上 OCI 配额同步延迟（LimitExceeded），用带重试的创建。
                 backup = await run_sync(
                     create_boot_volume_backup_with_limit_retry,
                     cli, vol["id"])
@@ -3516,7 +3540,8 @@ async def instance_boot_backup_callback(update, context):
     idx = context.user_data.get("pending_idx")
     inst = resolve_instance(context, idx)
     if inst is None:
-        await _reply(update, context, "实例不存在或已过期，请重新打开实例列表。")
+        await _reply(update, context, bot_i18n.tr(
+                update, context, "common.instance_gone_short"))
         return
     name = inst.get("display-name") or "?"
     cli = get_cli(context)
@@ -3579,7 +3604,8 @@ async def instance_boot_backup_delete_callback(update, context):
     idx = context.user_data.get("pending_idx")
     inst = resolve_instance(context, idx)
     if inst is None:
-        await _reply(update, context, "实例不存在或已过期，请重新打开实例列表。")
+        await _reply(update, context, bot_i18n.tr(
+                update, context, "common.instance_gone_short"))
         return
     name = inst.get("display-name") or "?"
     cli = get_cli(context)
@@ -3682,7 +3708,7 @@ async def instance_boot_backup_mscancel_callback(update, context):
 
 # ---------------- 引导卷恢复（停机换盘，原地恢复） ----------------
 
-# 正在换盘的实例 OCID 集合（同一实例同时只允许一个换盘任务）。
+# Set of instance OCIDs currently being disk-swapped (only one swap task per instance at a time). 正在换盘的实例 OCID 集合（同一实例同时只允许一个换盘任务）。
 _BOOTSWAP_RUNNING = set()
 _BOOTSWAP_LOCK = threading.Lock()
 
@@ -3731,9 +3757,7 @@ async def handle_bootswap(update, context):
     available = [b for b in backups
                  if (b.get("lifecycle-state") or "").upper() == "AVAILABLE"]
     if not available:
-        # 当前盘没备份时，顺便看一眼账号里是否还有别的盘的可用备份
-        # （比如换盘前旧盘的备份）：有就说明白，免得用户以为删盘
-        # 把备份也删了（2026-11-24 用户实问）。查不到也不影响主提示。
+        # When the current disk has no backup, also check whether the account still has a usable backup of another disk (e.g. a backup of the old disk from before the swap): if yes, say so, so the user does not think deleting the disk also deleted the backups. A failed lookup does not affect the main prompt. 当前盘没备份时，顺便看一眼账号里是否还有别的盘的可用备份（比如换盘前旧盘的备份）：有就说明白，免得用户以为删盘把备份也删了。查不到也不影响主提示。
         other_note = ""
         try:
             all_backups = await run_sync(
@@ -5322,8 +5346,7 @@ async def batch_action_callback(update, context):
         await _reply(update, context, "选中的实例已过期，请重新打开批量操作。")
         return
     context.user_data["pending_batch_action"] = action
-    # 实例名是用户起的，可能含 <>&：parse_mode="HTML" 时必须转义
-    # （与单个终止确认同理，quote=False 只转义 &<>）。
+    # Instance names are user-chosen and may contain <>&: with parse_mode="HTML" they must be escaped (same as the single-terminate confirm; quote=False escapes only &<>). 实例名是用户起的，可能含 <>&：parse_mode="HTML" 时必须转义（与单个终止确认同理，quote=False 只转义 &<>）。
     names = "\n".join(f"• {html.escape(inst.get('display-name') or '?', quote=False)}"
                       for inst in instances)
     verb = _BATCH_ACTION_TEXT[action]
@@ -5372,14 +5395,15 @@ async def handle_rename_prompt(update, context):
     idx = context.user_data.get("pending_idx")
     inst = resolve_instance(context, idx)
     if inst is None:
-        await _reply(update, context, "请先在实例列表里选一台实例，再点“改名”。",
-                     reply_markup=back_to_oracle_keyboard())
+        await _reply(update, context, bot_i18n.tr(
+            update, context, "rename.pick_first"),
+            reply_markup=back_to_oracle_keyboard(
+                lang=lang_of(update, context)))
         return
     name = inst.get("display-name") or "?"
     context.user_data["pending_input"] = {"kind": "rename", "idx": idx}
-    await _reply_prompt(update, context,
-                        f"✏️ 请回复这条消息，输入实例「{name}」的新名字：\n"
-                        "（直接发文字即可，不用加任何命令）")
+    await _reply_prompt(update, context, bot_i18n.tr(
+        update, context, "rename.prompt", name=name))
 
 
 @require_allowed
@@ -5392,15 +5416,15 @@ async def handle_reinstall_prompt(update, context):
     idx = context.user_data.get("pending_idx")
     inst = resolve_instance(context, idx)
     if inst is None:
-        await _reply(update, context, "请先在实例列表里选一台实例，再点“重装系统”。",
-                     reply_markup=back_to_oracle_keyboard())
+        await _reply(update, context, bot_i18n.tr(
+            update, context, "reinstall.pick_first"),
+            reply_markup=back_to_oracle_keyboard(
+                lang=lang_of(update, context)))
         return
     name = inst.get("display-name") or "?"
     context.user_data["pending_input"] = {"kind": "reinstall", "idx": idx}
-    await _reply_prompt(update, context,
-                        f"⚠️ 重装系统将清空实例「{name}」系统盘的全部数据，"
-                        "不可恢复；实例 OCID 与 IP 地址保留不变。\n\n"
-                        f"请回复这条消息，完整输入实例名「{name}」确认重装：")
+    await _reply_prompt(update, context, bot_i18n.tr(
+        update, context, "reinstall.prompt", name=name))
 
 
 @require_allowed
@@ -5413,33 +5437,39 @@ async def handle_console(update, context):
     idx = context.user_data.get("pending_idx")
     inst = resolve_instance(context, idx)
     if inst is None:
-        await _reply(update, context, "请先在实例列表里选一台实例，再点“串行控制台”。",
-                     reply_markup=back_to_oracle_keyboard())
+        await _reply(update, context, bot_i18n.tr(
+            update, context, "console.pick_first"),
+            reply_markup=back_to_oracle_keyboard(
+                lang=lang_of(update, context)))
         return
     name = inst.get("display-name") or "?"
     try:
         console = await run_sync(get_serial_console, get_cli(context),
                                  inst["id"])
     except Exception as exc:  # noqa: BLE001
-        await _reply(update, context, fmt_error(exc))
+        await _reply(update, context, fmt_error(
+            exc, lang=lang_of(update, context)))
         return
-    await _reply(update, context, fmt_serial_console(name, console),
-                 reply_markup=back_to_oracle_keyboard())
+    await _reply(update, context, fmt_serial_console(
+        name, console, lang=lang_of(update, context)),
+        reply_markup=back_to_oracle_keyboard(
+            lang=lang_of(update, context)))
 
 
-def fmt_serial_console(name, console):
+def fmt_serial_console(name, console, lang="zh"):
     """串行控制台连接信息全文（连接命令单独成行，方便复制）。"""
-    lines = [f"🖥️ {name} 的串行控制台：", ""]
-    lines.append("连接命令：")
-    lines.append(console.get("connection-string") or "（未返回连接命令）")
+    lines = [bot_i18n.t(lang, "console.title", name=name), ""]
+    lines.append(bot_i18n.t(lang, "console.command"))
+    lines.append(console.get("connection-string")
+                 or bot_i18n.t(lang, "console.no_command"))
     state = console.get("lifecycle-state")
     if state:
-        lines.append(f"状态：{state}")
+        lines.append(f"{bot_i18n.t(lang, 'console.state')}{state}")
     fingerprint = console.get("fingerprint")
     if fingerprint:
-        lines.append(f"指纹：{fingerprint}")
+        lines.append(f"{bot_i18n.t(lang, 'console.fingerprint')}{fingerprint}")
     lines.append("")
-    lines.append("用实例的 SSH 密钥连接；首次连接需接受主机密钥。")
+    lines.append(bot_i18n.t(lang, "console.hint"))
     return "\n".join(lines)
 
 
@@ -5466,37 +5496,29 @@ async def text_input_callback(update, context):
     text = (update.effective_message.text or "").strip()
     kind = pending.get("kind")
     if kind and kind.startswith("boot_"):
-        # 开机表单自定义值 / 开机脚本粘贴：不关联实例，直接处理。
         context.user_data.pop("pending_input", None)
         await _handle_boot_form_input(update, context, kind, text)
         return
-    # 非开机表单的文字输入：用户已回复，提示消息已无用，删掉
-    # （只留结果消息；开机表单的提示由表单自己编辑，不走这里）。
     chat_id = update.effective_chat.id if update.effective_chat else None
     if chat_id is not None:
         await _delete_tracked_prompts(context, chat_id)
     if kind == "ssl_domain":
-        # SSL 监控添加域名：不关联实例，直接处理。
         context.user_data.pop("pending_input", None)
         await _handle_ssl_domain_input(update, context, text)
         return
     if kind == "bark_url":
-        # Bark 设置地址：不关联实例，直接处理。
         context.user_data.pop("pending_input", None)
         await _handle_bark_url_input(update, context, text)
         return
     if kind == "bark_key":
-        # Bark 设置加密 Key：不关联实例，直接处理。
         context.user_data.pop("pending_input", None)
         await _handle_bark_key_input(update, context, text)
         return
     if kind == "gfw_key":
-        # GFW 设置 Atlas API Key：不关联实例，直接处理。
         context.user_data.pop("pending_input", None)
         await _handle_gfw_key_input(update, context, text)
         return
     if kind == "email_sender":
-        # Email 发件人：不关联实例，校验邮箱格式后弹二次确认。
         context.user_data.pop("pending_input", None)
         if not is_valid_email(text):
             await _reply(update, context,
@@ -5512,7 +5534,7 @@ async def text_input_callback(update, context):
                          "createsender", 0, "📧 确认创建发件人"))
         return
     if kind in ("user_desc", "user_email", "deluser"):
-        # 云账户管理：用户相关输入（不关联实例，直接处理）。
+        # Cloud account management: user-related input (not tied to an instance; handled directly). 云账户管理：用户相关输入（不关联实例，直接处理）。
         context.user_data.pop("pending_input", None)
         user = _resolve_iam_user(context, pending.get("idx"))
         if user is None:
@@ -5546,7 +5568,7 @@ async def text_input_callback(update, context):
                          reply_markup=confirm_keyboard(
                              "useremail", pending.get("idx"), "✅ 确认修改"))
             return
-        # deluser：输入必须与用户名完全一致，否则取消。
+        # deluser: the input must match the username exactly, otherwise cancel. deluser：输入必须与用户名完全一致，否则取消。
         if text != name:
             await _reply(update, context,
                          "输入的用户名与实际不符，删除已取消。\n"
@@ -5559,8 +5581,8 @@ async def text_input_callback(update, context):
                          "deluser", pending.get("idx"), "🗑️ 确认删除"))
         return
     if kind in ("cf_token", "cf_key", "cf_email"):
-        # Cloudflare 凭据手动添加：Token 一步，Key + 邮箱两步。
-        # 凭据值绝不回显；用户那条消息尽力删掉，不留明文。
+        # Manual Cloudflare credential add: Token in one step, Key + email in two steps. Cloudflare 凭据手动添加：Token 一步，Key + 邮箱两步。
+        # Credential values are never echoed back; the user's message is deleted as far as possible so no plain text remains. 凭据值绝不回显；用户那条消息尽力删掉，不留明文。
         context.user_data.pop("pending_input", None)
         await _delete_secret_message(update, context)
         if kind == "cf_token":
@@ -5598,7 +5620,6 @@ async def text_input_callback(update, context):
                 "Key 已记下。再输入该 Key 对应的账号邮箱：\n"
                 "（直接发文字即可，不用加任何命令）")
             return
-        # cf_email：第二步，校验邮箱格式后校验整组凭据并保存。
         if not is_valid_email(text):
             context.user_data.pop("cf_draft", None)
             await _reply(update, context,
@@ -5627,7 +5648,6 @@ async def text_input_callback(update, context):
             reply_markup=cf_manage_keyboard())
         return
     if kind in ("dns_add_name", "dns_add_content"):
-        # /domain 添加记录：第一步收名称，第二步收内容。
         context.user_data.pop("pending_input", None)
         if kind == "dns_add_name":
             await _handle_dns_add_name_input(update, context, text)
@@ -5635,7 +5655,6 @@ async def text_input_callback(update, context):
             await _handle_dns_add_content_input(update, context, text)
         return
     if kind in ("add_admin_name", "add_admin_email"):
-        # 增加管理员账号：两步输入（用户名 → 邮箱），最后弹二次确认。
         context.user_data.pop("pending_input", None)
         if kind == "add_admin_name":
             if not text or any(ch.isspace() for ch in text):
@@ -5670,7 +5689,7 @@ async def text_input_callback(update, context):
                          "addadmin", 0, "➕ 确认增加管理员账号"))
         return
     if kind == "restore_name":
-        # 从备份恢复：输入新实例名（发"默认"用"<备份名>-restored"）。
+        # Restore from backup: input a new instance name (send "默认" to use "<backup-name>-restored"). 从备份恢复：输入新实例名（发“默认”用“<备份名>-restored”）。
         context.user_data.pop("pending_input", None)
         backup = resolve_boot_backup(context, pending.get("idx"))
         if backup is None:
@@ -5701,38 +5720,41 @@ async def text_input_callback(update, context):
     inst = resolve_instance(context, idx)
     if inst is None:
         context.user_data.pop("pending_input", None)
-        await _reply(update, context, "实例不存在或已过期，请重新打开实例列表。")
+        await _reply(update, context, bot_i18n.tr(
+                update, context, "common.instance_gone_short"))
         return
     name = inst.get("display-name") or "?"
     if kind == "rename":
         context.user_data.pop("pending_input", None)
         if not text:
-            await _reply(update, context, "新实例名不能为空，改名已取消。")
+            await _reply(update, context, bot_i18n.tr(
+                update, context, "rename.empty"))
             return
         if len(text) > MAX_DISPLAY_NAME_LEN:
-            await _reply(update, context,
-                         f"新实例名不能超过 {MAX_DISPLAY_NAME_LEN} 字符，"
-                         "改名已取消。")
+            await _reply(update, context, bot_i18n.tr(
+                update, context, "rename.too_long",
+                max=MAX_DISPLAY_NAME_LEN))
             return
         context.user_data["pending_rename_name"] = text
-        await _reply(update, context,
-                     f"确认把实例「{name}」改名为「{text}」？",
-                     reply_markup=confirm_keyboard("rename", idx,
-                                                   "✅ 确认改名"))
+        await _reply(update, context, bot_i18n.tr(
+            update, context, "rename.confirm", name=name, new_name=text),
+            reply_markup=confirm_keyboard(
+                "rename", idx,
+                bot_i18n.tr(update, context, "rename.confirm_button"),
+                lang=lang_of(update, context)))
         return
     if kind == "reinstall":
         context.user_data.pop("pending_input", None)
         if text != name:
-            await _reply(update, context,
-                         "输入的实例名与实际不符，重装已取消。\n"
-                         "请重新点“重装系统”再试。")
+            await _reply(update, context, bot_i18n.tr(
+                update, context, "reinstall.mismatch"))
             return
-        await _reply(update, context,
-                     f"⚠️ 最后确认：重装实例「{name}」？\n"
-                     "系统盘数据将全部清空，不可恢复；"
-                     "实例 OCID 与 IP 地址保留不变。",
-                     reply_markup=confirm_keyboard("reinstall", idx,
-                                                   "💿 确认重装"))
+        await _reply(update, context, bot_i18n.tr(
+            update, context, "reinstall.final_confirm", name=name),
+            reply_markup=confirm_keyboard(
+                "reinstall", idx,
+                bot_i18n.tr(update, context, "reinstall.confirm_button"),
+                lang=lang_of(update, context)))
         return
     context.user_data.pop("pending_input", None)
 
@@ -5843,28 +5865,30 @@ async def _handle_confirm_inner(action, idx, update, context):
     if action == "changeip":
         inst = resolve_instance(context, idx)
         if inst is None:
-            await _reply(update, context, "实例不存在或已过期，请重新打开实例列表。")
+            await _reply(update, context, bot_i18n.tr(
+                update, context, "common.instance_gone_short"))
             return True
         try:
             new_ip = await run_sync(
                 change_public_ip, get_cli(context),
                 get_compartment(context), inst["id"])
         except Exception as exc:  # noqa: BLE001
-            await _reply(update, context, fmt_error(exc))
+            await _reply(update, context, fmt_error(
+                exc, lang=lang_of(update, context)))
             return True
         name = inst.get("display-name") or "?"
         await _reply(
             update, context,
-            f"✅ {name} 已换 IP，新公网 IP：{new_ip}\n"
-            "⚠️ 旧 IP 已释放，无法找回；"
-            "请同步更新 DNS 记录、反代与客户端配置。")
+            bot_i18n.tr(update, context, "changeip.done", name=name,
+                        ip=new_ip))
         return True
 
     if action == "resize":
         inst = resolve_instance(context, idx)
         target = context.user_data.get("pending_resize")
         if inst is None or not target:
-            await _reply(update, context, "实例或目标规格已过期，请重新选择。")
+            await _reply(update, context, bot_i18n.tr(
+                update, context, "resize.expired"))
             return True
         shape_config = json.dumps({
             "ocpus": target["ocpus"],
@@ -5876,21 +5900,19 @@ async def _handle_confirm_inner(action, idx, update, context):
                 ["compute", "instance", "update",
                  "--instance-id", inst["id"],
                  "--shape-config", shape_config,
-                 # --force 必加：不加时 OCI CLI 会交互确认
-                 # "Are you sure you want to continue? [y/N]"，
-                 # subprocess 无 stdin 应答会一直挂到超时
-                 # （2026-11-23 真实验证：不加 --force 超时 120 秒）。
+                 # --force is required: without it the OCI CLI asks interactively "Are you sure you want to continue? [y/N]", and a subprocess with no stdin to answer hangs until timeout. --force 必加：不加时 OCI CLI 会交互确认 "Are you sure you want to continue? [y/N]"，subprocess 无 stdin 应答会一直挂到超时。
                  "--force"])
         except Exception as exc:  # noqa: BLE001
-            await _reply(update, context, fmt_error(exc))
+            await _reply(update, context, fmt_error(
+                exc, lang=lang_of(update, context)))
             return True
         context.user_data.pop("pending_resize", None)
         name = inst.get("display-name") or "?"
         await _reply(
             update, context,
-            f"✅ {name} 已改为 {target['ocpus']} 核 / "
-            f"{target['memory_gb']}GB。\n"
-            "改规格时实例可能会重启，请稍后查看状态。")
+            bot_i18n.tr(update, context, "resize.done", name=name,
+                        ocpus=target['ocpus'],
+                        memory=target['memory_gb']))
         return True
 
     if action == "delvol":
@@ -5923,8 +5945,7 @@ async def _handle_confirm_inner(action, idx, update, context):
         return True
 
     if action == "delbbsel":
-        # idx 是逗号分隔的下标，如 "0,2,3"。逐个删除，单个失败不影响
-        # 其他；结束后清多选状态并汇报成功/失败数。
+        # idx is comma-separated indexes like "0,2,3". Delete one by one; a single failure does not affect the others; afterwards clear the multi-select state and report success/failure counts. idx 是逗号分隔的下标，如 "0,2,3"。逐个删除，单个失败不影响其他；结束后清多选状态并汇报成功/失败数。
         try:
             indices = [int(p) for p in str(idx).split(",") if p.strip()]
         except ValueError:
@@ -5956,9 +5977,6 @@ async def _handle_confirm_inner(action, idx, update, context):
         return True
 
     if action == "delibbsel":
-        # 本实例备份多选删除（与 delbbsel 同款，读 ib_backups）。
-        # idx 是逗号分隔的下标，如 "0,2,3"。逐个删除，单个失败不影响
-        # 其他；结束后清多选状态并汇报成功/失败数。
         try:
             indices = [int(p) for p in str(idx).split(",") if p.strip()]
         except ValueError:
@@ -5997,15 +6015,13 @@ async def _handle_confirm_inner(action, idx, update, context):
         cli = get_cli(context)
         compartment = get_compartment(context)
         try:
-            # 重新查一次配额，取当前最早的备份（用户确认期间可能有变化）。
+            # Re-check the quota and take the currently earliest backup (it may have changed while the user was confirming). 重新查一次配额，取当前最早的备份（用户确认期间可能有变化）。
             _count, _limit, _full, oldest = await run_sync(
                 check_backup_quota, cli, compartment)
             if oldest is None:
                 await _reply(update, context, "没有可删除的备份，请重新点备份。")
                 return True
             await run_sync(delete_boot_volume_backup, cli, oldest["id"])
-            # 删完立即创建可能撞上 OCI 配额同步延迟（LimitExceeded），
-            # 用带重试的创建（实测 2026-11-24 芝加哥）。
             backup = await run_sync(
                 create_boot_volume_backup_with_limit_retry, cli, vol["id"])
         except Exception as exc:  # noqa: BLE001
@@ -6031,7 +6047,7 @@ async def _handle_confirm_inner(action, idx, update, context):
             return True
         cli = get_cli(context)
         compartment = get_compartment(context)
-        # 形状：备份来源实例的形状，查不到用默认 A1 1核/6GB。
+        # Shape: the shape of the instance the backup came from; fall back to A1 1 OCPU / 6 GB when unknowable. 形状：备份来源实例的形状，查不到用默认 A1 1核/6GB。
         try:
             detected = await run_sync(get_source_instance_shape, cli,
                                       compartment, backup)
@@ -6048,7 +6064,7 @@ async def _handle_confirm_inner(action, idx, update, context):
                 ocpus = DEFAULT_RESTORE_OCPUS
             if memory_gb is None:
                 memory_gb = DEFAULT_RESTORE_MEMORY_GB
-        # A1 单台上限 + 免费额度预检（启动盘按备份实际大小算）。
+        # A1 per-instance cap + free-tier pre-check (boot disk counted at the backup's actual size). A1 单台上限 + 免费额度预检（启动盘按备份实际大小算）。
         if shape == SHAPE_A1_FLEX:
             cap_error = check_a1_single_instance_cap(ocpus, memory_gb)
             if cap_error:
@@ -6078,8 +6094,7 @@ async def _handle_confirm_inner(action, idx, update, context):
                          "MBOT_PLAN_SUBNET_ID 里配置。")
             return True
         if ssh_keys_file in (None, "", "/path/to/keys.pub"):
-            # 恢复出来的系统保留原机的 authorized_keys，原密钥照样能登录，
-            # 所以 SSH 公钥文件不是必须的；没配就传空字符串。
+            # A restored system keeps the original machine's authorized_keys, so the original key still logs in; the SSH public key file is therefore optional, and an empty string is passed when unconfigured. 恢复出来的系统保留原机的 authorized_keys，原密钥照样能登录，所以 SSH 公钥文件不是必须的；没配就传空字符串。
             ssh_keys_file = ""
         await _reply(update, context,
                      f"♻️ 正在从备份重建启动盘并开机「{display_name}」，"
@@ -6115,7 +6130,6 @@ async def _handle_confirm_inner(action, idx, update, context):
         backup = backups[bidx]
         cli = get_cli(context)
         compartment = get_compartment(context)
-        # 额度重检（确认期间可能有变化）。
         try:
             ok, remaining = await run_sync(
                 check_boot_volume_space, cli, compartment,
@@ -6189,33 +6203,38 @@ async def _handle_confirm_inner(action, idx, update, context):
         inst = resolve_instance(context, idx)
         new_name = context.user_data.get("pending_rename_name")
         if inst is None or not new_name:
-            await _reply(update, context, "实例或新名字已过期，请重新改名。")
+            await _reply(update, context, bot_i18n.tr(
+                update, context, "rename.expired"))
             return True
         try:
             await run_sync(rename_instance, get_cli(context),
                            inst["id"], new_name)
         except Exception as exc:  # noqa: BLE001
-            await _reply(update, context, fmt_error(exc))
+            await _reply(update, context, fmt_error(
+                exc, lang=lang_of(update, context)))
             return True
         context.user_data.pop("pending_rename_name", None)
         old_name = inst.get("display-name") or "?"
-        await _reply(update, context, f"✅ 实例「{old_name}」已改名为「{new_name}」。")
+        await _reply(update, context, bot_i18n.tr(
+            update, context, "rename.done", old_name=old_name,
+            new_name=new_name))
         return True
 
     if action == "reinstall":
         inst = resolve_instance(context, idx)
         if inst is None:
-            await _reply(update, context, "实例不存在或已过期，请重新打开实例列表。")
+            await _reply(update, context, bot_i18n.tr(
+                update, context, "common.instance_gone_short"))
             return True
         try:
             await run_sync(reinstall_instance, get_cli(context), inst["id"])
         except Exception as exc:  # noqa: BLE001
-            await _reply(update, context, fmt_error(exc))
+            await _reply(update, context, fmt_error(
+                exc, lang=lang_of(update, context)))
             return True
         name = inst.get("display-name") or "?"
-        await _reply(update, context,
-                     f"✅ 实例「{name}」重装已提交，系统盘正在重建。\n"
-                     "请等待实例重启完成后再连接。")
+        await _reply(update, context, bot_i18n.tr(
+            update, context, "reinstall.done", name=name))
         return True
 
     if action in ("batchstart", "batchstop", "batchrestart", "batchterminate"):
@@ -6230,7 +6249,7 @@ async def _handle_confirm_inner(action, idx, update, context):
                  for inst in instances}
         verb = _BATCH_ACTION_TEXT[action[len("batch"):]]
         try:
-            # 直接调模块级导入的函数（不要预建成 dict），测试才能 patch。
+            # Call the module-level imported function directly (do not pre-build a dict), so tests can patch it. 直接调模块级导入的函数（不要预建成 dict），测试才能 patch。
             if action == "batchstart":
                 result = await run_sync(batch_start, get_cli(context), ids)
             elif action == "batchstop":
@@ -6321,7 +6340,7 @@ async def _handle_confirm_inner(action, idx, update, context):
             except (TypeError, ValueError, IndexError):
                 await _reply(update, context, "服务不存在，请重新打开客户端管理。")
                 return True
-        # 重启机器人会杀掉当前进程：先把“正在重启”发出去再执行。
+        # Restarting the bot kills the current process: send the "restarting" message before executing. 重启机器人会杀掉当前进程：先把“正在重启”发出去再执行。
         await _reply(update, context, f"🔄 正在重启服务 {service}…")
         try:
             await run_sync(restart_service, service)
@@ -6330,8 +6349,7 @@ async def _handle_confirm_inner(action, idx, update, context):
             return True
         if service != BOT_SERVICE:
             await _reply(update, context, f"✅ 服务 {service} 已重启。")
-        # 重启机器人时进程即将被 systemd 杀掉，不再发第二条消息；
-        # 用户已收到“正在重启”，服务恢复后即代表重启完成。
+        # When the bot restarts, the process is about to be killed by systemd, so no second message is sent; the user already got "restarting", and the service coming back up means the restart completed. 重启机器人时进程即将被 systemd 杀掉，不再发第二条消息；用户已收到“正在重启”，服务恢复后即代表重启完成。
         return True
 
     if action == "openport":
@@ -6367,7 +6385,7 @@ async def _handle_confirm_inner(action, idx, update, context):
                 "git pull && pip install -r requirements.txt，"
                 "然后重启 rbot-clone-web 与 rbot-clone-bot 两个服务。")
             return True
-        # 升级最后会重启机器人（杀掉当前进程）：先把消息发出去再执行。
+        # The upgrade restarts the bot at the end (killing the current process): send the message before executing. 升级最后会重启机器人（杀掉当前进程）：先把消息发出去再执行。
         await _reply(update, context,
                      "⬆️ 开始升级：拉取最新代码并安装依赖，"
                      "随后重启面板与机器人，约 1 分钟不可用…")
@@ -6376,8 +6394,6 @@ async def _handle_confirm_inner(action, idx, update, context):
         except Exception as exc:  # noqa: BLE001
             await _reply(update, context, fmt_error(exc))
             return True
-        # 正常情况下 upgrade_client 最后重启机器人，本行可能发不出去；
-        # 用户已收到“开始升级”消息，服务恢复后即代表升级完成。
         await _reply(update, context, "✅ 升级完成，面板与机器人正在重启。")
         return True
 
@@ -6496,9 +6512,8 @@ async def _handle_confirm_inner(action, idx, update, context):
         return True
 
     if action == "addadmin":
-        # 增加管理员账号：用户名+邮箱在 user_data["add_admin"] 里。
-        # 先创建用户，再加进 Administrators 组；加组失败时用户已创建，
-        # 如实汇报（用户在列表里可见，可手动加组或删除）。
+        # Add admin account: username + email are in user_data["add_admin"]. 增加管理员账号：用户名+邮箱在 user_data["add_admin"] 里。
+        # Create the user first, then add them to the Administrators group; if adding to the group fails the user already exists, so report honestly (visible in the list; can be added to the group or deleted manually). 先创建用户，再加进 Administrators 组；加组失败时用户已创建，如实汇报（用户在列表里可见，可手动加组或删除）。
         admin = context.user_data.pop("add_admin", None) or {}
         name = admin.get("name") or ""
         email = admin.get("email") or ""
@@ -7166,8 +7181,7 @@ async def check_instances_job(context):
                         started_ids.add(inst["id"])
                         await context.bot.send_message(
                             chat_id=chat_id, text=f"▶️ 已自动启动实例：{name}")
-    # 流量守护与停机保活：各自的开关，不依赖监控开关；某一步异常
-    # 不能影响另一步。
+    # Traffic guard and stop-keepalive have their own switches, independent of the monitoring switch; an exception in one step must not affect the other. 流量守护与停机保活：各自的开关，不依赖监控开关；某一步异常不能影响另一步。
     try:
         await _traffic_guard_step(context, instances)
     except Exception as exc:  # noqa: BLE001 - job 内部异常只记日志
@@ -7230,7 +7244,7 @@ async def _traffic_guard_step(context, instances=None):
     if action == "block":
         command = guard_block_command()
         verb = "阻断断网（SSH 已保留）"
-    else:  # limit
+    else:
         command = guard_limit_command()
         verb = "限速 200K"
     ok_names, failed = await _run_guard_command_on_instances(
@@ -7284,7 +7298,7 @@ async def _keepalive_step(context, instances=None, skip_ids=None):
     for instance_id in sorted(targets):
         inst = by_id.get(instance_id)
         if inst is None:
-            continue  # 实例已删除或不在本账号下，跳过
+            continue
         if inst.get("lifecycle-state") != "STOPPED":
             if instance_id in (state.get("failures") or {}):
                 keepalive_record_success(state, instance_id)
@@ -7434,7 +7448,7 @@ async def billing_check_job(context):
     if not chat_id:
         logger.warning("账单预警有告警但未找到通知 chat_id，跳过通知")
         return
-    # 告警里有付费实例（停了 / 停失败 / 在保护名单里跑着）时置顶提醒。
+    # When the alert involves a paid instance (stopped / failed to stop / running while on the protect list), pin a reminder on top. 告警里有付费实例（停了 / 停失败 / 在保护名单里跑着）时置顶提醒。
     has_paid = any(res.get("stopped") or res.get("stop_errors")
                    or res.get("paid_running") for res in results)
     await run_sync(notify_dual, bot_config.TELEGRAM_BOT_TOKEN, chat_id,
@@ -7442,10 +7456,6 @@ async def billing_check_job(context):
                    group="oracle-billing", pin=has_paid)
 
 
-# ================= 工作包 D 新增（阶段 5） =================
-# 对象存储（菜单 40）、Email 发件人（菜单 41）、抢机计划（菜单 42）、
-# 开放云面板端口（菜单 11）、客户端管理（菜单 14）、重启（菜单 31）、
-# 升级客户端（菜单 32）。
 
 
 # ---------------- 安全组放行（开放云面板端口，cli.run 直调） ----------------
@@ -7487,8 +7497,6 @@ def add_ingress_rule(cli, security_list_id, port, source="0.0.0.0/0"):
     cli.run(["network", "security-list", "update",
              "--security-list-id", security_list_id,
              "--ingress-security-rules", json.dumps(rules),
-             # --force 必加：不加时 OCI CLI 会交互确认，
-             # subprocess 无 stdin 应答会一直挂到超时。
              "--force"])
     return True
 
@@ -7857,17 +7865,11 @@ async def handle_upgrade(update, context):
 
 # ================= /oracle 菜单分发 =================
 
-# 本模块实现的菜单项 key -> handler（"changeip"/"rename"/"reinstall"/
+# Menu keys implemented by this module -> handlers ("changeip"/"rename"/"reinstall"/"console"/"bootswap" are not menu items but forwards for instance actions "i:<act>:<idx>"). 本模块实现的菜单项 key -> handler（"changeip"/"rename"/"reinstall"/"console"/"bootswap" 不是菜单项，是实例操作 "i:<act>:<idx>" 的转发项）。
 # "console"/"bootswap" 不是菜单项，是实例操作 "i:<act>:<idx>" 的转发项）。
-# 未列出的项 dispatch 返回 False：
-#   - instances：核心项，由 handlers.py 处理，不在本模块；
-#   - disable / delapi：不实现（原因见 docs/phase2-todo.md；
-#     其中 delapi 是故意不做——会删机器人自己的 API 密钥）。
-#   - autoip（菜单 16 GFW 自动换 IP）：v1.10.0 已实现，见下表。
-# 菜单 23/24（memballoon / memclear）由 tgbot.handlers_client 实现，
-# 分发表里直接指向该模块的 handler。
-# 阶段 5 工作包 D 已实现 openport / clients / restart / upgrade /
-# objectstorage / email / plans（之前在“不实现”列表里，现已实现）。
+# Items not listed here make dispatch return False: 未列出的项 dispatch 返回 False：
+#   - instances: core items, handled by handlers.py, not this module; - instances：核心项，由 handlers.py 处理，不在本模块；
+#   - disable / delapi: not implemented (delapi is deliberately not done — it would delete the bot's own API key). - disable / delapi：不实现（其中 delapi 是故意不做——会删机器人自己的 API 密钥）。
 _DISPATCH = {
     "boot": handle_boot,
     "ip": handle_ip,
@@ -7908,6 +7910,7 @@ _DISPATCH = {
     "email": handle_email,
     "plans": handle_plans,
     "bark": handle_bark,
+    "rescue": handle_rescue,
     "rename": handle_rename_prompt,
     "reinstall": handle_reinstall_prompt,
     "console": handle_console,

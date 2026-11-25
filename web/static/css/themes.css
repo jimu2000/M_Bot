@@ -1,7 +1,4 @@
-/* 主题变量：经典（亮/暗）+ 星夜（暗色）
- * 切换方式：<html data-theme="classic|starry" data-mode="light|dark">
- * 星夜主题默认暗色，明暗切换对它不生效。
- * 星空与月亮全部用 CSS 渐变实现，不引用任何图片。 */
+/* Theme variables: classic (light/dark) + starry (dark). Switch with <html data-theme="classic|starry" data-mode="light|dark">. The starry theme is dark by default; the light/dark switch does not affect it. The starfield and the moon are pure CSS gradients, no images. 主题变量：经典（亮/暗）+ 星夜（暗色）。切换方式：<html data-theme="classic|starry" data-mode="light|dark">。星夜主题默认暗色，明暗切换对它不生效。星空与月亮全部用 CSS 渐变实现，不引用任何图片。 */
 
 /* ---------- 经典主题 · 亮色（默认） ---------- */
 :root,
@@ -111,7 +108,7 @@ html[data-theme="starry"][data-mode="dark"] {
   color-scheme: dark;
 }
 
-/* 星夜：星空点缀（多层 radial-gradient 平铺，不用图片） */
+/* Starry: starfield accents (multiple tiled radial-gradients, no images). 星夜：星空点缀（多层 radial-gradient 平铺，不用图片）。 */
 html[data-theme="starry"] body::before {
   content: "";
   position: fixed;
@@ -133,7 +130,7 @@ html[data-theme="starry"] body::before {
     420px 380px, 420px 380px, 420px 380px, 420px 380px, 100% 100%, 100% 100%;
 }
 
-/* 星夜：右下角月牙（两个错位圆叠出月牙形，纯 CSS） */
+/* Starry: crescent moon in the bottom-right corner (two offset circles overlapped into a crescent, pure CSS). 星夜：右下角月牙（两个错位圆叠出月牙形，纯 CSS）。 */
 html[data-theme="starry"] body::after {
   content: "";
   position: fixed;
@@ -150,7 +147,7 @@ html[data-theme="starry"] body::after {
   filter: blur(0.4px);
 }
 
-/* 星夜下内容层要压在星空之上 */
+/* In the starry theme, the content layer must sit above the starfield. 星夜下内容层要压在星空之上。 */
 html[data-theme="starry"] .topbar,
 html[data-theme="starry"] .resourcebar,
 html[data-theme="starry"] .shell {

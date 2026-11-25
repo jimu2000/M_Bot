@@ -30,20 +30,20 @@ from datetime import datetime
 from web import config as web_config
 
 # ================= 配置区（改这里） =================
-# 共享任务文件（MBOT_TASKS_FILE 可覆盖，默认 web DATA_DIR/tasks.json）。
+# Shared task file (MBOT_TASKS_FILE can override it; default web DATA_DIR/tasks.json). 共享任务文件（MBOT_TASKS_FILE 可覆盖，默认 web DATA_DIR/tasks.json）。
 TASKS_FILENAME = "tasks.json"
-# 取消监听轮询间隔（秒）。
+# Cancel-watch poll interval (seconds). 取消监听轮询间隔（秒）。
 WATCH_INTERVAL_SECONDS = 5
-# 终态：监听线程看到这些状态自行退出。
+# Terminal states: the watch thread exits on its own when it sees one of these. 终态：监听线程看到这些状态自行退出。
 TERMINAL_STATUSES = ("done", "failed", "cancelled")
-# grab_spec 里要存的 Grabber 参数白名单（只留这几个，别的字段不进文件）。
+# Grabber parameter allowlist to store in grab_spec (only these; other fields never enter the file). grab_spec 里要存的 Grabber 参数白名单（只留这几个，别的字段不进文件）。
 GRAB_PARAM_KEYS = (
     "availability_domain", "shape", "image_id", "subnet_id",
     "display_name", "ssh_keys_file", "target_cpu", "ocpus",
     "memory_gb", "boot_volume_size_gbs", "assign_public_ip",
     "assign_ipv6", "user_data", "min_delay", "max_delay", "count",
 )
-# grab_spec 里要存的通知字段白名单（token 绝不落盘，恢复时从 env 现读）。
+# Notification-field allowlist to store in grab_spec (tokens never hit disk; they are read from env at recovery time). grab_spec 里要存的通知字段白名单（token 绝不落盘，恢复时从 env 现读）。
 GRAB_NOTIFY_KEYS = (
     "chat_id", "profile_label", "region_label", "region_code",
     "root_password",
@@ -292,6 +292,7 @@ def grab_success_to_dict(result):
         "attempts": result.attempts,
         "releases": result.releases,
         "elapsed_seconds": result.elapsed_seconds,
+        "cpu_model": getattr(result, "cpu_model", None),
     }
 
 
@@ -304,6 +305,7 @@ def grab_success_from_dict(data):
         attempts=data.get("attempts", 0) or 0,
         releases=data.get("releases", 0) or 0,
         elapsed_seconds=data.get("elapsed_seconds", 0.0) or 0.0,
+        cpu_model=data.get("cpu_model"),
     )
 
 

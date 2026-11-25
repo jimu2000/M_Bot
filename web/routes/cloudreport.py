@@ -30,13 +30,11 @@ from web.deps import get_current_user
 router = APIRouter()
 
 # ================= 配置区（改这里） =================
-# 云报告服务端缓存 TTL（秒）：汇总要跑多次 OCI CLI，60 秒内重复访问
-# 直接返回缓存；手动刷新（refresh=1）绕过缓存。
+# Cloud report server cache TTL (seconds): summarizing runs several OCI CLI calls, so repeat visits within 60s return the cache; a manual refresh (refresh=1) bypasses it. 云报告服务端缓存 TTL（秒）：汇总要跑多次 OCI CLI，60 秒内重复访问直接返回缓存；手动刷新（refresh=1）绕过缓存。
 CLOUD_REPORT_CACHE_TTL = 60
 # =====================================================
 
-# 云报告缓存：单条 {"expires": 单调时钟过期点, "payload": 响应体}。
-# 只放内存不写盘；面板是单管理员，无需按用户隔离。
+# Cloud report cache: a single {"expires": monotonic-clock expiry, "payload": response body}. Memory only, never written to disk; the panel has a single admin, so no per-user isolation is needed. 云报告缓存：单条 {"expires": 单调时钟过期点, "payload": 响应体}。只放内存不写盘；面板是单管理员，无需按用户隔离。
 _REPORT_CACHE = {}
 _REPORT_CACHE_LOCK = threading.Lock()
 
@@ -46,7 +44,7 @@ def clear_cloud_report_cache():
     with _REPORT_CACHE_LOCK:
         _REPORT_CACHE.clear()
 
-# 不占免费额度的启动盘状态（与 oci.volume.total_boot_volume_gb 一致）。
+# Boot volume states that do not use free quota (same as oci.volume.total_boot_volume_gb). 不占免费额度的启动盘状态（与 oci.volume.total_boot_volume_gb 一致）。
 _EXCLUDED_VOLUME_STATES = ("TERMINATING", "TERMINATED")
 
 
@@ -75,7 +73,7 @@ def summarize_profile(profile):
 
     return {
         "profile": profile,
-        # 显示名（主区中文名；v1.15.0 新增，总览页用它代替配置键名）。
+        # Display name (home-region display name; the overview page uses it instead of the config key name). 显示名（主区中文名；总览页用它代替配置键名）。
         "profileLabel": config.profile_display_name(profile),
         "region": cfg["region"],
         "instances": {"total": len(instances), "byState": by_state},

@@ -35,7 +35,7 @@ WATCHDOG_CONFIG_PATH = "/root/.traffic_guard_bark"
 WATCHDOG_CRON_LINE = (
     "*/10 * * * * /usr/bin/python3 /usr/local/bin/oracle_traffic_guard.py check"
 )
-# 新版模板的特征串：probe 靠它判断已装脚本是不是自动识别端口版。
+# Signature string of the new template: probe uses it to tell whether the installed script is the auto-detect-port version. 新版模板的特征串：probe 靠它判断已装脚本是不是自动识别端口版。
 WATCHDOG_AUTO_MARKER = "detect_ssh_port"
 
 TEMPLATE_PATH = os.path.join(
@@ -191,7 +191,7 @@ def parse_extracted_keys(text):
             match = _KEY_LINE_RE.match(line)
             if match:
                 device_key = match.group(1)
-    # 占位符不算 Key。
+    # Placeholders do not count as a Key. 占位符不算 Key。
     if device_key in ("xxxxxxxxx", "xxxxxxxx"):
         device_key = ""
     if enc_key == "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx":
@@ -235,8 +235,7 @@ def install_watchdog(host, bark_cfg, run_command, put_file,
         return {"action": "already", "test_ok": True,
                 "mode": status.get("mode")}
 
-    # Bark 配置：旧脚本有 Key 就沿用主机的（别用机器人的覆盖，
-    # 主机那套可能和 App 里的 Key 是一对）；全新安装才用机器人的。
+    # Bark config: when the old script has a Key, keep the host's one (do not overwrite it with the bot's — the host's Key may be paired with the one in the App); only a fresh install uses the bot's Key. Bark 配置：旧脚本有 Key 就沿用主机的（别用机器人的覆盖，主机那套可能和 App 里的 Key 是一对）；全新安装才用机器人的。
     bark_settings = None
     if status["installed"] and not status["auto"]:
         _c, keys_out, _e = run_command(host, extract_keys_command())
@@ -250,20 +249,20 @@ def install_watchdog(host, bark_cfg, run_command, put_file,
             "机器人还没配 Bark（菜单 43 配好地址和 Key 再来），"
             "看门狗装上也推不了通知。")
 
-    # 依赖：vnstat/python3/curl（缺了就装，复用菜单 19 同款命令）。
+    # Dependencies: vnstat/python3/curl (install when missing; reuses menu 19's install command). 依赖：vnstat/python3/curl（缺了就装，复用菜单 19 同款命令）。
     code, _o, err = run_command(host, ensure_command, timeout=300)
     if code != 0:
         raise WatchdogError(
             f"安装依赖失败（vnstat/python3/curl）：{(err or '').strip()[-200:]}")
 
-    # 写 Bark 配置文件（600 权限），再上传模板脚本。
+    # Write the Bark config file (mode 600), then upload the template script. 写 Bark 配置文件（600 权限），再上传模板脚本。
     server, device_key, enc_key = bark_settings
     put_file(host, render_bark_config(server, device_key, enc_key),
              WATCHDOG_CONFIG_PATH, mode=0o600)
     text = template_text if template_text is not None else load_template()
     put_file(host, text, WATCHDOG_SCRIPT_PATH, mode=0o755)
 
-    # 挂 cron + 跑 test（test 发一条 Bark，失败不算安装失败，只记下来）。
+    # Install the cron + run test (test sends one Bark; a failure is not an install failure, just recorded). 挂 cron + 跑 test（test 发一条 Bark，失败不算安装失败，只记下来）。
     code, _o, err = run_command(host, add_cron_command())
     if code != 0:
         raise WatchdogError(f"挂 cron 失败：{(err or '').strip()[-200:]}")
@@ -275,8 +274,7 @@ def install_watchdog(host, bark_cfg, run_command, put_file,
     except Exception:  # noqa: BLE001 - 测试推送失败不算安装失败
         test_ok = False
     if status["installed"] and status["auto"]:
-        # 新版已装、只是 cron 被摘了：重新开启，不是升级
-        # （2026-11-24 真机验证挖出：重开时曾误报“已升级”）。
+        # New version already installed and only the cron was removed: re-enable it, not an upgrade (a real-machine check found re-enabling once misreported "已升级"). 新版已装、只是 cron 被摘了：重新开启，不是升级（真机验证挖出：重开时曾误报“已升级”）。
         action = "enabled"
     elif status["installed"]:
         action = "upgraded"

@@ -26,23 +26,21 @@ from datetime import datetime, timezone
 from tgbot import config as bot_config
 
 # ================= 配置区（改这里） =================
-# CPU 型号缓存文件（与 bark.json / region_plans.json 同目录）。
+# CPU model cache file (same directory as bark.json / region_plans.json). CPU 型号缓存文件（与 bark.json / region_plans.json 同目录）。
 CPU_MODELS_FILE = os.path.join(bot_config.DATA_DIR, "cpu_models.json")
-# 检测命令：x86 的 /proc/cpuinfo 有 model name；ARM（A1）的 cpuinfo
-# 没有该字段，兜底 lscpu（util-linux 自带，Debian 默认有）。
+# Detection command: x86 /proc/cpuinfo has a model name; ARM (A1) cpuinfo lacks that field, so fall back to lscpu (ships with util-linux, present by default on Debian). 检测命令：x86 的 /proc/cpuinfo 有 model name；ARM（A1）的 cpuinfo 没有该字段，兜底 lscpu（util-linux 自带，Debian 默认有）。
 CPU_MODEL_COMMAND = (
     "grep -m1 'model name' /proc/cpuinfo 2>/dev/null || "
     "lscpu 2>/dev/null | grep -m1 -i 'model name:'"
 )
-# 单次 SSH 检测超时（秒）：详情页同步检测用，不宜太长。
+# Timeout (seconds) for one SSH detection: used by the synchronous detail-page check, so keep it short. 单次 SSH 检测超时（秒）：详情页同步检测用，不宜太长。
 CPU_FETCH_TIMEOUT = 20
-# 未知型号截断长度（字符）。
+# Truncation length (characters) for unknown models. 未知型号截断长度（字符）。
 UNKNOWN_MODEL_MAX_LEN = 40
 # =====================================================
 
 
-# 缓存文件读写锁：网页端后台检测是多线程，load-modify-write
-# 必须串行，否则两个实例同时检测会互相覆盖对方的缓存条目。
+# Cache file read/write lock: the web panel's background detection is multi-threaded, so load-modify-write must be serialized, or two instances detected at once would overwrite each other's cache entries. 缓存文件读写锁：网页端后台检测是多线程，load-modify-write 必须串行，否则两个实例同时检测会互相覆盖对方的缓存条目。
 _CACHE_LOCK = threading.Lock()
 
 
@@ -62,7 +60,7 @@ def parse_cpu_model(text):
                 break
     if not value:
         return None
-    # 去 "(R)"、压空白，如 "Ampere(R) Altra(R)" -> "Ampere Altra"。
+    # Strip "(R)" and collapse whitespace, e.g. "Ampere(R) Altra(R)" -> "Ampere Altra". 去 "(R)"、压空白，如 "Ampere(R) Altra(R)" -> "Ampere Altra"。
     value = " ".join(value.replace("(R)", "").replace("(r)", "").split())
     if not value:
         return None
@@ -74,8 +72,7 @@ def parse_cpu_model(text):
     if tokens[:1] == ["Intel"] and len(tokens) >= 4:
         return " ".join(tokens[:4])
     if value == "Neoverse-N1":
-        # A1.Flex 在 OCI 上只跑 Ampere Altra（Neoverse-N1 核心），
-        # lscpu 只报核心代号，这里直接显示芯片名。
+        # A1.Flex only runs Ampere Altra on OCI (Neoverse-N1 cores); lscpu only reports the core codename, so show the chip name directly. A1.Flex 在 OCI 上只跑 Ampere Altra（Neoverse-N1 核心），lscpu 只报核心代号，这里直接显示芯片名。
         return "Ampere Altra"
     return value[:UNKNOWN_MODEL_MAX_LEN]
 

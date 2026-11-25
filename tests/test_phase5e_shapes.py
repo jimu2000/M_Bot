@@ -42,7 +42,7 @@ FAKE_ATTACHMENT = "ocid1.bootvolumeattachment.oc1..testxxxx"
 FAKE_COMPARTMENT = "ocid1.tenancy.oc1..testxxxx"
 FAKE_IP = "203.0.113.10"
 
-# 测试密码：运行时随机生成（不在代码里写任何固定口令）。
+# Test password: generated randomly at runtime (no fixed password is ever written in code). 测试密码：运行时随机生成（不在代码里写任何固定口令）。
 TEST_PASSWORD = secrets.token_urlsafe(16)
 
 FAKE_INSTANCES_RAW = [
@@ -86,7 +86,7 @@ class Phase5eShapesTestCase(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self._data_dir_patcher = patch("web.config.DATA_DIR", self._tmp.name)
         self._data_dir_patcher.start()
-        # 清服务端缓存（实例列表 / 云报告），避免缓存跨测试串数据。
+        # Clear the server cache (instance list / cloud report) so cached data does not leak across tests. 清服务端缓存（实例列表 / 云报告），避免缓存跨测试串数据。
         clear_instance_list_cache()
         clear_volumes_cache()
         clear_cloud_report_cache()
@@ -199,10 +199,9 @@ class TestVolumeShape(Phase5eShapesTestCase):
         self.assertEqual(vol["attachmentState"], "ATTACHED")
         self.assertEqual(vol["availabilityDomain"], "AD-1")
         self.assertEqual(vol["timeCreated"], "2026-11-11T10:00:00.000Z")
-        # 未挂载的盘 attached=false。
         self.assertFalse(volumes[1]["attached"])
         self.assertIsNone(volumes[1]["instanceId"])
-        # 挂载查询按 AD 调（两盘同 AD，只查一次），且带 include_id=True。
+        # The attachment query is per AD (both volumes share one AD, so one call) and carries include_id=True. 挂载查询按 AD 调（两盘同 AD，只查一次），且带 include_id=True。
         mock_atts.assert_called_once()
         _args, kwargs = mock_atts.call_args
         self.assertTrue(kwargs.get("include_id"))
@@ -345,7 +344,7 @@ class TestVolumesCache(Phase5eShapesTestCase):
         r = self.client.get("/api/quota/a1")
         self.assertEqual(r.status_code, 200)
         a1 = r.json()["a1"]
-        # cap 是免费上限 4/24，不是当前用量。
+        # cap is the free-tier cap 4/24, not current usage. cap 是免费上限 4/24，不是当前用量。
         self.assertEqual(a1["capOcpu"], 4)
         self.assertEqual(a1["capMem"], 24)
         self.assertEqual(a1["usedOcpu"], 2)
@@ -485,7 +484,7 @@ class TestOciLayerParams(unittest.TestCase):
                                 include_shape_config=True)
         self.assertEqual(result[0]["shape-config"]["ocpus"], 2)
         self.assertNotIn("region", result[0])
-        # 默认不带 shape-config（原有精简形状不变）。
+        # By default no shape-config is included (the existing slim shape is unchanged). 默认不带 shape-config（原有精简形状不变）。
         result2 = list_instances(cli, FAKE_COMPARTMENT)
         self.assertNotIn("shape-config", result2[0])
 
@@ -510,7 +509,7 @@ class TestOciLayerParams(unittest.TestCase):
         result = list_boot_volume_attachments(cli, FAKE_COMPARTMENT, "AD-1",
                                               include_id=True)
         self.assertEqual(result[0]["id"], FAKE_ATTACHMENT)
-        # 默认不带 id（原有精简形状不变）。
+        # By default no id is included (the existing slim shape is unchanged). 默认不带 id（原有精简形状不变）。
         result2 = list_boot_volume_attachments(cli, FAKE_COMPARTMENT, "AD-1")
         self.assertNotIn("id", result2[0])
 

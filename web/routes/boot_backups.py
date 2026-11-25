@@ -65,12 +65,11 @@ from web.tasks import PLAN_DEFAULTS
 
 router = APIRouter()
 
-# 部署默认值里的占位符（与 web/tasks.py 的 PLAN_DEFAULTS 一致）：
-# 恢复时 AD / 子网仍是占位符说明部署没配，返回 400 提示配置。
+# Placeholders in the deploy defaults (same as web/tasks.py's PLAN_DEFAULTS): if the AD / subnet are still placeholders at restore time, the deploy is unconfigured, so return 400 asking for config. 部署默认值里的占位符（与 web/tasks.py 的 PLAN_DEFAULTS 一致）：恢复时 AD / 子网仍是占位符说明部署没配，返回 400 提示配置。
 _AD_PLACEHOLDER = "xxxx:AP-SINGAPORE-1-AD-1"
 _SUBNET_PLACEHOLDER = "ocid1.subnet.oc1..xxxxxxxx"
 _SSH_KEYS_PLACEHOLDER = "/path/to/keys.pub"
-# 恢复表单的"自动"形状值：用备份来源实例的形状，查不到用默认 A1 1核/6GB。
+# The restore form's "auto" shape value: use the backup's source instance shape, falling back to the default A1 1 OCPU / 6 GB when unknown. 恢复表单的“自动”形状值：用备份来源实例的形状，查不到用默认 A1 1核/6GB。
 _SHAPE_AUTO = "auto"
 
 
@@ -93,7 +92,6 @@ def format_backup(backup):
         "type": backup.get("type"),
         "timeCreated": backup.get("time-created"),
         "imageId": backup.get("image-id"),
-        # 旧字段（过渡期双写）。
         "id": backup.get("id"),
         "display-name": backup.get("display-name"),
         "boot-volume-id": backup.get("boot-volume-id"),
@@ -151,8 +149,7 @@ class CreateBackupBody(BaseModel):
 
     boot_volume_id: str
     display_name: str = None
-    # 仅保留兼容：免费账号满了服务端自动删最早备份再创建，
-    # 不再需要前端传 delete_oldest。
+    # Kept for compatibility only: when a free account is full, the server deletes the oldest backup and creates a new one automatically; the frontend no longer needs to send delete_oldest. 仅保留兼容：免费账号满了服务端自动删最早备份再创建，不再需要前端传 delete_oldest。
     delete_oldest: bool = False
 
 
@@ -304,8 +301,7 @@ def create(body: CreateBackupBody,
                 delete_boot_volume_backup(cli, oldest["id"])
                 deleted_oldest = {"id": oldest.get("id"),
                                   "name": oldest.get("display-name")}
-                # 删完立即创建可能撞上 OCI 配额同步延迟（LimitExceeded），
-                # 用带重试的创建（实测 2026-11-24 芝加哥）。
+                # Creating immediately after deleting may hit OCI's quota sync delay (LimitExceeded), so use the retrying create. 删完立即创建可能撞上 OCI 配额同步延迟（LimitExceeded），用带重试的创建。
                 backup = create_boot_volume_backup_with_limit_retry(
                     cli, body.boot_volume_id, body.display_name)
             else:
@@ -387,8 +383,7 @@ def restore(backup_id: str,
                 "未配置子网：请在请求里传 subnet_id，或在部署环境变量 "
                 "MBOT_PLAN_SUBNET_ID 里配置。", status_code=400)
         if ssh_keys_file in (None, "", _SSH_KEYS_PLACEHOLDER):
-            # 恢复出来的系统保留原机的 authorized_keys，原密钥照样能登录，
-            # 所以 SSH 公钥文件不是必须的；没配就传空字符串（不传该参数）。
+            # The restored system keeps the original machine's authorized_keys, so the original key still logs in; the SSH public key file is therefore not required — when unconfigured, pass an empty string (do not pass the parameter). 恢复出来的系统保留原机的 authorized_keys，原密钥照样能登录，所以 SSH 公钥文件不是必须的；没配就传空字符串（不传该参数）。
             ssh_keys_file = ""
         display_name = body.display_name or (
             f"{backup.get('display-name') or 'backup'}-restored")
@@ -401,7 +396,7 @@ def restore(backup_id: str,
             shape=shape, ocpus=ocpus, memory_gb=memory_gb,
             assign_public_ip=body.assign_public_ip)
         clear_instance_list_cache(profile or config.DEFAULT_PROFILE)
-        # 恢复新建了一块启动盘，启动盘列表缓存也要清。
+        # Restore built a new boot volume, so the boot volume list cache must be cleared too. 恢复新建了一块启动盘，启动盘列表缓存也要清。
         clear_volumes_cache(profile or config.DEFAULT_PROFILE)
     except ValueError as exc:
         return error_response(str(exc), status_code=400)

@@ -74,8 +74,7 @@ from tgbot.services import (
 logger = logging.getLogger(__name__)
 
 # ================= 配置区（改这里） =================
-# 数据目录：与 Web 面板共用（hosts.json / ssh_keys.json / proxy.json /
-# mem_hog.json 都放这里）。web.config 不可用时用默认路径。
+# Data directory: shared with the web panel (hosts.json / ssh_keys.json / proxy.json / mem_hog.json all live here). Falls back to a default path when web.config is unavailable. 数据目录：与 Web 面板共用（hosts.json / ssh_keys.json / proxy.json / mem_hog.json 都放这里）。web.config 不可用时用默认路径。
 try:
     from web import config as _web_config
 
@@ -83,31 +82,30 @@ try:
 except Exception:  # noqa: BLE001 - web.config 不可用时回退默认路径
     DATA_DIR = os.path.expanduser("~/workspace/rbot-clone/web/data")
 
-# 各数据文件路径（测试可直接 patch 这些模块级变量指向临时目录）。
+# Paths of each data file (tests can patch these module-level variables to point at a temp dir). 各数据文件路径（测试可直接 patch 这些模块级变量指向临时目录）。
 HOSTS_FILE = os.path.join(DATA_DIR, "hosts.json")
 SSH_KEYS_FILE = os.path.join(DATA_DIR, "ssh_keys.json")
 PROXY_FILE = os.path.join(DATA_DIR, "proxy.json")
 MEM_HOG_FILE = os.path.join(DATA_DIR, "mem_hog.json")
 KNOWN_HOSTS_FILE = os.path.join(DATA_DIR, "known_hosts")
-# OCI config 文件路径（/uploadapi 与 /oci 的写入目标）：M_Bot 管理的
+# OCI config file path (the write target of /uploadapi and /oci): M_Bot-managed OCI config lives in root's home dir (~/oci_config), matching R-Bot's placement habit. OCI config 文件路径（/uploadapi 与 /oci 的写入目标）：M_Bot 管理的 OCI 配置放 root 家目录（~/oci_config），与 R-Bot 的放置习惯一致。
 # OCI 配置放 root 家目录（~/oci_config），与 R-Bot 的放置习惯一致。
-# 环境变量 MBOT_OCI_CONFIG_FILE 可显式指定（测试/部署用）。
-# 旧部署的 ~/.oci/config 在首次写入时自动迁移（内容原样复制过去，
-# 旧文件保留作备份）；读的时候新旧两个文件都会查。
+# Env var MBOT_OCI_CONFIG_FILE can specify it explicitly (for tests/deploys). 环境变量 MBOT_OCI_CONFIG_FILE 可显式指定（测试/部署用）。
+# The old deploy path ~/.oci/config is auto-migrated on first write (contents copied over verbatim; the old file is kept as a backup); reads check both files. 旧部署的 ~/.oci/config 在首次写入时自动迁移（内容原样复制过去，旧文件保留作备份）；读的时候新旧两个文件都会查。
 OCI_CONFIG_PATH = (os.environ.get("MBOT_OCI_CONFIG_FILE")
                    or OCI_CONFIG_ROOT_PATH)
 
 # ---- /command ----
-# 远程命令执行超时（秒），超时后终止并提示用户。
+# Remote command execution timeout (seconds); on timeout the command is killed and the user is told. 远程命令执行超时（秒），超时后终止并提示用户。
 COMMAND_TIMEOUT_SECONDS = 30
-# SSH 连接超时（秒）。
+# SSH connection timeout (seconds). SSH 连接超时（秒）。
 SSH_CONNECT_TIMEOUT = 10
-# Telegram 单条消息上限 4096 字符；命令输出按此长度分段（留余量）。
+# Telegram's per-message cap is 4096 chars; command output is split into segments of this length (with headroom). Telegram 单条消息上限 4096 字符；命令输出按此长度分段（留余量）。
 COMMAND_OUTPUT_CHUNK_CHARS = 4000
-# 命令输出总上限（字符）：超过则截断并提示，避免一次刷屏几十条。
+# Total cap on command output (chars): beyond it, truncate and say so, so one command never floods dozens of messages. 命令输出总上限（字符）：超过则截断并提示，避免一次刷屏几十条。
 MAX_OUTPUT_TOTAL_CHARS = 20000
-# 危险命令黑名单：(提示名, 正则)，大小写不敏感，命中任一直接拒绝执行。
-# 增删规则时直接改这个列表（正则用 re.search 匹配）。
+# Dangerous-command blacklist: (display name, regex), case-insensitive; any hit is refused outright. 危险命令黑名单：(提示名, 正则)，大小写不敏感，命中任一直接拒绝执行。
+# To add/remove rules, edit this list directly (regexes are matched with re.search). 增删规则时直接改这个列表（正则用 re.search 匹配）。
 DANGEROUS_COMMAND_PATTERNS = [
     ("删除根目录（rm -rf /）",
      r"\brm\s+(-[a-z]*r[a-z]*f[a-z]*|-[a-z]*f[a-z]*r[a-z]*)\s+/(?:\*|[\s;|&]|$)"),
@@ -123,33 +121,31 @@ DANGEROUS_COMMAND_PATTERNS = [
 ]
 
 # ---- /pubkey ----
-# 允许的 SSH 公钥类型前缀（OpenSSH 公钥第一列）。
+# Allowed SSH public key type prefixes (first column of an OpenSSH public key). 允许的 SSH 公钥类型前缀（OpenSSH 公钥第一列）。
 SSH_KEY_TYPES = ("ssh-rsa", "ssh-ed25519",
                  "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384",
                  "ecdsa-sha2-nistp521", "ssh-dss")
 
 # ---- /oproxy ----
-# 允许的代理协议前缀。
+# Allowed proxy protocol prefixes. 允许的代理协议前缀。
 PROXY_SCHEMES = ("http://", "https://", "socks5://")
 
 # ---- /uploadapi ----
-# OCI config 必填键（缺任一拒绝写入并说明缺什么）。
+# Required keys in an OCI config (a missing key refuses the write and says which is missing). OCI config 必填键（缺任一拒绝写入并说明缺什么）。
 REQUIRED_OCI_KEYS = ("user", "fingerprint", "tenancy", "region", "key_file")
-# profile 名合法字符（字母/数字/下划线/点/横线）。
+# Legal chars for a profile name (letters/digits/underscore/dot/dash). profile 名合法字符（字母/数字/下划线/点/横线）。
 PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9_.\-]+$")
 
 # ---- 菜单 23/24：内存占用 ----
-# 占用比例：总内存的 25%。
+# Memory share to hog: 25% of total memory. 占用比例：总内存的 25%。
 MEMHOG_FRACTION = 0.25
-# 占用进程持有时长（秒，10**9 秒约 31 年，相当于永久持有）。
+# How long the hog process holds memory (seconds; 10**9 seconds is ~31 years, effectively permanent). 占用进程持有时长（秒，10**9 秒约 31 年，相当于永久持有）。
 MEMHOG_SLEEP_SECONDS = 10 ** 9
-# 占用进程的日志文件（远程主机上）。
+# Hog process log file (on the remote host). 占用进程的日志文件（远程主机上）。
 MEMHOG_LOG_PATH = "/tmp/mbot_memhog.log"
-# 实例 SSH 默认值（hosts.json 里按 IP 匹配不到已保存主机时用）：
-# 用户名 / 端口 / 密钥（面板服务器上的默认密钥，需已加到实例上）。
-# 端口与密钥可由环境变量覆盖：MBOT_MEMHOG_SSH_PORT（默认 22，
-# 生产实例用 14422）、MBOT_MEMHOG_SSH_KEY（默认 ~/.ssh/id_ed25519；
-# 面板服务器上没有该私钥时必须设，指向部署用的专用密钥）。
+# Instance SSH defaults (used when hosts.json has no saved host matching the IP): 实例 SSH 默认值（hosts.json 里按 IP 匹配不到已保存主机时用）：
+# username / port / key (the default key on the panel server, which must already be added to the instance). 用户名 / 端口 / 密钥（面板服务器上的默认密钥，需已加到实例上）。
+# Port and key can be overridden by env vars: MBOT_MEMHOG_SSH_PORT (default 22; production instances use 14422), MBOT_MEMHOG_SSH_KEY (default ~/.ssh/id_ed25519; must be set to the deploy key when the panel server has no such private key). 端口与密钥可由环境变量覆盖：MBOT_MEMHOG_SSH_PORT（默认 22，生产实例用 14422）、MBOT_MEMHOG_SSH_KEY（默认 ~/.ssh/id_ed25519；面板服务器上没有该私钥时必须设，指向部署用的专用密钥）。
 MEMHOG_SSH_USER = "root"
 try:
     MEMHOG_SSH_PORT = int(os.environ.get("MBOT_MEMHOG_SSH_PORT", "22"))
@@ -889,7 +885,7 @@ def parse_oci_config_text(text):
         return result
     for profile in sections:
         if profile.lower() == "cloudflare":
-            # [cloudflare] 段不是 OCI profile：只提凭据，不进账号列表。
+            # The [cloudflare] section is not an OCI profile: extract only its credentials, never add it to the account list. [cloudflare] 段不是 OCI profile：只提凭据，不进账号列表。
             fields = {key: value.strip()
                       for key, value in parser.items(profile)}
             cf = {"api_token": fields.get("cf_token", ""),
@@ -969,8 +965,7 @@ def remove_oci_profile(profile, path=None):
             output.append(line)
     if not removed:
         return False
-    # 只删段内行，其余内容（包括段前后的空行）原样保留，不做任何
-    # 收尾处理——添加时不加分隔空行，删段后文件即恢复原样。
+    # Only delete lines inside the section; everything else (including blank lines before/after the section) is kept verbatim, with no trailing cleanup — adding never inserts a separator blank line, so after a section delete the file is back to its original form. 只删段内行，其余内容（包括段前后的空行）原样保留，不做任何收尾处理——添加时不加分隔空行，删段后文件即恢复原样。
     with open(target, "w", encoding="utf-8") as handle:
         handle.writelines(output)
     try:
@@ -1050,8 +1045,7 @@ def commit_cf_section(cloudflare, path=None):
         return "exists"
     if (path is None and not os.path.exists(target)
             and _has_section_ci(OCI_CONFIG_LEGACY_PATH, "cloudflare")):
-        # 目标不存在时写入会自动迁移旧文件（里面已有该段），
-        # 再追加会造成重复段；且解析本就会回退读旧文件，凭据已生效。
+        # When the target does not exist, writing auto-migrates the old file (which already has the section), so appending again would create a duplicate section; and parsing already falls back to reading the old file, so the credentials are already in effect. 目标不存在时写入会自动迁移旧文件（里面已有该段），再追加会造成重复段；且解析本就会回退读旧文件，凭据已生效。
         return "exists"
     lines = ["[cloudflare]"]
     if token:
@@ -1424,7 +1418,6 @@ async def handle_client_text_input(update, context):
         await _handle_proxy_text(update, context, text)
     elif context.user_data.get("ua_awaiting"):
         await _handle_uploadapi_text(update, context, text)
-    # 无待输入状态：静默忽略
 
 
 # ================= 菜单 23/24：内存占用 / 清除缓存和占用 =================

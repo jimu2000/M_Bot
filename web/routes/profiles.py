@@ -64,7 +64,7 @@ from web.deps import (
 
 router = APIRouter()
 
-# 待确认导入的有效期（秒）与上传大小上限。
+# Pending-import lifetime (seconds) and upload size cap. 待确认导入的有效期（秒）与上传大小上限。
 PENDING_EXPIRE_SECONDS = 600
 MAX_CONFIG_BYTES = 65536
 MAX_PEM_BYTES = 16384
@@ -344,7 +344,7 @@ async def commit_profiles(request: Request,
         return error_response("确认已过期或无效，请重新解析",
                               status_code=400)
     new_profiles = pending["profiles"]
-    # 1. 先校验全部上传的 pem（写盘前校验，任一失败则什么都不写）。
+    # 1. Validate all uploaded pems first (before writing anything; any failure writes nothing). 1. 先校验全部上传的 pem（写盘前校验，任一失败则什么都不写）。
     pems = {}
     for entry in new_profiles:
         profile = entry["profile"]
@@ -363,14 +363,13 @@ async def commit_profiles(request: Request,
                 "（需含 -----BEGIN ... PRIVATE KEY-----）",
                 status_code=400)
         pems[profile] = raw
-    # 2. 写配置（复用机器人逻辑：写段 + 复制已在服务器上的 key）。
+    # 2. Write the config (reusing the bot logic: write sections + copy keys already on the server). 2. 写配置（复用机器人逻辑：写段 + 复制已在服务器上的 key）。
     try:
         results = commit_oci_profiles(new_profiles)
     except (ValueError, OSError) as exc:
         return error_response(f"写入配置失败：{exc}", status_code=500)
     committed = {item["profile"] for item in results}
-    # 3. 写上传的 pem（只写已提交成功的 profile；路径必在 home 下，
-    # 上传的私钥覆盖自动复制来的旧 key）。
+    # 3. Write the uploaded pems (only for profiles that were submitted successfully; paths must be under home, and an uploaded private key overwrites the auto-copied old key). 3. 写上传的 pem（只写已提交成功的 profile；路径必在 home 下，上传的私钥覆盖自动复制来的旧 key）。
     pem_failed = []
     for profile, raw in pems.items():
         if profile not in committed:
@@ -389,7 +388,7 @@ async def commit_profiles(request: Request,
             os.chmod(key_file, 0o600)
         except OSError:
             pem_failed.append(profile)
-    # 4. [cloudflare] 段 + compartment 环境变量（失败不影响已写入的账号）。
+    # 4. The [cloudflare] section + compartment env vars (a failure does not affect the accounts already written). 4. [cloudflare] 段 + compartment 环境变量（失败不影响已写入的账号）。
     cf_status = "skipped"
     if pending.get("cloudflare"):
         try:

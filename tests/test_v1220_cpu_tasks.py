@@ -225,7 +225,7 @@ class TestBootCpuCallback(_DefaultCpuPolicyMixin,
         self.assertEqual(rows[0][0][0], "✅ 只抢 7J13")
 
     async def test_preset_summary_kind(self):
-        # 一键开机路径用 fmt_boot_preset（标题是“开机配置：”）。
+        # The one-click boot path uses fmt_boot_preset (its title is "开机配置："). 一键开机路径用 fmt_boot_preset（标题是“开机配置：”）。
         update, _ctx = await self._run("b:cpu:any", _e2_preset("7J13"),
                                        summary_kind="preset")
         self.assertTrue(edit_text_of(update).startswith("🚀 开机配置："))
@@ -307,7 +307,7 @@ class TestWebTaskLabel(unittest.TestCase):
         registry = web_tasks.TaskRegistry()
         task_id = registry.create("grab", detail="抢机中",
                                   label="E2.1.Micro · AMD_2026-11-24")
-        # 新注册表实例从 tasks.json 恢复（状态变 cancelled，label 保留）。
+        # A fresh registry instance restores from tasks.json (status becomes cancelled, label is kept). 新注册表实例从 tasks.json 恢复（状态变 cancelled，label 保留）。
         restored = web_tasks.TaskRegistry()
         task = restored.get(task_id)
         self.assertEqual(task["label"], "E2.1.Micro · AMD_2026-11-24")

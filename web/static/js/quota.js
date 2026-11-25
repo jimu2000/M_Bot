@@ -2,8 +2,8 @@
 (function () {
   "use strict";
 
-  var currentProfile = null; // 当前账号（profile），由 fillProfileSelect 恢复
-  var currentRegion = null; // 当前工作区域，由 fillRegionSelect 恢复（多区账号才有二级下拉）
+  var currentProfile = null;  // Current account (profile), restored by fillProfileSelect. 当前账号（profile），由 fillProfileSelect 恢复。
+  var currentRegion = null;  // Current working region, restored by fillRegionSelect (only multi-region accounts have the second dropdown). 当前工作区域，由 fillRegionSelect 恢复（多区账号才有二级下拉）。
   function setBar(fillId, textId, used, limit, unit) {
     var fill = document.getElementById(fillId);
     var text = document.getElementById(textId);
@@ -15,7 +15,7 @@
       "（剩余 " + Math.max(0, limit - used) + " " + unit + "）";
   }
 
-  // 加载配额汇总（走前端缓存；force=true 时跳过缓存重新拉取）
+  // Load the quota summary (through the frontend cache; force=true skips the cache and re-fetches). 加载配额汇总（走前端缓存；force=true 时跳过缓存重新拉取）。
   function loadQuota(force) {
     var prof = (currentProfile || "DEFAULT") + ":" + (currentRegion || "");
     document.getElementById("quota-loading").hidden = false;
@@ -50,7 +50,7 @@
     });
   }
 
-  // A1 配额（面板形状）：调 GET /api/quota/a1，超限时在 A1 卡片追加警告
+  // A1 quota (panel shape): call GET /api/quota/a1; when over the limit, append a warning to the A1 card. A1 配额（面板形状）：调 GET /api/quota/a1，超限时在 A1 卡片追加警告。
   function loadA1Quota(force) {
     var el = document.getElementById("a1-over-warning");
     if (!el) return;
@@ -69,7 +69,7 @@
     }).catch(function () { el.hidden = true; });
   }
 
-  // A1 配置体检：调 GET /api/quota/a1-health，按 severity 标色渲染建议
+  // A1 config health check: call GET /api/quota/a1-health and render suggestions color-coded by severity. A1 配置体检：调 GET /api/quota/a1-health，按 severity 标色渲染建议。
   var SEVERITY_MARK = { error: "❌", warning: "⚠️", info: "💡", ok: "✅" };
   var SEVERITY_COLOR = {
     error: "var(--danger)",
@@ -102,9 +102,7 @@
   }
 
   document.addEventListener("DOMContentLoaded", function () {
-    // 先填 profile 下拉（恢复上次选择），再填区域下拉（多区账号才显示），
-    // 最后按当前账号 + 区域加载配额；profiles 接口失败时仍按默认账号加载，
-    // 不让页面空白。
+    // Fill the profile dropdown first (restoring the last choice), then the region dropdown (only for multi-region accounts), then load the quota for the current account + region; when the profiles API fails, still load with the default account so the page is never blank. 先填 profile 下拉（恢复上次选择），再填区域下拉（多区账号才显示），最后按当前账号 + 区域加载配额；profiles 接口失败时仍按默认账号加载，不让页面空白。
     var profileSelect = document.getElementById("profile-select");
     var regionSelect = document.getElementById("region-select");
     MBot.fillProfileSelect(profileSelect).then(function (profile) {
@@ -117,7 +115,7 @@
     profileSelect.addEventListener("change", function (e) {
       currentProfile = e.target.value;
       MBot.setProfile(currentProfile);
-      // 切账号时区域重置为新账号的主区（与机器人端一致）。
+      // Switching accounts resets the region to the new account's home region (same as the bot). 切账号时区域重置为新账号的主区（与机器人端一致）。
       MBot.setRegion(null);
       currentRegion = MBot.fillRegionSelect(regionSelect, currentProfile);
       loadQuota();

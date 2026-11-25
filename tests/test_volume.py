@@ -20,7 +20,7 @@ from oci.volume import (delete_boot_volume, get_boot_volume,
                         list_orphan_boot_volumes, list_volumes,
                         resize_boot_volume, total_boot_volume_gb)
 
-# 占位符（测试里不出现真实 OCID）
+# Placeholders (no real OCID in tests). 占位符（测试里不出现真实 OCID）。
 FAKE_COMPARTMENT = "ocid1.tenancy.oc1..xxxxxxxx"
 FAKE_BV_ATTACHED = "ocid1.bootvolume.oc1..aaaa"
 FAKE_BV_ORPHAN = "ocid1.bootvolume.oc1..bbbb"
@@ -91,18 +91,18 @@ class TestListBootVolumes(unittest.TestCase):
                                   _orphan_boot_volume()]})
         result = list_boot_volumes(cli, FAKE_COMPARTMENT)
         self.assertEqual(len(result), 2)
-        # 精简字段齐全（availability-domain 保留，供孤儿盘判断查挂载用）
+        # The slim fields are complete (availability-domain is kept for the orphan-volume attachment lookup). 精简字段齐全（availability-domain 保留，供孤儿盘判断查挂载用）。
         self.assertEqual(result[0]["id"], FAKE_BV_ATTACHED)
         self.assertEqual(result[0]["display-name"], "boot-volume-attached")
         self.assertEqual(result[0]["size-in-gbs"], 47)
         self.assertEqual(result[0]["lifecycle-state"], "AVAILABLE")
         self.assertEqual(result[0]["availability-domain"], "FAKE-AD-1")
-        # 真实 API 不返回 instance-id，两盘都不带该键
+        # The real API does not return instance-id, so neither volume carries that key. 真实 API 不返回 instance-id，两盘都不带该键。
         self.assertNotIn("instance-id", result[0])
         self.assertNotIn("instance-id", result[1])
 
     def test_keeps_instance_id_when_present(self):
-        # 兜底逻辑：API 将来如果返回 instance-id，要保留下来
+        # Fallback: if the API ever returns instance-id, keep it. 兜底逻辑：API 将来如果返回 instance-id，要保留下来。
         item = _attached_boot_volume()
         item["instance-id"] = FAKE_INSTANCE
         cli = _mock_cli({"data": [item]})
@@ -161,7 +161,6 @@ class TestListVolumes(unittest.TestCase):
 
 class TestResizeBootVolume(unittest.TestCase):
     def test_command_args(self):
-        # 只检查命令构造，不对真实 API 执行
         cli = _mock_cli({"data": {"id": FAKE_BV_ATTACHED,
                                   "size-in-gbs": 100}})
         resize_boot_volume(cli, FAKE_BV_ATTACHED, 100)
@@ -169,8 +168,7 @@ class TestResizeBootVolume(unittest.TestCase):
             ["bv", "boot-volume", "update",
              "--boot-volume-id", FAKE_BV_ATTACHED,
              "--size-in-gbs", "100",
-             # --force 必加：不加时 OCI CLI 交互确认会挂到超时
-             # （2026-11-23 真实验证）。
+             # --force is required: without it the OCI CLI's interactive confirmation hangs until timeout. --force 必加：不加时 OCI CLI 交互确认会挂到超时。
              "--force"])
 
     def test_invalid_size_rejected(self):
@@ -184,7 +182,6 @@ class TestResizeBootVolume(unittest.TestCase):
 
 class TestDeleteBootVolume(unittest.TestCase):
     def test_command_args(self):
-        # 只检查命令构造，不对真实 API 执行
         cli = _mock_cli(None)
         self.assertIsNone(delete_boot_volume(cli, FAKE_BV_ORPHAN))
         cli.run.assert_called_once_with(
@@ -231,8 +228,8 @@ class TestListBootVolumeAttachments(unittest.TestCase):
 
 class TestListOrphanBootVolumes(unittest.TestCase):
     def test_only_orphan_returned(self):
-        # 两盘都是 AVAILABLE（一盘有实例挂载、一盘无实例），只返回孤儿盘。
-        # 这正是真实 API 的情况：只看 lifecycle-state 会把两盘都误判成孤儿。
+        # Both volumes are AVAILABLE (one attached to an instance, one not); only the orphan is returned. 两盘都是 AVAILABLE（一盘有实例挂载、一盘无实例），只返回孤儿盘。
+        # This is exactly the real API situation: judging by lifecycle-state alone would misclassify both as orphans. 这正是真实 API 的情况：只看 lifecycle-state 会把两盘都误判成孤儿。
         cli = _mock_cli_with_attachments(
             [_attached_boot_volume(), _orphan_boot_volume()],
             [{"boot-volume-id": FAKE_BV_ATTACHED,
@@ -244,7 +241,7 @@ class TestListOrphanBootVolumes(unittest.TestCase):
         self.assertEqual(result[0]["lifecycle-state"], "AVAILABLE")
 
     def test_no_orphans(self):
-        # 两盘都有 ATTACHED 记录，无孤儿
+        # Both volumes have ATTACHED records: no orphans. 两盘都有 ATTACHED 记录，无孤儿。
         cli = _mock_cli_with_attachments(
             [_attached_boot_volume(), _orphan_boot_volume()],
             [{"boot-volume-id": FAKE_BV_ATTACHED,
@@ -256,7 +253,7 @@ class TestListOrphanBootVolumes(unittest.TestCase):
         self.assertEqual(list_orphan_boot_volumes(cli, FAKE_COMPARTMENT), [])
 
     def test_detached_attachment_does_not_count(self):
-        # 挂载记录是 DETACHED（已分离）时，盘仍算孤儿
+        # When the attachment record is DETACHED, the volume still counts as an orphan. 挂载记录是 DETACHED（已分离）时，盘仍算孤儿。
         cli = _mock_cli_with_attachments(
             [_orphan_boot_volume()],
             [{"boot-volume-id": FAKE_BV_ORPHAN,
@@ -269,14 +266,14 @@ class TestListOrphanBootVolumes(unittest.TestCase):
 
 class TestTotalBootVolumeGb(unittest.TestCase):
     def test_sums_all_boot_volumes(self):
-        # 全部启动盘都计入（IN-USE 与 AVAILABLE 都占免费额度）
+        # All boot volumes count (IN-USE and AVAILABLE both use free quota). 全部启动盘都计入（IN-USE 与 AVAILABLE 都占免费额度）。
         cli = _mock_cli({"data": [_attached_boot_volume(),
                                   _orphan_boot_volume()]})
         self.assertEqual(total_boot_volume_gb(cli, FAKE_COMPARTMENT), 94)
 
     def test_excludes_terminated_and_terminating(self):
-        # 已删除（TERMINATED）与删除中（TERMINATING）的盘不占额度，要排除。
-        # 回归测试：圣何塞删过盘的账号，旧实现会把已删除的盘也算进去。
+        # Deleted (TERMINATED) and deleting (TERMINATING) volumes use no quota and must be excluded. 已删除（TERMINATED）与删除中（TERMINATING）的盘不占额度，要排除。
+        # Regression test: on an account that deleted volumes in San Jose, the old implementation counted deleted volumes too. 回归测试：圣何塞删过盘的账号，旧实现会把已删除的盘也算进去。
         cli = _mock_cli({"data": [_attached_boot_volume(),
                                   _terminated_boot_volume(),
                                   _terminating_boot_volume()]})

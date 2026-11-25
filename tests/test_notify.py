@@ -64,7 +64,6 @@ class TestSendTelegramMessage(unittest.TestCase):
 class TestFmtBootSuccess(unittest.TestCase):
 
     def test_single_instance_with_password(self):
-        # v1.11.0：照 R 探长成功消息的字段结构重排。
         text = notify_mod.fmt_boot_success(
             "新加坡", "首尔", "VM.Standard.A1.Flex", 1, 6, 47,
             [{"name": "ARM_2026-11-24", "public_ip": "203.0.113.10",
@@ -100,7 +99,7 @@ class TestFmtBootSuccess(unittest.TestCase):
         self.assertIn("获取中", text)
 
     def test_default_disk_and_region_fallback(self):
-        # 硬盘不指定显示"默认"；没有区域代码时只显示中文名。
+        # An unspecified disk shows "默认"; without a region code, only the display name is shown. 硬盘不指定显示“默认”；没有区域代码时只显示中文名。
         text = notify_mod.fmt_boot_success(
             "新加坡", "新加坡", "VM.Standard.A1.Flex", 1, 6, None,
             [{"name": "ARM_2026-11-24", "public_ip": "203.0.113.10",
@@ -137,6 +136,30 @@ class TestFmtBootSuccess(unittest.TestCase):
               "attempts": 1, "elapsed_seconds": 3.0}])
         self.assertNotIn("CPU 未验明", text)
 
+    def test_cpu_model_shown_when_known(self):
+        # 拿到实测型号时 cpu 类型行显示具体型号，不只是 AMD/ARM。
+        text = notify_mod.fmt_boot_success(
+            "新加坡", "新加坡", "VM.Standard.E2.1.Micro", 1, 1, 47,
+            [{"name": "AMD_2026-11-25", "public_ip": "203.0.113.10",
+              "attempts": 379, "elapsed_seconds": 120.0}],
+            cpu_model="AMD EPYC 7J13")
+        self.assertIn("cpu类型：AMD EPYC 7J13", text)
+        text = notify_mod.fmt_boot_success(
+            "新加坡", "新加坡", "VM.Standard.A1.Flex", 1, 6, 47,
+            [{"name": "ARM_2026-11-25", "public_ip": "203.0.113.10",
+              "attempts": 1, "elapsed_seconds": 3.0}],
+            cpu_model="Ampere Altra")
+        self.assertIn("cpu类型：Ampere Altra", text)
+
+    def test_cpu_model_falls_back_when_unknown(self):
+        # 没拿到型号时回落到形状的 AMD/ARM。
+        text = notify_mod.fmt_boot_success(
+            "新加坡", "新加坡", "VM.Standard.E2.1.Micro", 1, 1, 47,
+            [{"name": "AMD_2026-11-25", "public_ip": "203.0.113.10",
+              "attempts": 1, "elapsed_seconds": 3.0}],
+            cpu_model=None)
+        self.assertIn("cpu类型：AMD", text)
+
 
 class TestNotifyBootSuccess(unittest.TestCase):
 
@@ -155,6 +178,24 @@ class TestNotifyBootSuccess(unittest.TestCase):
         self.assertEqual(result["errors"], [])
         self.assertIn("开机成功", tg.call_args[0][2])
         self.assertEqual(bark.call_args[0][0], "🎉 恭喜，开机成功！")
+
+    def test_both_channels_show_cpu_model(self):
+        # TG 与 Bark 用同一份文本，cpu 类型行都显示具体型号。
+        with patch.object(notify_mod, "send_telegram_message",
+                          return_value=(True, "")) as tg, \
+                patch.object(notify_mod, "send_bark",
+                             return_value=(True, "")) as bark:
+            result = notify_mod.notify_boot_success(
+                "T", 1, "新加坡", "新加坡", "VM.Standard.E2.1.Micro",
+                1, 1, 47,
+                [{"name": "AMD_2026-11-25", "public_ip": "1.2.3.4",
+                  "attempts": 379, "elapsed_seconds": 120.0}],
+                cpu_model="AMD EPYC 7J13")
+        self.assertTrue(result["telegram"])
+        self.assertTrue(result["bark"])
+        self.assertIn("cpu类型：AMD EPYC 7J13", tg.call_args[0][2])
+        self.assertIn("cpu类型：AMD EPYC 7J13", bark.call_args[0][1])
+        self.assertEqual(tg.call_args[0][2], bark.call_args[0][1])
 
     def test_bark_disabled_is_not_an_error(self):
         with patch.object(notify_mod, "send_telegram_message",
@@ -231,7 +272,7 @@ class TestGrabberThreadNotify(unittest.TestCase):
         self.assertEqual(args[0][2], "新加坡")
         self.assertEqual(args[0][3], "首尔")
         self.assertEqual(args[0][4], "VM.Standard.A1.Flex")
-        self.assertEqual(args[0][7], 47)  # 默认盘
+        self.assertEqual(args[0][7], 47)
         instances = args[0][8]
         self.assertEqual(instances[0]["name"], "ARM_2026-11-24")
         self.assertEqual(instances[0]["public_ip"], "203.0.113.10")
@@ -280,7 +321,7 @@ class TestGrabberThreadNotify(unittest.TestCase):
         self.assertEqual(args[1], "ARM_2026-11-24")
         self.assertEqual(args[2], "T")
         self.assertEqual(args[3], 654321)
-        # 传给跟进线程的回调要绑对实例 id。
+        # The callback passed to the follow-up thread must bind the right instance id. 传给跟进线程的回调要绑对实例 id。
         with patch.object(he, "get_public_ip",
                           return_value="203.0.113.10") as get_ip:
             self.assertEqual(args[0](), "203.0.113.10")
@@ -361,9 +402,38 @@ class TestGrabberThreadCpuFilter(unittest.TestCase):
         self.assertEqual(mock_grabber_cls.call_args[0][7],
                          "/tmp/user_keys.pub")
         mock_hook_fn.assert_not_called()
-        # 警告要留在最终详情里（on_event 的单行详情会被成功详情覆盖）
+        # The warning must stay in the final detail (on_event's one-line detail is overwritten by the success detail). 警告要留在最终详情里（on_event 的单行详情会被成功详情覆盖）。
         self.assertIn("未配置 guard 密钥",
                       self.tasks.get(task_id)["detail"])
+
+    def test_filter_on_no_guard_notify_unverified(self):
+        # guard 未配导致验不了 CPU：通知要带 CPU 未验明，不能静默留机。
+        fake = self._fake_grabber(self.result)
+        notify = {"token": "T", "chat_id": 654321,
+                  "profile_label": "新加坡", "region_label": "新加坡",
+                  "root_password": "pw" + "123"}
+        with patch.object(he, "Grabber",
+                          return_value=fake), \
+                patch.object(he, "combined_boot_keys",
+                             self._combined_keys("/tmp/user_keys.pub",
+                                                 False)), \
+                patch.object(he, "get_allowed_cpu_models",
+                             return_value=["7J13"]), \
+                patch.object(he, "make_cpu_check_hook") as mock_hook_fn, \
+                patch.object(he, "save_preset"), \
+                patch.object(he, "wait_for_public_ip",
+                             return_value="203.0.113.10"), \
+                patch.object(he, "notify_boot_success",
+                             return_value={"telegram": True, "bark": False,
+                                           "errors": []}) as notify_fn:
+            task_id = self.tasks.register("grab")
+            he._run_grabber_thread(task_id, MagicMock(), "comp",
+                                   self.preset, notify=notify)
+        mock_hook_fn.assert_not_called()
+        self.assertTrue(notify_fn.call_args[1]["cpu_unverified"])
+        detail = self.tasks.get(task_id)["detail"]
+        self.assertIn("未配置 guard 密钥", detail)
+        self.assertIn("CPU 未验明", detail)
 
     def test_filter_off_no_guard_keys_no_hook(self):
         preset = dict(self.preset)
@@ -384,7 +454,7 @@ class TestGrabberThreadCpuFilter(unittest.TestCase):
         self.assertFalse(mock_keys.call_args[1]["include_guard"])
 
     def test_cpu_check_failed_flag_reaches_notify(self):
-        # Grabber 发 cpu_check_failed 事件时，成功通知带未验明标志
+        # When the Grabber emits cpu_check_failed, the success notice carries an unverified flag. Grabber 发 cpu_check_failed 事件时，成功通知带未验明标志。
         fake = self._fake_grabber(self.result)
         mock_grabber_cls = MagicMock(return_value=fake)
 

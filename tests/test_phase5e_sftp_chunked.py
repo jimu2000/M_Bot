@@ -114,7 +114,7 @@ class TestChunkedUploadFlow(ChunkedUploadTestCase):
         self.assertEqual(body["chunkSize"], CHUNK_UPLOAD_SIZE)
         self.assertEqual(body["totalChunks"], 3)
 
-        # 分块上传：第一块后进度约 1/3。
+        # Chunked upload: after the first chunk, progress is about 1/3. 分块上传：第一块后进度约 1/3。
         r = self._chunk(upload_id, 0, b"x" * CHUNK_UPLOAD_SIZE)
         self.assertEqual(r.status_code, 200)
         progress = r.json()
@@ -125,18 +125,16 @@ class TestChunkedUploadFlow(ChunkedUploadTestCase):
         self.assertAlmostEqual(progress["percent"],
                                100.0 * CHUNK_UPLOAD_SIZE / size, places=1)
 
-        # progress 接口。
         r = self.client.get(
             f"/api/ssh/sessions/{SESSION_ID}/sftp/upload/progress"
             f"?uploadId={upload_id}", headers=self.headers)
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()["chunksReceived"], 1)
 
-        # 传完剩余块。
         self._chunk(upload_id, 1, b"x" * CHUNK_UPLOAD_SIZE)
         self._chunk(upload_id, 2, b"x" * 100)
 
-        # complete：远端按序写入，临时分块清理。
+        # complete: the remote side writes in order and the temp chunks are cleaned up. complete：远端按序写入，临时分块清理。
         remote_file = MagicMock()
         self.mock_sftp.open.return_value = remote_file
         r = self.client.post(
@@ -148,7 +146,6 @@ class TestChunkedUploadFlow(ChunkedUploadTestCase):
         written = b"".join(
             call.args[0] for call in remote_file.write.call_args_list)
         self.assertEqual(len(written), size)
-        # 临时目录已清理。
         upload_dir = os.path.join(self._tmp.name, "sftp_uploads", upload_id)
         self.assertFalse(os.path.exists(upload_dir))
 
@@ -202,7 +199,7 @@ class TestChunkedUploadValidation(ChunkedUploadTestCase):
 
     def test_init_bad_filename_400(self):
         r = self._init(filename="../evil")
-        # basename 后为 "evil"，合法；真正非法的是空名与点号名。
+        # "evil" after basename is legal; the truly illegal names are empty and dotted ones. basename 后为 "evil"，合法；真正非法的是空名与点号名。
         self.assertEqual(r.status_code, 200)
         r = self._init(filename="..")
         self.assertEqual(r.status_code, 400)
@@ -268,7 +265,6 @@ class TestChunkedUploadCancel(ChunkedUploadTestCase):
             f"/api/ssh/sessions/{SESSION_ID}/sftp/upload/cancel",
             json={"uploadId": upload_id}, headers=self.headers)
         self.assertEqual(r.status_code, 400)
-        # 未取消，任务还在。
         r = self.client.get(
             f"/api/ssh/sessions/{SESSION_ID}/sftp/upload/progress"
             f"?uploadId={upload_id}", headers=self.headers)
@@ -285,7 +281,7 @@ class TestChunkedUploadCancel(ChunkedUploadTestCase):
             headers=self.headers)
         self.assertEqual(r.status_code, 200)
         self.assertFalse(os.path.exists(upload_dir))
-        # 再查进度已是 404。
+        # Checking progress again is already 404. 再查进度已是 404。
         r = self.client.get(
             f"/api/ssh/sessions/{SESSION_ID}/sftp/upload/progress"
             f"?uploadId={upload_id}", headers=self.headers)
@@ -296,7 +292,7 @@ class TestStaleUploadCleanup(ChunkedUploadTestCase):
     """超期临时分块由 init 时顺带清理。"""
 
     def test_stale_dir_removed_on_init(self):
-        # 手工造一个超期（25 小时前）的上传目录。
+        # Hand-build an expired (25 hours old) upload directory. 手工造一个超期（25 小时前）的上传目录。
         stale_id = "a" * 32
         stale_dir = os.path.join(self._tmp.name, "sftp_uploads", stale_id)
         os.makedirs(stale_dir)
@@ -307,7 +303,7 @@ class TestStaleUploadCleanup(ChunkedUploadTestCase):
                        "chunks": []}, f)
         with open(os.path.join(stale_dir, "0.part"), "wb") as f:
             f.write(b"x" * 10)
-        # 新建一次上传会触发清理。
+        # Starting a new upload triggers the cleanup. 新建一次上传会触发清理。
         r = self._init(size=100)
         self.assertEqual(r.status_code, 200)
         self.assertFalse(os.path.exists(stale_dir))

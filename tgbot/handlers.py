@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Telegram 机器人核心命令（/start、/help、/oracle、实例管理）。
+"""Telegram 机器人核心命令（/start、/help、/oracle、/instances、/lang、实例管理）。
 
 路由（见 tgbot/bot.py）：
-  - 命令：/start /help /oracle /instances
-  - 回调：o:*（Oracle 菜单）、i:*（实例列表/详情/操作）、
+  - 命令：/start /help /oracle /instances /lang
+  - 回调：o:*（Oracle 菜单，含 o:lang 语言切换）、i:*（实例列表/详情/操作）、
     c:*（危险操作二次确认）、x（取消）
 
 callback_data 只有 64 字节，放不下 OCID，所以回调里只传实例列表下标，
@@ -29,9 +29,11 @@ from telegram.ext import ContextTypes
 from oci.instance import (get_instance, list_instances, restart_instance,
                           start_instance, stop_instance, terminate_instance)
 from oci.network import attach_public_ips, get_public_ip
+from tgbot import i18n as bot_i18n
 from tgbot import menu_tracker
 from tgbot.cpu_model import delete_cpu_model, get_cpu_model, host_for_ip
 from tgbot.handlers_client import run_remote_command
+from tgbot.i18n import lang_of, set_lang_context, toggle_user_lang
 from tgbot.keyboards import (ORACLE_MENU_ITEMS, back_to_oracle_keyboard,
                              confirm_keyboard,
                              instance_actions_keyboard,
@@ -44,66 +46,31 @@ from tgbot.services import (fmt_error, fmt_instance_detail,
 
 logger = logging.getLogger(__name__)
 
-# 操作中文名（确认提示与结果通知共用）。
-_ACTION_TEXT = {
-    "start": "启动",
-    "stop": "停止",
-    "restart": "重启",
-    "terminate": "终止",
-}
 
-# 欢迎词与帮助文本。
-WELCOME_TEXT = (
-    "👋 你好！我是 M-探长，M_Bot Oracle 开源管理面板的机器人。\n"
-    "\n"
-    "我可以帮你管理 Oracle Cloud 免费层实例：查看实例、启停、"
-    "换 IP、查配额、抢机等。\n"
-    "\n"
-    "常用命令：\n"
-    f"/oracle — Oracle 菜单（{len(ORACLE_MENU_ITEMS)} 项功能）\n"
-    "/instances — 实例列表\n"
-    "/help — 命令清单"
-)
+def _action_verb(action, lang="zh"):
+    """实例操作动词（确认提示与结果通知共用）。"""
+    return bot_i18n.t(lang, f"instances.verb_{action}")
 
-HELP_TEXT = (
-    "📖 命令清单：\n"
-    "\n"
-    "/start — 欢迎与主菜单\n"
-    "/help — 显示本清单\n"
-    f"/oracle — Oracle 菜单（开机、实例、配额、流量等 {len(ORACLE_MENU_ITEMS)} 项）\n"
-    "/instances — 列出当前账号的实例\n"
-    "/bark — Bark 通知设置（地址 / 加密 Key / 测试推送 / 开关）\n"
-    "/domain — 域名管理（Cloudflare DNS）\n"
-    "\n"
-    "其他云（需先配置对应账号）：\n"
-    "/azure — Azure 云管理\n"
-    "/aws — AWS 云管理\n"
-    "/gcp — GCP 云管理\n"
-    "/do — DigitalOcean 实例管理\n"
-    "/vf — VirtFusion 实例管理\n"
-    "/solusvm — SolusVM 面板管理\n"
-    "\n"
-    "客户端工具：\n"
-    "/oci — 上传甲骨文或 azure 配置\n"
-    "/command — 在已保存主机上远程执行 Shell 命令\n"
-    "/pubkey — 管理 SSH 公钥（列表/添加/删除）\n"
-    "/oproxy — 查看/设置机器人出站代理\n"
-    "/uploadapi — 添加 OCI API 配置（上传 config 文件或粘贴文本）\n"
-    "\n"
-    "管理：\n"
-    "/clearlock — 清除面板登录失败锁定\n"
-    "/raninfo — 重置面板管理员密码\n"
-    "/me — 查看我的信息\n"
-    "/admin — 管理员菜单（面板状态 / 重启服务 / 版本）\n"
-    "\n"
-    "实例操作都在消息下方的按钮里完成：点实例进详情，"
-    "再点启动 / 停止 / 重启 / 换 IP / 升降配 / 终止。"
-    "危险操作（停止、终止）执行前会二次确认。"
-)
 
-ORACLE_MENU_TEXT = f"☁️ Oracle 菜单（共 {len(ORACLE_MENU_ITEMS)} 项，点按钮使用）："
-NOT_IMPLEMENTED_TEXT = "该功能暂未实现。"
-INSTANCE_GONE_TEXT = "实例不存在或列表已过期，请重新打开实例列表。"
+def _welcome_text(lang="zh"):
+    return bot_i18n.t(lang, "welcome", count=len(ORACLE_MENU_ITEMS))
+
+
+def _help_text(lang="zh"):
+    return bot_i18n.t(lang, "help", count=len(ORACLE_MENU_ITEMS))
+
+
+def _oracle_menu_text(lang="zh"):
+    return bot_i18n.t(lang, "oracle.menu_title",
+                      count=len(ORACLE_MENU_ITEMS))
+
+
+# Welcome and help text (Chinese default; the multilingual versions are _welcome_text / _help_text). 欢迎词与帮助文本（中文默认版；多语言版见 _welcome_text/_help_text）。
+WELCOME_TEXT = _welcome_text("zh")
+HELP_TEXT = _help_text("zh")
+ORACLE_MENU_TEXT = _oracle_menu_text("zh")
+NOT_IMPLEMENTED_TEXT = bot_i18n.t("zh", "common.not_implemented")
+INSTANCE_GONE_TEXT = bot_i18n.t("zh", "common.instance_gone")
 
 
 # ---------------- 扩展模块转发 ----------------
@@ -182,7 +149,7 @@ def _current_account_label(context):
         label = get_label(get_current_profile(context))
     except Exception:  # noqa: BLE001 - 读失败不影响菜单显示
         return get_current_profile(context)
-    # 工作区域不是主区时后缀区域名（如“新加坡 · 首尔”）。
+    # When the working region is not the home region, suffix the region name (e.g. "新加坡 · 首尔"). 工作区域不是主区时后缀区域名（如“新加坡 · 首尔”）。
     try:
         from tgbot.services import get_current_region
         from tgbot.config import get_region, get_region_label
@@ -202,7 +169,7 @@ def _unwrap(data):
     return data or {}
 
 
-async def _load_instance_list(context):
+async def _load_instance_list(context, lang="zh"):
     """拉实例列表并格式化，返回 (文本, 键盘)。
 
     成功时把精简列表存进 user_data 供回调按下标取回；
@@ -215,14 +182,13 @@ async def _load_instance_list(context):
         instances = await run_sync(
             list_instances, cli, get_compartment(context))
         instances = await run_sync(attach_public_ips, cli, instances)
-    except Exception as exc:  # noqa: BLE001 - OCI 异常统一转中文提示
+    except Exception as exc:  # noqa: BLE001 - OCI 异常统一转提示
         logger.warning("列实例失败：%s", exc)
-        return fmt_error(exc), back_to_oracle_keyboard()
+        return fmt_error(exc, lang=lang), back_to_oracle_keyboard(lang=lang)
     store_instances(context, instances)
-    # 列表标题用账号显示名（主区中文名，多区账号带区数，非主区
-    # 工作区域后缀区域名；v1.15.0 修：原来直接显示 DEFAULT 等配置键名）。
-    return (fmt_instance_list(instances, _current_account_label(context)),
-            instance_list_keyboard(instances))
+    return (fmt_instance_list(instances, _current_account_label(context),
+                             lang=lang),
+            instance_list_keyboard(instances, lang=lang))
 
 
 # ---------------- 命令 ----------------
@@ -230,31 +196,50 @@ async def _load_instance_list(context):
 @require_allowed
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """处理 /start：欢迎词 + 主菜单。"""
+    lang = lang_of(update, context)
     await menu_tracker.reply(update, context,
-                             WELCOME_TEXT,
-                             reply_markup=main_menu_keyboard())
+                             _welcome_text(lang),
+                             reply_markup=main_menu_keyboard(lang=lang))
 
 
 @require_allowed
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """处理 /help：命令清单。"""
-    await update.effective_message.reply_text(HELP_TEXT)
+    await update.effective_message.reply_text(_help_text(
+        lang_of(update, context)))
+
+
+@require_allowed
+async def lang_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """处理 /lang：切换语言（中文 <-> English），立即生效并持久化。"""
+    user = update.effective_user
+    user_id = user.id if user else None
+    new_lang = toggle_user_lang(user_id)
+    set_lang_context(context, new_lang)
+    await menu_tracker.reply(
+        update, context,
+        bot_i18n.t(new_lang,
+                   "lang.switched_en" if new_lang == "en"
+                   else "lang.switched_zh"),
+        reply_markup=main_menu_keyboard(lang=new_lang))
 
 
 @require_allowed
 async def oracle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """处理 /oracle：发送 Oracle 菜单（第 1 页，监控按钮带开关状态）。"""
+    lang = lang_of(update, context)
     await menu_tracker.reply(
-        update, context, ORACLE_MENU_TEXT,
+        update, context, _oracle_menu_text(lang),
         reply_markup=oracle_menu_keyboard(
             0, states=_menu_states(context),
-            current_account=_current_account_label(context)))
+            current_account=_current_account_label(context), lang=lang))
 
 
 @require_allowed
 async def instances_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """处理 /instances：实例列表（回复命令消息，不编辑回调消息）。"""
-    text, keyboard = await _load_instance_list(context)
+    lang = lang_of(update, context)
+    text, keyboard = await _load_instance_list(context, lang=lang)
     await menu_tracker.reply(update, context, text, reply_markup=keyboard)
 
 
@@ -292,14 +277,29 @@ async def oracle_menu_callback(update: Update,
     await query.answer()
     data = query.data or ""
     parts = data.split(":")
+    lang = lang_of(update, context)
+
+    if data == "o:lang":
+        user = update.effective_user
+        new_lang = toggle_user_lang(user.id if user else None)
+        set_lang_context(context, new_lang)
+        await _cleanup_switch_messages(update, context)
+        await query.edit_message_text(
+            _oracle_menu_text(new_lang),
+            reply_markup=oracle_menu_keyboard(
+                0, states=_menu_states(context),
+                current_account=_current_account_label(context),
+                lang=new_lang))
+        return
 
     if data == "o:menu":
         await _cleanup_switch_messages(update, context)
         await query.edit_message_text(
-            ORACLE_MENU_TEXT,
+            _oracle_menu_text(lang),
             reply_markup=oracle_menu_keyboard(
                 0, states=_menu_states(context),
-                current_account=_current_account_label(context)))
+                current_account=_current_account_label(context),
+                lang=lang))
         return
 
     if len(parts) == 3 and parts[1] == "page":
@@ -308,22 +308,23 @@ async def oracle_menu_callback(update: Update,
         except ValueError:
             page = 0
         await query.edit_message_text(
-            ORACLE_MENU_TEXT,
+            _oracle_menu_text(lang),
             reply_markup=oracle_menu_keyboard(
                 page, states=_menu_states(context),
-                current_account=_current_account_label(context)))
+                current_account=_current_account_label(context),
+                lang=lang))
         return
 
     if data == "o:instances":
-        text, keyboard = await _load_instance_list(context)
+        text, keyboard = await _load_instance_list(context, lang=lang)
         await query.edit_message_text(text, reply_markup=keyboard)
         return
 
-    # 其余菜单项（配额、流量、任务、测活、开机……）转发给扩展模块。
     item = parts[1] if len(parts) >= 2 else ""
     if not await _dispatch_extra(item, update, context):
         await query.edit_message_text(
-            NOT_IMPLEMENTED_TEXT, reply_markup=back_to_oracle_keyboard())
+            bot_i18n.t(lang, "common.not_implemented"),
+            reply_markup=back_to_oracle_keyboard(lang=lang))
 
 
 # ---------------- 实例列表 / 详情回调 ----------------
@@ -334,7 +335,8 @@ async def instance_list_callback(update: Update,
     """处理 i:list 回调：刷新实例列表（编辑当前消息）。"""
     query = update.callback_query
     await query.answer()
-    text, keyboard = await _load_instance_list(context)
+    text, keyboard = await _load_instance_list(
+        context, lang=lang_of(update, context))
     await query.edit_message_text(text, reply_markup=keyboard)
 
 
@@ -357,19 +359,22 @@ async def instance_detail_callback(update: Update,
     parts = (query.data or "").split(":")
     idx = parts[2] if len(parts) >= 3 else ""
     inst = resolve_instance(context, idx)
+    lang = lang_of(update, context)
     if inst is None:
         await query.edit_message_text(
-            INSTANCE_GONE_TEXT, reply_markup=back_to_oracle_keyboard())
+            bot_i18n.t(lang, "common.instance_gone"),
+            reply_markup=back_to_oracle_keyboard(lang=lang))
         return
 
     cli = get_cli(context)
     instance_id = inst.get("id")
     try:
         detail = await run_sync(get_instance, cli, instance_id)
-    except Exception as exc:  # noqa: BLE001 - OCI 异常统一转中文提示
+    except Exception as exc:  # noqa: BLE001 - OCI 异常统一转提示
         logger.warning("查实例详情失败：%s", exc)
         await query.edit_message_text(
-            fmt_error(exc), reply_markup=back_to_oracle_keyboard())
+            fmt_error(exc, lang=lang),
+            reply_markup=back_to_oracle_keyboard(lang=lang))
         return
     try:
         public_ip = await run_sync(get_public_ip, cli, instance_id)
@@ -378,8 +383,8 @@ async def instance_detail_callback(update: Update,
         public_ip = None
 
     state = _unwrap(detail).get("lifecycle-state", "?")
-    # CPU 型号：运行中的实例才 SSH 检测（缓存命中时不连 SSH）；
-    # 检测失败不影响详情展示，该行显示“未知”。
+    # CPU model: only SSH-detect for RUNNING instances (skip SSH on a cache hit); CPU 型号：运行中的实例才 SSH 检测（缓存命中时不连 SSH）；
+    # a detection failure does not affect the detail view; that row shows "未知". 检测失败不影响详情展示，该行显示“未知”。
     cpu_model = None
     if state == "RUNNING" and public_ip:
         try:
@@ -389,8 +394,9 @@ async def instance_detail_callback(update: Update,
         except Exception as exc:  # noqa: BLE001 - 检测失败只记日志
             logger.warning("查 CPU 型号失败：%s", exc)
     await query.edit_message_text(
-        fmt_instance_detail(detail, public_ip, cpu_model),
-        reply_markup=instance_actions_keyboard(int(idx), state))
+        fmt_instance_detail(detail, public_ip, cpu_model, lang=lang),
+        reply_markup=instance_actions_keyboard(int(idx), state,
+                                               lang=lang))
 
 
 # ---------------- 实例操作回调 ----------------
@@ -410,48 +416,47 @@ async def instance_action_callback(update: Update,
     action = parts[1] if len(parts) >= 2 else ""
     idx = parts[2] if len(parts) >= 3 else ""
     inst = resolve_instance(context, idx)
+    lang = lang_of(update, context)
     if inst is None:
         await query.edit_message_text(
-            INSTANCE_GONE_TEXT, reply_markup=back_to_oracle_keyboard())
+            bot_i18n.t(lang, "common.instance_gone"),
+            reply_markup=back_to_oracle_keyboard(lang=lang))
         return
     name = inst.get("display-name") or inst.get("id", "?")[-4:]
 
     if action in ("ip", "resize", "rename", "reinstall", "console",
                   "bootswap", "bootbackup", "bootbackup-del"):
-        # 扩展模块处理时用 pending_idx 取回实例下标。
-        # 注意：实例操作里的 "ip" 转发为 "changeip"（换 IP 确认流程），
-        # 不要转发 "ip"——"ip" 是菜单 2 的 IP 总览，不含换 IP 确认按钮。
-        # 其余 action 与 dispatch 项同名，直接转发。
+        # The extension module uses pending_idx to get the instance index back. 扩展模块处理时用 pending_idx 取回实例下标。
+        # Note: the "ip" instance action forwards as "changeip" (the change-IP confirm flow); do not forward "ip" — "ip" is the menu-2 IP overview, which has no change-IP confirm button. 注意：实例操作里的 "ip" 转发为 "changeip"（换 IP 确认流程），不要转发 "ip"——"ip" 是菜单 2 的 IP 总览，不含换 IP 确认按钮。
+        # Other actions share names with dispatch items and forward directly. 其余 action 与 dispatch 项同名，直接转发。
         context.user_data["pending_idx"] = idx
         item = "changeip" if action == "ip" else action
         if not await _dispatch_extra(item, update, context):
             await query.edit_message_text(
-                NOT_IMPLEMENTED_TEXT, reply_markup=back_to_oracle_keyboard())
+                bot_i18n.t(lang, "common.not_implemented"),
+                reply_markup=back_to_oracle_keyboard(lang=lang))
         return
 
-    if action not in _ACTION_TEXT:
+    if action not in ("start", "stop", "restart", "terminate"):
         await query.edit_message_text(
-            NOT_IMPLEMENTED_TEXT, reply_markup=back_to_oracle_keyboard())
+            bot_i18n.t(lang, "common.not_implemented"),
+            reply_markup=back_to_oracle_keyboard(lang=lang))
         return
 
-    verb = _ACTION_TEXT[action]
+    verb = _action_verb(action, lang)
     if action == "terminate":
-        # 实例名是用户起的，可能含 <>&：parse_mode="HTML" 时必须转义，
-        # 否则 Telegram 解析失败或被注入标签（quote=False 只转义 &<>，
-        # Telegram HTML 只认这三个实体）。
-        text = (
-            f"⚠️ 确认终止实例「{html.escape(name, quote=False)}」？\n"
-            "\n"
-            "<b>终止后将永久删除引导卷，数据无法恢复！</b>"
-        )
+        # Instance names are user-chosen and may contain <>&: with parse_mode="HTML" they must be escaped, or Telegram fails to parse or gets injected tags (quote=False escapes only &<>; Telegram HTML recognizes just these three entities). 实例名是用户起的，可能含 <>&：parse_mode="HTML" 时必须转义，否则 Telegram 解析失败或被注入标签（quote=False 只转义 &<>，Telegram HTML 只认这三个实体）。
+        text = bot_i18n.t(
+            lang, "instances.confirm_terminate",
+            name=html.escape(name, quote=False))
         await query.edit_message_text(
             text, parse_mode="HTML",
-            reply_markup=confirm_keyboard(action, idx))
+            reply_markup=confirm_keyboard(action, idx, lang=lang))
         return
 
     await query.edit_message_text(
-        f"确认{verb}实例「{name}」？",
-        reply_markup=confirm_keyboard(action, idx))
+        bot_i18n.t(lang, f"instances.confirm_{action}", name=name),
+        reply_markup=confirm_keyboard(action, idx, lang=lang))
 
 
 # ---------------- 二次确认回调 ----------------
@@ -468,25 +473,28 @@ async def confirm_callback(update: Update,
     parts = (query.data or "").split(":")
     action = parts[1] if len(parts) >= 2 else ""
     idx = parts[2] if len(parts) >= 3 else ""
+    lang = lang_of(update, context)
 
-    if action not in _ACTION_TEXT:
+    if action not in ("start", "stop", "restart", "terminate"):
         if not await _handle_confirm_extra(action, idx, update, context):
             await query.edit_message_text(
-                NOT_IMPLEMENTED_TEXT, reply_markup=back_to_oracle_keyboard())
+                bot_i18n.t(lang, "common.not_implemented"),
+                reply_markup=back_to_oracle_keyboard(lang=lang))
         return
 
     inst = resolve_instance(context, idx)
     if inst is None:
         await query.edit_message_text(
-            INSTANCE_GONE_TEXT, reply_markup=back_to_oracle_keyboard())
+            bot_i18n.t(lang, "common.instance_gone"),
+            reply_markup=back_to_oracle_keyboard(lang=lang))
         return
     name = inst.get("display-name") or inst.get("id", "?")[-4:]
-    verb = _ACTION_TEXT[action]
+    verb = _action_verb(action, lang)
 
     try:
         cli = get_cli(context)
         instance_id = inst.get("id")
-        # 直接调模块级导入的函数（不要预建成 dict），测试才能 patch。
+        # Call the module-level imported function directly (do not pre-build a dict), so tests can patch it. 直接调模块级导入的函数（不要预建成 dict），测试才能 patch。
         if action == "start":
             await run_sync(start_instance, cli, instance_id)
         elif action == "stop":
@@ -494,20 +502,23 @@ async def confirm_callback(update: Update,
         elif action == "restart":
             await run_sync(restart_instance, cli, instance_id)
         elif action == "terminate":
-            # 默认 preserve_boot_volume=False：永久删除引导卷。
+            # Default preserve_boot_volume=False: the boot volume is permanently deleted. 默认 preserve_boot_volume=False：永久删除引导卷。
             await run_sync(terminate_instance, cli, instance_id)
-    except Exception as exc:  # noqa: BLE001 - OCI 异常统一转中文提示
+    except Exception as exc:  # noqa: BLE001 - OCI 异常统一转提示
         logger.warning("%s实例失败：%s", verb, exc)
         await query.edit_message_text(
-            fmt_error(exc), reply_markup=back_to_oracle_keyboard())
+            fmt_error(exc, lang=lang),
+            reply_markup=back_to_oracle_keyboard(lang=lang))
         return
 
     if action == "terminate":
         delete_cpu_model(instance_id)
-        text = f"✅ 已终止实例「{name}」，引导卷已永久删除。"
+        text = bot_i18n.t(lang, "instances.done_terminate", name=name)
     else:
-        text = f"✅ 已{verb}实例「{name}」。"
-    await query.edit_message_text(text, reply_markup=back_to_oracle_keyboard())
+        text = bot_i18n.t(lang, f"instances.done_{action}", name=name)
+    await query.edit_message_text(text,
+                                  reply_markup=back_to_oracle_keyboard(
+                                      lang=lang))
 
 
 # ---------------- 取消 / 未知命令 / 错误 ----------------
@@ -518,8 +529,9 @@ async def cancel_callback(update: Update,
     """处理 x 回调：取消当前操作。"""
     query = update.callback_query
     await query.answer()
-    await query.edit_message_text("已取消。")
-    # 消息已变成纯文字结果，不再是选择框，清空跟踪。
+    await query.edit_message_text(bot_i18n.t(lang_of(update, context),
+                                            "common.cancel"))
+    # The message is now a plain-text result, no longer a selection box; clear the tracking. 消息已变成纯文字结果，不再是选择框，清空跟踪。
     menu_tracker.forget_live_menu(context)
 
 
@@ -528,7 +540,7 @@ async def unknown_command(update: Update,
                           context: ContextTypes.DEFAULT_TYPE):
     """未知命令：提示用 /help 查看命令清单。"""
     await update.effective_message.reply_text(
-        "未知命令，输入 /help 查看可用命令。")
+        bot_i18n.t(lang_of(update, context), "common.unknown_command"))
 
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
@@ -549,6 +561,7 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     message = getattr(update, "effective_message", None)
     if message is not None:
         try:
-            await message.reply_text(fmt_error(context.error))
+            lang = lang_of(update) if update is not None else "zh"
+            await message.reply_text(fmt_error(context.error, lang=lang))
         except Exception:  # noqa: BLE001 - 通知失败也不要再抛
             logger.exception("向用户发送错误通知失败")

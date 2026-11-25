@@ -31,10 +31,6 @@ TEST_USER_ID = 123456
 TEST_CHAT_ID = 654321
 TEST_COMPARTMENT = "ocid1.tenancy.oc1..test"
 
-# 菜单里本模块实现的 33 项（memballoon / memclear 由
-# tgbot.handlers_client 实现，分发表指向该模块的 handler；
-# openport / clients / restart / upgrade / objectstorage / email /
-# plans 由阶段 5 工作包 D 实现）。
 IMPLEMENTED_ITEMS = [
     "boot", "ip", "resume", "ipv6", "resize", "volumes", "users",
     "monitor", "autostart", "workflows", "profiles", "health",
@@ -44,8 +40,6 @@ IMPLEMENTED_ITEMS = [
     "openport", "clients", "restart", "upgrade",
     "objectstorage", "email", "plans", "bark", "autoip",
 ]
-# 本模块不实现的项（dispatch 应返回 False）。
-# autoip（菜单 16 GFW 自动换 IP）v1.10.0 已实现，不在这里。
 NOT_IMPLEMENTED_ITEMS = [
     "delapi", "disable", "instances", "nosuchkey",
 ]
@@ -257,13 +251,11 @@ class TestDispatch(HandlersExtraTestCase):
                     update = make_update(callback_data=f"o:{item}")
                     context = make_context()
                     if item == "resize":
-                        # resize 需要 pending_idx + 已存实例（E2 走固定规格分支）
                         context.user_data["instances"] = [FAKE_INSTANCES[1]]
                         context.user_data["pending_idx"] = 0
                     handled = await he.dispatch_oracle_action(
                         item, update, context)
                     self.assertTrue(handled, f"{item} 应返回 True")
-                    # profiles 切换账号在原消息里改（就地编辑），其余发新消息。
                     self.assertIsNotNone(
                         reply_text_of(update) or edit_text_of(update),
                         f"{item} 应回复消息")
@@ -351,20 +343,16 @@ class TestQuotaTrafficCost(HandlersExtraTestCase):
         self.cli.run.return_value = {"data": {"items": items}}
         update = make_update()
         context = make_context()
-        # v1.45.0 修 2：PROFILES 现含 oci_config 里全部有 tenancy 的
-        # 账号（本机有 6 个），不 patch 的话合计随环境变。测试只测
-        # 费用汇总逻辑，账号集固定为 1 个新加坡账号。
+        # The test only checks the cost-total logic, so pin the account set to one Singapore account. 测试只测费用汇总逻辑，账号集固定为 1 个新加坡账号。
         profiles = {"DEFAULT": {"region": "ap-singapore-1",
                                 "compartment_id": "ocid1.tenancy.oc1..aaa"}}
         with patch.object(bot_config, "PROFILES", profiles):
             await he.handle_cost(update, context)
         text = reply_text_of(update)
-        # 多账号格式（v1.19.0）：逐账号列费用，最后附合计
         self.assertIn("• 新加坡：13.46 SGD", text)
         self.assertIn("合计：13.46 SGD", text)
         called_args = self.cli.run.call_args[0][0]
-        # 费用汇总也用 MONTHLY 粒度再求和（用量 API 没有 TOTAL 粒度，
-        # 真实 API 实测报 "Unknown Granularity"）。
+        # Cost totals are also summed at MONTHLY granularity (the usage API has no TOTAL granularity; the real API reports "Unknown Granularity"). 费用汇总也用 MONTHLY 粒度再求和（用量 API 没有 TOTAL 粒度，真实 API 实测报 "Unknown Granularity"）。
         self.assertIn("MONTHLY", called_args)
 
     def test_usage_time_window_is_midnight(self):
@@ -378,12 +366,11 @@ class TestQuotaTrafficCost(HandlersExtraTestCase):
         self.cli.run.return_value = {"data": {"items": []}}
         update = make_update()
         context = make_context()
-        # 同 test_cost_total：账号集固定，避免随本机 oci_config 变化。
+        # Same as test_cost_total: pin the account set so it does not vary with the local oci_config. 同 test_cost_total：账号集固定，避免随本机 oci_config 变化。
         profiles = {"DEFAULT": {"region": "ap-singapore-1",
                                 "compartment_id": "ocid1.tenancy.oc1..aaa"}}
         with patch.object(bot_config, "PROFILES", profiles):
             await he.handle_cost(update, context)
-        # 多账号格式（v1.19.0）：空账号显示 0.00，不再用“没有用量记录”
         text = reply_text_of(update)
         self.assertIn("• 新加坡：0.00", text)
         self.assertIn("合计：0.00", text)
@@ -434,8 +421,7 @@ class TestInstanceTraffic(HandlersExtraTestCase):
             {"display-name": "stopped", "lifecycle-state": "STOPPED",
              "public-ip": "9.9.9.9"},
         ]
-        # 示例只有 2026-11 一条月份数据，解析器默认取该条（无当月时
-        # 取最后一条，所以任何时间跑这个测试都稳定）。
+        # The fixture has only one month of data (2026-11); the parser defaults to it (falling back to the last entry when there is no current month), so this test is stable whenever it runs. 示例只有 2026-11 一条月份数据，解析器默认取该条（无当月时取最后一条，所以任何时间跑这个测试都稳定）。
         context = make_context()
         with patch.object(bot_config, "GUARD_SSH_KEY", "/root/.ssh/rbot_guard"), \
                 patch.object(he, "fetch_city_for_ip",
@@ -448,7 +434,6 @@ class TestInstanceTraffic(HandlersExtraTestCase):
                 raise RuntimeError("ssh refused")
             mock_cmd.side_effect = _cmd
             entries = await he._fetch_instance_traffic(context, instances)
-        # 已停止的实例不查。
         self.assertEqual(len(entries), 2)
         self.assertEqual(entries[0]["city"], "新加坡")
         self.assertAlmostEqual(entries[0]["rx_gb"], 3.21, places=2)
@@ -491,7 +476,6 @@ class TestInstanceTraffic(HandlersExtraTestCase):
                 return (0, self.VNSTAT_SAMPLE, "")
             mock_cmd.side_effect = _cmd
             entries = await he._fetch_instance_traffic(context, instances)
-        # vnstat 失败 → apt 安装 → vnstat 重试 → 看门狗 probe，共 4 次。
         self.assertEqual(len(calls), 4)
         self.assertTrue(any("apt-get install -y vnstat python3 curl" in c
                             for c in calls))
@@ -564,7 +548,7 @@ class TestInstanceTraffic(HandlersExtraTestCase):
                           "/root/.ssh/rbot_guard"):
             keyboard = he.traffic_keyboard(entries)
         rows = keyboard.inline_keyboard
-        self.assertEqual(len(rows), 3)  # 两台可操作 + 返回按钮
+        self.assertEqual(len(rows), 3)
         self.assertEqual(rows[0][0].text, "🛡️ web：关闭看门狗")
         self.assertEqual(rows[0][0].callback_data, "wd:toggle:0")
         self.assertEqual(rows[1][0].text, "🛡️ e2：开启看门狗")
@@ -614,7 +598,6 @@ class TestWatchdogCallback(HandlersExtraTestCase):
         self.assertEqual(context.user_data["traffic_entries"], fresh)
 
     async def test_reenable_says_reenabled(self):
-        # 新版已装、只是 cron 被摘了：文案是“已重新开启”，不是“已升级”。
         update = make_update(callback_data="wd:toggle:0")
         context = make_context()
         context.user_data["traffic_entries"] = self._entries(enabled=False)
@@ -701,7 +684,6 @@ class TestHealthTasksProfiles(HandlersExtraTestCase):
             context = make_context()
             await he.handle_health(update, context)
         text = reply_text_of(update)
-        # v1.15.0：账号用主区中文名 + 区数显示，不再显示配置键名。
         self.assertIn("新加坡（3 个区）：2 台实例，1 台运行中", text)
         self.assertIn("圣何塞", text)
         self.assertIn("auth failed", text)
@@ -717,13 +699,11 @@ class TestHealthTasksProfiles(HandlersExtraTestCase):
         self.assertIn(task_id, text)
         self.assertIn("抢机测试中", text)
 
-        # 取消一次成功
         update2 = make_update(callback_data=f"t:cancel:{task_id}")
         await he.task_cancel_callback(update2, make_context())
         self.assertIn("已取消", reply_text_of(update2))
         self.assertEqual(self.tasks.get(task_id)["status"], "cancelled")
 
-        # 再取消已结束的任务失败
         update3 = make_update(callback_data=f"t:cancel:{task_id}")
         await he.task_cancel_callback(update3, make_context())
         self.assertIn("不存在或已结束", reply_text_of(update3))
@@ -748,8 +728,6 @@ class TestHealthTasksProfiles(HandlersExtraTestCase):
             update = make_update()
             context = make_context()
             await he.handle_profiles(update, context)
-            # 按主区中文名显示，多区账号后缀区数，不再显示 profile 名；
-            # 列表按钮用顿号格式（新加坡、3 个区），单区账号不加后缀。
             self.assertIn("新加坡（3 个区）", reply_text_of(update))
             self.assertNotIn("DEFAULT", reply_text_of(update))
             buttons = reply_button_texts_of(update)
@@ -759,8 +737,6 @@ class TestHealthTasksProfiles(HandlersExtraTestCase):
             update2 = make_update(callback_data="p:ACCOUNT2")
             await he.profile_callback(update2, context)
             self.assertEqual(context.user_data["profile"], "ACCOUNT2")
-            # 切换成功后直接回主菜单：当前消息被编辑成菜单（带确认行），
-            # 不再单独发一条确认消息。
             self.assertIn("已切换到账号", edit_text_of(update2))
             self.assertIn("圣何塞", edit_text_of(update2))
             self.assertIn("Oracle 菜单", edit_text_of(update2))
@@ -768,14 +744,11 @@ class TestHealthTasksProfiles(HandlersExtraTestCase):
             self.assertIn("🔄 切换账号：圣何塞",
                           edit_button_texts_of(update2))
 
-            # 未知 profile 切换失败
             update3 = make_update(callback_data="p:NOPE")
             await he.profile_callback(update3, context)
             self.assertIn("切换失败", reply_text_of(update3))
 
     async def test_profile_switch_deletes_tracked_messages(self):
-        # 切换流程的中间消息（账号列表、区域列表）在切换完成后删除，
-        # 只留主菜单一条消息。
         profiles = {
             "DEFAULT": {"region": "ap-singapore-1",
                         "compartment_id": "ocid1.tenancy.oc1..aaa"},
@@ -797,8 +770,6 @@ class TestHealthTasksProfiles(HandlersExtraTestCase):
                              return_value={"DEFAULT": 2, "ACCOUNT2": 1}):
             context = make_context()
             context.user_data["profile"] = "ACCOUNT2"
-            # 账号列表消息 id 101（无回调时新发，仍跟踪）；区域列表现在
-            # 就地编辑，不再产生新消息（用户要求 2026-11-24：不弹新框）。
             msg1 = MagicMock()
             msg1.message_id = 101
             update1 = make_update()
@@ -809,7 +780,6 @@ class TestHealthTasksProfiles(HandlersExtraTestCase):
             await he.profile_callback(update2, context)
             self.assertIn("切换工作区域", edit_text_of(update2))
             self.assertIsNone(reply_text_of(update2))
-            # 点区域完成切换：101 删掉，当前消息（777）编辑成菜单
             update3 = make_update(callback_data="pr:DEFAULT:ap-seoul-1")
             await he.profile_region_callback(update3, context)
             deleted = [call.kwargs.get("message_id")
@@ -821,7 +791,6 @@ class TestHealthTasksProfiles(HandlersExtraTestCase):
             self.assertEqual(context.user_data.get("switch_msg_ids"), None)
 
     async def test_profile_switch_duplicate_click_ignored(self):
-        # 双击同一个切换按钮：第二次回调直接应答，不重复切换、不重复发消息
         profiles = {
             "DEFAULT": {"region": "ap-singapore-1",
                         "compartment_id": "ocid1.tenancy.oc1..aaa"},
@@ -846,7 +815,6 @@ class TestHealthTasksProfiles(HandlersExtraTestCase):
             update2.callback_query.answer.assert_awaited_once()
 
     async def test_handle_profiles_clears_stale_switch_messages(self):
-        # 重新打开切换菜单时，先删掉上次流程残留的中间消息
         profiles = {
             "DEFAULT": {"region": "ap-singapore-1",
                         "compartment_id": "ocid1.tenancy.oc1..aaa"},
@@ -882,7 +850,6 @@ class TestHealthTasksProfiles(HandlersExtraTestCase):
             update = make_update(callback_data="p:ACCOUNT2")
             await he.profile_callback(update, context)
             self.assertEqual(context.user_data["profile"], "ACCOUNT2")
-            # 切账号时区域重置为新账号主区，旧区域不带过去
             self.assertEqual(context.user_data["region"], "us-sanjose-1")
 
 
@@ -910,7 +877,6 @@ class TestProfileRegions(HandlersExtraTestCase):
             context.user_data["profile"] = "ACCOUNT2"
             update = make_update(callback_data="p:DEFAULT")
             await he.profile_callback(update, context)
-            # 多区账号不直接切换，只出二级菜单（就地编辑，不弹新框）
             self.assertEqual(context.user_data["profile"], "ACCOUNT2")
             self.assertIn("切换工作区域", edit_text_of(update))
             callbacks = edit_callback_data_of(update)
@@ -932,7 +898,6 @@ class TestProfileRegions(HandlersExtraTestCase):
             await he.profile_region_callback(update, context)
             self.assertEqual(context.user_data["profile"], "DEFAULT")
             self.assertEqual(context.user_data["region"], "ap-seoul-1")
-            # 切换成功后直接回主菜单（编辑当前消息，不单独发确认消息）
             self.assertIn("已切换到账号", edit_text_of(update))
             self.assertIn("首尔", edit_text_of(update))
             self.assertIn("Oracle 菜单", edit_text_of(update))
@@ -987,7 +952,6 @@ class TestUniquifyDisplayName(unittest.TestCase):
             "AMD_2026-11-24-3")
 
     def test_batch_checks_all_suffixed_names(self):
-        # 批量 2 台：base-1 被占时整组移到 base-2（出 -2-1、-2-2）
         self.assertEqual(
             he.uniquify_display_name("ARM_2026-11-24", 2,
                                      {"ARM_2026-11-24-1"}),
@@ -1073,15 +1037,12 @@ class TestBoot(HandlersExtraTestCase):
                 registered = self.tasks.list_all()
                 self.assertEqual(len(registered), 1)
                 task_id = registered[0]["id"]
-                # 启动消息显示任务 label（抢什么机器），不再暴露
-                # g1 这类内部任务 ID。
                 self.assertIn("E2.1.Micro", text)
                 self.assertNotIn(task_id, text)
                 self.assertEqual(registered[0]["label"],
                                  "E2.1.Micro（新加坡）· e2-micro")
-                # 等 daemon 线程跑完（mock Grabber 立即返回）。
-                # 注意：整个等待过程必须留在 PRESETS_FILE 的 patch 里，
-                # 否则线程里的 save_preset 会写到真实默认路径。
+                # Wait for the daemon thread to finish (the mocked Grabber returns immediately). 等 daemon 线程跑完（mock Grabber 立即返回）。
+                # The whole wait must stay inside the PRESETS_FILE patch, or save_preset in the thread writes to the real default path. 注意：整个等待过程必须留在 PRESETS_FILE 的 patch 里，否则线程里的 save_preset 会写到真实默认路径。
                 for _ in range(50):
                     if self.tasks.get(task_id)["status"] == "done":
                         break
@@ -1092,8 +1053,7 @@ class TestBoot(HandlersExtraTestCase):
                 self.assertIn("释放 1 台", task["detail"])
                 mock_grabber_cls.assert_called_once()
                 mock_grabber.run.assert_called_once()
-                # 成功后保存了快捷开机配置（状态先置 done、再写文件，
-                # 所以要轮询等文件写好，不能立即读）。
+                # The quick-boot config was saved after success (status is set to done before the file write, so poll until the file is written instead of reading immediately). 成功后保存了快捷开机配置（状态先置 done、再写文件，所以要轮询等文件写好，不能立即读）。
                 saved = []
                 for _ in range(50):
                     saved = he.load_presets(presets_file)
@@ -1115,8 +1075,7 @@ class TestBoot(HandlersExtraTestCase):
         with patch.object(he, "Grabber", mock_grabber_cls):
             await he.boot_go_callback(update, context)
             task_id = self.tasks.list_all()[0]["id"]
-            # 等待必须留在 Grabber 的 patch 里：线程构造 Grabber 时
-            # patch 已退出就会拿到真实 Grabber，任务变 failed。
+            # The wait must stay inside the Grabber patch: if the patch exits before the thread builds its Grabber, the thread gets the real Grabber and the task fails. 等待必须留在 Grabber 的 patch 里：线程构造 Grabber 时 patch 已退出就会拿到真实 Grabber，任务变 failed。
             for _ in range(50):
                 if self.tasks.get(task_id)["status"] == "cancelled":
                     break
@@ -1236,7 +1195,6 @@ class TestBatchActionEscape(HandlersExtraTestCase):
         self.assertIn("test&lt;b&gt;&amp;", text)
         self.assertNotIn("<b>&", text)
         self.assertIn("ok-name", text)
-        # <b> 警告标签本身还在（只转义了实例名）。
         self.assertIn("<b>删除后将永久删除各实例的引导卷", text)
         _args, kwargs = update.effective_message.reply_text.await_args_list[-1]
         self.assertEqual(kwargs.get("parse_mode"), "HTML")
@@ -1336,7 +1294,7 @@ class TestJobs(HandlersExtraTestCase):
         context = self._monitor_context()
         context.bot_data["last_states"] = {
             "ocid1.instance.oc1..aaa1": "RUNNING",
-            "ocid1.instance.oc1..bbb2": "RUNNING",  # 上次是 RUNNING
+            "ocid1.instance.oc1..bbb2": "RUNNING",
         }
         with patch.object(he, "list_instances",
                           return_value=FAKE_INSTANCES):
@@ -1354,7 +1312,7 @@ class TestJobs(HandlersExtraTestCase):
         context = self._monitor_context(autostart=True)
         context.bot_data["last_states"] = {
             "ocid1.instance.oc1..aaa1": "RUNNING",
-            "ocid1.instance.oc1..bbb2": "STOPPED",  # 基线已是 STOPPED，不通知
+            "ocid1.instance.oc1..bbb2": "STOPPED",
         }
         with patch.object(he, "list_instances",
                           return_value=FAKE_INSTANCES), \
@@ -1550,15 +1508,13 @@ class TestIpIpv6ResumeResizeVolumes(HandlersExtraTestCase):
             update = make_update()
             context = make_context()
             await he.handle_resume(update, context)
-        # 文字只剩标题；实例在按钮上，且只有 STOPPED 的那台。
         texts = reply_button_texts_of(update)
         self.assertIn("e2-test · E2 · 已停止", texts)
         self.assertNotIn("web-server", " ".join(texts))
         self.assertEqual(len(context.user_data["instances"]), 1)
 
     async def test_handle_resume_enriches_ip(self):
-        # 菜单 3 同样补公网 IP 再存、再格式化。
-        # 203.0.113.10 是 TEST-NET-3 文档保留地址，非真实 IP。
+        # 203.0.113.10 is a TEST-NET-3 documentation-reserved address, not a real IP. 203.0.113.10 是 TEST-NET-3 文档保留地址，非真实 IP。
         enriched = [dict(FAKE_INSTANCES[1],
                          **{"public-ip": "203.0.113.10"})]
         with patch.object(he, "list_instances",
@@ -1570,7 +1526,7 @@ class TestIpIpv6ResumeResizeVolumes(HandlersExtraTestCase):
             await he.handle_resume(update, context)
         mock_attach.assert_called_once()
         self.assertEqual(context.user_data["instances"], enriched)
-        # IP 在对应按钮上（文字只剩标题）。
+        # The IP is on the matching button (the text keeps only the title). IP 在对应按钮上（文字只剩标题）。
         self.assertIn("e2-test · E2 · 203.0.113.10",
                       reply_button_texts_of(update))
         self.assertNotIn("203.0.113.10", reply_text_of(update))
@@ -1651,8 +1607,6 @@ class TestIpIpv6ResumeResizeVolumes(HandlersExtraTestCase):
             context = make_context()
             await he.handle_volumes(update, context)
         text = reply_text_of(update)
-        # v1.8.1：文字只留标题 + 各组数量，容量标在可用组后面；
-        # 盘名与孤儿盘标记移到按钮上。
         self.assertIn("🟢 可用 2 块（150GB）", text)
         self.assertNotIn("boot-a", text)
         self.assertIn("⚠️ 孤儿盘 1 块（共 100GB）", text)
@@ -1660,8 +1614,6 @@ class TestIpIpv6ResumeResizeVolumes(HandlersExtraTestCase):
         self.assertEqual(len(context.user_data["volumes"]), 2)
 
     async def test_handle_volumes_hides_terminated(self):
-        # v1.11.0：已删除 / 删除中的盘一律不显示（文字、按钮、存的
-        # 列表里都没有），连“已删除”分组标题都不出现。
         volumes = [
             {"id": "ocid1.bootvolume.oc1..v1", "display-name": "boot-a",
              "size-in-gbs": 50, "lifecycle-state": "AVAILABLE",
@@ -1709,12 +1661,10 @@ class TestIpIpv6ResumeResizeVolumes(HandlersExtraTestCase):
         self.assertIn("boot-a", reply_text_of(update))
         self.assertIn("50GB", reply_text_of(update))
 
-        # 选扩容 -> 显示目标容量按钮
         update2 = make_update(callback_data="v:resize:0")
         await he.volume_resize_callback(update2, context)
         self.assertIn("只能扩不能缩", reply_text_of(update2))
 
-        # 选 100GB -> 执行扩容
         with patch.object(he, "resize_boot_volume",
                           return_value=None) as mock_resize:
             update3 = make_update(callback_data="v:volsize:0:100")
@@ -1907,13 +1857,11 @@ class TestIpManagementButtons(HandlersExtraTestCase):
             context = make_context()
             await he.handle_ip(update, context)
         text = reply_text_of(update)
-        # 现有列表文案与换 IP 提示保持不变。
         self.assertIn("203.0.113.1", text)
         self.assertIn("203.0.113.2", text)
         self.assertIn("换 IP：请在实例列表里选一台实例", text)
         callbacks = reply_callback_data_of(update)
         self.assertIn("ip_create", callbacks)
-        # 只有 AVAILABLE 且未绑定的那条挂删除按钮。
         self.assertIn("ip_delete:0", callbacks)
         self.assertNotIn("ip_delete:1", callbacks)
         self.assertIn("o:menu", callbacks)
@@ -2028,7 +1976,6 @@ class TestUserManagement(HandlersExtraTestCase):
             update = make_update()
             context = make_context()
             await he.handle_users(update, context)
-        # v1.7.1：文字只剩标题，名字在按钮里
         text = reply_text_of(update)
         self.assertIn("云账户（2 个用户）", text)
         self.assertNotIn("alice", text)
@@ -2313,7 +2260,6 @@ class TestUserManagement(HandlersExtraTestCase):
                           return_value=[dict(u)
                                         for u in self.FAKE_USERS]):
             await he.user_callback(update, context)
-        # v1.7.1：文字只剩标题，名字在按钮里
         text = reply_text_of(update)
         self.assertIn("云账户（2 个用户）", text)
         self.assertNotIn("alice", text)
@@ -2333,7 +2279,6 @@ class TestUsersWorkflowsRegionsSubscriptionMfa(HandlersExtraTestCase):
         update = make_update()
         context = make_context()
         await he.handle_users(update, context)
-        # v1.7.1：文字只剩标题，名字在按钮里，邮箱在详情页
         text = reply_text_of(update)
         self.assertIn("云账户（2 个用户）", text)
         self.assertNotIn("alice", text)
@@ -2471,7 +2416,7 @@ class TestMonitorToggles(HandlersExtraTestCase):
         await he.handle_autostart(update, context)
         state = context.bot_data["monitor"]
         self.assertTrue(state["autostart"])
-        self.assertTrue(state["on"])  # 开自启一并开监控
+        self.assertTrue(state["on"])
         self.assertEqual(state["chat_id"], TEST_CHAT_ID)
 
     async def test_daily_toggle(self):
@@ -2488,7 +2433,7 @@ class TestDisplayNames(HandlersExtraTestCase):
 
     def setUp(self):
         super().setUp()
-        # 每次测试前清空订阅区域缓存，避免测试间互相干扰
+        # Clear the subscription-region cache before each test to keep tests from interfering with each other. 每次测试前清空订阅区域缓存，避免测试间互相干扰。
         he._profile_regions = {}
         he._profile_regions_at = None
 
@@ -2607,7 +2552,6 @@ class TestDisplayNames(HandlersExtraTestCase):
                  for row in kb.inline_keyboard for btn in row]
         self.assertIn("p:DEFAULT", datas)
         self.assertIn("p:ACCOUNT2", datas)
-        # 不传 labels 时回退到 profile 名（兼容旧调用）
         kb2 = profile_keyboard(["DEFAULT"], "DEFAULT")
         self.assertEqual(kb2.inline_keyboard[0][0].text, "✅ DEFAULT")
 
@@ -2630,7 +2574,6 @@ class TestDisplayNames(HandlersExtraTestCase):
             self.assertEqual(get_cli.call_count, 2)
             counts2 = he.get_profile_region_counts()
             self.assertEqual(counts2, counts)
-            # 缓存命中：不再调 OCI
             self.assertEqual(get_cli.call_count, 2)
             self.assertEqual(list_regions.call_count, 2)
 
@@ -2752,7 +2695,6 @@ class TestQuotaDrillDown(HandlersExtraTestCase):
         self.assertIn("A1.Flex：3/4 核，12/24GB", text)
         mock_get_cli.assert_called_once_with(profile="DEFAULT",
                                              region="ap-seoul-1")
-        # 多区详情的返回按钮回区域菜单
         self.assertIn("q:acct:DEFAULT", reply_callback_data_of(update))
 
     async def test_quota_region_error_shows_friendly_message(self):
@@ -2896,7 +2838,7 @@ class TestVolumeGrouping(HandlersExtraTestCase):
         self.assertEqual(
             [name for _i, v in ordered for name in [v["display-name"]]],
             ["prod-1", "prod-2", "old-test-1", "old-test-2"])
-        # 下标是原列表下标（回调按它取回），不是分组后的下标。
+        # Indexes are indexes into the original list (callbacks use them to fetch back), not post-grouping indexes. 下标是原列表下标（回调按它取回），不是分组后的下标。
         self.assertEqual([i for i, _v in ordered], [1, 3, 0, 2])
 
     def test_volume_group_title_unknown_is_other(self):
@@ -2908,7 +2850,6 @@ class TestVolumeGrouping(HandlersExtraTestCase):
         text = he.fmt_volume_list(self.VOLUMES, [], 94)
         self.assertIn("🟢 可用 2 块（94GB）", text)
         self.assertIn("⚫ 已删除 2 块", text)
-        # 文字不再逐块重复盘名（盘名只在按钮上）。
         self.assertNotIn("prod-1", text)
         self.assertNotIn("old-test-1", text)
 
@@ -2925,7 +2866,6 @@ class TestVolumeGrouping(HandlersExtraTestCase):
                  for row in markup.inline_keyboard for b in row]
         self.assertEqual(texts[0], "🟢 可用（2 块）：")
         self.assertEqual(datas[0], "v:noop")
-        # 可用组在前、已删除组在后；按钮 callback 带原列表下标。
         self.assertIn("v:detail:1", datas)
         self.assertIn("v:detail:0", datas)
         self.assertLess(datas.index("v:detail:1"),

@@ -97,7 +97,7 @@ class TestCheckSslExpiry(unittest.TestCase):
                 check_ssl_expiry("example.com")
         self.assertEqual(ctx.exception.kind, "network")
         self.assertIn("example.com", str(ctx.exception))
-        # 不裸露 socket 细节。
+        # Do not expose raw socket details. 不裸露 socket 细节。
         self.assertNotIn("unreachable", str(ctx.exception))
         self.assertNotIn("Errno", str(ctx.exception))
 

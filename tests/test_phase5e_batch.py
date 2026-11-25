@@ -24,7 +24,7 @@ from web.app import create_app
 from web.auth import LOGIN_GUARD, SESSIONS, hash_password
 from web.routes.batch import BATCHES
 
-# 测试密码：运行时随机生成（不在代码里写任何固定口令）。
+# Test password: generated randomly at runtime (no fixed password is ever written in code). 测试密码：运行时随机生成（不在代码里写任何固定口令）。
 TEST_PASSWORD = secrets.token_urlsafe(16)
 
 FAKE_HOSTS = [
@@ -196,7 +196,7 @@ class TestBatchGetCancel(BatchTestCase):
         def _run(host, command, timeout=None):
             started.append(host["id"])
             if host["id"] == "host-a":
-                # 第一台执行时卡住，等测试发取消后再放行。
+                # The first host blocks while executing until the test sends a cancel, then is released. 第一台执行时卡住，等测试发取消后再放行。
                 deadline = time.time() + 5
                 while not gate["release"] and time.time() < deadline:
                     time.sleep(0.02)
@@ -206,12 +206,11 @@ class TestBatchGetCancel(BatchTestCase):
             "host_ids": ["host-a", "host-b", "host-c"], "command": "uptime",
             "confirm": True})
         batch_id = r.json()["batchId"]
-        # 等第一台开始执行。
         deadline = time.time() + 5
         while "host-a" not in started and time.time() < deadline:
             time.sleep(0.02)
         self.assertIn("host-a", started)
-        # 取消，再放行第一台。
+        # Cancel, then release the first host. 取消，再放行第一台。
         r = self.client.post(f"/api/batch/{batch_id}/cancel")
         self.assertEqual(r.status_code, 200)
         self.assertTrue(r.json()["batch"]["cancel_requested"])
@@ -221,7 +220,7 @@ class TestBatchGetCancel(BatchTestCase):
         self.assertEqual(batch["results"]["host-a"]["status"], "done")
         self.assertEqual(batch["results"]["host-b"]["status"], "cancelled")
         self.assertEqual(batch["results"]["host-c"]["status"], "cancelled")
-        # host-b/host-c 没被执行过。
+        # host-b/host-c were never executed. host-b/host-c 没被执行过。
         self.assertEqual(mock_run.call_count, 1)
 
 

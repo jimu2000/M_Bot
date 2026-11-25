@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tgbot import cpu_model as cm  # noqa: E402
 
-# 占位符（测试里不出现真实 OCID / IP）
+# Placeholders (no real OCID / IP in tests). 占位符（测试里不出现真实 OCID / IP）。
 FAKE_OCID = "ocid1.instance.oc1..cputest1"
 FAKE_OCID_2 = "ocid1.instance.oc1..cputest2"
 FAKE_HOST = {"host": "203.0.113.10", "port": 14422, "username": "root",
@@ -52,7 +52,7 @@ class TestParseCpuModel(unittest.TestCase):
             "Ampere Altra")
 
     def test_neoverse_n1_maps_to_ampere_altra(self):
-        # A1 实例的 lscpu 只报核心代号 Neoverse-N1，显示成芯片名。
+        # An A1 instance's lscpu only reports the core codename Neoverse-N1; display the chip name. A1 实例的 lscpu 只报核心代号 Neoverse-N1，显示成芯片名。
         self.assertEqual(
             cm.parse_cpu_model("Model name: Neoverse-N1"),
             "Ampere Altra")
@@ -64,7 +64,7 @@ class TestParseCpuModel(unittest.TestCase):
             "Intel Xeon Platinum 8272CL")
 
     def test_first_line_only(self):
-        # 多行输出只取第一行有冒号的值。
+        # From multi-line output, take only the first line that has a colon. 多行输出只取第一行有冒号的值。
         self.assertEqual(
             cm.parse_cpu_model("Model name: AMD EPYC 7J13 64-Core Processor\n"
                                "Model name: AMD EPYC 7742 64-Core Processor"),

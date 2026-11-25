@@ -25,29 +25,26 @@ from datetime import datetime, timezone
 import httpx
 
 # ================= 配置区（改这里） =================
-# Cloudflare API v4 基础地址。
+# Cloudflare API v4 base URL. Cloudflare API v4 基础地址。
 API_BASE_URL = "https://api.cloudflare.com/client/v4"
-# 单次请求超时（秒）。
+# Per-request timeout (seconds). 单次请求超时（秒）。
 DEFAULT_TIMEOUT = 30
-# 列表接口每页条数（list_zones / list_dns_records 翻页时用）。
+# Items per page for list endpoints (used when paging list_zones / list_dns_records). 列表接口每页条数（list_zones / list_dns_records 翻页时用）。
 DEFAULT_PER_PAGE = 50
-# SSL 证书检查直连超时（秒，check_ssl_expiry 用，不走 Cloudflare API）。
+# Direct-connect timeout (seconds) for SSL cert expiry checks (check_ssl_expiry; does not go through the Cloudflare API). SSL 证书检查直连超时（秒，check_ssl_expiry 用，不走 Cloudflare API）。
 SSL_CHECK_TIMEOUT = 10
-# 环境变量名（真实凭据只放环境变量，不要写进代码）：
-#   CF_API_TOKEN  - API Token（推荐，优先使用），示例占位符：cf-token-xxxxxxxx
-#   CF_API_KEY    - Global API Key（与 CF_EMAIL 配合使用），示例：cf-key-xxxxxxxx
-#   CF_EMAIL      - Global API Key 对应的账号邮箱，示例：user@example.com
+# Env var names (real credentials go only in env vars, never in code): 环境变量名（真实凭据只放环境变量，不要写进代码）：
+#   CF_API_TOKEN  - API Token (recommended, preferred), example placeholder: cf-token-xxxxxxxx. CF_API_TOKEN - API Token（推荐，优先使用），示例占位符：cf-token-xxxxxxxx。
+#   CF_API_KEY    - Global API Key (used with CF_EMAIL), example: cf-key-xxxxxxxx. CF_API_KEY - Global API Key（与 CF_EMAIL 配合使用），示例：cf-key-xxxxxxxx。
+#   CF_EMAIL      - Account email for the Global API Key, example: user@example.com. CF_EMAIL - Global API Key 对应的账号邮箱，示例：user@example.com。
 ENV_API_TOKEN = "CF_API_TOKEN"
 ENV_API_KEY = "CF_API_KEY"
 ENV_EMAIL = "CF_EMAIL"
 # =====================================================
 
-# create_dns_record / update_dns_record 允许的 DNS 记录类型。
+# DNS record types allowed by create_dns_record / update_dns_record. create_dns_record / update_dns_record 允许的 DNS 记录类型。
 ALLOWED_RECORD_TYPES = {"A", "AAAA", "CNAME", "TXT", "MX", "NS", "SRV", "CAA"}
-# Cloudflare error code 中表示 zone / record 不存在的（HTTP 200 但 success=false
-# 时也能按 code 判为 not_found）。7003: No route for that URI；
-# 7000: No route for that URI（旧版）；7001: Method not allowed 也常伴随不存在的
-# 路径；7007: Cannot find zone；7008: Cannot find record。按需补充。
+# Cloudflare error codes meaning the zone / record does not exist (also judged not_found by code when HTTP 200 but success=false). 7003: No route for that URI; 7000: No route for that URI (old version); 7001: Method not allowed often accompanies a missing path; 7007: Cannot find zone; 7008: Cannot find record. Add more as needed. Cloudflare error code 中表示 zone / record 不存在的（HTTP 200 但 success=false 时也能按 code 判为 not_found）。7003: No route for that URI；7000: No route for that URI（旧版）；7001: Method not allowed 也常伴随不存在的路径；7007: Cannot find zone；7008: Cannot find record。按需补充。
 NOT_FOUND_ERROR_CODES = {7000, 7003, 7007, 7008}
 
 
@@ -96,7 +93,7 @@ class CloudflareClient:
                 kind="config",
             )
         self.timeout = timeout if timeout is not None else DEFAULT_TIMEOUT
-        self._client = None  # 惰性创建，方便测试 patch
+        self._client = None  # Created lazily, so tests can patch it. 惰性创建，方便测试 patch。
 
     @property
     def auth_mode(self):
@@ -106,8 +103,7 @@ class CloudflareClient:
     # ---------- 内部 ----------
 
     def _get_http_client(self):
-        # 注意：不用 base_url。httpx 里 "/zones" 这种绝对路径会顶掉
-        # base_url 的 /client/v4 前缀，改由 _request/_list_paged 拼完整 URL。
+        # Note: do not use base_url. In httpx, an absolute path like "/zones" overrides base_url's /client/v4 prefix, so _request/_list_paged build the full URL instead. 注意：不用 base_url。httpx 里 "/zones" 这种绝对路径会顶掉 base_url 的 /client/v4 前缀，改由 _request/_list_paged 拼完整 URL。
         if self._client is None:
             self._client = httpx.Client(
                 headers=self._auth_headers,
@@ -132,7 +128,7 @@ class CloudflareClient:
     def _parse_response(response, path):
         """解析 Cloudflare 响应：429/auth/not_found/api 按状态码与 error code
         分类抛错；成功时返回解析后的 payload（dict）。"""
-        # 429：限流，读 Retry-After 头（只记录，不重试，调用方决定）
+        # 429: rate-limited; read the Retry-After header (only logged, never retried; the caller decides). 429：限流，读 Retry-After 头（只记录，不重试，调用方决定）。
         if response.status_code == 429:
             retry_after = response.headers.get("Retry-After")
             raise CloudflareError(

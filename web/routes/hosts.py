@@ -25,10 +25,10 @@ from web.deps import error_response, get_current_user
 
 router = APIRouter()
 
-# 主机记录允许的字段（请求体里的其他字段一律丢弃，尤其 password）。
+# Fields allowed in a host record (any other field in the request body is discarded, especially password). 主机记录允许的字段（请求体里的其他字段一律丢弃，尤其 password）。
 _HOST_FIELDS = ("name", "host", "port", "username", "auth_type",
                 "key_path", "tags", "notes")
-# 认证方式：password（连接时现输密码）/ key（密钥文件）。
+# Auth method: password (entered live at connect time) / key (key file). 认证方式：password（连接时现输密码）/ key（密钥文件）。
 AUTH_TYPES = ("password", "key")
 
 _HOSTS_LOCK = threading.Lock()
@@ -78,7 +78,7 @@ def _validate_host(data):
     if auth_type == "key" and not (data.get("key_path") or "").strip():
         raise ValueError("auth_type=key 时必须提供 key_path（密钥文件路径）")
     if auth_type == "password":
-        # 密码认证的主机不存密钥路径（避免混淆）。
+        # A password-auth host stores no key path (to avoid confusion). 密码认证的主机不存密钥路径（避免混淆）。
         data.pop("key_path", None)
 
 
@@ -171,7 +171,7 @@ class HostBody(BaseModel):
     key_path: str = None
     tags: list = []
     notes: str = ""
-    password: str = None  # 接受但丢弃：密码绝不存文件
+    password: str = None  # Accepted but discarded: passwords are never stored in files. 接受但丢弃：密码绝不存文件。
 
 
 class HostUpdateBody(BaseModel):
@@ -185,7 +185,7 @@ class HostUpdateBody(BaseModel):
     key_path: str = None
     tags: list = None
     notes: str = None
-    password: str = None  # 接受但丢弃
+    password: str = None
 
 
 @router.get("/api/hosts")

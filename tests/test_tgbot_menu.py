@@ -48,7 +48,7 @@ region = ap-singapore-1
 key_file = /home/user/.oci/fake-key.pem
 """
 
-# 注意：client_secret 一行用拼接写，避免字面量触发密文过滤。
+# Note: client_secret is written with concatenation, so the literal does not trip the secret filter. 注意：client_secret 一行用拼接写，避免字面量触发密文过滤。
 FAKE_AZURE_CONFIG_TEXT = (
     "[azure]\n"
     "subscription_id = 00000000-0000-0000-0000-000000000000\n"
@@ -149,8 +149,7 @@ class TestMenuConsistency(unittest.TestCase):
 
         菜单里有的命令必须有 handler（点了有反应），反之亦然。
         """
-        # 清环境变量再构建：Application 构建 httpx 客户端时会读代理
-        # 环境变量，本机沙箱的代理变量格式 httpx 解析不了（InvalidURL）。
+        # Clear env vars before building: building an Application reads proxy env vars for its httpx client, and this sandbox's proxy var format is unparseable by httpx (InvalidURL). 清环境变量再构建：Application 构建 httpx 客户端时会读代理环境变量，本机沙箱的代理变量格式 httpx 解析不了（InvalidURL）。
         with patch.dict(os.environ, {}, clear=True), \
              patch.object(bot_config, "TELEGRAM_BOT_TOKEN",
                           "123456:FAKE-TOKEN"), \
@@ -598,7 +597,7 @@ class TestRaninfoPassword(unittest.TestCase):
                 new_password = hm.reset_admin_password(
                     env_file=env_file, password_file=pw_file)
             mock_restart.assert_called_once_with("rbot-clone-web")
-            # env 文件：旧行保留 + 哈希行（pbkdf2_sha256 格式）。
+            # env file: old lines kept + a hash line (pbkdf2_sha256 format). env 文件：旧行保留 + 哈希行（pbkdf2_sha256 格式）。
             with open(env_file, encoding="utf-8") as f:
                 env_content = f.read()
             self.assertIn("KEEP_ME=yes", env_content)
@@ -606,11 +605,11 @@ class TestRaninfoPassword(unittest.TestCase):
                          if line.startswith("MBOT_WEB_PASSWORD_HASH=")][0]
             stored_hash = hash_line.split("=", 1)[1].strip("'")
             self.assertTrue(stored_hash.startswith("pbkdf2_sha256$"))
-            # 哈希与面板 verify_password 配套：新密码能验过，错密码验不过。
+            # The hash pairs with the panel's verify_password: the new password verifies, a wrong one does not. 哈希与面板 verify_password 配套：新密码能验过，错密码验不过。
             self.assertTrue(verify_password(new_password, stored_hash))
             self.assertFalse(verify_password("wrong-password-1",
                                              stored_hash))
-            # 密码文件：明文就是新密码，权限 600。
+            # Password file: its plaintext is the new password, mode 600. 密码文件：明文就是新密码，权限 600。
             with open(pw_file, encoding="utf-8") as f:
                 self.assertEqual(f.read().strip(), new_password)
             mode = stat.S_IMODE(os.stat(pw_file).st_mode)
@@ -703,7 +702,7 @@ class TestMeCommand(AllowedUserTestCase):
         self.assertIn("@testuser", text)
         self.assertIn("v9.9.9", text)
         self.assertIn("2 个", text)
-        # v1.15.0：账号用主区中文名显示，不再显示配置键名。
+        # Accounts are shown by their home-region display name, not the config key name. 账号用主区中文名显示，不再显示配置键名。
         self.assertIn("（新加坡、圣何塞）", text)
         self.assertIn("新加坡：RUNNING 2 台", text)
         self.assertIn("圣何塞：RUNNING 0 台", text)

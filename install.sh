@@ -52,55 +52,74 @@
 #     （lego，shortlived，有效期约 6 天，cron 每 2 天自动续期），
 #     访问 https://服务器IP:9527；申请失败时回落自签证书
 #     （浏览器会提示证书不受信任，点“继续访问”即可）。
-#   - 管理员密码不给就自动生成，只显示一次，并存到
-#     /root/.mbot-admin-password（600 权限）。
-#   - UFW 开启前会先放行当前 SSH 端口，不会把自己锁在外面。
+#   - The admin password is auto-generated when not given, shown only
+#     once, and stored in /root/.mbot-admin-password (mode 600).
+#   - UFW opens the current SSH port first, so it never locks you out.
+#
+# English summary: one-click installer for M_Bot (Debian / Ubuntu, run as
+# root). First run installs, later runs update and restart (config kept).
+# Commands after install: bash install.sh
+# start|stop|restart|status|log|upgrade|auto-upgrade|setup-auto-upgrade|uninstall.
+# Before installing you need: 1. a Telegram bot token from @BotFather
+# (/newbot for a new bot, /token to recover one); 2. your Telegram user ID
+# from @userinfobot (digits only; the allowlist holds just this ID);
+# 3. OCI API keys: send the config text to your own bot (/uploadapi) and
+# scp the .pem private key to /root/ (never via Telegram). Details in the
+# README section on getting OCI API keys. Non-interactive install: pass
+# MBOT_INSTALL_TOKEN / MBOT_INSTALL_USER_ID / MBOT_INSTALL_PASSWORD /
+# MBOT_INSTALL_DOMAIN / MBOT_INSTALL_CERT_METHOD / MBOT_INSTALL_CF_API_TOKEN
+# as env vars. Notes: the panel binds 127.0.0.1:9527 only and is exposed via
+# nginx + HTTPS; nginx comes from the official nginx.org repo (mainline),
+# falling back to the distro build; the firewall (ufw / firewalld / nftables
+# / iptables) opens SSH + 80 + 443 + 9527, and OCI security lists are opened
+# via the OCI API too; the Telegram token may be left empty (panel only);
+# with a domain, the A record is auto-created via Cloudflare when credentials
+# are available; install ends with a self-check (cert, login page, real
+# login, http-to-https redirect); a domain gets a Let's Encrypt cert
+# (http or Cloudflare DNS-01 via lego), no domain gets a Let's Encrypt IP
+# cert (shortlived, ~6 days, auto-renewed every 2 days) or falls back to a
+# self-signed cert.
 # ============================================================================
 
 set -euo pipefail
 
 # ================= 配置区（改这里） =================
-# 代码仓库（git clone 用）。
+# Repo URL (used by git clone). 代码仓库（git clone 用）。
 REPO_URL="https://github.com/jimu2000/M_Bot.git"
-# 安装目录（代码放这里；不要用 /tmp，重启会丢）。
+# Install directory (code lives here; not /tmp, it is wiped on reboot). 安装目录（代码放这里；不要用 /tmp，重启会丢）。
 INSTALL_DIR="/opt/mbot"
-# 环境文件（Token、密码哈希、会话密钥等，600 权限，systemd 读入）。
+# Env file (tokens, password hash, session key; mode 600, read by systemd). 环境文件（Token、密码哈希、会话密钥等，600 权限，systemd 读入）。
 ENV_FILE="/root/.mbot.env"
-# 管理员密码明文（自动生成时才写，600 权限，只显示一次后请妥善保存）。
+# Admin password in plain text (only written when auto-generated; mode 600, shown once, keep it safe). 管理员密码明文（自动生成时才写，600 权限，只显示一次后请妥善保存）。
 ADMIN_PASSWORD_FILE="/root/.mbot-admin-password"
-# Python 虚拟环境目录（install 时创建）。
+# Python virtualenv directory (created during install). Python 虚拟环境目录（install 时创建）。
 VENV_DIR="$INSTALL_DIR/venv"
-# systemd 服务名。
+# systemd service names. systemd 服务名。
 WEB_SERVICE="mbot-web"
 BOT_SERVICE="mbot-bot"
-# 面板端口（nginx 对外监听的端口，用户访问用；有域名时是 443，
+# Panel port (nginx listens on it for users; 443 with a domain, this port without one). 面板端口（nginx 对外监听的端口，用户访问用；有域名时是 443，没域名时是这个端口）。
 # 没域名时是这个端口）。
 PANEL_PORT=9527
-# 面板内部端口（uvicorn 只绑 127.0.0.1:INTERNAL_PORT，nginx 反代到它）。
-# 必须和 PANEL_PORT 不同：nginx 绑 0.0.0.0:9527 后，uvicorn 再绑
-# 127.0.0.1:9527 会报 address already in use（Linux 上通配绑定会占
-# 住该端口的所有地址，包括回环；2026-11-24 首尔测试机实测）。
+# Internal port (uvicorn binds 127.0.0.1:INTERNAL_PORT only; nginx proxies to it). 面板内部端口（uvicorn 只绑 127.0.0.1:INTERNAL_PORT，nginx 反代到它）。
+# Must differ from PANEL_PORT: after nginx binds 0.0.0.0:9527, uvicorn binding 127.0.0.1:9527 fails with address already in use (a wildcard bind also occupies loopback). 必须和 PANEL_PORT 不同：nginx 绑 0.0.0.0:9527 后，uvicorn 再绑 127.0.0.1:9527 会报 address already in use（Linux 上通配绑定会占住该端口的所有地址，包括回环）。
 INTERNAL_PORT=18001
-# nginx 反代配置路径（conf.d 里的独立文件，不动用户已有配置）。
+# nginx reverse-proxy config path (a standalone file under conf.d; user configs untouched). nginx 反代配置路径（conf.d 里的独立文件，不动用户已有配置）。
 NGINX_CONF="/etc/nginx/conf.d/mbot-panel.conf"
-# 自签证书目录（没域名、IP 证书又申请失败时回落用）。
+# Self-signed cert directory (fallback when no domain and the IP cert fails). 自签证书目录（没域名、IP 证书又申请失败时回落用）。
 SELFSIGN_DIR="/etc/nginx/ssl/mbot-selfsigned"
-# lego（ACME 客户端，IP 证书与 Cloudflare DNS-01 用；单文件 Go 二进制，
-# 从 GitHub releases 下，支持 --profile shortlived 与 IP 证书）。
-# 版本钉死：升级前先在测试机上验过新版的命令行没变。
+# lego (ACME client for IP certs and Cloudflare DNS-01; single-file Go binary from GitHub releases, supports --profile shortlived and IP certs). lego（ACME 客户端，IP 证书与 Cloudflare DNS-01 用；单文件 Go 二进制，从 GitHub releases 下，支持 --profile shortlived 与 IP 证书）。
+# Version pinned: verify a new version's CLI has not changed on a test machine before upgrading. 版本钉死：升级前先在测试机上验过新版的命令行没变。
 LEGO_VERSION="v5.7.0"
 LEGO_BIN="/usr/local/bin/lego"
 LEGO_DIR="/etc/lego"
-# lego 证书存放目录（lego 默认结构：certificates/<名字>.crt/.key）。
+# lego cert storage (lego default layout: certificates/<name>.crt/.key). lego 证书存放目录（lego 默认结构：certificates/<名字>.crt/.key）。
 LEGO_CERT_DIR="$LEGO_DIR/certificates"
-# ACME webroot（IP 证书 http-01 验证用，nginx 80 端口 serve 它）。
+# ACME webroot (served by nginx on port 80 for IP-cert http-01). ACME webroot（IP 证书 http-01 验证用，nginx 80 端口 serve 它）。
 ACME_WEBROOT="/var/www/mbot-acme"
-# 证书续期脚本与 cron（IP 证书只有 160 小时有效期，每 2 天跑一次；
-# lego run 兼续期：证书没到续期窗口时直接跳过）。
+# Renewal script + cron (IP certs last only 160 hours, run every 2 days; lego run also renews and skips when outside the renewal window). 证书续期脚本与 cron（IP 证书只有 160 小时有效期，每 2 天跑一次；lego run 兼续期：证书没到续期窗口时直接跳过）。
 RENEW_SCRIPT="/usr/local/bin/mbot-renew-cert.sh"
 RENEW_CRON="/etc/cron.d/mbot-cert-renew"
-# 定时自动升级（每天凌晨 4 点跑 install.sh auto-upgrade；已是
-# 最新版时只记日志不重启服务，有新版时才升级；失败时 Bark 通知）。
+# Scheduled auto-upgrade (runs install.sh auto-upgrade daily at 04:00; only logs when already latest, upgrades only on a new version; Bark notification on failure). 定时自动升级（每天凌晨 4 点跑 install.sh auto-upgrade；已是最新版时只记日志不重启服务，有新版时才升级；失败时 Bark 通知）。
 UPGRADE_CRON="/etc/cron.d/mbot-auto-upgrade"
 UPGRADE_LOG="/var/log/mbot-upgrade.log"
 AUTO_UPGRADE_SCHEDULE="0 4 * * *"
@@ -119,7 +138,6 @@ require_root() {
 }
 
 detect_os() {
-    # 只支持 Debian / Ubuntu（apt 系）；其他系统直接退出，不瞎装。
     if [ -r /etc/os-release ]; then
         # shellcheck disable=SC1091
         . /etc/os-release
@@ -131,14 +149,9 @@ detect_os() {
 }
 
 # ---------- 依赖 ----------
-# 新装系统首次启动时 unattended-upgrades / apt-daily 会占着 apt 锁，
-# 直接 apt-get 会报 Could not get lock，set -e 下脚本当场退出
-# （2026-11-24 首尔测试机实测：刚开机的 Ubuntu 24.04 必然撞上）。
+# A fresh system may still hold the apt lock (unattended-upgrades / apt-daily on first boot), so a direct apt-get fails with Could not get lock and set -e kills the script. 新装系统首次启动时 unattended-upgrades / apt-daily 会占着 apt 锁，直接 apt-get 会报 Could not get lock，set -e 下脚本当场退出。
 apt_locked() {
-    # 优先 fuser（psmisc，未装时回落 pgrep；都没有就当没锁）。
-    # 注意：不要匹配 unattended-upgrade 进程本身——
-    # unattended-upgrade-shutdown --wait-for-signal 是常驻守护，
-    # 不占 apt 锁，匹配它会永远等下去。
+    # Do not match the unattended-upgrade process itself: unattended-upgrade-shutdown --wait-for-signal is a resident daemon that holds no apt lock; waiting on it would hang forever. 注意：不要匹配 unattended-upgrade 进程本身——unattended-upgrade-shutdown --wait-for-signal 是常驻守护，不占 apt 锁，匹配它会永远等下去。
     if command_exists fuser; then
         fuser /var/lib/apt/lists/lock >/dev/null 2>&1 \
             || fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1
@@ -165,12 +178,8 @@ wait_for_apt() {
     done
 }
 
-# nginx.org 官方仓库（mainline 分支）：发行版自带的 nginx 太旧，
-# 这里加官方仓库装最新版。失败返回 1，调用方回落发行版版本，
-# 安装不中断。仓库 URL 里发行版名按系统自动换（debian/ubuntu，
-# 不能写死 debian，否则 Ubuntu 上 404）。
-# 密钥放专用 keyring + signed-by（只信任 nginx.org 的包），
-# 不放全局 trusted.gpg.d。
+# nginx.org official repo (mainline): the distro nginx is too old, so add the official repo for the latest version. Failure returns 1 and the caller falls back to the distro version; install continues. The repo URL swaps the distro name automatically (debian/ubuntu, never hardcode debian or Ubuntu gets 404). nginx.org 官方仓库（mainline 分支）：发行版自带的 nginx 太旧，这里加官方仓库装最新版。失败返回 1，调用方回落发行版版本，安装不中断。仓库 URL 里发行版名按系统自动换（debian/ubuntu，不能写死 debian，否则 Ubuntu 上 404）。
+# Key goes to a dedicated keyring with signed-by (only nginx.org packages trusted), not the global trusted.gpg.d. 密钥放专用 keyring + signed-by（只信任 nginx.org 的包），不放全局 trusted.gpg.d。
 setup_nginx_repo() {
     local id codename
     id="$(. /etc/os-release; echo "${ID:-}")"
@@ -178,7 +187,7 @@ setup_nginx_repo() {
         debian|ubuntu) : ;;
         *) warn "未知发行版 $id，nginx 用发行版自带版本。"; return 1 ;;
     esac
-    # 取仓库密钥要 curl + gpg + lsb-release，精简镜像上未必预装。
+    # Fetching the repo key needs curl + gpg + lsb-release, which minimal images may not preinstall. 取仓库密钥要 curl + gpg + lsb-release，精简镜像上未必预装。
     if ! command_exists curl || ! command_exists gpg \
             || ! command_exists lsb_release; then
         wait_for_apt
@@ -212,8 +221,7 @@ install_deps() {
     info "安装系统依赖（python3 / git / nginx / ufw / certbot）…"
     export DEBIAN_FRONTEND=noninteractive
     wait_for_apt
-    # 等锁与 apt-get 之间仍可能有竞态（锁刚被别的进程抢走），
-    # update / install 各重试 3 次，失败才退出。
+    # A race can still occur between the lock check and apt-get (another process may grab the lock), so update / install each retry 3 times before giving up. 等锁与 apt-get 之间仍可能有竞态（锁刚被别的进程抢走），update / install 各重试 3 次，失败才退出。
     local attempt=0
     until apt-get update -qq; do
         attempt=$((attempt + 1))
@@ -222,11 +230,9 @@ install_deps() {
         sleep 15
         wait_for_apt
     done
-    # nginx 要最新版：先加 nginx.org 官方仓库，加不上回落发行版版本。
     setup_nginx_repo || true
     attempt=0
-    # --force-confold：机器上已有 nginx 配置时保留它（不覆盖用户改过的
-    # 配置；新装时没影响）。
+    # --force-confold: keep an existing nginx config on the machine (do not overwrite user edits; no effect on a fresh install). --force-confold：机器上已有 nginx 配置时保留它（不覆盖用户改过的配置；新装时没影响）。
     until apt-get install -y -qq -o Dpkg::Options::="--force-confdef" \
         -o Dpkg::Options::="--force-confold" \
         python3 python3-venv python3-pip git nginx \
@@ -241,13 +247,11 @@ install_deps() {
 }
 
 # ---------- 交互提问 ----------
-# 已有环境文件时不重复问（更新重启不丢配置）；非交互变量优先。
 prompt_config() {
     if [ -f "$ENV_FILE" ]; then
         info "检测到已有配置 $ENV_FILE，跳过提问（更新模式）。"
         FRESH_INSTALL=0
-        # 更新模式也认 MBOT_INSTALL_CERT_METHOD（否则默认走 http，
-        # 环境变量传了 cfdns 也不生效）。非法值回落 http，不中断更新。
+        # Update mode also honors MBOT_INSTALL_CERT_METHOD (otherwise it defaults to http and an env-passed cfdns is ignored). Invalid values fall back to http without interrupting the update. 更新模式也认 MBOT_INSTALL_CERT_METHOD（否则默认走 http，环境变量传了 cfdns 也不生效）。非法值回落 http，不中断更新。
         CERT_METHOD="${MBOT_INSTALL_CERT_METHOD:-http}"
         case "$CERT_METHOD" in
             http|cfdns) : ;;
@@ -258,11 +262,8 @@ prompt_config() {
     FRESH_INSTALL=1
     echo
     echo "=== M_Bot 安装配置（Token 留空则只装面板；密码/域名可留空） ==="
-    # Token：环境变量 > 交互输入 > 留空（只装面板，不装机器人）。
-    # 注意：read 后面都要加 || true——nohup / 非交互运行时 stdin
-    # 可能是 EOF，read 返回非零，set -e 会直接杀掉脚本。
-    # EOF 时变量保持为空，后面按"未提供"处理（Token 缺了只装面板，
-    # 密码/域名缺了走默认值）。
+    # Token: env var > interactive input > empty (panel only, no bot). Token：环境变量 > 交互输入 > 留空（只装面板，不装机器人）。
+    # Every read needs || true: under nohup / non-interactive runs stdin may be EOF, read returns non-zero and set -e kills the script. On EOF the variable stays empty and is handled as not provided below. 注意：read 后面都要加 || true——nohup / 非交互运行时 stdin 可能是 EOF，read 返回非零，set -e 会直接杀掉脚本。EOF 时变量保持为空，后面按“未提供”处理（Token 缺了只装面板，密码/域名缺了走默认值）。
     TOKEN="${MBOT_INSTALL_TOKEN:-}"
     if [ -z "$TOKEN" ]; then
         printf "Telegram 机器人 Token（@BotFather 处获得，留空则只装面板）："
@@ -279,7 +280,6 @@ prompt_config() {
         info "未提供 Token：只装面板，不装机器人。"
         info "以后想加机器人：在 $ENV_FILE 里填 MBOT_TELEGRAM_TOKEN 与 MBOT_ALLOWED_USERS 后重跑安装即可。"
     fi
-    # 用户 ID：有 Token 时必填（机器人白名单），没 Token 时不用问。
     USER_ID="${MBOT_INSTALL_USER_ID:-}"
     if [ "$BOT_ENABLED" = "1" ]; then
         if [ -z "$USER_ID" ]; then
@@ -290,7 +290,6 @@ prompt_config() {
             *[!0-9]*|"") die "用户 ID 必须是纯数字。" ;;
         esac
     fi
-    # 管理员密码：环境变量 > 交互输入 > 自动生成。
     ADMIN_PASSWORD="${MBOT_INSTALL_PASSWORD:-}"
     if [ -z "$ADMIN_PASSWORD" ]; then
         printf "面板管理员密码（留空自动生成 16 位随机密码）："
@@ -303,7 +302,6 @@ prompt_config() {
     else
         GENERATED_PASSWORD=0
     fi
-    # 域名：环境变量 > 交互输入 > 留空（自签证书 + IP 访问）。
     DOMAIN="${MBOT_INSTALL_DOMAIN:-}"
     if [ -z "${MBOT_INSTALL_DOMAIN+x}" ]; then
         printf "面板域名（留空则用自签证书 + IP 访问，如 panel.example.com）："
@@ -315,8 +313,6 @@ prompt_config() {
             *) die "域名格式不对，应含至少一个点（如 panel.example.com）。" ;;
         esac
     fi
-    # 证书验证方式：有域名时问（http 默认 / cfdns）。
-    # 没域名时不问，自动走 IP 证书。
     CERT_METHOD="${MBOT_INSTALL_CERT_METHOD:-http}"
     if [ -n "$DOMAIN" ] && [ -z "${MBOT_INSTALL_CERT_METHOD+x}" ]; then
         printf "域名证书验证方式（http=80 端口验证[默认]，cfdns=Cloudflare DNS 验证）："
@@ -327,9 +323,7 @@ prompt_config() {
         http|cfdns) : ;;
         *) die "验证方式只能是 http 或 cfdns。" ;;
     esac
-    # Cloudflare 凭据：有域名时都先读一份（DNS 自动绑定要用；
-    # cfdns 验证更是必须）。优先级：环境变量 > OCI 配置文件
-    # ~/oci_config 的 [cloudflare] 段 > 交互输入（只在 cfdns 时问）。
+    # Cloudflare credentials: read up front when a domain is set (needed for DNS auto-binding, and mandatory for cfdns). Priority: env vars > [cloudflare] section of ~/oci_config > interactive input (only asked for cfdns). Cloudflare 凭据：有域名时都先读一份（DNS 自动绑定要用；cfdns 验证更是必须）。优先级：环境变量 > OCI 配置文件 ~/oci_config 的 [cloudflare] 段 > 交互输入（只在 cfdns 时问）。
     CF_API_TOKEN=""; CF_API_KEY=""; CF_EMAIL=""
     if [ -n "$DOMAIN" ]; then
         load_cf_credentials || true
@@ -348,10 +342,7 @@ prompt_config() {
 }
 
 # ---------- 代码 ----------
-# 把已安装的代码更新到最新版：先 git pull，快进失败时改用
-# fetch + reset 强制同步（只动 git 跟踪的代码文件；环境文件在
-# /root/.mbot.env、运行时数据与 __pycache__ 都不在 git 里，不受影响）；
-# 两条路都失败时直接退出，绝不静默用旧代码继续装。
+# Update installed code to the latest: git pull first; on fast-forward failure use fetch + reset to force-sync (only git-tracked code files; the env file at /root/.mbot.env, runtime data and __pycache__ are not in git and are untouched). If both fail, exit instead of silently installing with stale code. 把已安装的代码更新到最新版：先 git pull，快进失败时改用 fetch + reset 强制同步（只动 git 跟踪的代码文件；环境文件在 /root/.mbot.env、运行时数据与 __pycache__ 都不在 git 里，不受影响）；两条路都失败时直接退出，绝不静默用旧代码继续装。
 update_code() {
     info "更新代码到最新版…"
     if (cd "$INSTALL_DIR" && git pull --ff-only); then
@@ -366,7 +357,6 @@ update_code() {
 }
 
 installed_version() {
-    # 已安装代码的版本号（VERSION 文件内容，读不到时返回 unknown）。
     if [ -f "$INSTALL_DIR/VERSION" ]; then
         cat "$INSTALL_DIR/VERSION"
     else
@@ -396,8 +386,7 @@ setup_venv() {
     "$VENV_DIR/bin/pip" install --quiet --upgrade pip
     "$VENV_DIR/bin/pip" install --quiet -r "$INSTALL_DIR/requirements.txt" \
         || die "pip 安装依赖失败，请检查网络。"
-    # OCI 调用走官方 OCI CLI（subprocess），requirements.txt 里没有，
-    # 这里单独装进 venv，MBOT_OCI_CLI 指到它。
+    # OCI calls use the official OCI CLI (subprocess); it is not in requirements.txt, so install it separately into the venv and point MBOT_OCI_CLI at it. OCI 调用走官方 OCI CLI（subprocess），requirements.txt 里没有，这里单独装进 venv，MBOT_OCI_CLI 指到它。
     "$VENV_DIR/bin/pip" install --quiet oci-cli \
         || die "pip 安装 oci-cli 失败，请检查网络。"
     ok "Python 依赖已就绪。"
@@ -409,20 +398,15 @@ write_env_file() {
     info "写入环境文件 $ENV_FILE（600 权限）…"
     local secret hash
     secret="$(openssl rand -hex 32)"
-    # 密码经环境变量传给 Python，避免 shell 引用转义问题。
-    # PYTHONPATH 必须指到安装目录：安装脚本的当前目录不一定是
-    # /opt/mbot，python -c 不加 PYTHONPATH 就 import 不到 web.auth
-    # （2026-11-24 首尔测试机实测：hash 生成失败就是这个原因）。
-    # 出错时把 stderr 打出来，别只给一句"失败"，否则没法定位。
+    # Pass the password to Python via an env var to avoid shell quoting/escaping issues. 密码经环境变量传给 Python，避免 shell 引用转义问题。
+    # PYTHONPATH must point at the install dir: the script's cwd is not necessarily /opt/mbot, and without it python -c cannot import web.auth. PYTHONPATH 必须指到安装目录：安装脚本的当前目录不一定是 /opt/mbot，python -c 不加 PYTHONPATH 就 import 不到 web.auth。
     hash="$(MBOT_PW="$ADMIN_PASSWORD" PYTHONPATH="$INSTALL_DIR" \
         "$VENV_DIR/bin/python" -c \
         "import os; from web.auth import hash_password; print(hash_password(os.environ['MBOT_PW']))" \
         2>/tmp/mbot_hash_err)" \
         || { cat /tmp/mbot_hash_err >&2; die "生成密码哈希失败。"; }
     [ -n "$hash" ] || die "生成密码哈希失败（空哈希）。"
-    # compartment：从 OCI 配置的 tenancy 推导（根 compartment 即
-    # tenancy）；读不到时不写这行（绝不再写占位符），面板启动时再
-    # 从 tenancy 推导。
+    # Compartment is derived from the OCI config's tenancy (the root compartment is the tenancy); when unreadable, omit the line (never write a placeholder again) and let the panel derive it from the tenancy at startup. compartment：从 OCI 配置的 tenancy 推导（根 compartment 即 tenancy）；读不到时不写这行（绝不再写占位符），面板启动时再从 tenancy 推导。
     local compartment_line=""
     local tenancy
     tenancy="$(read_tenancy_from_oci_config 2>/dev/null || true)"
@@ -433,7 +417,7 @@ write_env_file() {
         warn "未在 OCI 配置里找到 tenancy，未写 MBOT_COMPARTMENT_DEFAULT（面板会在你放好 OCI 配置后自动推导）。"
     fi
     cat > "$ENV_FILE" <<EOF
-# M_Bot 运行配置（install.sh 生成，600 权限，不要分享此文件）
+# M_Bot runtime config (generated by install.sh, mode 600, do not share this file). M_Bot 运行配置（install.sh 生成，600 权限，不要分享此文件）。
 MBOT_TELEGRAM_TOKEN=$TOKEN
 MBOT_ALLOWED_USERS=$USER_ID
 MBOT_WEB_PASSWORD_HASH=$hash
@@ -448,16 +432,12 @@ EOF
         printf '%s\n' "$ADMIN_PASSWORD" > "$ADMIN_PASSWORD_FILE"
         chmod 600 "$ADMIN_PASSWORD_FILE"
     fi
-    # 运行时数据目录（机器人与面板共用 tgbot/data，如 bark.json、
-    # region_plans.json；面板数据在 web/data）。
     mkdir -p "$INSTALL_DIR/tgbot/data" "$INSTALL_DIR/web/data"
     ok "环境文件已写入。"
 }
 
 # ---------- systemd 单元 ----------
-# 本机上实际存在的 M_Bot 服务（面板一定有，机器人只在装了时有）。
-# start/stop/restart/status/log/upgrade 都走它，避免对不存在的
-# 机器人服务调 systemctl（会报错退出）。
+# Services that actually exist on this machine (panel always, bot only when installed). start/stop/restart/status/log/upgrade use this list to avoid calling systemctl on a missing bot service (which would error out). 本机上实际存在的 M_Bot 服务（面板一定有，机器人只在装了时有）。start/stop/restart/status/log/upgrade 都走它，避免对不存在的机器人服务调 systemctl（会报错退出）。
 mbot_services() {
     printf '%s' "$WEB_SERVICE"
     if [ -f "/etc/systemd/system/${BOT_SERVICE}.service" ]; then
@@ -466,8 +446,7 @@ mbot_services() {
 }
 
 running_services() {
-    # 升级时只重启“在跑或已设自启”的服务：被特意停掉并禁用
-    # 的服务（如机器人留着不用）不要擅自拉起来。
+    # On upgrade only restart services that are running or enabled: a service deliberately stopped and disabled (e.g. bot kept but unused) must not be pulled up on its own. 升级时只重启“在跑或已设自启”的服务：被特意停掉并禁用的服务（如机器人留着不用）不要擅自拉起来。
     local svc
     for svc in $(mbot_services); do
         if systemctl is-active -q "$svc" 2>/dev/null \
@@ -478,16 +457,14 @@ running_services() {
 }
 
 write_systemd_units() {
-    # 更新模式下 prompt_config 没跑，BOT_ENABLED 未设：从 env 文件
-    # 看有没有 Token 决定要不要机器人服务。
-    # 注意：grep 默认是 BRE，.+ 里的 + 是字面加号、永远匹配不到，
-    # 所以只用 . 测“值非空”（v1.37.1 修：旧正则把机器人误删了）。
+    # In update mode prompt_config did not run, so BOT_ENABLED is unset: decide from whether the env file has a Token. 更新模式下 prompt_config 没跑，BOT_ENABLED 未设：从 env 文件看有没有 Token 决定要不要机器人服务。
+    # Note: grep defaults to BRE, where + in .+ is a literal plus that never matches; test non-empty with . only (an old regex used to delete the bot by mistake). 注意：grep 默认是 BRE，.+ 里的 + 是字面加号、永远匹配不到，所以只用 . 测“值非空”（旧正则曾把机器人误删）。
     if [ -z "${BOT_ENABLED:-}" ]; then
         if grep -q "^MBOT_TELEGRAM_TOKEN=." "$ENV_FILE" 2>/dev/null; then
             BOT_ENABLED=1
         elif [ -f "/etc/systemd/system/${BOT_SERVICE}.service" ] \
                 && ! [ -f "$ENV_FILE" ]; then
-            # env 文件丢了但机器人单元还在：保留机器人，不擅自拆掉。
+            # Env file lost but the bot unit still exists: keep the bot, do not tear it down on our own. env 文件丢了但机器人单元还在：保留机器人，不擅自拆掉。
             BOT_ENABLED=1
         else
             BOT_ENABLED=0
@@ -507,9 +484,7 @@ WorkingDirectory=${INSTALL_DIR}
 Environment="PATH=${VENV_DIR}/bin:/usr/local/bin:/usr/bin:/bin"
 Environment="SUPPRESS_LABEL_WARNING=True"
 EnvironmentFile=${ENV_FILE}
-# 面板与机器人读写 env 文件都走 web/config.py 的 ENV_FILE（它默认
-# 指向旧部署路径）；安装版 env 在 /root/.mbot.env，必须显式指
-# 过去，否则删账号 env_removed:false、加账号写进 stray 文件。
+# The panel and bot both read/write the env file through web/config.py's ENV_FILE (which defaults to the old deploy path); the installer env lives at /root/.mbot.env and must be pointed at explicitly, or account add/remove writes land in a stray file. 面板与机器人读写 env 文件都走 web/config.py 的 ENV_FILE（它默认指向旧部署路径）；安装版 env 在 /root/.mbot.env，必须显式指过去，否则删账号 env_removed:false、加账号写进 stray 文件。
 Environment="MBOT_WEB_ENV_FILE=${ENV_FILE}"
 ExecStart=${VENV_DIR}/bin/uvicorn web.app:app --host 127.0.0.1 --port ${INTERNAL_PORT}
 Restart=always
@@ -534,7 +509,6 @@ WorkingDirectory=${INSTALL_DIR}
 Environment="PATH=${VENV_DIR}/bin:/usr/local/bin:/usr/bin:/bin"
 Environment="SUPPRESS_LABEL_WARNING=True"
 EnvironmentFile=${ENV_FILE}
-# 与面板单元同理：机器人读写 env 文件也走 web/config.py 的 ENV_FILE。
 Environment="MBOT_WEB_ENV_FILE=${ENV_FILE}"
 ExecStart=${VENV_DIR}/bin/python -m tgbot.bot
 Restart=on-failure
@@ -546,8 +520,7 @@ StandardError=journal
 WantedBy=multi-user.target
 EOF
         systemctl daemon-reload
-        # 必须用 restart 不用 --now：更新模式下服务已在跑，--now 不重启，
-        # 旧进程会一直跑旧代码（v1.37.1 修：面板曾因此停留在旧版）。
+        # Must use restart, not --now: in update mode the service is already running, --now does not restart it and the old process keeps running old code. 必须用 restart 不用 --now：更新模式下服务已在跑，--now 不重启，旧进程会一直跑旧代码。
         systemctl enable "$WEB_SERVICE" "$BOT_SERVICE" \
             || die "设置服务自启失败。"
         systemctl restart "$WEB_SERVICE" "$BOT_SERVICE" \
@@ -555,7 +528,6 @@ EOF
         ok "服务已启动（开机自启）。"
         return 0
     fi
-    # 只装面板：之前装过机器人、现在改只装面板时，把旧机器人服务停掉删掉。
     if [ -f "/etc/systemd/system/${BOT_SERVICE}.service" ]; then
         systemctl stop "$BOT_SERVICE" 2>/dev/null || true
         systemctl disable "$BOT_SERVICE" 2>/dev/null || true
@@ -563,8 +535,6 @@ EOF
         info "已停掉旧的机器人服务（本次只装面板）。"
     fi
     systemctl daemon-reload
-    # 必须用 restart 不用 --now：更新模式下服务已在跑，--now 不重启，
-    # 旧进程会一直跑旧代码（v1.37.1 修）。
     systemctl enable "$WEB_SERVICE" \
         || die "设置面板服务自启失败。"
     systemctl restart "$WEB_SERVICE" \
@@ -573,15 +543,12 @@ EOF
 }
 
 # ---------- nginx 反代 ----------
-# 面板只绑 127.0.0.1:9527；nginx 对外反代并加 HTTPS + WebSocket 支持。
-# ---------- 面板 nginx 安全加固（用户常用 nginx.conf 的通用部分） ----------
-# 来源：用户平时用的 Cloudreve 反代配置（example.com）。
-# 只取通用加固项，不取业务专属项：Cloudreve 反代地址、xray 8443
-# 回落、client_max_body_size 0（面板上传走 100m 上限，0 是无限上传）。
-# 修 ARM 漏洞测试 L-1（安全响应头全缺）并挡扫描器爬虫。
-# NGINX_CONF 是 conf.d 下的 vhost 文件，由 nginx.conf 的 http 块
-# include，所以文件顶部的 map 指令在 http 上下文，合法。
-# 单引号定义：内容里的 $ 是 nginx 变量，保持原样写进配置文件。
+# Panel nginx hardening (generic parts of the user's everyday Cloudreve reverse-proxy config for example.com). 面板 nginx 安全加固（用户常用 nginx.conf 的通用部分）。
+# Source: the user's everyday Cloudreve reverse-proxy config (example.com). 来源：用户平时用的 Cloudreve 反代配置（example.com）。
+# Only generic hardening is taken, not business-specific bits: the Cloudreve proxy address, the xray 8443 fallback, client_max_body_size 0 (panel uploads cap at 100m; 0 means unlimited). 只取通用加固项，不取业务专属项：Cloudreve 反代地址、xray 8443 回落、client_max_body_size 0（面板上传走 100m 上限，0 是无限上传）。
+# Adds the missing security response headers (vuln test L-1) and blocks scanner crawlers. 修 ARM 漏洞测试 L-1（安全响应头全缺）并挡扫描器爬虫。
+# NGINX_CONF is a vhost file under conf.d, included by nginx.conf's http block, so the map directives at the top of the file are in http context and legal. NGINX_CONF 是 conf.d 下的 vhost 文件，由 nginx.conf 的 http 块 include，所以文件顶部的 map 指令在 http 上下文，合法。
+# Single-quoted definition: $ inside stays literal nginx variables when written to the config file. 单引号定义：内容里的 $ 是 nginx 变量，保持原样写进配置文件。
 NGINX_SECURITY_HEADERS='    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
     add_header X-Frame-Options "SAMEORIGIN" always;
     add_header X-Content-Type-Options "nosniff" always;
@@ -591,14 +558,12 @@ NGINX_HTTP_MAPS='    # map 哈希桶：正则较长，默认 64 字节桶会溢�
     map_hash_bucket_size 128;
     map_hash_max_size 512;
 
-    # Cloudflare 后的真实 IP（未走 CF 时回落 $remote_addr）。
     map $http_cf_connecting_ip $clientRealIp {
         ""      $remote_addr;
         default $http_cf_connecting_ip;
     }
 
-    # 恶意爬虫甄别（只拦扫描器；python/libwww/java 等通用库 UA 不拦，
-    # 以免挡住用户用脚本调面板 API）。
+    # Malicious-crawler filter (scanners only; generic library UAs like python/libwww/java are NOT blocked, so user scripts calling the panel API keep working). 恶意爬虫甄别（只拦扫描器；python/libwww/java 等通用库 UA 不拦，以免挡住用户用脚本调面板 API）。
     map $http_user_agent $is_bad_bot {
         default 0;
         "~*nmap|sqlmap|nikto|zgrab|masscan|shodan|fofa|censys|nuclei|scanner" 1;
@@ -616,7 +581,7 @@ write_nginx_selfsigned() {
             || die "自签证书生成失败。"
     fi
     cat > "$NGINX_CONF" <<EOF
-# M_Bot 面板反代（install.sh 生成，自签证书，监听 ${PANEL_PORT}）
+# M_Bot panel reverse proxy (generated by install.sh, self-signed cert, listens on ${PANEL_PORT}). M_Bot 面板反代（install.sh 生成，自签证书，监听 ${PANEL_PORT}）。
 ${NGINX_HTTP_MAPS}
 server {
     listen ${PANEL_PORT} ssl;
@@ -655,10 +620,7 @@ EOF
 
 write_nginx_domain() {
     local domain="$1"
-    # certbot 只发证、不改 nginx 配置（certonly --webroot），443 的
-    # vhost 我们自己写：certbot --nginx 会在 443 被 xray 占了时重载
-    # 失败，证发了也白发（2026-11-24 .101 实测：xray 占 443 是常态）。
-    # 80 被非 nginx 进程占用时 http-01 验证不了，直接回落自签。
+    # certbot only issues certs (certonly --webroot) and never edits the nginx config: we write the 443 vhost ourselves, because certbot --nginx fails its reload when 443 is held by xray and the issued cert would be wasted. certbot 只发证、不改 nginx 配置（certonly --webroot），443 的 vhost 我们自己写：certbot --nginx 会在 443 被 xray 占了时重载失败，证发了也白发。
     if command_exists ss; then
         local holder
         holder="$(ss -ltnp 2>/dev/null | grep ':80 ' | grep -v nginx | head -n 1 || true)"
@@ -669,8 +631,6 @@ write_nginx_domain() {
             return 0
         fi
     fi
-    # certbot 只在有域名时才需要，这里按需安装，装不上也不致命。
-    # certonly --webroot 不需要 nginx 插件包。
     if ! command_exists certbot; then
         info "安装 certbot（域名证书用）…"
         wait_for_apt
@@ -683,8 +643,7 @@ write_nginx_domain() {
         if certbot certonly --webroot -w "$ACME_WEBROOT" -d "$domain" \
                 --non-interactive --agree-tos \
                 --register-unsafely-without-email >/dev/null 2>&1; then
-            # 续期后重载 nginx：certbot 自带定时续期（certbot.timer），
-            # 不挂 deploy hook 的话续了新证 nginx 还在用旧证。
+            # Reload nginx after renewal: certbot's own timer renews certs, but without a deploy hook nginx keeps serving the old cert. 续期后重载 nginx：certbot 自带定时续期（certbot.timer），不挂 deploy hook 的话续了新证 nginx 还在用旧证。
             mkdir -p /etc/letsencrypt/renewal-hooks/deploy
             printf '#!/bin/sh\nsystemctl reload nginx\n' \
                 > /etc/letsencrypt/renewal-hooks/deploy/mbot-reload-nginx.sh
@@ -707,12 +666,8 @@ write_nginx_domain() {
 }
 
 # ---------- lego（IP 证书 / Cloudflare DNS-01） ----------
-# 从 OCI 配置文件（~/oci_config，旧版回退 ~/.oci/config）的
-# [cloudflare] 段读 CF 凭据：cf_token / cf_key（cf_account_key）/
-# cf_email。读到可用的就设 CF_API_TOKEN / CF_API_KEY / CF_EMAIL
-# 三个变量并返回 0，否则返回 1（调用方改问用户）。
-# 用 python3 解析（configparser，段名大小写不敏感；install_deps
-# 已装好 python3，prompt_config 在它之后跑）。
+# Read CF credentials from the [cloudflare] section of ~/oci_config (old fallback ~/.oci/config): cf_token / cf_key (cf_account_key) / cf_email. When usable, set CF_API_TOKEN / CF_API_KEY / CF_EMAIL and return 0, else return 1 (caller asks the user instead). 从 OCI 配置文件（~/oci_config，旧版回退 ~/.oci/config）的 [cloudflare] 段读 CF 凭据：cf_token / cf_key（cf_account_key）/ cf_email。读到可用的就设 CF_API_TOKEN / CF_API_KEY / CF_EMAIL 三个变量并返回 0，否则返回 1（调用方改问用户）。
+# Parsed with python3 (configparser, section names case-insensitive; install_deps already installed python3 and prompt_config runs after it). 用 python3 解析（configparser，段名大小写不敏感；install_deps 已装好 python3，prompt_config 在它之后跑）。
 read_cf_from_oci_config() {
     local cfg=""
     for f in "$HOME/oci_config" "$HOME/.oci/config"; do
@@ -746,12 +701,9 @@ print(email)
     return 0
 }
 
-# 从 OCI 配置文件（~/oci_config，旧版回退 ~/.oci/config）的 [DEFAULT]
-# 段读 tenancy OCID（根 compartment 即 tenancy）。安装时用它填
-# MBOT_COMPARTMENT_DEFAULT，不再写占位符（占位符会让面板实例列表
-# 报 502 "Invalid compartmentId"、创建备份报 404）。
-# 读不到时返回 1（调用方不写这行，面板启动时再从 tenancy 推导）。
-# 注意 configparser 默认把 [DEFAULT] 当默认段，必须换名才能读到。
+# Read the tenancy OCID from the [DEFAULT] section of ~/oci_config (old fallback ~/.oci/config); the root compartment is the tenancy. Used at install time to fill MBOT_COMPARTMENT_DEFAULT instead of a placeholder (a placeholder makes the panel instance list 502 Invalid compartmentId and backup creation 404). 从 OCI 配置文件（~/oci_config，旧版回退 ~/.oci/config）的 [DEFAULT] 段读 tenancy OCID（根 compartment 即 tenancy）。安装时用它填 MBOT_COMPARTMENT_DEFAULT，不再写占位符（占位符会让面板实例列表报 502 “Invalid compartmentId”、创建备份报 404）。
+# Return 1 when unreadable (caller omits the line; the panel derives it from the tenancy at startup). 读不到时返回 1（调用方不写这行，面板启动时再从 tenancy 推导）。
+# Note: configparser treats [DEFAULT] as the default section, so it must be renamed to be readable. 注意 configparser 默认把 [DEFAULT] 当默认段，必须换名才能读到。
 read_tenancy_from_oci_config() {
     local cfg=""
     for f in "$HOME/oci_config" "$HOME/.oci/config"; do
@@ -776,10 +728,6 @@ print(tenancy)
 ' "$cfg" 2>/dev/null
 }
 
-# 读 Cloudflare 凭据（DNS 自动绑定与 cfdns 共用）：
-# 环境变量 > OCI 配置文件 ~/oci_config 的 [cloudflare] 段。
-# 读到可用的（Token，或 Key + 邮箱）设 CF_API_TOKEN / CF_API_KEY /
-# CF_EMAIL 并返回 0，否则返回 1。绝不交互提问（调用方决定要不要问）。
 load_cf_credentials() {
     CF_API_TOKEN="${MBOT_INSTALL_CF_API_TOKEN:-${CF_API_TOKEN:-}}"
     CF_API_KEY="${MBOT_INSTALL_CF_API_KEY:-${CF_API_KEY:-}}"
@@ -795,12 +743,11 @@ load_cf_credentials() {
 }
 
 # ---------- Cloudflare DNS 自动绑定 ----------
-# 域名解析到本机是发证的前提：域名还没解析（或指到别处）时，
-# 有 Cloudflare 凭据就自动建/改 A 记录指到本机，再等解析生效。
-# 凭据走 CF_API_TOKEN（Bearer）或 CF_API_KEY + CF_EMAIL（X-Auth-Key）。
-# 失败只返回 1，调用方警告后继续（发证会失败并回落自签，不中断安装）。
+# A domain must resolve to this machine before issuing a cert: when it does not (or points elsewhere), use Cloudflare credentials to create/update the A record to this machine, then wait for DNS to take effect. 域名解析到本机是发证的前提：域名还没解析（或指到别处）时，有 Cloudflare 凭据就自动建/改 A 记录指到本机，再等解析生效。
+# Credentials via CF_API_TOKEN (Bearer) or CF_API_KEY + CF_EMAIL (X-Auth-Key). 凭据走 CF_API_TOKEN（Bearer）或 CF_API_KEY + CF_EMAIL（X-Auth-Key）。
+# Failure only returns 1; the caller warns and continues (cert issuance then fails and falls back to self-signed; install is not interrupted). 失败只返回 1，调用方警告后继续（发证会失败并回落自签，不中断安装）。
 cf_api() {
-    # $1 方法，$2 路径，$3 JSON body（可空）。成功打印 response body。
+    # $1 method, $2 path, $3 JSON body (optional). Prints the response body on success. $1 方法，$2 路径，$3 JSON body（可空）。成功打印 response body。
     local method="$1" path="$2" body="${3:-}"
     local auth=()
     if [ -n "${CF_API_TOKEN:-}" ]; then
@@ -817,7 +764,6 @@ cf_api() {
     fi
 }
 
-# 本机公网 IP（api.ipify.org 拿不到时回退 hostname -I 的第一个）。
 public_ip() {
     local ip
     ip="$(curl -s -m 5 https://api.ipify.org 2>/dev/null || true)"
@@ -825,7 +771,6 @@ public_ip() {
     echo "$ip"
 }
 
-# 域名是否已解析到本机（任一 A 记录等于本机公网 IP 即算）。
 dns_points_here() {
     local domain="$1" ip="$2"
     [ -n "$ip" ] || return 1
@@ -838,9 +783,7 @@ except Exception:
 PYEOF
 }
 
-# 域名自动绑定到本机：已解析到本机直接返回 0；否则有 CF 凭据就
-# 建/改 A 记录（DNS-only，不开代理——代理会挡 http-01 验证），
-# 然后最多等 60 秒看解析生效。返回 0 表示域名已指到本机。
+# Bind the domain to this machine: return 0 if already resolving here; otherwise create/update the A record with CF credentials (DNS-only, proxy OFF — proxying blocks http-01 validation), then wait up to 60 seconds for DNS to take effect. Return 0 means the domain now points at this machine. 域名自动绑定到本机：已解析到本机直接返回 0；否则有 CF 凭据就建/改 A 记录（DNS-only，不开代理——代理会挡 http-01 验证），然后最多等 60 秒看解析生效。返回 0 表示域名已指到本机。
 ensure_dns_points_here() {
     local domain="$1"
     local ip
@@ -855,7 +798,6 @@ ensure_dns_points_here() {
         return 1
     }
     info "域名 $domain 未解析到本机，正在用 Cloudflare API 自动绑定…"
-    # 找 zone：逐级去掉最左标签，直到在 CF 里找到该 zone。
     local zone="" zone_id="" rest="$domain"
     local resp
     while [ -n "$rest" ]; do
@@ -872,7 +814,6 @@ ensure_dns_points_here() {
         esac
     done
     [ -n "$zone_id" ] || { warn "Cloudflare 里找不到域名 $domain 所属的 zone（凭据权限不足或域名不在此账号下）。"; return 1; }
-    # 查现有 A 记录：有就改（PUT），没有就建（POST）。
     resp="$(cf_api GET "/zones/$zone_id/dns_records?type=A&name=$domain")"
     local rec_id
     rec_id="$(printf '%s' "$resp" | python3 -c "import json,sys; r=json.load(sys.stdin).get('result') or []; print(r[0]['id'] if r else '')" 2>/dev/null || true)"
@@ -886,7 +827,6 @@ ensure_dns_points_here() {
     ok_flag="$(printf '%s' "$resp" | python3 -c "import json,sys; print(json.load(sys.stdin).get('success', False))" 2>/dev/null || true)"
     [ "$ok_flag" = "True" ] || { warn "Cloudflare API 建/改 A 记录失败（见上面返回）。"; return 1; }
     ok "DNS 记录已更新：$domain → $ip（DNS-only），等解析生效…"
-    # 最多等 60 秒（每 5 秒查一次）。
     local i
     for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
         dns_points_here "$domain" "$ip" && { ok "域名 $domain 解析已生效。"; return 0; }
@@ -896,15 +836,8 @@ ensure_dns_points_here() {
     return 1
 }
 
-# Let's Encrypt 从 2026-01-15 起正式给公网 IP 发证，但只发 shortlived
-# （有效期 160 小时，约 6 天），验证只能用 http-01（80 端口）或
-# tls-alpn-01（443 端口），不能用 dns-01。certbot 要 5.4+ 才支持 IP
-# 证书，Debian/Ubuntu 的 apt 装不到这么新的版本，所以 IP 证书与
-# Cloudflare DNS-01 统一用 lego（单文件 Go 二进制，v4.22+ 支持
-# --profile，v5.7.0 实测可用；--email 可留空，lego 会用
-# noemail@example.com 注册账号）。
+# Let's Encrypt issues certs for public IPs since 2026-01-15, but only shortlived (160 hours, ~6 days), and validation is http-01 (port 80) or tls-alpn-01 (port 443) only — no dns-01. certbot needs 5.4+ for IP certs, which Debian/Ubuntu apt cannot provide, so IP certs and Cloudflare DNS-01 both use lego (single-file Go binary, v4.22+ supports --profile; tested working with v5.7.0; --email may be empty, lego registers with noemail@example.com). Let's Encrypt 从 2026-01-15 起正式给公网 IP 发证，但只发 shortlived（有效期 160 小时，约 6 天），验证只能用 http-01（80 端口）或 tls-alpn-01（443 端口），不能用 dns-01。certbot 要 5.4+ 才支持 IP 证书，Debian/Ubuntu 的 apt 装不到这么新的版本，所以 IP 证书与 Cloudflare DNS-01 统一用 lego（单文件 Go 二进制，v4.22+ 支持 --profile，v5.7.0 实测可用；--email 可留空，lego 会用 noemail@example.com 注册账号）。
 install_lego() {
-    # 已装且版本对就跳过（重装/更新时不用重复下载）。
     if [ -x "$LEGO_BIN" ] && "$LEGO_BIN" --version 2>/dev/null | grep -q "$LEGO_VERSION"; then
         return 0
     fi
@@ -934,10 +867,8 @@ install_lego() {
     return 1
 }
 
-# lego 凭据文件（600 权限，只放给定的变量；CF Token 不进 shell 历史、
-# 不打印；续期脚本每次跑之前 source 它）。
-# lego 的 Cloudflare 凭据名：CF_DNS_API_TOKEN（Token）或
-# CF_API_KEY + CF_API_EMAIL（Global Key + 邮箱）。
+# lego credential file (mode 600, only the given variables; the CF token never enters shell history and is never printed; the renewal script sources it before each run). lego 凭据文件（600 权限，只放给定的变量；CF Token 不进 shell 历史、不打印；续期脚本每次跑之前 source 它）。
+# lego's Cloudflare credential names: CF_DNS_API_TOKEN (token) or CF_API_KEY + CF_API_EMAIL (global key + email). lego 的 Cloudflare 凭据名：CF_DNS_API_TOKEN（Token）或 CF_API_KEY + CF_API_EMAIL（Global Key + 邮箱）。
 write_lego_env() {
     mkdir -p "$LEGO_DIR"
     chmod 700 "$LEGO_DIR"
@@ -949,27 +880,22 @@ write_lego_env() {
     chmod 600 "$LEGO_DIR/env"
 }
 
-# lego deploy hook：证书创建/续期成功后重载 nginx，让新证书生效。
-# 单独存成脚本文件，避免 --deploy-hook 后面跟带空格的命令串
-# （续期脚本里拼命令时引用容易错）。
+# lego deploy hook: reload nginx after a cert is created/renewed so the new cert takes effect. lego deploy hook：证书创建/续期成功后重载 nginx，让新证书生效。
+# Kept as a standalone script file to avoid a space-containing command string after --deploy-hook (easy to misquote when the renewal script builds the command). 单独存成脚本文件，避免 --deploy-hook 后面跟带空格的命令串（续期脚本里拼命令时引用容易错）。
 write_lego_deploy_hook() {
     cat > "$LEGO_DIR/deploy-hook.sh" <<'EOF'
 #!/bin/sh
-# lego deploy hook（install.sh 生成）：证书更新后重载 nginx。
+# lego deploy hook (generated by install.sh): reload nginx after a cert update. lego deploy hook（install.sh 生成）：证书更新后重载 nginx。
 systemctl reload nginx 2>/dev/null || systemctl restart nginx
 EOF
     chmod 700 "$LEGO_DIR/deploy-hook.sh"
 }
 
-# 证书续期脚本 + cron：lego v5 里 run 兼续期，证书没到续期窗口时
-# 直接跳过；shortlived 证书默认剩一半寿命（约 3 天）时续，
-# 每 2 天跑一次正好。$1 = 发证时的 lego 参数（无空格的 token 串，
-# 续期原样重跑；凭据每次从 /etc/lego/env 读，不写进脚本）。
+# Renewal script + cron: in lego v5, run doubles as renewal and skips when outside the renewal window; shortlived certs renew at half life (~3 days), so every 2 days is right. $1 = the lego args used at issuance (a space-free token string, replayed verbatim on renewal; credentials are read from /etc/lego/env each time, never written into the script). 证书续期脚本 + cron：lego v5 里 run 兼续期，证书没到续期窗口时直接跳过；shortlived 证书默认剩一半寿命（约 3 天）时续，每 2 天跑一次正好。$1 = 发证时的 lego 参数（无空格的 token 串，续期原样重跑；凭据每次从 /etc/lego/env 读，不写进脚本）。
 write_renew_script() {
     cat > "$RENEW_SCRIPT" <<EOF
 #!/bin/bash
-# M_Bot 证书续期（install.sh 生成）：IP 证书只有 160 小时有效期，
-# 每 2 天跑一次；域名证书到期前自动续；未到续期窗口时 lego 直接跳过。
+# M_Bot cert renewal (generated by install.sh): IP certs last only 160 hours, run every 2 days; domain certs auto-renew before expiry; lego skips when outside the renewal window. M_Bot 证书续期（install.sh 生成）：IP 证书只有 160 小时有效期，每 2 天跑一次；域名证书到期前自动续；未到续期窗口时 lego 直接跳过。
 set -euo pipefail
 [ -f $LEGO_DIR/env ] && set -a && . $LEGO_DIR/env && set +a || true
 exec $LEGO_BIN run --path $LEGO_DIR --accept-tos $1
@@ -981,17 +907,14 @@ EOF
     ok "证书自动续期已设置（每 2 天凌晨 3 点）。"
 }
 
-# IP 证书验证用的 80 端口 vhost：只 serve ACME 验证文件，
-# 其余请求一律 404（面板不在 80 上）。server_name 写 IP 本身，
-# http-01 的验证请求 Host 就是 IP，能精确匹配上（机器上若还有
-# 别的 80 端口站点也不会抢走验证请求）。
-# 80 端口的 ACME 验证 vhost：只 serve 验证文件，其余 404。
-# server_name 可以是 IP（IP 证书）或域名（certbot http-01）。
+# Port-80 vhost for IP-cert validation: serves only ACME validation files, everything else 404 (the panel is not on port 80). server_name is the IP itself, because http-01 validation requests use the IP as Host and match exactly (other port-80 sites on the machine cannot steal the validation request). IP 证书验证用的 80 端口 vhost：只 serve ACME 验证文件，其余请求一律 404（面板不在 80 上）。server_name 写 IP 本身，http-01 的验证请求 Host 就是 IP，能精确匹配上（机器上若还有别的 80 端口站点也不会抢走验证请求）。
+# Port-80 ACME validation vhost: serves only validation files, else 404. 80 端口的 ACME 验证 vhost：只 serve 验证文件，其余 404。
+# server_name may be an IP (IP cert) or a domain (certbot http-01). server_name 可以是 IP（IP 证书）或域名（certbot http-01）。
 write_nginx_acme_vhost() {
     local name="$1"
     mkdir -p "$ACME_WEBROOT/.well-known/acme-challenge"
     cat > "$NGINX_CONF" <<EOF
-# M_Bot 面板反代（install.sh 生成，ACME 验证中）
+# M_Bot panel reverse proxy (generated by install.sh, ACME validation in progress). M_Bot 面板反代（install.sh 生成，ACME 验证中）。
 server {
     listen 80;
     listen [::]:80;
@@ -1011,15 +934,13 @@ EOF
         || die "nginx 重载失败，请看 journalctl -u nginx。"
 }
 
-# IP 证书拿到后的完整配置：80 端口验证 vhost 保留（续期还要用），
-# 面板走 ${PANEL_PORT} ssl，用 lego 的 IP 证书。
 write_nginx_lego_ip() {
     local ip="$1"
     local crt="$LEGO_CERT_DIR/${ip}.crt" key="$LEGO_CERT_DIR/${ip}.key"
     [ -f "$crt" ] && [ -f "$key" ] \
         || { warn "lego 证书文件不存在：$crt"; return 1; }
     cat > "$NGINX_CONF" <<EOF
-# M_Bot 面板反代（install.sh 生成，Let's Encrypt IP 证书，${ip}）
+# M_Bot panel reverse proxy (generated by install.sh, Let's Encrypt IP cert, ${ip}). M_Bot 面板反代（install.sh 生成，Let's Encrypt IP 证书，${ip}）。
 ${NGINX_HTTP_MAPS}
 server {
     listen 80;
@@ -1070,13 +991,9 @@ EOF
     ok "nginx 反代已生效（Let's Encrypt IP 证书，端口 ${PANEL_PORT}）。"
 }
 
-# 域名拿到证书后的完整配置（lego cfdns 与 certbot http 共用）：
-# 面板走 443 ssl，443 已被 xray 之类服务占了时改走 ${PANEL_PORT}
-# （证书照样有效，地址带端口就行）；80 端口做跳转。
-# $1 域名，$2 证书 fullchain，$3 私钥，$4 是否在 80 上留验证入口
-# （certbot 续期用 webroot http-01，80 必须能 serve 验证文件；
-# lego cfdns 续期走 DNS，不用留）。
-# 成功时设 CERT_PORT，返回 0；失败返回 1。
+# Full config after a domain cert is issued (shared by lego cfdns and certbot http): panel on 443 ssl, or ${PANEL_PORT} when 443 is held by xray or similar (the cert stays valid; just include the port in the address); port 80 redirects. 域名拿到证书后的完整配置（lego cfdns 与 certbot http 共用）：面板走 443 ssl，443 已被 xray 之类服务占了时改走 ${PANEL_PORT}（证书照样有效，地址带端口就行）；80 端口做跳转。
+# $1 domain, $2 cert fullchain, $3 private key, $4 whether to keep a validation entry on port 80 (certbot renewal uses webroot http-01, so port 80 must serve validation files; lego cfdns renews via DNS and needs none). $1 域名，$2 证书 fullchain，$3 私钥，$4 是否在 80 上留验证入口（certbot 续期用 webroot http-01，80 必须能 serve 验证文件；lego cfdns 续期走 DNS，不用留）。
+# Sets CERT_PORT on success, returns 0; returns 1 on failure. 成功时设 CERT_PORT，返回 0；失败返回 1。
 write_nginx_domain_https() {
     local domain="$1" crt="$2" key="$3" acme_on_80="${4:-0}"
     [ -f "$crt" ] && [ -f "$key" ] \
@@ -1100,7 +1017,7 @@ write_nginx_domain_https() {
 "
     fi
     cat > "$NGINX_CONF" <<EOF
-# M_Bot 面板反代（install.sh 生成，Let's Encrypt，域名 ${domain}）
+# M_Bot panel reverse proxy (generated by install.sh, Let's Encrypt, domain ${domain}). M_Bot 面板反代（install.sh 生成，Let's Encrypt，域名 ${domain}）。
 ${NGINX_HTTP_MAPS}
 server {
     listen ${port} ssl;
@@ -1146,26 +1063,22 @@ EOF
     ok "nginx 反代已生效（Let's Encrypt 证书，域名 ${domain}，端口 ${port}）。"
 }
 
-# 域名 + Cloudflare DNS-01 拿到后的配置（lego 的证书文件）。
 write_nginx_lego_domain() {
     local domain="$1"
     write_nginx_domain_https "$domain" \
         "$LEGO_CERT_DIR/${domain}.crt" "$LEGO_CERT_DIR/${domain}.key" 0
 }
 
-# 无域名时自动申请 Let's Encrypt IP 证书。失败返回 1，调用方回落自签。
 request_ip_cert() {
     local ip
     ip="$(curl -s -m 5 https://api.ipify.org 2>/dev/null || true)"
     [ -n "$ip" ] || { warn "拿不到公网 IP，只能用自签证书。"; return 1; }
-    # Let's Encrypt 不给内网/保留地址发证。
+    # Let's Encrypt does not issue certs for private/reserved addresses. Let's Encrypt 不给内网/保留地址发证。
     case "$ip" in
         10.*|172.1[6-9].*|172.2[0-9].*|172.3[0-1].*|192.168.*|127.*|0.*)
             warn "公网 IP 是内网地址 $ip，Let's Encrypt 不给内网 IP 发证，只能用自签证书。"
             return 1 ;;
     esac
-    # http-01 验证走 80 端口：80 被非 nginx 进程占用时验证不了。
-    # nginx 自己占着没关系（验证 vhost 就写在 nginx 里）。
     if command_exists ss; then
         local holder
         holder="$(ss -ltnp 2>/dev/null | grep ':80 ' | grep -v nginx | head -n 1 || true)"
@@ -1194,20 +1107,15 @@ request_ip_cert() {
     return 1
 }
 
-# 有域名 + cfdns 时用 Cloudflare DNS-01 申请证书（不占 80/443 端口，
-# 443 被 xray 之类服务占了也能用）。失败返回 1，调用方回落自签。
 request_domain_cert_cfdns() {
     local domain="$1"
     install_lego || return 1
     write_lego_env
     write_lego_deploy_hook
     info "申请 Let's Encrypt 证书（域名 $domain，Cloudflare DNS 验证）…"
-    # lego 的 DNS-01 传播检查默认走本机系统解析器；OCI 的解析器
-    # （169.254.169.254）对新建记录有 1800 秒负缓存，cfdns 必失败。
-    # 改走公共解析器 1.1.1.1 / 8.8.8.8（2026-11-25 ARM 实测：16 秒签下）。
+    # lego's DNS-01 propagation check uses the local system resolver by default; OCI's resolver (169.254.169.254) negative-caches new records for 1800 seconds, so cfdns always fails. Use public resolvers 1.1.1.1 / 8.8.8.8 instead. lego 的 DNS-01 传播检查默认走本机系统解析器；OCI 的解析器（169.254.169.254）对新建记录有 1800 秒负缓存，cfdns 必失败。改走公共解析器 1.1.1.1 / 8.8.8.8。
     local args="--dns cloudflare --dns.resolvers 1.1.1.1:53,8.8.8.8:53 -d $domain --deploy-hook $LEGO_DIR/deploy-hook.sh"
-    # lego 输出留一份日志（失败时定位用；以前全丢 /dev/null，报错还
-    # 误导说 Token 权限不对，实际常是传播检查超时）。
+    # Keep a copy of lego's output as a log (for failure diagnosis; it used to go entirely to /dev/null, and the error misleadingly blamed token permissions when it was often a propagation-check timeout). lego 输出留一份日志（失败时定位用；以前全丢 /dev/null，报错还误导说 Token 权限不对，实际常是传播检查超时）。
     local lego_log="$LEGO_DIR/lego-last.log"
     if ( [ -f "$LEGO_DIR/env" ] && set -a && . "$LEGO_DIR/env" && set +a || true; \
          "$LEGO_BIN" run --path "$LEGO_DIR" --accept-tos $args >"$lego_log" 2>&1 ); then
@@ -1224,8 +1132,7 @@ request_domain_cert_cfdns() {
 }
 
 setup_nginx() {
-    # 9527 已被非 nginx 进程占用时：面板走 443 就没关系（有域名且
-    # 443 空闲），只警告；否则面板要走 9527，绑不上只能先停掉它。
+    # When 9527 is held by a non-nginx process: fine if the panel runs on 443 (domain set and 443 free), just warn; otherwise the panel needs 9527 and cannot bind, so stop the holder first. 9527 已被非 nginx 进程占用时：面板走 443 就没关系（有域名且 443 空闲），只警告；否则面板要走 9527，绑不上只能先停掉它。
     if command_exists ss; then
         local holder
         holder="$(ss -ltnp 2>/dev/null | grep ":${PANEL_PORT} " | head -n 1 || true)"
@@ -1248,8 +1155,6 @@ setup_nginx() {
         fi
     fi
     if [ -n "${DOMAIN:-}" ]; then
-        # 发证前先保证域名解析到本机：没解析就自动绑（有 CF 凭据时），
-        # 绑不上只警告，发证失败会回落自签。
         ensure_dns_points_here "$DOMAIN" || true
         if [ "${CERT_METHOD:-http}" = "cfdns" ]; then
             request_domain_cert_cfdns "$DOMAIN" || write_nginx_selfsigned
@@ -1261,7 +1166,7 @@ setup_nginx() {
     fi
 }
 
-# SSH 端口：sshd 实际监听端口 > sshd_config > 22。
+# SSH port: actual sshd listening port > sshd_config > 22. SSH 端口：sshd 实际监听端口 > sshd_config > 22。
 detect_ssh_port() {
     local port=""
     if command_exists ss; then
@@ -1275,12 +1180,9 @@ detect_ssh_port() {
 }
 
 # ---------- 本机防火墙 ----------
-# 自动识别在运行的防火墙类型并放行本项目需要的端口：
-# SSH 端口（当前实际端口）+ 80 + 443（有域名时）+ 9527（面板端口）。
-# 支持 ufw / firewalld / nftables / iptables；都没在跑时优先用 ufw
-# （装了就启用），否则端口默认就是通的，跳过。
-# 注意检测顺序：UFW 在 Debian 12+ 上走 nft 后端，nft ruleset 里有
-# ufw 的链——必须先认 UFW，否则会把 UFW 误判成裸 nft。
+# Auto-detect the running firewall and open the ports this project needs: SSH port (current actual port) + 80 + 443 (with a domain) + 9527 (panel port). 自动识别在运行的防火墙类型并放行本项目需要的端口：SSH 端口（当前实际端口）+ 80 + 443（有域名时）+ 9527（面板端口）。
+# Supports ufw / firewalld / nftables / iptables; when none is running, prefer enabling ufw (if installed), otherwise ports are open by default and this is skipped. 支持 ufw / firewalld / nftables / iptables；都没在跑时优先用 ufw（装了就启用），否则端口默认就是通的，跳过。
+# Check order matters: on Debian 12+ UFW runs on an nft backend, so its chains appear in the nft ruleset — detect UFW first or UFW is misread as bare nft. 注意检测顺序：UFW 在 Debian 12+ 上走 nft 后端，nft ruleset 里有 ufw 的链——必须先认 UFW，否则会把 UFW 误判成裸 nft。
 detect_firewall() {
     if command_exists ufw && ufw status 2>/dev/null | grep -q "Status: active"; then
         echo "ufw"; return 0
@@ -1304,10 +1206,8 @@ detect_firewall() {
     echo "none"
 }
 
-# 面板需要的端口（不含 SSH）：80 始终 + 9527 + 443（有域名时）。
-# 9527 被别的服务占了时不放行：反代绑不上 9527，放行只会把别人
-# 的服务暴露出去（.129 实测：R-Bot 客户端占着 9527）。本机防火墙
-# 与云端安全列表共用这份列表。
+# Ports the panel needs (excluding SSH): 80 always + 9527 + 443 (with a domain). 面板需要的端口（不含 SSH）：80 始终 + 9527 + 443（有域名时）。
+# Do not open 9527 when another service holds it: the proxy cannot bind 9527, and opening the port would expose someone else's service. 9527 被别的服务占了时不放行：反代绑不上 9527，放行只会把别人的服务暴露出去。
 panel_ports() {
     local ports="80"
     if ! command_exists ss || ! ss -ltnp 2>/dev/null | grep ":${PANEL_PORT} " | grep -qv nginx; then
@@ -1317,8 +1217,7 @@ panel_ports() {
     echo "$ports"
 }
 
-# 需要放行的端口（空格分隔）：SSH 始终 + 面板端口。80 必须无条件：
-# IP 证书验证（申请与续期）要用 80。
+# Ports to open (space-separated): SSH always + panel ports. Port 80 is unconditional: IP-cert issuance and renewal need port 80. 需要放行的端口（空格分隔）：SSH 始终 + 面板端口。80 必须无条件：IP 证书验证（申请与续期）要用 80。
 firewall_ports() {
     echo "$(detect_ssh_port) $(panel_ports)"
 }
@@ -1343,8 +1242,7 @@ setup_firewall() {
     esac
 }
 
-# UFW：开启前先放行 SSH 端口（sshd 实际监听端口 > sshd_config > 22），
-# 否则 ufw enable 会把自己锁在外面。
+# UFW: open the SSH port first (actual sshd listening port > sshd_config > 22), or ufw enable locks us out. UFW：开启前先放行 SSH 端口（sshd 实际监听端口 > sshd_config > 22），否则 ufw enable 会把自己锁在外面。
 _firewall_ufw() {
     local port
     for port in $(firewall_ports); do
@@ -1356,18 +1254,13 @@ _firewall_ufw() {
     else
         ok "UFW 规则已添加（防火墙本来就是开着的）。"
     fi
-    # Oracle 云镜像（Ubuntu）自带 /etc/iptables/rules.v4，INPUT 链里有
-    # 一条 -j REJECT（只放行 22），位置在 UFW 的链前面，会把 UFW 的
-    # 放行规则全部挡住——面板端口从外网看就是 No route to host，
-    # 本机 curl 却正常（2026-11-24 首尔测试机实测）。UFW 开启后这条
-    # REJECT 是多余的（UFW 默认入站就是拒绝），删掉它。
+    # Oracle cloud images (Ubuntu) ship /etc/iptables/rules.v4 with an INPUT -j REJECT (only port 22 allowed) sitting ahead of UFW's chains: it blocks every UFW allow rule, so panel ports look like No route to host from outside while local curl works. The REJECT is redundant once UFW is on (UFW denies inbound by default), so remove it. Oracle 云镜像（Ubuntu）自带 /etc/iptables/rules.v4，INPUT 链里有一条 -j REJECT（只放行 22），位置在 UFW 的链前面，会把 UFW 的放行规则全部挡住——面板端口从外网看就是 No route to host，本机 curl 却正常。UFW 开启后这条 REJECT 是多余的（UFW 默认入站就是拒绝），删掉它。
     if ufw status 2>/dev/null | grep -q "Status: active"; then
         remove_shadow_reject 4
         remove_shadow_reject 6
     fi
 }
 
-# firewalld：--permanent 写永久规则，reload 生效（重启仍在）。
 _firewall_firewalld() {
     local port
     for port in $(firewall_ports); do
@@ -1377,11 +1270,8 @@ _firewall_firewalld() {
     ok "firewalld 规则已添加（--permanent，重启仍在）。"
 }
 
-# nftables：找到 filter 表的 input 链，在链首插入放行规则
-# （insert 放最前面，避免被链尾的 drop 挡住；已有的不重复加）。
-# filter 表存在但没有 input 链时：表全是空表（无任何链/规则，如
-# Ubuntu 24.04 的 table ip/ip6 filter {}）就回落到 UFW（规则持久
-# 化）；已有规则的表不动，只警告（可能有用户自定义规则）。
+# nftables: find the filter table's input chain and insert allow rules at its head (insert goes first, so a trailing drop cannot block them; existing rules are not duplicated). nftables：找到 filter 表的 input 链，在链首插入放行规则（insert 放最前面，避免被链尾的 drop 挡住；已有的不重复加）。
+# When the filter table exists but has no input chain: an entirely empty table (no chains/rules, e.g. Ubuntu 24.04's table ip/ip6 filter {}) falls back to UFW (for persistent rules); a table with rules is left alone with a warning (it may hold user rules). filter 表存在但没有 input 链时：表全是空表（无任何链/规则，如 Ubuntu 24.04 的 table ip/ip6 filter {}）就回落到 UFW（规则持久化）；已有规则的表不动，只警告（可能有用户自定义规则）。
 _firewall_nft() {
     local chain=""
     local table
@@ -1418,7 +1308,6 @@ _firewall_nft() {
     warn "nft 规则只在当前生效，重启后会丢（除非写进 /etc/nftables.conf）；建议改用 ufw 或 firewalld 管理。"
 }
 
-# iptables：-I 插到链首（REJECT/DROP 前面），-C 先查避免重复。
 _firewall_iptables() {
     local port ipt
     for ipt in iptables ip6tables; do
@@ -1434,12 +1323,9 @@ _firewall_iptables() {
 }
 
 # ---------- 云端安全列表（OCI） ----------
-# 本机防火墙开了还不够：OCI 实例的安全列表（安全组）那层也要放行
-# 80/443/9527，否则外网照样进不来。这里经 OCI API 自动加规则。
-# 只在 OCI 上跑（读实例元数据确认）；认证优先用已有的 OCI 配置
-# 文件（~/oci_config），没有时试实例主体（需动态组 + 策略）。
-# 任何一步失败都只警告 + 打印手动操作步骤，安装不中断。
-# 需要放行的端口：80 + 9527 始终，有域名时加 443（SSH 云上本来就通）。
+# The local firewall is not enough: the OCI instance's security list (security group) must also allow 80/443/9527, or traffic still cannot reach the panel from outside. Added automatically here via the OCI API. 本机防火墙开了还不够：OCI 实例的安全列表（安全组）那层也要放行 80/443/9527，否则外网照样进不来。这里经 OCI API 自动加规则。
+# Only on OCI (confirmed by reading instance metadata); auth prefers the existing OCI config file (~/oci_config), falling back to instance principal (needs a dynamic group + policy). 只在 OCI 上跑（读实例元数据确认）；认证优先用已有的 OCI 配置文件（~/oci_config），没有时试实例主体（需动态组 + 策略）。
+# Any step failing only warns and prints manual steps; install is not interrupted. 任何一步失败都只警告 + 打印手动操作步骤，安装不中断。
 open_cloud_ports() {
     local meta
     meta="$(curl -s -m 3 http://169.254.169.254/opc/v1/instance/ 2>/dev/null || true)"
@@ -1460,7 +1346,6 @@ open_cloud_ports() {
     return 0
 }
 
-# 真正调 OCI API 的部分（失败返回 1，调用方只警告）。
 _oci_open_ports() {
     local oci_bin="$1" ports="$2"
     local auth_args=""
@@ -1468,7 +1353,6 @@ _oci_open_ports() {
         auth_args="--auth instance_principal"
     fi
     export SUPPRESS_LABEL_WARNING=True
-    # 主网卡：元数据里取 vnicId。
     local vnic_id
     vnic_id="$(curl -s -m 3 http://169.254.169.254/opc/v1/vnics/ 2>/dev/null \
         | python3 -c "import json,sys; print(json.load(sys.stdin)[0]['vnicId'])" 2>/dev/null || true)"
@@ -1481,7 +1365,7 @@ _oci_open_ports() {
     nsg_ids="$(printf '%s' "$vnic" | python3 -c "import json,sys; print(' '.join(json.load(sys.stdin)['data'].get('nsg-ids') or []))" 2>/dev/null || true)"
     [ -n "$subnet_id" ] || { warn "读不到子网 ID。"; return 1; }
     if [ -n "$nsg_ids" ]; then
-        # 网卡挂了 NSG 时安全列表规则不生效，只加 NSG 规则（additive）。
+        # When the VNIC has an NSG attached, security-list rules do not apply; add NSG rules instead (additive). 网卡挂了 NSG 时安全列表规则不生效，只加 NSG 规则（additive）。
         local nsg
         for nsg in $nsg_ids; do
             _oci_add_nsg_rules "$oci_bin" "$auth_args" "$nsg" "$ports" || return 1
@@ -1499,13 +1383,10 @@ _oci_open_ports() {
     return 0
 }
 
-# 给定现有 ingress 规则 JSON 与端口列表，输出补齐后的规则 JSON。
-# $3 = "nsg" 时只输出新增的规则（NSG rules add 是增量的），并带
-# direction 字段；默认输出全量（安全列表 update 是全量替换）。
-# 全部已放行时不输出、退出 2（调用方据此跳过 API 调用）。
-# 已放行的判定：来源 0.0.0.0/0 且 protocol=all（全协议），或 TCP
-# 规则的端口范围覆盖该端口（无 tcp-options 视为全部 TCP 端口）；
-# NSG 规则只看 direction=INGRESS 的。
+# Given the existing ingress rules JSON and a port list, output the completed rules JSON. 给定现有 ingress 规则 JSON 与端口列表，输出补齐后的规则 JSON。
+# With $3 = "nsg", output only the new rules (NSG rules add is incremental) and include the direction field; otherwise output the full set (security-list update replaces the whole list). $3 = "nsg" 时只输出新增的规则（NSG rules add 是增量的），并带 direction 字段；默认输出全量（安全列表 update 是全量替换）。
+# When everything is already allowed, output nothing and exit 2 (caller skips the API call). 全部已放行时不输出、退出 2（调用方据此跳过 API 调用）。
+# Already-allowed means: source 0.0.0.0/0 with protocol=all, or a TCP rule whose port range covers the port (no tcp-options means all TCP ports); NSG rules only consider direction=INGRESS. 已放行的判定：来源 0.0.0.0/0 且 protocol=all（全协议），或 TCP 规则的端口范围覆盖该端口（无 tcp-options 视为全部 TCP 端口）；NSG 规则只看 direction=INGRESS 的。
 _oci_rules_with_ports() {
     python3 - "$1" "$2" "${3:-}" <<'PYEOF'
 import json, sys
@@ -1544,7 +1425,7 @@ for p in missing:
         rule["direction"] = "INGRESS"
     added.append(rule)
 out = added if nsg_mode else rules + added
-# update 只接受干净的字段：去掉 GET 返回的 null 选项键。
+# update only accepts clean fields: strip null option keys from the GET response. update 只接受干净的字段：去掉 GET 返回的 null 选项键。
 clean = [{k: v for k, v in r.items() if v is not None} for r in out]
 print(json.dumps(clean))
 PYEOF
@@ -1590,9 +1471,9 @@ _oci_add_nsg_rules() {
     return 0
 }
 
-# 删掉镜像自带的、挡在 UFW 链前面的 INPUT REJECT 规则。
-# 只删 INPUT 那条；FORWARD 与 InstanceServices（OCI 元数据服务）不动。
-# $1: 4 或 6。
+# Remove the image-shipped INPUT REJECT rule that sits ahead of UFW's chains. 删掉镜像自带的、挡在 UFW 链前面的 INPUT REJECT 规则。
+# Only the INPUT rule; FORWARD and InstanceServices (OCI metadata service) are untouched. 只删 INPUT 那条；FORWARD 与 InstanceServices（OCI 元数据服务）不动。
+# $1: 4 or 6. $1: 4 或 6。
 remove_shadow_reject() {
     local ver="$1" ipt rules
     if [ "$ver" = "6" ]; then
@@ -1638,18 +1519,15 @@ health_check() {
     else
         info "未装机器人服务，跳过检查。"
     fi
-    # 内部端口是 uvicorn（面板本身），外部端口是 nginx（反代）。
-    # 两个都要在：只查外部端口会在 uvicorn 挂了时误报正常
-    # （nginx 自己还在监听；2026-11-24 首尔测试机实测）。
+    # The internal port is uvicorn (the panel itself) and the external port is nginx (the proxy). Both must be up: checking only the external port reports healthy when uvicorn is dead (nginx still listens). 内部端口是 uvicorn（面板本身），外部端口是 nginx（反代）。两个都要在：只查外部端口会在 uvicorn 挂了时误报正常（nginx 自己还在监听）。
     if command_exists ss && ss -ltn 2>/dev/null | grep -q ":${INTERNAL_PORT} "; then
         ok "面板内部端口 ${INTERNAL_PORT} 监听中。"
     else
         warn "面板内部端口 ${INTERNAL_PORT} 未监听，uvicorn 可能未起来。"
         fail=1
     fi
-    # 外部端口：域名部署走 443（443 被占时走 9527），无域名走 9527。
-    # 查“nginx 进程占着 9527 或 443”而不是只查端口在听：443 可能被
-    # xray 之类服务占着，只查端口会误报正常。
+    # External port: 443 for a domain deploy (9527 when 443 is taken), 9527 without a domain. 外部端口：域名部署走 443（443 被占时走 9527），无域名走 9527。
+    # Check that an nginx process holds 9527 or 443, not just that the port listens: 443 may be held by xray or similar, and a bare port check would falsely report healthy. 查“nginx 进程占着 9527 或 443”而不是只查端口在听：443 可能被 xray 之类服务占着，只查端口会误报正常。
     if command_exists ss && ss -ltnp 2>/dev/null | grep nginx | grep -qE ":(${PANEL_PORT}|443) "; then
         ok "nginx 反代监听中。"
     else
@@ -1660,9 +1538,9 @@ health_check() {
 }
 
 # ---------- 安装后自检 ----------
-# 把人工验证的那几项做到脚本里：证书、登录页、真实登录、跳转。
-# 只在首次安装时跑（更新模式下密码/域名不在内存里，没法验登录）。
-# $1：面板管理员密码（可空，空时跳过真实登录那项）。
+# Script the manual verification checklist: cert, login page, real login, redirect. 把人工验证的那几项做到脚本里：证书、登录页、真实登录、跳转。
+# Only on first install (in update mode the password/domain are not in memory, so login cannot be verified). 只在首次安装时跑（更新模式下密码/域名不在内存里，没法验登录）。
+# $1: panel admin password (empty skips the real-login check). $1：面板管理员密码（可空，空时跳过真实登录那项）。
 self_test() {
     local password="${1:-}"
     local base_url ip host port
@@ -1679,14 +1557,13 @@ self_test() {
     host="$(printf '%s' "$base_url" | sed -E 's|https?://([^:/]+).*|\1|')"
     port="$(printf '%s' "$base_url" | sed -E 's|.*:([0-9]+)$|\1|')"
     [ "$port" = "$base_url" ] && port=443
-    # 自签证书时 curl 要 -k；LE 证书严格校验（链不对就报失败）。
+    # Self-signed certs need curl -k; LE certs are strictly validated (a bad chain fails). 自签证书时 curl 要 -k；LE 证书严格校验（链不对就报失败）。
     local k=""
     [ "${CERT_KIND:-selfsigned}" = "selfsigned" ] && k="-k"
 
     echo
     echo "--- 安装自检 ---"
 
-    # ① 证书：LE 证书时验颁发者 + 有效期 + 域名匹配；自签时只验能握手。
     local cert_line="跳过"
     if [ "${CERT_KIND:-selfsigned}" = "domain" ] || [ "${CERT_KIND:-selfsigned}" = "ip" ]; then
         local cert_text not_after
@@ -1708,7 +1585,6 @@ self_test() {
     fi
     echo "证书：$cert_line"
 
-    # ② 登录页：公网地址返回 200。
     local code page_line
     code="$(curl -s $k -o /dev/null -w "%{http_code}" --max-time 15 "$base_url/login" 2>/dev/null || echo 000)"
     if [ "$code" = "200" ]; then
@@ -1718,7 +1594,6 @@ self_test() {
     fi
     echo "登录页：$page_line"
 
-    # ③ 真实登录：admin + 密码调登录接口，要 200 且拿到会话 cookie。
     local login_line="跳过（无密码）"
     if [ -n "$password" ]; then
         local body cookie_file
@@ -1736,7 +1611,6 @@ self_test() {
     fi
     echo "真实登录：$login_line"
 
-    # ④ http 跳转：域名 + 证书成功时，http 应 301 跳 https。
     local redirect_line="跳过（无域名或证书未成功）"
     if [ -n "${DOMAIN:-}" ] && [ "${CERT_OK:-0}" = "1" ]; then
         local loc
@@ -1748,7 +1622,7 @@ self_test() {
     fi
     echo "http 跳转：$redirect_line"
 
-    # 80 端口外网可达不用再测：http-01 发证成功本身就是证明。
+    # Port 80 reachability from outside needs no separate test: a successful http-01 issuance already proves it. 80 端口外网可达不用再测：http-01 发证成功本身就是证明。
     if { [ "${CERT_KIND:-selfsigned}" = "domain" ] || [ "${CERT_KIND:-selfsigned}" = "ip" ]; } \
         && [ "${CERT_METHOD:-http}" = "http" ]; then
         echo "外网 80 端口：可达（http-01 发证成功已证明）"
@@ -1760,9 +1634,7 @@ print_access_info() {
     ip="$(curl -s -m 5 https://api.ipify.org 2>/dev/null || hostname -I | awk '{print $1}')"
     echo
     echo "==================== 安装完成 ===================="
-    # 域名地址只在证书真的申请成功时才给：certbot 失败回落自签后，
-    # 面板走的是 IP:9527，给域名地址会误导用户（域名根本不解析；
-    # 2026-11-24 首尔测试机实测）。
+    # Only give the domain URL when the cert was really issued: after a certbot failure falls back to self-signed, the panel serves on IP:9527 and a domain URL would mislead (the domain does not resolve). 域名地址只在证书真的申请成功时才给：certbot 失败回落自签后，面板走的是 IP:9527，给域名地址会误导用户（域名根本不解析）。
     if [ -n "${DOMAIN:-}" ] && [ "${CERT_OK:-0}" = "1" ]; then
         if [ "${CERT_PORT:-443}" = "443" ]; then
             echo "面板地址：https://${DOMAIN}/login"
@@ -1817,8 +1689,7 @@ print_access_info() {
 cmd_install() {
     require_root
     detect_os
-    # 先装依赖再提问：提问里的随机密码生成要用到 openssl，
-    # 精简镜像上 openssl 未必预装。
+    # Install deps before prompting: random password generation needs openssl, which minimal images may not preinstall. 先装依赖再提问：提问里的随机密码生成要用到 openssl，精简镜像上 openssl 未必预装。
     install_deps
     prompt_config
     install_code
@@ -1826,13 +1697,12 @@ cmd_install() {
     write_env_file
     write_systemd_units
     if [ "$FRESH_INSTALL" = "1" ]; then
-        # 顺序：先放行两层防火墙（本机 + 云端），再申请证书——
-        # http-01 验证要 80 端口从外网能通，云上没放行会发证失败。
+        # Order: open both firewall layers (local + cloud) before requesting certs — http-01 needs port 80 reachable from outside, and a blocked cloud layer fails issuance. 顺序：先放行两层防火墙（本机 + 云端），再申请证书——http-01 验证要 80 端口从外网能通，云上没放行会发证失败。
         setup_firewall
         open_cloud_ports
         setup_nginx
     elif [ ! -f "$NGINX_CONF" ]; then
-        # 更新模式但 nginx 配置丢了：按环境变量的域名重建（没给就自签）。
+        # Update mode with a lost nginx config: rebuild it from the env var domain (self-signed when none given). 更新模式但 nginx 配置丢了：按环境变量的域名重建（没给就自签）。
         DOMAIN="${MBOT_INSTALL_DOMAIN:-}"
         setup_nginx
     else
@@ -1850,11 +1720,7 @@ cmd_install() {
     fi
 }
 
-# 定时自动升级的 cron 设置：每天凌晨 4 点跑一次
-# install.sh auto-upgrade；已是最新版时只记日志不重启服务，
-# 有新版时才升级。用临时副本执行，避免 git pull 更新 install.sh
-# 本身时正在运行的脚本被改写。MBOT_INSTALL_NO_AUTO_UPGRADE
-# 非空时删掉 cron 文件并跳过。
+# Auto-upgrade cron: daily at 04:00 run install.sh auto-upgrade; when already latest it only logs and does not restart services, and only upgrades on a new version. Use a temp copy to run it, so a git pull updating install.sh itself does not rewrite the running script. MBOT_INSTALL_NO_AUTO_UPGRADE non-empty removes the cron file and skips. 定时自动升级的 cron 设置：每天凌晨 4 点跑一次 install.sh auto-upgrade；已是最新版时只记日志不重启服务，有新版时才升级。用临时副本执行，避免 git pull 更新 install.sh 本身时正在运行的脚本被改写。MBOT_INSTALL_NO_AUTO_UPGRADE 非空时删掉 cron 文件并跳过。
 setup_auto_upgrade() {
     if [ -n "${MBOT_INSTALL_NO_AUTO_UPGRADE:-}" ]; then
         rm -f "$UPGRADE_CRON"
@@ -1864,11 +1730,26 @@ setup_auto_upgrade() {
     printf '%s root (cp %s/install.sh /tmp/mbot-install-run.sh && bash /tmp/mbot-install-run.sh auto-upgrade) >> %s 2>&1\n' \
         "$AUTO_UPGRADE_SCHEDULE" "$INSTALL_DIR" "$UPGRADE_LOG" > "$UPGRADE_CRON"
     chmod 644 "$UPGRADE_CRON"
+    # 去重：root 本地 crontab 里旧的 mbot 自动升级任务会和新 cron.d 双份执行。
+    # 只删同时含 auto-upgrade 与 mbot/install.sh 的行，其余内容不动；
+    # crontab 为空或无 crontab 命令时不报错。
+    # Only delete lines containing both auto-upgrade and mbot/install.sh; leave everything else alone. No error when crontab is empty or the crontab command is missing. 只删同时含 auto-upgrade 与 mbot/install.sh 的行，其余内容不动；crontab 为空或无 crontab 命令时不报错。
+    if command -v crontab >/dev/null 2>&1; then
+        local _cron_tmp
+        _cron_tmp="$(mktemp)"
+        if crontab -l > "$_cron_tmp" 2>/dev/null; then
+            if grep -qE "auto-upgrade.*(mbot|install\.sh)|(mbot|install\.sh).*auto-upgrade" "$_cron_tmp"; then
+                grep -vE "auto-upgrade.*(mbot|install\.sh)|(mbot|install\.sh).*auto-upgrade" "$_cron_tmp" > "${_cron_tmp}.new" || true
+                crontab "${_cron_tmp}.new" 2>/dev/null || true
+                rm -f "${_cron_tmp}.new"
+            fi
+        fi
+        rm -f "$_cron_tmp"
+    fi
     ok "定时自动升级已设置（每天凌晨 4 点，有新版时才升级）。"
 }
 
-# 自动升级失败时 Bark 通知（Bark 未配置或未开启时静默跳过）。
-# $1 = 失败原因简述。通知本身的任何异常都吞掉，绝不能影响升级流程。
+# Bark notification on auto-upgrade failure (silently skipped when Bark is unconfigured or disabled). $1 = short failure reason. Any error in the notification itself is swallowed; it must never affect the upgrade flow. 自动升级失败时 Bark 通知（Bark 未配置或未开启时静默跳过）。$1 = 失败原因简述。通知本身的任何异常都吞掉，绝不能影响升级流程。
 _notify_upgrade_failure() {
     local reason="$1"
     MBOT_TGBOT_DATA_DIR="$INSTALL_DIR/tgbot/data" \
@@ -1892,9 +1773,7 @@ PYEOF
 }
 
 cmd_auto_upgrade() {
-    # 定时自动升级（cron 调用）：先比对本地与远端版本，已是
-    # 最新版时只记日志、不碰服务；有新版时走完整升级流程；
-    # 失败时记日志并 Bark 通知（Bark 配好且已开启时）。
+    # Scheduled auto-upgrade (invoked by cron): compare local vs remote version first; when already latest, only log and touch nothing; on a new version run the full upgrade; on failure log and send a Bark notification (when Bark is configured and enabled). 定时自动升级（cron 调用）：先比对本地与远端版本，已是最新版时只记日志、不碰服务；有新版时走完整升级流程；失败时记日志并 Bark 通知（Bark 配好且已开启时）。
     require_root
     [ -d "$INSTALL_DIR/.git" ] || die "未安装（$INSTALL_DIR 不存在），先运行不带参数的安装。"
     cd "$INSTALL_DIR" || die "无法进入 $INSTALL_DIR。"
@@ -1912,8 +1791,7 @@ cmd_auto_upgrade() {
         return 0
     fi
     info "发现新版，开始升级…"
-    # 升级步骤放子 shell 里跑：update_code 失败时 die 只退出子 shell，
-    # 外层能捕获失败并 Bark 通知；子 shell 里不要用 local。
+    # Run the upgrade steps in a subshell: if update_code fails, die exits only the subshell and the outer layer can catch the failure and send a Bark notification; do not use local inside the subshell. 升级步骤放子 shell 里跑：update_code 失败时 die 只退出子 shell，外层能捕获失败并 Bark 通知；子 shell 里不要用 local。
     if (
         set -e
         update_code
@@ -1940,7 +1818,6 @@ cmd_upgrade() {
     update_code
     "$VENV_DIR/bin/pip" install --quiet -r "$INSTALL_DIR/requirements.txt"
     "$VENV_DIR/bin/pip" install --quiet oci-cli
-    # 只重启在跑或已设自启的服务（特意停掉并禁用的不拉起来）。
     local to_restart
     to_restart=$(running_services)
     if [ -n "$to_restart" ]; then
@@ -1973,8 +1850,6 @@ cmd_uninstall() {
 }
 
 # ---------- 入口 ----------
-# 不带参数：首次=安装，再次=更新并重启（R-Bot 模板同款用法）。
-# 管理命令只操作实际存在的服务（没装机器人时不碰机器人服务）。
 case "${1:-}" in
     "")         cmd_install ;;
     start)      systemctl start $(mbot_services) && echo "已启动。" ;;

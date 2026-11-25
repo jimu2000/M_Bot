@@ -31,19 +31,19 @@ from datetime import datetime
 
 # ==================== ★★★ 流量阈值配置（都在这里，改数字就能用）★★★ ====================
 #
-# 【超限处理模式】改这一个数字，决定流量超了之后怎么办：
-OVER_LIMIT_MODE = 0        # 0 = 阻断断网（iptables 熔断，切断外网，SSH 逃生门保留）
-                           # 1 = 限速不断网（tc 限流到 RATE_LIMIT，SSH 与服务都不掉线）
-                           # 选 0 还是选 1：怕超额扣费选 0（最保险）；怕断网影响服务选 1（不断连）
+# [Over-limit mode] Change this one number to decide what happens when traffic exceeds the limit: 【超限处理模式】改这一个数字，决定流量超了之后怎么办：
+OVER_LIMIT_MODE = 0  # 0 = block the network (iptables breaker: cut off outbound traffic, keep the SSH escape hatch). 0 = 阻断断网（iptables 熔断，切断外网，SSH 逃生门保留）。
+                           # 1 = rate-limit without disconnecting (tc throttling to RATE_LIMIT; SSH and services stay up). 1 = 限速不断网（tc 限流到 RATE_LIMIT，SSH 与服务都不掉线）。
+                           # Which to pick: afraid of overage charges, pick 0 (safest); afraid of disconnects hurting services, pick 1 (stays connected). 选 0 还是选 1：怕超额扣费选 0（最保险）；怕断网影响服务选 1（不断连）。
 #
-# 【月流量硬顶】当月出站流量达到这个值，触发超限处理（按上面选的模式执行）
-MONTHLY_LIMIT_GB = 200.0   # 单位 GB，甲骨文免费 tier 每月 10TB 出站，一般设 200 防失控
+# [Monthly traffic hard cap] When this month's outbound traffic reaches this value, the over-limit action runs (in the mode chosen above). 【月流量硬顶】当月出站流量达到这个值，触发超限处理（按上面选的模式执行）。
+MONTHLY_LIMIT_GB = 200.0  # Unit GB; the Oracle free tier gives 10 TB outbound per month, so 200 is usually set to guard against runaway usage. 单位 GB，甲骨文免费 tier 每月 10TB 出站，一般设 200 防失控。
 #
-# 【限速速率】仅 OVER_LIMIT_MODE=1 时生效，超限后把网速降到这个值
-RATE_LIMIT = "1600kbit"    # 约 200KB/s，够 SSH 操作、不够跑满流量；想更慢改 800kbit，更快改 5mbit
+# [Rate limit] Only applies when OVER_LIMIT_MODE=1: after exceeding the limit, throttle to this speed. 【限速速率】仅 OVER_LIMIT_MODE=1 时生效，超限后把网速降到这个值。
+RATE_LIMIT = "1600kbit"  # About 200 KB/s: enough for SSH, not enough to burn through traffic; slower: 800kbit, faster: 5mbit. 约 200KB/s，够 SSH 操作、不够跑满流量；想更慢改 800kbit，更快改 5mbit。
 #
-# 【阶梯预警】到量就推一条 Bark 提醒（每档每月只推一次，跨月自动重置）
-# 格式：(阈值 GB, 提醒标题, 提示音)
+# [Tiered alerts] One Bark reminder per tier (at most once per tier per month; resets automatically across months). 【阶梯预警】到量就推一条 Bark 提醒（每档每月只推一次，跨月自动重置）。
+# Format: (threshold GB, alert title, sound). 格式：(阈值 GB, 提醒标题, 提示音)。
 STAGES = [
     (100.0, "100GB 阶段警报", "minuet"),
     (50.0,  "50GB 阶段提醒",  "telegraph"),
@@ -51,13 +51,10 @@ STAGES = [
     (5.0,   "5GB 阶段提醒",   "glass"),
 ]
 #
-# 【Bark 推送】不在这里写 Key！三级读取（前面的优先）：
-#   1. 环境变量 BARK_KEY / BARK_ENC_KEY / BARK_SERVER
-#   2. 配置文件 /root/.traffic_guard_bark（KEY=value 每行一个，600 权限，
-#      M_Bot 安装时自动生成；手动安装请自己建这个文件）
-#   3. 都没配：跳过推送（只记日志，熔断/限速照常工作）
-# BARK_KEY 是 Bark App 里设备 Key；BARK_ENC_KEY 是 App 加密设置里的 Key（32 位）；
-# BARK_SERVER 自建 Bark 服务端才改，默认官方 api.day.app。
+# [Bark push] Do NOT write the Key here! Three-level lookup (earlier wins): 【Bark 推送】不在这里写 Key！三级读取（前面的优先）：
+#   1. Env vars BARK_KEY / BARK_ENC_KEY / BARK_SERVER. 1. 环境变量 BARK_KEY / BARK_ENC_KEY / BARK_SERVER。
+#   2. Config file /root/.traffic_guard_bark (KEY=value, one per line, mode 600; auto-generated when M_Bot installs; for manual installs create this file yourself). 2. 配置文件 /root/.traffic_guard_bark（KEY=value 每行一个，600 权限，M_Bot 安装时自动生成；手动安装请自己建这个文件）。
+# BARK_KEY is the device Key in the Bark app; BARK_ENC_KEY is the Key in the app's encryption settings (32 chars); change BARK_SERVER only for a self-hosted Bark server (default is the official api.day.app). BARK_KEY 是 Bark App 里设备 Key；BARK_ENC_KEY 是 App 加密设置里的 Key（32 位）；BARK_SERVER 自建 Bark 服务端才改，默认官方 api.day.app。
 BARK_CONFIG_FILE = "/root/.traffic_guard_bark"
 # ==================== 配置结束，下面是程序逻辑，一般不用改 ====================
 
@@ -137,7 +134,7 @@ def detect_ssh_port():
     rc, out, _ = run_cmd("ss -tlnp 2>/dev/null | grep sshd")
     if rc == 0 and out:
         for line in out.splitlines():
-            # LISTEN 0 128 0.0.0.0:22 0.0.0.0:* users:(("sshd",...))
+            # Sample ss output the parser expects: LISTEN 0 128 0.0.0.0:22 0.0.0.0:* users:(("sshd",...)). 解析器期望的 ss 输出示例：LISTEN 0 128 0.0.0.0:22 0.0.0.0:* users:(("sshd",...))。
             parts = line.split()
             if len(parts) >= 4 and ":" in parts[3]:
                 port = parts[3].rsplit(":", 1)[1]
@@ -185,7 +182,7 @@ def send_bark_notification(title: str, body: str, sound: str = "alarm"):
         log_msg("Bark 加密 Key 未配置，跳过推送")
         return
     try:
-        # IV 必须是 16 位 ASCII 字符串，发送时用原文（不要 base64），否则 App 解密失败收不到
+        # The IV must be a 16-char ASCII string, sent as-is (not base64), or the app fails to decrypt and receives nothing. IV 必须是 16 位 ASCII 字符串，发送时用原文（不要 base64），否则 App 解密失败收不到。
         alphabet = string.ascii_letters + string.digits
         iv = "".join(secrets.choice(alphabet) for _ in range(16))
         payload = json.dumps({
@@ -370,7 +367,6 @@ def check_traffic():
         state = {"last_month": current_month_str, "notified_stages": []}
     notified_stages = state.get("notified_stages", [])
 
-    # 超限处理：按配置的模式执行（0=阻断，1=限速）
     if monthly_tx_gb >= MONTHLY_LIMIT_GB:
         if OVER_LIMIT_MODE == 0:
             if not is_circuit_broken():
@@ -381,7 +377,6 @@ def check_traffic():
                 apply_rate_limit(
                     f"当月累计出站已达 {monthly_tx_gb:.2f} GB（硬顶阈值 {MONTHLY_LIMIT_GB} GB）")
 
-    # 阶梯预警
     for limit_val, title_text, sound_type in STAGES:
         if monthly_tx_gb >= limit_val and limit_val not in notified_stages:
             ip_info, geo_result = get_ip_and_geo()
@@ -431,7 +426,6 @@ if __name__ == "__main__":
         send_bark_notification("VPS 流量卫士运行状态", body_msg, sound="glass")
         print("测试通知已成功发送至手机！")
     elif action == "trip":
-        # 手动触发超限处理（按配置的模式执行）
         if OVER_LIMIT_MODE == 0:
             trip_circuit_breaker("管理员命令行手动触发测试")
             print("已成功模拟触发熔断！")
@@ -439,7 +433,6 @@ if __name__ == "__main__":
             apply_rate_limit("管理员命令行手动触发测试")
             print("已成功模拟触发限速！")
     elif action == "reset":
-        # 解除两种超限状态（熔断 + 限速都清掉）
         reset_circuit_breaker()
         reset_rate_limit()
         print("已解除熔断与限速状态。")

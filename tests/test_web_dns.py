@@ -93,8 +93,7 @@ class DnsApiTestCase(unittest.TestCase):
                                       return_value=self.cf)
         self._cf_patch.start()
         self.addCleanup(self._cf_patch.stop)
-        # v1.26.0：_get_client 优先走 tgbot.cf_config 的包装
-        # （文件优先，环境变量兜底），这里也要 mock 掉。
+        # _get_client prefers the tgbot.cf_config wrapper (file first, environment variables as fallback), so it must be mocked here too. _get_client 优先走 tgbot.cf_config 的包装（文件优先，环境变量兜底），这里也要 mock 掉。
         self._cf_cfg_patch = patch.object(
             dns_routes, "get_configured_cf_client", return_value=self.cf)
         self._cf_cfg_patch.start()
@@ -218,7 +217,7 @@ class TestDnsRecords(DnsApiTestCase):
         self.cf.create_dns_record.assert_not_called()
 
     def test_create_record_missing_field_422(self):
-        body = {"type": "A", "name": "example.com"}  # 缺 content
+        body = {"type": "A", "name": "example.com"}
         r = self.client.post(f"/api/dns/zones/{FAKE_ZONE_ID}/records",
                              json=body)
         self.assertEqual(r.status_code, 422)
@@ -317,7 +316,7 @@ class TestDnsPage(DnsApiTestCase):
         self.assertIn('href="/dns" data-page="dns" class="active"', r.text)
 
 
-# ================= v1.26.0：凭据管理接口 =================
+# ================= 凭据管理接口 =================
 
 class TestDnsCredentials(DnsApiTestCase):
     """GET/POST/DELETE /api/dns/credentials 与提取接口。"""
@@ -333,7 +332,7 @@ class TestDnsCredentials(DnsApiTestCase):
         self.assertEqual(body["source"], "file")
         self.assertEqual(body["auth_mode"], "token")
         self.assertIsNone(body["email_masked"])
-        # 响应里绝不出现凭据值。
+        # Credential values never appear in the response. 响应里绝不出现凭据值。
         self.assertNotIn("fake-token", r.text)
 
     def test_get_credentials_env_key_masked_email(self):
@@ -350,7 +349,7 @@ class TestDnsCredentials(DnsApiTestCase):
         self.assertNotIn("user@example.com", r.text)
 
     def test_get_credentials_oci_config(self):
-        # v1.30.0：凭据来自 OCI 配置 [cloudflare] 段。
+        # Credentials come from the OCI config [cloudflare] section. 凭据来自 OCI 配置 [cloudflare] 段。
         with patch.object(
                 dns_routes, "resolve_cf_credentials",
                 return_value=("", "fake-key", "user@example.com",
@@ -438,7 +437,7 @@ class TestDnsCredentials(DnsApiTestCase):
         self.assertIn("没有已保存的凭据文件", r.json()["error"])
 
     def test_delete_oci_config_source_400(self):
-        # v1.30.0：凭据在 OCI 配置文件里时，删除也要说清来源。
+        # When credentials live in the OCI config file, the delete must also say where they came from. 凭据在 OCI 配置文件里时，删除也要说清来源。
         with patch.object(
                 dns_routes, "resolve_cf_credentials",
                 return_value=("", "fake-key", "user@example.com",

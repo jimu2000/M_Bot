@@ -134,7 +134,7 @@ class TestFmtUsageTotals(unittest.TestCase):
         self.assertIn("合计：1.00 SGD", text)
 
     def test_blank_currency_ignored(self):
-        # OCI 的 0 元项币种有时是单个空格（真实数据实测）：不能覆盖 SGD。
+        # An OCI zero-cost item's currency is sometimes a single space (seen in real data): it must not override SGD. OCI 的 0 元项币种有时是单个空格（真实数据实测）：不能覆盖 SGD。
         entries = [
             ("新加坡（3 个区）",
              [{"computed-amount": "13.46", "currency": "SGD"}]),

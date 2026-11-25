@@ -253,7 +253,7 @@ class TestBootBackupsCallback(BootBackupBotTestCase):
         self.assertIn("2/5", text)
         datas = callback_datas(reply_markup_of(update))
         self.assertIn("bb:restore:0", datas)
-        # 列表已存进 user_data，后续回调按下标取回。
+        # The list is stored in user_data; later callbacks retrieve it by index. 列表已存进 user_data，后续回调按下标取回。
         self.assertEqual(context.user_data["boot_backups"], FAKE_BACKUPS)
 
 
@@ -278,7 +278,7 @@ class TestVolumeBackupCallback(BootBackupBotTestCase):
         text = reply_text_of(update)
         self.assertIn("new-backup", text)
         self.assertIn("创建中", text)
-        # 创建成功后起完成通知轮询。
+        # After a successful creation, start the completion-notice polling. 创建成功后起完成通知轮询。
         mock_watch.assert_called_once()
         self.assertEqual(mock_watch.call_args[0][1], FAKE_BACKUP)
 
@@ -296,7 +296,7 @@ class TestVolumeBackupCallback(BootBackupBotTestCase):
         context = make_context()
         context.user_data["volumes"] = FAKE_VOLUMES
         await he.volume_backup_callback(update, context)
-        # 先删最早备份，再带重试创建；不弹确认。
+        # Delete the oldest backup first, then create with retry; no confirmation popup. 先删最早备份，再带重试创建；不弹确认。
         mock_delete.assert_called_once()
         self.assertEqual(mock_delete.call_args[0][1], FAKE_OLD_BACKUP)
         mock_create_retry.assert_called_once()
@@ -424,7 +424,7 @@ class TestHandleConfirmBackup(BootBackupBotTestCase):
         self.assertTrue(result)
         self.assertIn("配额预检不通过", reply_text_of(update))
         mock_restore.assert_not_called()
-        # 启动盘按备份实际大小（50GB）校验，不是默认 47GB。
+        # The boot volume is validated against the backup's actual size (50 GB), not the default 47 GB. 启动盘按备份实际大小（50GB）校验，不是默认 47GB。
         self.assertEqual(
             mock_can.call_args.kwargs.get("boot_volume_size_gbs"), 50)
 

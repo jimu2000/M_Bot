@@ -148,8 +148,7 @@ class DomainTestCase(unittest.IsolatedAsyncioTestCase):
                                       return_value=self.cf)
         self._cf_patch.start()
         self.addCleanup(self._cf_patch.stop)
-        # v1.26.0：_get_cf_client 优先走 tgbot.cf_config 的包装
-        # （文件优先，环境变量兜底），这里也要 mock 掉。
+        # _get_cf_client prefers the tgbot.cf_config wrapper (file first, environment variables as fallback), so it must be mocked here too. _get_cf_client 优先走 tgbot.cf_config 的包装（文件优先，环境变量兜底），这里也要 mock 掉。
         self._cf_cfg_patch = patch.object(he, "get_configured_cf_client",
                                           return_value=self.cf)
         self._cf_cfg_patch.start()
@@ -172,7 +171,7 @@ class TestDomainCommand(DomainTestCase):
         self.assertIn(f"domain:zone:{FAKE_ZONE_ID}", callbacks)
         self.assertIn(f"domain:zone:{FAKE_ZONE_ID_2}", callbacks)
         self.cf.list_zones.assert_called_once_with()
-        # Zone 列表存进 user_data，供回调解析 Zone 名。
+        # The Zone list is stored in user_data for the callback to resolve Zone names. Zone 列表存进 user_data，供回调解析 Zone 名。
         self.assertEqual(context.user_data["domain_zones"], FAKE_ZONES)
 
     async def test_domain_no_zones(self):
@@ -222,7 +221,6 @@ class TestDomainCallback(DomainTestCase):
         self.assertIn("A www.example.com -> 203.0.113.10 🟠", text)
         self.assertIn("TXT example.com -> v=spf1 -all", text)
         self.assertIn("MX example.com -> mail.example.com", text)
-        # 只有 proxied 的那条带 🟠。
         self.assertEqual(text.count("🟠"), 1)
         self.cf.list_dns_records.assert_called_once_with(FAKE_ZONE_ID)
         callbacks = button_callback_data(reply_markup_of(update))
@@ -232,7 +230,7 @@ class TestDomainCallback(DomainTestCase):
     async def test_zone_callback_resolves_name_from_records(self):
         """user_data 里没存 Zone 列表时，从记录的 zone_name 解析 Zone 名。"""
         update = make_update(callback_data=f"domain:zone:{FAKE_ZONE_ID}")
-        context = make_context()  # domain_zones 为空
+        context = make_context()
         await he.domain_callback(update, context)
         self.assertIn("example.com", reply_text_of(update))
 
@@ -312,7 +310,7 @@ class TestDomainFormatting(unittest.TestCase):
         self.assertIn("不存在", he.fmt_cf_error(_cf_error("not_found")))
         self.assertIn("限流", he.fmt_cf_error(_cf_error("rate_limit")))
         self.assertIn("调用失败", he.fmt_cf_error(_cf_error("api")))
-        # 原始错误细节不进提示文本。
+        # Raw error details never enter the prompt text. 原始错误细节不进提示文本。
         self.assertNotIn("mock cloudflare failure",
                          he.fmt_cf_error(_cf_error("auth")))
 
@@ -325,7 +323,6 @@ class TestDomainKeyboards(unittest.TestCase):
         callbacks = button_callback_data(markup)
         self.assertIn(f"domain:zone:{FAKE_ZONE_ID}", callbacks)
         self.assertIn(f"domain:zone:{FAKE_ZONE_ID_2}", callbacks)
-        # 按钮文本带 Zone 名。
         labels = [btn.text for row in markup.inline_keyboard for btn in row]
         self.assertTrue(any("example.com" in label for label in labels))
 
@@ -342,7 +339,7 @@ class TestDomainKeyboards(unittest.TestCase):
             self.assertLessEqual(len(callback.encode("utf-8")), 64)
 
 
-# ================= v1.26.0：Cloudflare 凭据管理 =================
+# ================= Cloudflare 凭据管理 =================
 
 FAKE_INSTANCES = [
     {"id": "ocid1.instance.oc1..fake0000000000000000000000000001",
@@ -504,7 +501,7 @@ class TestCfCallback(DomainTestCase):
             update = make_update(callback_data="cf:extract")
             context = make_context()
             await he.cf_callback(update, context)
-        # 只有 host-a（RUNNING + 有公网 IP）进列表。
+        # Only host-a (RUNNING + has a public IP) enters the list. 只有 host-a（RUNNING + 有公网 IP）进列表。
         hosts = context.user_data["cf_extract_hosts"]
         self.assertEqual(len(hosts), 1)
         self.assertEqual(hosts[0]["display-name"], "host-a")
@@ -615,7 +612,7 @@ class TestCfTextInput(DomainTestCase):
         self.assertIn("6 个 Zone", text)
         self.assertNotIn("fake-token-123", text)
         self.assertNotIn("pending_input", context.user_data)
-        # 用户发的含凭据消息被删掉。
+        # The user's credential-bearing message is deleted. 用户发的含凭据消息被删掉。
         context.bot.delete_message.assert_awaited_once()
 
     async def test_cf_token_validate_failure(self):
@@ -757,7 +754,7 @@ class TestDnsAddFlow(DomainTestCase):
         callbacks = button_callback_data(reply_markup_of(update))
         self.assertIn(f"domain:add:{FAKE_ZONE_ID}", callbacks)
         self.assertIn(f"domain:delpick:{FAKE_ZONE_ID}", callbacks)
-        # 记录存进 user_data，供删除按下标取用。
+        # Records are stored in user_data for deletion by index. 记录存进 user_data，供删除按下标取用。
         self.assertEqual(
             context.user_data["domain_records"][FAKE_ZONE_ID],
             FAKE_RECORDS)
@@ -812,7 +809,7 @@ class TestDnsAddFlow(DomainTestCase):
                                               "type": "A"}
         await he.text_input_callback(update, context)
         self.assertIn("格式不对", reply_text_of(update))
-        # 格式不对可重发：pending_input 仍在 dns_add_name。
+        # A bad format can be resent: pending_input is still at dns_add_name. 格式不对可重发：pending_input 仍在 dns_add_name。
         self.assertEqual(context.user_data["pending_input"]["kind"],
                          "dns_add_name")
 
@@ -854,7 +851,6 @@ class TestDnsAddFlow(DomainTestCase):
         self.cf.create_dns_record.assert_called_once_with(
             FAKE_ZONE_ID, "A", "www", "203.0.113.10")
         self.assertNotIn("dns_add_draft", context.user_data)
-        # 成功后刷新记录列表（最后一条消息是记录列表）。
         self.assertIn("共 3 条", last_sent_text(update, context))
 
     async def test_confirm_without_draft_expired(self):
@@ -895,7 +891,7 @@ class TestDnsDeleteFlow(DomainTestCase):
         callbacks = button_callback_data(reply_markup_of(update))
         self.assertIn(f"domain:del:{FAKE_ZONE_ID}:0", callbacks)
         self.assertIn(f"domain:del:{FAKE_ZONE_ID}:2", callbacks)
-        # 有缓存时不再调 API。
+        # With a cache, the API is not called again. 有缓存时不再调 API。
         self.cf.list_dns_records.assert_not_called()
 
     async def test_delpick_refetches_when_no_cache(self):
@@ -938,7 +934,6 @@ class TestDnsDeleteFlow(DomainTestCase):
         await he.domain_callback(update, context)
         self.cf.delete_dns_record.assert_called_once_with(
             FAKE_ZONE_ID, "recid000000000000000000000002")
-        # 成功后刷新记录列表。
         self.assertIn("共 3 条", last_sent_text(update, context))
 
     async def test_del_yes_api_error_reported(self):

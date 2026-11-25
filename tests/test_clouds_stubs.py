@@ -13,11 +13,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from clouds import (AWSProvider, AzureProvider, CloudProvider, DOProvider,
                     GCPProvider, SolusVMProvider, VirtFusionProvider)
 
-# 测试数据一律用文档保留值，绝不出现真实 IP / OCID / Token / 密钥。
+# Test data always uses documentation-reserved values; no real IP / OCID / Token / key ever appears. 测试数据一律用文档保留值，绝不出现真实 IP / OCID / Token / 密钥。
 FAKE_INSTANCE_ID = "test-instance-id"
-FAKE_PUBLIC_IP = "203.0.113.10"  # TEST-NET-3，文档保留地址
+FAKE_PUBLIC_IP = "203.0.113.10"
 FAKE_HOSTNAME = "example.com"
-# AWS 官方文档示例密钥（非真实凭据，见 AWS 文档示例）。
+# AWS official documentation example keys (not real credentials; see the AWS docs examples). AWS 官方文档示例密钥（非真实凭据，见 AWS 文档示例）。
 FAKE_AWS_CREDS = {
     "access_key_id": "AKIAIOSFODNN7EXAMPLE",
     "secret_access_key": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
@@ -45,7 +45,7 @@ FAKE_VF_CREDS = {
     "api_token": "fake-vf-token",
 }
 
-# 11 个抽象方法名（与 CloudProvider 的接口清单一致）。
+# The 11 abstract method names (matching the CloudProvider interface list). 11 个抽象方法名（与 CloudProvider 的接口清单一致）。
 EXPECTED_ABSTRACT_METHODS = {
     "list_instances",
     "get_instance",
@@ -60,9 +60,7 @@ EXPECTED_ABSTRACT_METHODS = {
     "get_quota",
 }
 
-# 每个方法一次调用所需的参数（抽样至少覆盖 list_instances /
-# get_instance / create_instance / terminate_instance / list_public_ips /
-# get_quota；这里全覆盖 11 个方法）。
+# The parameters one call of each method needs (sampling must at least cover list_instances / get_instance / create_instance / terminate_instance / list_public_ips / get_quota; here all 11 methods are covered). 每个方法一次调用所需的参数（抽样至少覆盖 list_instances / get_instance / create_instance / terminate_instance / list_public_ips / get_quota；这里全覆盖 11 个方法）。
 METHOD_CALLS = [
     ("list_instances", (), {}),
     ("get_instance", (FAKE_INSTANCE_ID,), {}),

@@ -108,14 +108,13 @@ class TestMenuTracker(unittest.IsolatedAsyncioTestCase):
             return_value=sent_message(999))
         await menu_tracker.reply(update, context, "第一条")
         await menu_tracker.reply(update, context, "第二条")
-        # 第一次走回复，第二次走 send_message（被点的消息已删，
-        # 回复它会报 Bad Request）。
+        # First reply goes through the reply path, the second through send_message (the tapped message is already deleted, and replying to it raises Bad Request). 第一次走回复，第二次走 send_message（被点的消息已删，回复它会报 Bad Request）。
         update.effective_message.reply_text.assert_awaited_once()
         context.bot.send_message.assert_awaited_once()
         args, kwargs = context.bot.send_message.await_args
         self.assertEqual(kwargs["chat_id"], TEST_CHAT_ID)
         self.assertEqual(kwargs["text"], "第二条")
-        # 被点的消息只删一次。
+        # The tapped message is deleted only once. 被点的消息只删一次。
         self.assertEqual(deleted_ids(context), [777])
 
     async def test_command_menu_tracks_and_deletes_old(self):

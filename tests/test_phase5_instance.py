@@ -27,7 +27,7 @@ from oci.instance import (
     rename_instance,
 )
 
-# 占位符（测试里不出现真实 OCID）
+# Placeholders (no real OCID in tests). 占位符（测试里不出现真实 OCID）。
 FAKE_INSTANCE_1 = "ocid1.instance.oc1..aaaa"
 FAKE_INSTANCE_2 = "ocid1.instance.oc1..bbbb"
 FAKE_IMAGE = "ocid1.image.oc1..xxxxxxxx"
@@ -116,7 +116,7 @@ class TestRenameInstance(unittest.TestCase):
         self.assertEqual(args[args.index("--instance-id") + 1],
                          FAKE_INSTANCE_1)
         self.assertEqual(args[args.index("--display-name") + 1], "new-name")
-        # --force 必加：不加会交互确认挂到超时
+        # --force is required: without it, interactive confirmation hangs until timeout. --force 必加：不加会交互确认挂到超时。
         self.assertIn("--force", args)
         self.assertEqual(result["display-name"], "new-name")
 
@@ -153,7 +153,7 @@ class TestReinstallInstance(unittest.TestCase):
     def test_with_explicit_image(self):
         cli = _mock_cli({"data": {"id": FAKE_INSTANCE_1}})
         reinstall_instance(cli, FAKE_INSTANCE_1, image_id=FAKE_IMAGE)
-        # 指定镜像时只调一次 update，不用先 get
+        # With an image specified, update is called only once, no get first. 指定镜像时只调一次 update，不用先 get。
         cli.run.assert_called_once()
         args = cli.run.call_args[0][0]
         self.assertEqual(args[:3], ["compute", "instance", "update"])
@@ -187,7 +187,7 @@ class TestReinstallInstance(unittest.TestCase):
         cli.run.return_value = {"data": {"id": FAKE_INSTANCE_1}}
         with self.assertRaises(ValueError):
             reinstall_instance(cli, FAKE_INSTANCE_1)
-        # 只调了 get，没调 update
+        # Only get was called; update was not. 只调了 get，没调 update。
         cli.run.assert_called_once()
         args = cli.run.call_args[0][0]
         self.assertEqual(args[:3], ["compute", "instance", "get"])
@@ -226,14 +226,14 @@ class TestGetSerialConsole(unittest.TestCase):
         self.assertEqual(create_args[:3],
                          ["compute", "instance-console-connection", "create"])
         self.assertIn(FAKE_INSTANCE_1, create_args)
-        # OCI CLI 必填参数 --ssh-public-key-file（真实验证挖出的 bug）
+        # The OCI CLI's required --ssh-public-key-file parameter (a bug found by real verification). OCI CLI 必填参数 --ssh-public-key-file（真实验证挖出的 bug）。
         self.assertIn("--ssh-public-key-file", create_args)
         self.assertIn("/tmp/fake-key.pub", create_args)
         get_args = cli.run.call_args_list[1][0][0]
         self.assertEqual(get_args[:3],
                          ["compute", "instance-console-connection", "get"])
         self.assertIn(FAKE_CONNECTION, get_args)
-        # create 的连接串保留，get 的最新状态覆盖旧状态
+        # create's connection string is kept; get's latest state overwrites the old state. create 的连接串保留，get 的最新状态覆盖旧状态。
         self.assertIn("ssh -i key", result["connection-string"])
         self.assertEqual(result["fingerprint"], "aa:bb:cc")
         self.assertEqual(result["lifecycle-state"], "ACTIVE")

@@ -18,9 +18,9 @@ python-telegram-bot 的 Application（面板进程里没有 bot 实例）。
 import httpx
 
 # ================= 配置区（改这里） =================
-# Bot API 基础地址。
+# Bot API base URL. Bot API 基础地址。
 TELEGRAM_API_BASE = "https://api.telegram.org"
-# 单次发送超时（秒）。
+# Timeout (seconds) per send. 单次发送超时（秒）。
 SEND_TIMEOUT_SECONDS = 10
 # =====================================================
 

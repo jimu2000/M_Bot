@@ -152,7 +152,7 @@ class TestRecordTrafficGuardTrigger(MonitoringTestCase):
         self.assertEqual(cfg["last_triggered"], now.isoformat())
         saved = self.read_json(mon.TRAFFIC_GUARD_FILE)
         self.assertEqual(saved["last_triggered"], now.isoformat())
-        # 刚触发完，立即再判断应被冷却挡住。
+        # Just triggered; an immediate re-check should be blocked by the cooldown. 刚触发完，立即再判断应被冷却挡住。
         self.assertFalse(mon.should_trigger_traffic_guard(cfg, 99999,
                                                           now=now))
 
@@ -166,13 +166,10 @@ class TestCurrentMonthTransferGb(MonitoringTestCase):
              "2026-11-01T00:00:00Z", "computed-quantity": 100.5},
             {"service": "Data Transfer", "time-usage-started":
              "2026-11-15T00:00:00Z", "computed-quantity": 200},
-            # 上个月的不算。
             {"service": "Data Transfer", "time-usage-started":
              "2026-10-31T00:00:00Z", "computed-quantity": 9999},
-            # 非流量服务不算。
             {"service": "Compute", "time-usage-started":
              "2026-11-10T00:00:00Z", "computed-quantity": 8888},
-            # 坏数据跳过。
             {"service": "Data Transfer", "time-usage-started":
              "2026-11-10T00:00:00Z", "computed-quantity": "bad"},
             {"service": "Data Transfer", "time-usage-started":
@@ -233,7 +230,7 @@ class TestKeepaliveFailures(MonitoringTestCase):
         count, gave_up = mon.keepalive_record_failure(state, FAKE_OCID_1)
         self.assertEqual((count, gave_up), (3, True))
         self.assertIn(FAKE_OCID_1, state["gave_up"])
-        # 再失败也不重复进停试名单。
+        # Further failures do not re-add it to the stop-try list. 再失败也不重复进停试名单。
         mon.keepalive_record_failure(state, FAKE_OCID_1)
         self.assertEqual(state["gave_up"].count(FAKE_OCID_1), 1)
 
@@ -304,20 +301,18 @@ class TestSslReminderDue(MonitoringTestCase):
         self.assertEqual(new, [14, 30])
 
     def test_late_added_domain_catches_up_all_crossed(self):
-        # 域名刚加入时只剩 5 天：30/14/7 三个阈值都已跨过，一次性都记上，
-        # 调用方只发一条提醒，避免连发三条。
+        # A domain added with only 5 days left: the 30/14/7 thresholds are all already crossed, so record them all at once and let the caller send just one reminder instead of three. 域名刚加入时只剩 5 天：30/14/7 三个阈值都已跨过，一次性都记上，调用方只发一条提醒，避免连发三条。
         due, new = mon.ssl_reminder_due(5, [])
         self.assertEqual(due, [30, 14, 7])
         self.assertEqual(new, [7, 14, 30])
 
     def test_renewal_prunes_reminded_thresholds(self):
-        # 证书续期后剩余天数回升到 90 天：已提醒的阈值全部清掉，
-        # 下次到期时可重新提醒。
+        # After renewal the remaining days bounce back to 90: all reminded thresholds are cleared, so they can remind again at the next expiry. 证书续期后剩余天数回升到 90 天：已提醒的阈值全部清掉，下次到期时可重新提醒。
         due, new = mon.ssl_reminder_due(90, [30, 14, 7, 1])
         self.assertEqual((due, new), ([], []))
 
     def test_partial_renewal_prunes_only_uncrossed(self):
-        # 剩余 20 天：30 仍跨过（保留），14/7/1 未跨过（剪掉）。
+        # 20 days left: 30 is still crossed (kept), 14/7/1 are not crossed (pruned). 剩余 20 天：30 仍跨过（保留），14/7/1 未跨过（剪掉）。
         due, new = mon.ssl_reminder_due(20, [30, 14])
         self.assertEqual((due, new), ([], [30]))
 

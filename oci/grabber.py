@@ -86,33 +86,25 @@ from datetime import datetime, timezone
 from oci.client import OCIError, OutOfCapacityError, QuotaExceededError, RateLimitError
 
 # ================= 配置区（改这里） =================
-# 抢机轮询间隔（秒）：无容量时等这么久再试。API 约 6 秒 + 检查约 2 秒，
-# 整轮约 30 秒。
+# Grab poll interval (seconds): wait this long before retrying when there is no capacity. One API call takes ~6s + ~2s of checks, so a full round is ~30s. 抢机轮询间隔（秒）：无容量时等这么久再试。API 约 6 秒 + 检查约 2 秒，整轮约 30 秒。
 CREATE_INTERVAL = 25
-# 抢机抖动范围（秒）：实际间隔为 CREATE_INTERVAL +/- CREATE_JITTER，
-# 即 20~30 秒随机，避免固定节律被限流。
+# Grab jitter range (seconds): the actual interval is CREATE_INTERVAL +/- CREATE_JITTER, i.e. 20-30s random, so a fixed rhythm does not get rate-limited. 抢机抖动范围（秒）：实际间隔为 CREATE_INTERVAL +/- CREATE_JITTER，即 20~30 秒随机，避免固定节律被限流。
 CREATE_JITTER = 5
-# 429 限流指数退避的初始等待（秒），每次翻倍。
+# Initial wait (seconds) for 429 rate-limit exponential backoff, doubling each time. 429 限流指数退避的初始等待（秒），每次翻倍。
 BACKOFF_INITIAL = 60
-# 429 限流指数退避的上限（秒）。
+# Cap (seconds) for 429 rate-limit exponential backoff. 429 限流指数退避的上限（秒）。
 BACKOFF_MAX = 600
-# 默认目标 CPU 型号（E2 抢机用：只留 AMD EPYC 7J13 的）。
+# Default target CPU model (for E2 grabbing: keep only AMD EPYC 7J13). 默认目标 CPU 型号（E2 抢机用：只留 AMD EPYC 7J13 的）。
 TARGET_CPU = "7J13"
-# 等公网 IP 分配：最多查多少次、每次间隔多少秒（默认 30 次 x 20 秒 = 10 分钟）。
+# Wait for public IP assignment: max polls x interval seconds (default 30 x 20s = 10 minutes). 等公网 IP 分配：最多查多少次、每次间隔多少秒（默认 30 次 x 20 秒 = 10 分钟）。
 PUBLIC_IP_MAX_POLLS = 30
 PUBLIC_IP_POLL_INTERVAL = 20
-# 等实例终止：最多查多少次、每次间隔多少秒（默认 40 次 x 15 秒 = 10 分钟）。
+# Wait for instance termination: max polls x interval seconds (default 40 x 15s = 10 minutes). 等实例终止：最多查多少次、每次间隔多少秒（默认 40 次 x 15 秒 = 10 分钟）。
 TERMINATE_MAX_POLLS = 40
 TERMINATE_POLL_INTERVAL = 15
-# 防重复建的时间窗（秒）：同名实例只有在最近这么久内创建的才算
-# “上次创建成功但响应丢失”（默认 15 分钟）。实例名改成日期格式
-# （AMD_YYYY-MM-DD）后，同名旧实例是之前建的，不能误当新开的。
+# Anti-duplicate-build window (seconds): a same-name instance only counts as "last build succeeded but the response was lost" when created within this window (default 15 minutes). Instance names are now date-format (AMD_YYYY-MM-DD), so a same-name old instance was built earlier and must not be mistaken for the new one. 防重复建的时间窗（秒）：同名实例只有在最近这么久内创建的才算“上次创建成功但响应丢失”（默认 15 分钟）。实例名改成日期格式（AMD_YYYY-MM-DD）后，同名旧实例是之前建的，不能误当新开的。
 DEDUP_WINDOW_SECONDS = 900
-# 防重复建只认“活着”的实例：已终止 / 停止 / 删除中的同名实例
-# 不是“上次创建成功但响应丢失”，复用它会把一台死机当成抢机成功
-# 返回（2026-11-24 首尔实测：第二轮验证复用了 15 分钟内被终止的
-# 测试机，导致备份创建报“启动卷已是 Terminated”）。状态查不到时
-# 按旧行为保守处理（认作活着，不冒险重复建）。
+# Anti-duplicate-build only recognizes "live" instances: a TERMINATED / STOPPED / TERMINATING same-name instance is not "last build succeeded but response lost"; reusing it would return a dead machine as a successful grab (a real case: a test machine terminated within 15 minutes was reused in round two, and backup creation then failed with "boot volume already Terminated"). When the state cannot be read, stay conservative as before (treat it as live; do not risk a duplicate build). 防重复建只认“活着”的实例：已终止 / 停止 / 删除中的同名实例不是“上次创建成功但响应丢失”，复用它会把一台死机当成抢机成功返回（实测：第二轮验证复用了 15 分钟内被终止的测试机，导致备份创建报“启动卷已是 Terminated”）。状态查不到时按旧行为保守处理（认作活着，不冒险重复建）。
 DEDUP_LIVE_STATES = frozenset({"RUNNING", "PROVISIONING", "STARTING"})
 # =====================================================
 
@@ -121,10 +113,11 @@ DEDUP_LIVE_STATES = frozenset({"RUNNING", "PROVISIONING", "STARTING"})
 class GrabResult:
     """抢机完成后的结果（含统计，供调用方通知时用，如“共尝试 N 次，总耗时 T”）。"""
 
-    instance_id: str       # 最终保留的实例 OCID
-    attempts: int          # 尝试次数（含直接复用同名实例的那次）
-    releases: int          # 因 CPU 不对而释放的实例数
-    elapsed_seconds: float  # 从 run() 开始到抢到的总耗时（秒）
+    instance_id: str  # OCID of the finally kept instance. 最终保留的实例 OCID。
+    attempts: int  # Attempt count (including the attempt that directly reused a same-name instance). 尝试次数（含直接复用同名实例的那次）。
+    releases: int  # Instances released for the wrong CPU. 因 CPU 不对而释放的实例数。
+    elapsed_seconds: float  # Total time (seconds) from run() start until the grab. 从 run() 开始到抢到的总耗时（秒）。
+    cpu_model: str | None = None  # CPU model measured by the guard SSH check (e.g. "AMD EPYC 7J13"); None when unverified. 抢机时 guard SSH 实测的 CPU 型号（如 "AMD EPYC 7J13"），未验明时为 None。
 
 
 class GrabCancelledError(RuntimeError):
@@ -187,7 +180,7 @@ class Grabber:
         self.display_name = display_name
         self.ssh_keys_file = ssh_keys_file
         self.target_cpu = target_cpu
-        # 归一成列表：字符串变单元素列表，列表去空；原值保留作兼容。
+        # Normalize to a list: a string becomes a single-element list, empty entries are dropped; the original value is kept for compatibility. 归一成列表：字符串变单元素列表，列表去空；原值保留作兼容。
         if isinstance(target_cpu, str):
             self.target_cpus = [target_cpu] if target_cpu else []
         else:
@@ -200,7 +193,7 @@ class Grabber:
         self.assign_public_ip = assign_public_ip
         self.assign_ipv6 = assign_ipv6
         self.user_data = user_data
-        # 抢机延迟区间：都传且都 > 0 时按区间算，否则用模块常量默认值。
+        # Grab delay range: used only when both values are given and > 0; otherwise the module-constant defaults apply. 抢机延迟区间：都传且都 > 0 时按区间算，否则用模块常量默认值。
         if min_delay and max_delay:
             if min_delay > max_delay:
                 raise ValueError(
@@ -210,13 +203,10 @@ class Grabber:
         else:
             self._interval = CREATE_INTERVAL
             self._jitter = CREATE_JITTER
-        # 启动脚本临时文件路径（惰性创建，见 _ensure_user_data_file）。
+        # Boot-script temp file path (created lazily, see _ensure_user_data_file). 启动脚本临时文件路径（惰性创建，见 _ensure_user_data_file）。
         self._user_data_file = None
-        # 可注入的 CPU 检查函数，签名 cpu_check_hook(instance_id, public_ip)
-        # -> str | None，返回 CPU 型号字符串（如 "AMD EPYC 7J13"），
-        # 查不到返回 None（run() 收到 None 时暂留实例）。默认 None（不查 CPU）。
-        # SSH 查 CPU 的逻辑由调用方提供（tgbot/cpu_policy.py 的
-        # make_cpu_check_hook），模块本身不依赖 SSH。
+        # Injectable CPU check hook, signature cpu_check_hook(instance_id, public_ip) -> str | None, returning the CPU model string (e.g. "AMD EPYC 7J13"), or None when unknowable (run() keeps the instance for now on None). Default None (no CPU check). 可注入的 CPU 检查函数，签名 cpu_check_hook(instance_id, public_ip) -> str | None，返回 CPU 型号字符串（如 "AMD EPYC 7J13"），查不到返回 None（run() 收到 None 时暂留实例）。默认 None（不查 CPU）。
+        # The SSH-based CPU check logic is provided by the caller (tgbot/cpu_policy.py make_cpu_check_hook); this module itself does not depend on SSH. SSH 查 CPU 的逻辑由调用方提供（tgbot/cpu_policy.py 的 make_cpu_check_hook），模块本身不依赖 SSH。
         self.cpu_check_hook = None
 
     # ---------------- 内部小工具 ----------------
@@ -304,7 +294,7 @@ class Grabber:
             found = json.loads(out)
         except ValueError:
             return None
-        # 兼容旧查询（data[0] 返回单个对象）与新查询（data[] 返回列表）。
+        # Compatible with the old query (data[0] returns a single object) and the new query (data[] returns a list). 兼容旧查询（data[0] 返回单个对象）与新查询（data[] 返回列表）。
         if isinstance(found, dict):
             found = [found]
         if not isinstance(found, list):
@@ -316,7 +306,7 @@ class Grabber:
             if not item.get("id"):
                 continue
             state = (item.get("state") or "").upper()
-            # 状态明确且不在活着的集合里：死机，不认。
+            # State is known and not in the live set: a dead machine, do not accept it. 状态明确且不在活着的集合里：死机，不认。
             if state and state not in DEDUP_LIVE_STATES:
                 continue
             candidates.append(item)
@@ -333,8 +323,7 @@ class Grabber:
                 created = created.replace(tzinfo=timezone.utc)
             return created
 
-        # 取最新的一个；创建时间解析不了的排最前（沿用旧行为：不冒险
-        # 重复建，直接认作上次创建的实例）。
+        # Take the newest one; entries whose creation time cannot be parsed sort first (keep the old behavior: do not risk a duplicate build, accept it as the last-created instance). 取最新的一个；创建时间解析不了的排最前（沿用旧行为：不冒险重复建，直接认作上次创建的实例）。
         dated = [(_created_at(item), item) for item in candidates]
         dated.sort(key=lambda pair: (
             pair[0] is None,
@@ -401,8 +390,7 @@ class Grabber:
             "true" if self.assign_public_ip else "false",
             "--display-name", self.display_name,
         ]
-        # 不用公钥时（ssh_keys_file 为 None/空）不传该参数；OCI launch
-        # 本身不强制要求 SSH 公钥，配合 root 密码登录即可进实例。
+        # When no public key is given (ssh_keys_file is None/empty), do not pass the parameter; OCI launch does not require an SSH public key, and root password login gets into the instance. 不用公钥时（ssh_keys_file 为 None/空）不传该参数；OCI launch 本身不强制要求 SSH 公钥，配合 root 密码登录即可进实例。
         if self.ssh_keys_file:
             args += ["--ssh-authorized-keys-file", self.ssh_keys_file]
         if (self.shape.endswith(".Flex") and self.ocpus is not None
@@ -487,25 +475,25 @@ class Grabber:
             try:
                 instance_id = self.try_launch_once()
             except RateLimitError as exc:
-                # 429 限流：指数退避，不要硬刷。
+                # 429 rate limit: exponential backoff, do not hammer. 429 限流：指数退避，不要硬刷。
                 self._emit("rate_limited",
                            f"遇到 429 限流，退避 {backoff} 秒后再试。{exc}")
                 self._sleep(backoff)
                 backoff = min(backoff * 2, BACKOFF_MAX)
                 continue
             except QuotaExceededError as exc:
-                # 配额不足（不是缺货）：重试没用，通知后停下。
+                # Quota exhausted (not out of stock): retrying is useless, so notify and stop. 配额不足（不是缺货）：重试没用，通知后停下。
                 self._emit("quota", f"配额不足，停止抢机：{exc}")
                 raise
-            backoff = BACKOFF_INITIAL  # 非 429 结果则重置退避
+            backoff = BACKOFF_INITIAL
             if instance_id is None:
-                # 无容量：等 interval +/- jitter 再试。
                 wait = self._next_interval()
                 self._emit("attempt",
                            f"第 {attempts} 次失败（无容量），{wait:.0f} 秒后重试。")
                 self._sleep(wait)
                 continue
             self._emit("launched", f"抢到了！实例 {instance_id[-4:]}")
+            cpu_model = None
             if self.target_cpus and self.cpu_check_hook is not None:
                 public_ip = self.get_public_ip(instance_id)
                 try:
@@ -515,7 +503,7 @@ class Grabber:
                     cpu = None
                     check_error = str(exc)
                 if cpu is None:
-                    # 查不到型号：不释放没验明的机器，暂留并提醒人工核对。
+                    # CPU model unknowable: do not release an unverified machine; keep it for now and flag it for manual review. 查不到型号：不释放没验明的机器，暂留并提醒人工核对。
                     reason = (f"检查出错（{check_error}）" if check_error
                               else "查不到型号")
                     self._emit("cpu_check_failed",
@@ -528,9 +516,13 @@ class Grabber:
                     self.terminate_instance(instance_id)
                     releases += 1
                     continue
+                cpu_model = cpu
             elapsed = time.monotonic() - started
-            self._emit("done",
-                       f"抢机完成：实例 {instance_id[-4:]}，共尝试 {attempts} 次，"
-                       f"累计释放 {releases} 台 CPU 不符，总耗时 {elapsed:.0f} 秒。")
+            done = (f"抢机完成：实例 {instance_id[-4:]}，共尝试 {attempts} 次，"
+                    f"累计释放 {releases} 台 CPU 不符，总耗时 {elapsed:.0f} 秒。")
+            if cpu_model:
+                done += f" CPU 型号：{cpu_model}。"
+            self._emit("done", done)
             return GrabResult(instance_id=instance_id, attempts=attempts,
-                              releases=releases, elapsed_seconds=elapsed)
+                              releases=releases, elapsed_seconds=elapsed,
+                              cpu_model=cpu_model)

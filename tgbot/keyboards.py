@@ -77,10 +77,15 @@ callback_data 规范（Telegram 限制 64 字节，OCID 约 100 字节放不下�
   - "domain:del:<zone_id>:<idx>"  /domain：删除某条记录的确认页
     （idx 是 user_data["domain_records"][zone_id] 的下标）
   - "domain:del:yes:<zone_id>:<idx>"  /domain：确认删除某条记录
+  - "bd:start:<idx>"  绑定域名：从实例详情开始（idx 是 instances 下标）
+  - "bd:zone:<idx>:<zidx>"  绑定域名：选主域名（zidx 是 Zone 列表下标）
+  - "bd:overwrite"  绑定域名：确认覆盖已存在的同名 A 记录
+  - "bd:cancel"  绑定域名：取消
 """
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
+from tgbot import i18n as bot_i18n
 from tgbot.cpu_policy import get_allowed_cpu_models
 from tgbot.monitoring import (TRAFFIC_GUARD_THRESHOLD_PRESETS,
                               fmt_threshold_gb,
@@ -92,13 +97,9 @@ from tgbot.services import (
 )
 
 # ================= 配置区（改这里） =================
-# /oracle 菜单：(callback key, 显示文字)，1-34 项是菜单编号
-# （来源：docs/references.md）；35 项以后是后续新增（阶段 5）。
-# key 是短标识，显示文字带原编号。
-# 注意：13 号已删（用户要求 2026-11-24：菜单顶行已有“切换账号”按钮，
-# 菜单里的 13. profile管理 是重复入口，没必要留）；其余编号保持不动，
-# 不重新编号（1-34 是用户叫惯的编号，如“菜单 19 流量”
-# 这类叫法都不变）。切换账号功能本身还在（o:profiles 回调 + 顶行按钮）。
+# /oracle menu: (callback key, display text); items 1-34 are the numbered menu (source: docs/references.md), items 35+ were added later. /oracle 菜单：(callback key, 显示文字)，1-34 项是菜单编号（来源：docs/references.md）；35 项以后是后续新增。
+# key is a short identifier; the display text carries the original number. key 是短标识，显示文字带原编号。
+# Note: item 13 was removed (the menu top row already has a "切换账号" button, so menu item 13. profile管理 was a duplicate entry); the other numbers stay as-is and are never renumbered (1-34 are the numbers users call by habit, e.g. "菜单 19 流量"). Account switching itself is still there (the o:profiles callback + the top-row button). 注意：13 号已删（菜单顶行已有“切换账号”按钮，菜单里的 13. profile管理 是重复入口，没必要留）；其余编号保持不动，不重新编号（1-34 是用户叫惯的编号，如“菜单 19 流量”这类叫法都不变）。切换账号功能本身还在（o:profiles 回调 + 顶行按钮）。
 ORACLE_MENU_ITEMS = [
     ("boot", "1. 开机(刷机)"),
     ("ip", "2. ip管理"),
@@ -142,12 +143,12 @@ ORACLE_MENU_ITEMS = [
     ("email", "41. Email 发件人"),
     ("plans", "42. 抢机计划"),
     ("bark", "43. Bark 通知设置"),
+    ("rescue", "44. 救机"),
 ]
-# 每页显示的菜单项数（2 列，自动分页；总页数随菜单项数变化）。
+# Menu items per page (2 columns, auto-paginated; total pages follow the item count). 每页显示的菜单项数（2 列，自动分页；总页数随菜单项数变化）。
 MENU_PAGE_SIZE = 22
-# 按钮文字带动态开关状态的菜单项：key -> states 字典里的键。
-# 生成菜单时传 states={...}，对应按钮会带上“(开启)”/“(关闭)”后缀；
-# states 不传或不是 dict 时显示原文字（兼容旧调用）。
+# Menu items whose button text carries a dynamic on/off state: key -> a key in the states dict. 按钮文字带动态开关状态的菜单项：key -> states 字典里的键。
+# When the menu is built with states={...}, matching buttons get an "(开启)" / "(关闭)" suffix; when states is missing or not a dict, the original text is shown (compatible with old callers). 生成菜单时传 states={...}，对应按钮会带上“(开启)”/“(关闭)”后缀；states 不传或不是 dict 时显示原文字（兼容旧调用）。
 DYNAMIC_STATE_ITEMS = {
     "monitor": "monitor",
     "autostart": "autostart",
@@ -166,54 +167,75 @@ def _menu_page(page):
     return ORACLE_MENU_ITEMS[start:start + MENU_PAGE_SIZE], page, total_pages
 
 
-def oracle_menu_keyboard(page=0, states=None, current_account=None):
+def oracle_menu_keyboard(page=0, states=None, current_account=None,
+                         lang="zh"):
     """`/oracle` 菜单键盘：2 列排列，带上一页/下一页。
 
     states：可选的开关状态字典（键见 DYNAMIC_STATE_ITEMS），
     传了之后监控类按钮会带上“(开启)”/“(关闭)”后缀。
     current_account：当前账号显示名（如“新加坡（3 个区）”），传了之
     后菜单顶行多一条“🔄 切换账号：<当前账号>”按钮（点开切换账号）。
+    lang：菜单语言（"zh" / "en"）；菜单底部带语言切换按钮（o:lang）。
     """
     items, page, total_pages = _menu_page(page)
     rows = []
     if current_account:
         rows.append([InlineKeyboardButton(
-            f"🔄 切换账号：{current_account}",
+            bot_i18n.t(lang, "oracle.switch_account",
+                       account=current_account),
             callback_data="o:profiles")])
     for i in range(0, len(items), 2):
         row = []
-        for key, text in items[i:i + 2]:
+        for key, _text in items[i:i + 2]:
+            text = bot_i18n.menu_item_label(key, lang)
             state_key = DYNAMIC_STATE_ITEMS.get(key)
             if state_key is not None and isinstance(states, dict):
-                text = f"{text} ({'开启' if states.get(state_key) else '关闭'})"
+                state = bot_i18n.t(lang, "common.on" if states.get(state_key)
+                                   else "common.off")
+                text = f"{text} ({state})"
             row.append(InlineKeyboardButton(text, callback_data=f"o:{key}"))
         rows.append(row)
     nav = []
     if page > 0:
-        nav.append(InlineKeyboardButton("◀ 上一页",
-                                        callback_data=f"o:page:{page - 1}"))
+        nav.append(InlineKeyboardButton(
+            bot_i18n.t(lang, "oracle.prev_page"),
+            callback_data=f"o:page:{page - 1}"))
     nav.append(InlineKeyboardButton(f"{page + 1}/{total_pages}",
                                     callback_data="x"))
     if page < total_pages - 1:
-        nav.append(InlineKeyboardButton("下一页 ▶",
-                                        callback_data=f"o:page:{page + 1}"))
+        nav.append(InlineKeyboardButton(
+            bot_i18n.t(lang, "oracle.next_page"),
+            callback_data=f"o:page:{page + 1}"))
     rows.append(nav)
+    lang_key = "lang.toggle_en" if lang == "zh" else "lang.toggle_zh"
+    rows.append([InlineKeyboardButton(bot_i18n.t(lang, lang_key),
+                                      callback_data="o:lang")])
     return InlineKeyboardMarkup(rows)
 
 
-def main_menu_keyboard():
+def main_menu_keyboard(lang="zh"):
     """`/start` 主菜单：最常用的几个入口。"""
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("☁️ Oracle 菜单", callback_data="o:menu"),
-         InlineKeyboardButton("🖥️ 实例列表", callback_data="i:list")],
-        [InlineKeyboardButton("📊 查询配额", callback_data="o:quota"),
-         InlineKeyboardButton("📈 本月流量", callback_data="o:traffic")],
-        [InlineKeyboardButton("📋 运行中的任务", callback_data="o:tasks"),
-         InlineKeyboardButton("❤️ 一键测活", callback_data="o:health")],
+        [InlineKeyboardButton(bot_i18n.t(lang, "menu.main_oracle"),
+                              callback_data="o:menu"),
+         InlineKeyboardButton(bot_i18n.t(lang, "menu.main_instances"),
+                              callback_data="i:list")],
+        [InlineKeyboardButton(bot_i18n.t(lang, "menu.main_quota"),
+                              callback_data="o:quota"),
+         InlineKeyboardButton(bot_i18n.t(lang, "menu.main_traffic"),
+                              callback_data="o:traffic")],
+        [InlineKeyboardButton(bot_i18n.t(lang, "menu.main_tasks"),
+                              callback_data="o:tasks"),
+         InlineKeyboardButton(bot_i18n.t(lang, "menu.main_health"),
+                              callback_data="o:health")],
+        [InlineKeyboardButton(
+            bot_i18n.t(lang, "lang.toggle_en" if lang == "zh"
+                       else "lang.toggle_zh"),
+            callback_data="o:lang")],
     ])
 
 
-def _instance_button_text(inst):
+def _instance_button_text(inst, lang="zh"):
     """实例按钮文字：名称 · A1/E2 · 公网 IP 或状态词。
 
     有公网 IP 时显示 IP（`名称 · E2 · 1.2.3.4`）；没有 IP 时
@@ -226,12 +248,14 @@ def _instance_button_text(inst):
     if ip:
         return f"{name} · {shape} · {ip}"
     state = (inst.get("lifecycle-state") or "").upper()
-    state_word = {"RUNNING": "运行中", "STOPPED": "已停止",
-                  "TERMINATED": "已终止"}.get(state, state or "?")
+    state_word = {"RUNNING": bot_i18n.t(lang, "instances.state_running"),
+                  "STOPPED": bot_i18n.t(lang, "instances.state_stopped"),
+                  "TERMINATED": bot_i18n.t(lang, "instances.state_terminated"),
+                  }.get(state, state or "?")
     return f"{name} · {shape} · {state_word}"
 
 
-def instance_list_keyboard(instances):
+def instance_list_keyboard(instances, lang="zh"):
     """实例列表键盘：按状态分组，每组一行标题按钮 + 每台一个按钮。
 
     instances 是 instance.list_instances 返回的精简列表。
@@ -245,24 +269,29 @@ def instance_list_keyboard(instances):
     ordered = sort_instances_by_group(instances)
     counts = {}
     for _idx, inst in ordered:
-        title = instance_group_title(inst.get("lifecycle-state"))
+        title = instance_group_title(inst.get("lifecycle-state"), lang=lang)
         counts[title] = counts.get(title, 0) + 1
     rows = []
     current_group = None
     for idx, inst in ordered:
-        group = instance_group_title(inst.get("lifecycle-state"))
+        group = instance_group_title(inst.get("lifecycle-state"), lang=lang)
         if group != current_group:
             current_group = group
+            count_text = (f"{counts[group]} 台" if lang == "zh"
+                          else f"{counts[group]}")
             rows.append([InlineKeyboardButton(
-                f"{group}（{counts[group]} 台）：", callback_data="i:noop")])
+                f"{group}（{count_text}）：", callback_data="i:noop")])
         rows.append([InlineKeyboardButton(
-            _instance_button_text(inst), callback_data=f"i:detail:{idx}")])
-    rows.append([InlineKeyboardButton("🔄 刷新", callback_data="i:list"),
-                 InlineKeyboardButton("◀ Oracle 菜单", callback_data="o:menu")])
+            _instance_button_text(inst, lang=lang),
+            callback_data=f"i:detail:{idx}")])
+    rows.append([InlineKeyboardButton(bot_i18n.t(lang, "common.refresh"),
+                                      callback_data="i:list"),
+                 InlineKeyboardButton(bot_i18n.t(lang, "common.back_oracle"),
+                                      callback_data="o:menu")])
     return InlineKeyboardMarkup(rows)
 
 
-def instance_actions_keyboard(idx, state="RUNNING"):
+def instance_actions_keyboard(idx, state="RUNNING", lang="zh"):
     """实例操作键盘：按当前状态显示可用的操作。
 
     idx 是 instances 列表下标；state 是 lifecycle-state。
@@ -270,45 +299,60 @@ def instance_actions_keyboard(idx, state="RUNNING"):
     rows = []
     if state == "RUNNING":
         rows.append([
-            InlineKeyboardButton("⏹️ 停止", callback_data=f"i:stop:{idx}"),
-            InlineKeyboardButton("🔄 重启", callback_data=f"i:restart:{idx}"),
+            InlineKeyboardButton(bot_i18n.t(lang, "instances.action_stop"),
+                                 callback_data=f"i:stop:{idx}"),
+            InlineKeyboardButton(bot_i18n.t(lang, "instances.action_restart"),
+                                 callback_data=f"i:restart:{idx}"),
         ])
     elif state == "STOPPED":
         rows.append([
-            InlineKeyboardButton("▶️ 启动", callback_data=f"i:start:{idx}"),
+            InlineKeyboardButton(bot_i18n.t(lang, "instances.action_start"),
+                                 callback_data=f"i:start:{idx}"),
         ])
     rows.append([
-        InlineKeyboardButton("🔁 换 IP", callback_data=f"i:ip:{idx}"),
-        InlineKeyboardButton("📐 升/降配", callback_data=f"i:resize:{idx}"),
+        InlineKeyboardButton(bot_i18n.t(lang, "instances.action_change_ip"),
+                             callback_data=f"i:ip:{idx}"),
+        InlineKeyboardButton(bot_i18n.t(lang, "instances.action_resize"),
+                             callback_data=f"i:resize:{idx}"),
     ])
     rows.append([
-        InlineKeyboardButton("✏️ 改名", callback_data=f"i:rename:{idx}"),
-        InlineKeyboardButton("💿 重装系统", callback_data=f"i:reinstall:{idx}"),
+        InlineKeyboardButton(bot_i18n.t(lang, "instances.action_rename"),
+                             callback_data=f"i:rename:{idx}"),
+        InlineKeyboardButton(bot_i18n.t(lang, "instances.action_reinstall"),
+                             callback_data=f"i:reinstall:{idx}"),
     ])
     if state in ("RUNNING", "STOPPED"):
-        # 引导卷备份与恢复放一排，备份在前面；删除历史备份单独一行。
-        # 三个都要找实例当前挂载的启动盘，只有运行中 / 已停止的实例有。
         rows.append([
-            InlineKeyboardButton("💾 引导卷备份",
-                                 callback_data=f"i:bootbackup:{idx}"),
-            InlineKeyboardButton("💾 引导卷恢复",
-                                 callback_data=f"i:bootswap:{idx}"),
+            InlineKeyboardButton(
+                bot_i18n.t(lang, "instances.action_boot_backup"),
+                callback_data=f"i:bootbackup:{idx}"),
+            InlineKeyboardButton(
+                bot_i18n.t(lang, "instances.action_boot_restore"),
+                callback_data=f"i:bootswap:{idx}"),
         ])
         rows.append([
-            InlineKeyboardButton("🗑️ 删除历史备份",
-                                 callback_data=f"i:bootbackup-del:{idx}"),
+            InlineKeyboardButton(
+                bot_i18n.t(lang, "instances.action_boot_backup_del"),
+                callback_data=f"i:bootbackup-del:{idx}"),
         ])
     rows.append([
-        InlineKeyboardButton("🖥️ 串行控制台", callback_data=f"i:console:{idx}"),
+        InlineKeyboardButton(bot_i18n.t(lang, "instances.action_bind_domain"),
+                             callback_data=f"bd:start:{idx}"),
     ])
     rows.append([
-        InlineKeyboardButton("🗑️ 终止实例", callback_data=f"i:terminate:{idx}"),
-        InlineKeyboardButton("◀ 实例列表", callback_data="i:list"),
+        InlineKeyboardButton(bot_i18n.t(lang, "instances.action_console"),
+                             callback_data=f"i:console:{idx}"),
+    ])
+    rows.append([
+        InlineKeyboardButton(bot_i18n.t(lang, "instances.action_terminate"),
+                             callback_data=f"i:terminate:{idx}"),
+        InlineKeyboardButton(bot_i18n.t(lang, "instances.action_list"),
+                             callback_data="i:list"),
     ])
     return InlineKeyboardMarkup(rows)
 
 
-def batch_select_keyboard(instances, selected):
+def batch_select_keyboard(instances, selected, lang="zh"):
     """批量操作多选键盘：点实例切换选中状态。
 
     instances 是 instance.list_instances 返回的精简列表；
@@ -322,37 +366,50 @@ def batch_select_keyboard(instances, selected):
         rows.append([InlineKeyboardButton(
             f"{mark} {name} ({state})",
             callback_data=f"ba:toggle:{idx}")])
-    rows.append([InlineKeyboardButton("➡️ 下一步：选动作",
+    next_text = ("➡️ 下一步：选动作" if lang == "zh"
+                 else "➡️ Next: pick an action")
+    rows.append([InlineKeyboardButton(next_text,
                                       callback_data="ba:next")])
-    rows.append([InlineKeyboardButton("◀ Oracle 菜单", callback_data="o:menu")])
+    rows.append([InlineKeyboardButton(bot_i18n.t(lang, "common.back_oracle"),
+                                      callback_data="o:menu")])
     return InlineKeyboardMarkup(rows)
 
 
-def batch_action_keyboard():
+def batch_action_keyboard(lang="zh"):
     """批量操作动作选择键盘（开机/关机/重启/删除）。"""
+    labels = {
+        "zh": ("▶️ 批量开机", "⏹️ 批量关机", "🔄 批量重启", "🗑️ 批量删除",
+               "◀ 返回选择"),
+        "en": ("▶️ Batch Start", "⏹️ Batch Stop", "🔄 Batch Restart",
+               "🗑️ Batch Delete", "◀ Back to Selection"),
+    }
+    start, stop, restart, delete, back = labels.get(lang, labels["zh"])
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("▶️ 批量开机", callback_data="ba:action:start"),
-         InlineKeyboardButton("⏹️ 批量关机", callback_data="ba:action:stop")],
-        [InlineKeyboardButton("🔄 批量重启", callback_data="ba:action:restart"),
-         InlineKeyboardButton("🗑️ 批量删除", callback_data="ba:action:terminate")],
-        [InlineKeyboardButton("◀ 返回选择", callback_data="o:batch")],
+        [InlineKeyboardButton(start, callback_data="ba:action:start"),
+         InlineKeyboardButton(stop, callback_data="ba:action:stop")],
+        [InlineKeyboardButton(restart, callback_data="ba:action:restart"),
+         InlineKeyboardButton(delete, callback_data="ba:action:terminate")],
+        [InlineKeyboardButton(back, callback_data="o:batch")],
     ])
 
 
-def confirm_keyboard(action, idx, confirm_text="✅ 确认执行"):
+def confirm_keyboard(action, idx, confirm_text=None, lang="zh"):
     """危险操作二次确认键盘。
 
     action: start/stop/restart/terminate/changeip/resize/delete 等；
     idx: instances（或 volumes）列表下标。
     """
+    if confirm_text is None:
+        confirm_text = bot_i18n.t(lang, "common.confirm")
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(confirm_text,
                               callback_data=f"c:{action}:{idx}")],
-        [InlineKeyboardButton("❌ 取消", callback_data="x")],
+        [InlineKeyboardButton(bot_i18n.t(lang, "common.cancel_button"),
+                              callback_data="x")],
     ])
 
 
-def boot_preset_keyboard():
+def boot_preset_keyboard(lang="zh"):
     """开机预设选择键盘（快速配置预填）。"""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("AMD 微型 1C/1G（E2.1.Micro）",
@@ -361,11 +418,12 @@ def boot_preset_keyboard():
                               callback_data="b:boot:a1small")],
         [InlineKeyboardButton("ARM A1 4C/24G（满配）",
                               callback_data="b:boot:a1full")],
-        [InlineKeyboardButton("◀ Oracle 菜单", callback_data="o:menu")],
+        [InlineKeyboardButton(bot_i18n.t(lang, "common.back_oracle"),
+                              callback_data="o:menu")],
     ])
 
 
-def boot_confirm_keyboard(preset=None):
+def boot_confirm_keyboard(preset=None, lang="zh"):
     """开机确认键盘（点开始抢机后进后台任务）。
 
     E2 才有 CPU 选项行（只抢配置里的型号 / 什么 CPU 都可以），放在
@@ -376,21 +434,25 @@ def boot_confirm_keyboard(preset=None):
     rows = []
     if preset is not None and preset.get("shape") == "VM.Standard.E2.1.Micro":
         only_allowed = bool(preset.get("target_cpu"))
-        cpu_label = "只抢 " + "/".join(get_allowed_cpu_models())
+        cpu_label = bot_i18n.t(lang, "boot.cpu_only",
+                               models="/".join(get_allowed_cpu_models()))
         rows.append([
             InlineKeyboardButton(
                 ("✅ " if only_allowed else "") + cpu_label,
                 callback_data="b:cpu:7j13"),
             InlineKeyboardButton(
-                ("✅ " if not only_allowed else "") + "什么 CPU 都可以",
+                ("✅ " if not only_allowed else "")
+                + bot_i18n.t(lang, "boot.cpu_any"),
                 callback_data="b:cpu:any"),
         ])
-    rows.append([InlineKeyboardButton("🚀 开始抢机", callback_data="b:go")])
-    rows.append([InlineKeyboardButton("❌ 取消", callback_data="x")])
+    rows.append([InlineKeyboardButton(bot_i18n.t(lang, "boot.start_grab"),
+                                      callback_data="b:go")])
+    rows.append([InlineKeyboardButton(bot_i18n.t(lang, "common.cancel_button"),
+                                      callback_data="x")])
     return InlineKeyboardMarkup(rows)
 
 
-def task_list_keyboard(tasks):
+def task_list_keyboard(tasks, lang="zh"):
     """任务列表键盘：每条运行中任务一个取消按钮。
 
     tasks 是 TaskRegistry.list_all() 返回的列表，每项含 id/kind/status。
@@ -402,14 +464,16 @@ def task_list_keyboard(tasks):
         if task.get("status") in ("running", "pending"):
             label = task.get("label") or task.get("id")
             rows.append([InlineKeyboardButton(
-                f"❌ 取消 {label}",
+                bot_i18n.t(lang, "tasks.cancel", label=label),
                 callback_data=f"t:cancel:{task.get('id')}")])
-    rows.append([InlineKeyboardButton("🔄 刷新", callback_data="o:tasks"),
-                 InlineKeyboardButton("◀ Oracle 菜单", callback_data="o:menu")])
+    rows.append([InlineKeyboardButton(bot_i18n.t(lang, "common.refresh"),
+                                      callback_data="o:tasks"),
+                 InlineKeyboardButton(bot_i18n.t(lang, "common.back_oracle"),
+                                      callback_data="o:menu")])
     return InlineKeyboardMarkup(rows)
 
 
-def profile_keyboard(profiles, current, labels=None):
+def profile_keyboard(profiles, current, labels=None, lang="zh"):
     """profile 切换键盘：profiles 是 profile 名列表，current 是当前 profile。
 
     labels 是 {profile: 显示名}（主区中文名，多区账号后缀区数，如
@@ -422,11 +486,12 @@ def profile_keyboard(profiles, current, labels=None):
         text = (labels or {}).get(name, name)
         rows.append([InlineKeyboardButton(f"{mark}{text}",
                                           callback_data=f"p:{name}")])
-    rows.append([InlineKeyboardButton("◀ Oracle 菜单", callback_data="o:menu")])
+    rows.append([InlineKeyboardButton(bot_i18n.t(lang, "common.back_oracle"),
+                                      callback_data="o:menu")])
     return InlineKeyboardMarkup(rows)
 
 
-def profile_regions_keyboard(profile, regions, current=None):
+def profile_regions_keyboard(profile, regions, current=None, lang="zh"):
     """切换账号的二级区域菜单：某账号的订阅区域列表。
 
     regions 是 list_regions 的返回（region-name / is-home-region）。
@@ -445,12 +510,14 @@ def profile_regions_keyboard(profile, regions, current=None):
             label = f"✅ {label}"
         rows.append([InlineKeyboardButton(
             label, callback_data=f"pr:{profile}:{code}")])
-    rows.append([InlineKeyboardButton("◀ 返回账号列表",
+    back_text = ("◀ 返回账号列表" if lang == "zh"
+                 else "◀ Back to Accounts")
+    rows.append([InlineKeyboardButton(back_text,
                                      callback_data="o:profiles")])
     return InlineKeyboardMarkup(rows)
 
 
-def quota_accounts_keyboard(labels):
+def quota_accounts_keyboard(labels, lang="zh"):
     """额度页账号列表键盘：labels 是 {profile: 显示名}（主区中文名，
     多区账号后缀区数，如“新加坡（3 个区）”，与切换菜单一致）。
 
@@ -458,11 +525,12 @@ def quota_accounts_keyboard(labels):
     """
     rows = [[InlineKeyboardButton(label, callback_data=f"q:acct:{name}")]
             for name, label in labels.items()]
-    rows.append([InlineKeyboardButton("◀ Oracle 菜单", callback_data="o:menu")])
+    rows.append([InlineKeyboardButton(bot_i18n.t(lang, "common.back_oracle"),
+                                      callback_data="o:menu")])
     return InlineKeyboardMarkup(rows)
 
 
-def quota_regions_keyboard(profile, regions):
+def quota_regions_keyboard(profile, regions, lang="zh"):
     """额度页二级菜单：某账号的订阅区域列表。
 
     regions 是 list_regions 的返回（region-name / is-home-region）。
@@ -479,15 +547,18 @@ def quota_regions_keyboard(profile, regions):
             label += "（Home）"
         rows.append([InlineKeyboardButton(
             label, callback_data=f"q:region:{profile}:{code}")])
-    rows.append([InlineKeyboardButton("◀ 返回账号列表",
+    back_text = ("◀ 返回账号列表" if lang == "zh"
+                 else "◀ Back to Accounts")
+    rows.append([InlineKeyboardButton(back_text,
                                      callback_data="q:list")])
     return InlineKeyboardMarkup(rows)
 
 
-def back_to_oracle_keyboard():
+def back_to_oracle_keyboard(lang="zh"):
     """通用返回按钮（回 /oracle 菜单）。"""
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("◀ Oracle 菜单", callback_data="o:menu")],
+        [InlineKeyboardButton(bot_i18n.t(lang, "common.back_oracle"),
+                              callback_data="o:menu")],
     ])
 
 
@@ -584,13 +655,12 @@ def domain_records_keyboard(zone_id, records):
     ])
 
 
-# /domain 命令：单条消息最多显示的 DNS 记录数，超出时截断并提示总数。
-# 机器人与网页端共用同一上限；删除选记录时也只列前这么多条。
+# /domain command: max DNS records shown in one message; beyond that, truncate and show the total. /domain 命令：单条消息最多显示的 DNS 记录数，超出时截断并提示总数。
+# The bot and the web panel share this same limit; deleting records also lists only the first that many. 机器人与网页端共用同一上限；删除选记录时也只列前这么多条。
 DOMAIN_RECORDS_LIMIT = 20
 
 
-# /domain 添加记录时可选的类型（Cloudflare 允许的常用五种；
-# NS/SRV/CAA 不常用，机器人端不提供，网页端表单里有）。
+# Record types offered when adding a record via /domain (the five common ones Cloudflare allows; NS/SRV/CAA are uncommon, not offered by the bot, but present in the web form). /domain 添加记录时可选的类型（Cloudflare 允许的常用五种；NS/SRV/CAA 不常用，机器人端不提供，网页端表单里有）。
 DNS_ADD_TYPES = ("A", "AAAA", "CNAME", "TXT", "MX")
 
 

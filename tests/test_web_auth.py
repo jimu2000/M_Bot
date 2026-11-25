@@ -43,8 +43,8 @@ class TestHashPassword(unittest.TestCase):
         self.assertEqual(len(parts), 4)
         self.assertEqual(parts[0], "pbkdf2_sha256")
         self.assertEqual(int(parts[1]), HASH_ITERATIONS)
-        self.assertEqual(len(parts[2]), 32)   # 16 字节盐的 hex
-        self.assertEqual(len(parts[3]), 64)   # sha256 的 hex
+        self.assertEqual(len(parts[2]), 32)
+        self.assertEqual(len(parts[3]), 64)
 
     def test_same_password_different_hash(self):
         """同一密码每次哈希结果不同（随机盐）。"""
@@ -103,10 +103,10 @@ class TestLoginGuard(unittest.TestCase):
 
     def test_lock_capped_at_max(self):
         """锁定时长封顶 30 分钟（第 6 次及以后不再翻倍）。"""
-        for _ in range(5):  # 1/2/4/8/16 分钟各锁一次
+        for _ in range(5):  # Lock once each for 1/2/4/8/16 minutes. 1/2/4/8/16 分钟各锁一次。
             self._fail_times("admin", 5)
             self._expire_lock("admin")
-        for _ in range(2):  # 第 6、7 次锁定都应是 30 分钟
+        for _ in range(2):  # The 6th and 7th locks should both be 30 minutes. 第 6、7 次锁定都应是 30 分钟。
             self._fail_times("admin", 5)
             remaining = self.guard.remaining_lock_seconds("admin")
             self.assertGreater(remaining, 30 * 60 - 5)
@@ -119,7 +119,7 @@ class TestLoginGuard(unittest.TestCase):
         first_remaining = self.guard.remaining_lock_seconds("admin")
         self.guard.record_failure("admin")
         self.guard.record_failure("admin")
-        # 剩余时间只应自然减少（误差 1 秒），不应被重置回 60 秒。
+        # Remaining time should only decrease naturally (1s tolerance), never reset back to 60s. 剩余时间只应自然减少（误差 1 秒），不应被重置回 60 秒。
         self.assertLessEqual(self.guard.remaining_lock_seconds("admin"),
                              first_remaining)
 
@@ -132,10 +132,10 @@ class TestLoginGuard(unittest.TestCase):
 
     def test_success_resets_lock_level(self):
         """锁定期过后登录成功，锁定级别清零（下次锁定回到 1 分钟）。"""
-        self._fail_times("admin", 5)   # 锁 1 分钟
+        self._fail_times("admin", 5)
         self._expire_lock("admin")
         self.guard.record_success("admin")
-        self._fail_times("admin", 5)   # 应再次锁 1 分钟，而不是 2 分钟
+        self._fail_times("admin", 5)  # Should lock for 1 minute again, not 2 minutes. 应再次锁 1 分钟，而不是 2 分钟。
         remaining = self.guard.remaining_lock_seconds("admin")
         self.assertGreater(remaining, 55)
         self.assertLessEqual(remaining, 60)
@@ -170,19 +170,19 @@ class TestSessionStore(unittest.TestCase):
         self.assertIsNone(self.store.get(token))
 
     def test_revoke_unknown_is_silent(self):
-        self.store.revoke("no-such-token")  # 不抛异常
+        self.store.revoke("no-such-token")
 
     def test_expired_session_invalid(self):
         """过期会话自动失效（直接改过期时间模拟）。"""
         token = self.store.create("admin")
         self.store._sessions[token]["expires"] = time.time() - 1
         self.assertIsNone(self.store.get(token))
-        # 过期会话已从字典里删除。
+        # The expired session has been removed from the dict. 过期会话已从字典里删除。
         self.assertNotIn(token, self.store._sessions)
 
     def test_short_expiry_really_expires(self):
         """真实短有效期：1 秒后会话失效。"""
-        store = SessionStore(expire_hours=1 / 3600)  # 1 秒
+        store = SessionStore(expire_hours=1 / 3600)
         token = store.create("admin")
         self.assertEqual(store.get(token), "admin")
         time.sleep(1.2)
@@ -226,7 +226,7 @@ class TestMagicLoginStore(unittest.TestCase):
         token = self.store.create()
         self.store._tokens[token] = time.time() - 1
         self.assertFalse(self.store.consume(token))
-        # 过期 token 已从字典里删除。
+        # The expired token has been removed from the dict. 过期 token 已从字典里删除。
         self.assertNotIn(token, self.store._tokens)
 
     def test_revoke(self):

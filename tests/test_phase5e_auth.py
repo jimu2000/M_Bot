@@ -44,7 +44,7 @@ from web.captcha import (
     render_captcha_image,
 )
 
-# 测试密码：运行时随机生成（不在代码里写任何固定口令）。
+# Test password: generated randomly at runtime (no fixed password is ever written in code). 测试密码：运行时随机生成（不在代码里写任何固定口令）。
 TEST_PASSWORD = secrets.token_urlsafe(16)
 
 
@@ -55,7 +55,7 @@ class CaptchaStoreTest(unittest.TestCase):
         store = CaptchaStore()
         captcha_id, answer = store.create(answer="Ab123")
         self.assertTrue(store.verify(captcha_id, "Ab123"))
-        # 一次性：再验同一条失败。
+        # Single-use: verifying the same code again fails. 一次性：再验同一条失败。
         self.assertFalse(store.verify(captcha_id, "Ab123"))
 
     def test_verify_case_insensitive(self):
@@ -89,7 +89,7 @@ class CaptchaRenderTest(unittest.TestCase):
 
     def test_png_render(self):
         image, mime = render_captcha_image("Ab123")
-        # 本机装了 Pillow，应为 PNG。
+        # Pillow is installed on this machine, so it should be PNG. 本机装了 Pillow，应为 PNG。
         self.assertEqual(mime, "image/png")
         self.assertTrue(image.startswith(b"\x89PNG"))
 
@@ -98,7 +98,6 @@ class CaptchaRenderTest(unittest.TestCase):
             image, mime = render_captcha_image("Ab123")
         self.assertEqual(mime, "image/svg+xml")
         self.assertIn(b"<svg", image)
-        # 每个字符单独一个 <text> 元素。
         for ch in b"Ab123":
             self.assertIn(bytes([ch]) + b"</text>", image)
 
@@ -107,7 +106,6 @@ class CaptchaRenderTest(unittest.TestCase):
         captcha_id, data_url = generate_captcha()
         self.assertTrue(captcha_id)
         self.assertTrue(data_url.startswith("data:image/"))
-        # data URL 能解码。
         _header, b64 = data_url.split(",", 1)
         self.assertTrue(base64.b64decode(b64))
         CAPTCHAS.reset()
@@ -148,7 +146,6 @@ class TelegramCodeStoreTest(unittest.TestCase):
         can, remaining = store.can_send("203.0.113.10")
         self.assertFalse(can)
         self.assertGreater(remaining, 0)
-        # 别的客户端不受影响。
         can, _ = store.can_send("203.0.113.11")
         self.assertTrue(can)
 
@@ -262,7 +259,7 @@ class TestRememberMe(Phase5eAuthTestCase):
         self.assertEqual(r.status_code, 200)
         cookie = r.headers.get("set-cookie", "")
         self.assertIn(f"Max-Age={30 * 24 * 3600}", cookie)
-        # 服务端会话过期时间也在约 30 天后（不是默认 12 小时）。
+        # The server-side session expiry is also about 30 days out (not the default 12 hours). 服务端会话过期时间也在约 30 天后（不是默认 12 小时）。
         self.assertEqual(len(SESSIONS._sessions), 1)
         session = next(iter(SESSIONS._sessions.values()))
         remaining = session["expires"] - time.time()
@@ -293,7 +290,7 @@ class TestTelegramLoginApi(Phase5eAuthTestCase):
         self.assertTrue(body["ok"])
         self.assertTrue(body["codeId"])
         self.assertEqual(body["expiresInSeconds"], 300)
-        # 验证码本身绝不出现在响应里。
+        # The code itself never appears in the response. 验证码本身绝不出现在响应里。
         self.assertNotIn("code", body)
         mock_send.assert_called_once()
         text = mock_send.call_args[0][0]
@@ -306,7 +303,7 @@ class TestTelegramLoginApi(Phase5eAuthTestCase):
         r = self.client.post("/api/auth/telegram/send-code", json={})
         self.assertEqual(r.status_code, 200)
         mock_bark.assert_called_once()
-        # Telegram 消息里的链接与 Bark 的 url 必须是同一个。
+        # The link in the Telegram message and the Bark url must be the same one. Telegram 消息里的链接与 Bark 的 url 必须是同一个。
         tg_text = mock_send.call_args[0][0]
         link = re.search(r"https?://\S+/login\?token=\S+",
                          tg_text).group(0)
@@ -333,7 +330,6 @@ class TestTelegramLoginApi(Phase5eAuthTestCase):
         self.assertEqual(r2.status_code, 429)
         self.assertIn("retry_after_seconds", r2.json())
         self.assertGreater(r2.json()["retry_after_seconds"], 0)
-        # 冷却期内只发了一次。
         self.assertEqual(mock_send.call_count, 1)
 
     @patch("web.routes.auth.send_to_allowed_users", return_value=0)
@@ -341,7 +337,7 @@ class TestTelegramLoginApi(Phase5eAuthTestCase):
         """机器人未配置（发给 0 人）时 503，且不进冷却。"""
         r = self.client.post("/api/auth/telegram/send-code", json={})
         self.assertEqual(r.status_code, 503)
-        # 不进冷却：立即再发仍是 503（不是 429）。
+        # No cooldown is entered: sending again immediately still returns 503 (not 429). 不进冷却：立即再发仍是 503（不是 429）。
         r2 = self.client.post("/api/auth/telegram/send-code", json={})
         self.assertEqual(r2.status_code, 503)
 
@@ -352,7 +348,6 @@ class TestTelegramLoginApi(Phase5eAuthTestCase):
         self.assertEqual(r.status_code, 200)
         self.assertTrue(r.json()["ok"])
         self.assertEqual(r.json()["username"], "admin")
-        # 会话 cookie 已设，/api/auth/me 能用。
         r = self.client.get("/api/auth/me")
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()["username"], "admin")
@@ -397,7 +392,7 @@ class TestMagicLoginApi(Phase5eAuthTestCase):
         self.assertIn("验证码", text)
         self.assertIn("/login?token=", text)
         self.assertIn("直接登录", text)
-        # 从消息里抠出 token，走 magic-login 全链路登录成功。
+        # Pull the token out of the message and log in through the full magic-login flow. 从消息里抠出 token，走 magic-login 全链路登录成功。
         match = re.search(r"/login\?token=([A-Za-z0-9_-]+)", text)
         self.assertIsNotNone(match)
         r = self.client.post("/api/auth/telegram/magic-login",
@@ -405,7 +400,6 @@ class TestMagicLoginApi(Phase5eAuthTestCase):
         self.assertEqual(r.status_code, 200)
         self.assertTrue(r.json()["ok"])
         self.assertEqual(r.json()["username"], "admin")
-        # 会话 cookie 已设，/api/auth/me 能用。
         r = self.client.get("/api/auth/me")
         self.assertEqual(r.status_code, 200)
 
@@ -500,7 +494,7 @@ class TestSendCodeBarkChannel(Phase5eAuthTestCase):
         bark_token = re.search(r"/login\?token=([A-Za-z0-9_-]+)",
                                bark_body).group(1)
         self.assertEqual(tg_token, bark_token)
-        # 该 token 能登录（且只能用一次）。
+        # That token can log in (and only once). 该 token 能登录（且只能用一次）。
         r = self.client.post("/api/auth/telegram/magic-login",
                              json={"token": bark_token})
         self.assertEqual(r.status_code, 200)

@@ -28,14 +28,14 @@ from oci.client import (
 from web import config
 from web.auth import SESSIONS
 
-# OCI 异常类 -> HTTP 状态码（按 client.py 的错误分类）。
+# OCI exception class -> HTTP status code (per client.py's error classification): not found / upstream OCI auth failure (a panel config problem) / OCI rate limit / quota shortfall or conflict with current resource state / no capacity in the region, service temporarily unavailable / other OCI call failures. OCI 异常类 -> HTTP 状态码（按 client.py 的错误分类）：资源不存在 / 上游 OCI 认证失败（面板自身配置问题）/ OCI 限流 / 配额不足，与当前资源状态冲突 / 机房无容量，服务暂时不可用 / 其他 OCI 调用失败。
 _OCI_STATUS = {
-    NotFoundError: 404,       # 资源不存在
-    AuthError: 502,           # 上游 OCI 认证失败（面板自身配置问题）
-    RateLimitError: 429,      # OCI 限流
-    QuotaExceededError: 409,  # 配额不足，与当前资源状态冲突
-    OutOfCapacityError: 503,  # 机房无容量，服务暂时不可用
-    OCIError: 502,            # 其他 OCI 调用失败
+    NotFoundError: 404,
+    AuthError: 502,
+    RateLimitError: 429,
+    QuotaExceededError: 409,
+    OutOfCapacityError: 503,
+    OCIError: 502,
 }
 
 
@@ -51,8 +51,7 @@ def get_current_user(request: Request):
     return username
 
 
-# 订阅区域缓存：region-subscription 很少变，缓存 1 小时，避免每次
-# 打开页面都对每个账号调一次 OCI。
+# Region-subscription cache: region-subscription rarely changes, so cache it for 1 hour to avoid calling OCI once per account on every page open. 订阅区域缓存：region-subscription 很少变，缓存 1 小时，避免每次打开页面都对每个账号调一次 OCI。
 _REGION_TTL = 3600
 _profile_regions = {}
 _profile_regions_at = 0

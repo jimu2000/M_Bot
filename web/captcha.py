@@ -24,13 +24,13 @@ import string
 import time
 
 # ================= 配置区（改这里） =================
-# 验证码字符集：去掉易混淆的 0/O/1/I/l。
+# Captcha charset: confusing 0/O/1/I/l are removed. 验证码字符集：去掉易混淆的 0/O/1/I/l。
 CAPTCHA_CHARS = "23456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz"
-# 验证码长度（字符数）。
+# Captcha length (characters). 验证码长度（字符数）。
 CAPTCHA_LENGTH = 5
-# 验证码有效期（秒）：5 分钟。
+# Captcha lifetime (seconds): 5 minutes. 验证码有效期（秒）：5 分钟。
 CAPTCHA_EXPIRE_SECONDS = 5 * 60
-# 图片尺寸（像素）。
+# Image size (pixels). 图片尺寸（像素）。
 CAPTCHA_WIDTH = 160
 CAPTCHA_HEIGHT = 60
 # =====================================================
@@ -52,7 +52,6 @@ def _render_png(answer):
     image = Image.new("RGB", (CAPTCHA_WIDTH, CAPTCHA_HEIGHT), (255, 255, 255))
     draw = ImageDraw.Draw(image)
     rng = random.Random()
-    # 干扰线。
     for _ in range(4):
         draw.line(
             [(rng.randint(0, CAPTCHA_WIDTH), rng.randint(0, CAPTCHA_HEIGHT)),
@@ -60,7 +59,6 @@ def _render_png(answer):
             fill=(rng.randint(150, 220), rng.randint(150, 220),
                   rng.randint(150, 220)),
             width=1)
-    # 字符：每个字符随机颜色与纵向偏移。
     try:
         font = ImageFont.truetype("DejaVuSans-Bold.ttf", 34)
     except (OSError, IOError):
@@ -72,7 +70,6 @@ def _render_png(answer):
                         rng.randint(0, 120)),
                   font=font)
         x += (CAPTCHA_WIDTH - 24) // max(1, len(answer))
-    # 噪点。
     for _ in range(60):
         draw.point((rng.randint(0, CAPTCHA_WIDTH - 1),
                     rng.randint(0, CAPTCHA_HEIGHT - 1)),
@@ -172,7 +169,7 @@ class CaptchaStore:
         self._codes.clear()
 
 
-# 全局单例（单进程内共享）。
+# Global singleton (shared within a single process). 全局单例（单进程内共享）。
 CAPTCHAS = CaptchaStore()
 
 

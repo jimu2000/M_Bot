@@ -30,7 +30,7 @@
   }
   function hideError() { $("create-error").hidden = true; }
 
-  // E2 是固定规格（1 OCPU / 1 GB），选中时锁定 OCPU/内存输入
+  // E2 is a fixed shape (1 OCPU / 1 GB); selecting it locks the OCPU/memory inputs. E2 是固定规格（1 OCPU / 1 GB），选中时锁定 OCPU/内存输入。
   function onShapeChange() {
     var isE2 = $("shape").value === SHAPE_E2;
     $("ocpus").disabled = isE2;
@@ -55,7 +55,6 @@
     }
   }
 
-  // 快捷开机预设：点一张卡片填满表单
   function applyPreset(card) {
     var shape = card.getAttribute("data-shape");
     $("shape").value = shape;
@@ -81,8 +80,7 @@
     var isE2 = shape === SHAPE_E2;
     var name = $("display-name").value.trim();
     if (!name) {
-      // 实例名留空时自动生成：免费实例按类型 + 日期（与机器人同规则，
-      // 如 AMD_2026-11-24 / ARM_2026-11-24）；其他形状沿用时间戳格式。
+      // When the instance name is left empty, it is auto-generated: free instances use type + date (same rule as the bot, e.g. AMD_2026-11-24 / ARM_2026-11-24); other shapes keep the timestamp format. 实例名留空时自动生成：免费实例按类型 + 日期（与机器人同规则，如 AMD_2026-11-24 / ARM_2026-11-24）；其他形状沿用时间戳格式。
       var d = new Date();
       if (shape === SHAPE_E2 || shape === SHAPE_A1) {
         var prefix = shape === SHAPE_E2 ? "AMD" : "ARM";
@@ -100,16 +98,14 @@
       shape: shape,
       ocpus: isE2 ? 1 : parseInt($("ocpus").value, 10),
       memory_gb: isE2 ? 1 : parseInt($("memory-gb").value, 10),
-      // 自定义镜像 OCID 优先于下拉（跨区域创建时填该区域的镜像 OCID）
+      // A custom image OCID takes priority over the dropdown (fill the target region's image OCID for cross-region creation). 自定义镜像 OCID 优先于下拉（跨区域创建时填该区域的镜像 OCID）。
       image_id: $("image-id-custom").value.trim() || $("image-id").value,
       display_name: name,
-      // 后端必填两项（卡 3 收集）+ 可选 SSH 公钥文件（为空时只靠 root 密码）
+      // Two required backend fields (collected in card 3) + an optional SSH public key file (empty means root password only). 后端必填两项（卡 3 收集）+ 可选 SSH 公钥文件（为空时只靠 root 密码）。
       subnet_id: $("subnet-id").value.trim(),
       availability_domain: $("availability-domain").value.trim(),
       ssh_keys_file: $("ssh-keys-file").value.trim(),
-      // 已接入后端的扩展字段（Grabber 传给 OCI CLI）
-      // 硬盘：47 或留空 = 镜像默认（发 null，后端不传该参数）；
-      // 显式指定最少 50GB（显式传 47 会被 OCI 拒绝）。
+      // Disk: 47 or empty = the image default (send null; the backend omits the parameter); an explicit size must be at least 50 GB (an explicit 47 is rejected by OCI). 硬盘：47 或留空 = 镜像默认（发 null，后端不传该参数）；显式指定最少 50GB（显式传 47 会被 OCI 拒绝）。
       boot_volume_size_gbs: (function () {
         var disk = parseInt($("disk-gb").value, 10);
         return (isNaN(disk) || disk <= 47) ? null : disk;
@@ -120,7 +116,7 @@
       max_delay: parseInt($("max-delay").value, 10) || 0,
       target_cpu: $("target-cpu").value.trim(),
       user_data: $("startup-script").value,
-      // root 登录：默认开启；密码前端预填 UUID，留空由后端生成。
+      // Root login: on by default; the frontend prefills a UUID password, and the backend generates one when left empty. root 登录：默认开启；密码前端预填 UUID，留空由后端生成。
       root_login: $("root-login").checked,
       root_password: $("root-login").checked
         ? $("root-password").value.trim() : "",
@@ -128,14 +124,14 @@
   }
 
   function generateUuidPassword() {
-    // UUID4 的 32 位十六进制（去掉连字符），与机器人端一致。
+    // UUID4 as 32 hex chars (hyphens stripped), same as the bot. UUID4 的 32 位十六进制（去掉连字符），与机器人端一致。
     if (window.crypto && window.crypto.randomUUID) {
       return window.crypto.randomUUID().replace(/-/g, "");
     }
     var bytes = new Uint8Array(16);
     window.crypto.getRandomValues(bytes);
-    bytes[6] = (bytes[6] & 0x0f) | 0x40; // 版本 4
-    bytes[8] = (bytes[8] & 0x3f) | 0x80; // 变体
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
     return Array.from(bytes, function (b) {
       return b.toString(16).padStart(2, "0");
     }).join("");
@@ -162,7 +158,7 @@
     btn.disabled = true;
     btn.textContent = "配额预检中…";
     try {
-      // 先调配额预检（带当前账号与区域，预检该区域的免费额度）
+      // First run the quota pre-check (with the current account and region; it checks that region's free quota). 先调配额预检（带当前账号与区域，预检该区域的免费额度）。
       var check = await MBot.api(MBot.withProfile("/api/quota/can-launch", payload.profile, payload.region), {
         method: "POST",
         body: { shape: payload.shape, ocpus: payload.ocpus, memory_gb: payload.memory_gb },
@@ -171,13 +167,11 @@
         showError("配额不足，无法创建：" + (check.reason || "免费额度已用完"));
         return;
       }
-      // 预检通过，提交创建
       btn.textContent = "创建中…";
       var result = await MBot.api("/api/create", { method: "POST", body: payload });
       MBot.toast("创建任务已提交", "success");
       if (result.root_password) {
-        // root 密码只显示这一次（后端不保存、不再可查；抢机成功后
-        // 还会在 Telegram / Bark 通知里带上）。
+        // The root password is shown only this once (the backend does not store it and it cannot be looked up again; after a successful grab it also appears in the Telegram / Bark notice). root 密码只显示这一次（后端不保存、不再可查；抢机成功后还会在 Telegram / Bark 通知里带上）。
         await MBot.confirmDialog(
           "🔑 root 登录密码（只显示这一次）",
           "<p>请立即记下，面板不会再显示它：</p>" +
@@ -200,9 +194,7 @@
     $("btn-regen-password").disabled = !on;
   }
 
-  // 加载创建默认值（可用域 / 子网 / SSH 公钥文件）：后端按当前账号
-  // 与工作区域从部署配置里取；SSH 公钥文件只在服务器上真实存在时才
-  // 返回路径，没有就不填。切换账号或区域时重新加载。
+  // Load the create defaults (availability domain / subnet / SSH public key file): the backend picks them from the deploy config for the current account and working region; the SSH public key file path is only returned when it really exists on the server, otherwise left empty. Reload when switching account or region. 加载创建默认值（可用域 / 子网 / SSH 公钥文件）：后端按当前账号与工作区域从部署配置里取；SSH 公钥文件只在服务器上真实存在时才返回路径，没有就不填。切换账号或区域时重新加载。
   async function loadDefaults() {
     try {
       var profile = $("profile").value || null;
@@ -212,14 +204,12 @@
       if (data.subnet_id) $("subnet-id").value = data.subnet_id;
       if (data.ssh_keys_file) $("ssh-keys-file").value = data.ssh_keys_file;
     } catch (err) {
-      // 默认值加载失败不阻塞表单（用户手填即可）。
+      // A failed defaults load does not block the form (the user can fill it in by hand). 默认值加载失败不阻塞表单（用户手填即可）。
     }
   }
 
   document.addEventListener("DOMContentLoaded", function () {
-    // 填 profile 下拉（恢复上次选择），再填区域下拉（多区账号才显示），
-    // 最后加载该账号 + 区域的网络默认值。失败时保持默认账号，仍按默认
-    // 账号加载默认值，不阻塞表单。
+    // Fill the profile dropdown (restoring the last choice), then the region dropdown (only for multi-region accounts), then load the network defaults for that account + region. On failure, keep the default account and still load its defaults without blocking the form. 填 profile 下拉（恢复上次选择），再填区域下拉（多区账号才显示），最后加载该账号 + 区域的网络默认值。失败时保持默认账号，仍按默认账号加载默认值，不阻塞表单。
     var profileSelect = $("profile");
     var regionSelect = $("region-select");
     MBot.fillProfileSelect(profileSelect).then(function (profile) {
@@ -228,7 +218,7 @@
     }, loadDefaults);
     profileSelect.addEventListener("change", function (e) {
       MBot.setProfile(e.target.value);
-      // 切账号时区域重置为新账号的主区（与机器人端一致）。
+      // Switching accounts resets the region to the new account's home region (same as the bot). 切账号时区域重置为新账号的主区（与机器人端一致）。
       MBot.setRegion(null);
       MBot.fillRegionSelect(regionSelect, e.target.value);
       loadDefaults();
@@ -239,7 +229,7 @@
     });
     $("shape").addEventListener("change", onShapeChange);
     onShapeChange();
-    // root 密码默认预填一个随机 UUID；关掉 root 登录时禁用输入框。
+    // The root password is prefilled with a random UUID by default; the input is disabled when root login is turned off. root 密码默认预填一个随机 UUID；关掉 root 登录时禁用输入框。
     $("root-password").value = generateUuidPassword();
     $("root-login").addEventListener("change", onRootLoginChange);
     onRootLoginChange();

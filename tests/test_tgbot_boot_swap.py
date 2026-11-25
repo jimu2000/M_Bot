@@ -236,13 +236,13 @@ class TestHandleBootswap(BootSwapBotTestCase):
         context.user_data["pending_idx"] = "0"
         context.user_data["instances"] = FAKE_INSTANCES
         await he.handle_bootswap(update, context)
-        # 只列 AVAILABLE 的那条（CREATING 的不出现）。
+        # Only the AVAILABLE entry is listed (the CREATING one does not appear). 只列 AVAILABLE 的那条（CREATING 的不出现）。
         datas = callback_datas(reply_markup_of(update))
         self.assertIn("bs:pick:0", datas)
         self.assertNotIn("bs:pick:1", datas)
         self.assertEqual(len(context.user_data["bootswap_backups"]), 1)
         self.assertEqual(context.user_data["bootswap_idx"], "0")
-        # 按当前启动盘过滤备份。
+        # Filter backups by the current boot volume. 按当前启动盘过滤备份。
         self.assertEqual(mock_list.call_args.kwargs.get("boot_volume_id"),
                          FAKE_BV)
 

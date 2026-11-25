@@ -155,13 +155,13 @@ class WebOciProfilesTestCase(unittest.TestCase):
         self.assertEqual(item["profile"], "NEWPROF")
         self.assertEqual(item["region"], "ap-singapore-1")
         self.assertEqual(item["regionLabel"], "新加坡")
-        # key_file 不在 home 下，归一到 ~/NEWPROF.pem。
+        # A key_file outside home is normalized to ~/NEWPROF.pem. key_file 不在 home 下，归一到 ~/NEWPROF.pem。
         self.assertEqual(item["key_file"],
                          os.path.join(self._home, "NEWPROF.pem"))
         self.assertFalse(item["key_ready"])
         self.assertEqual(data["skipped"], [])
         self.assertIsNone(data["cloudflare"])
-        # 响应里不回显 OCID 与指纹。
+        # The response does not echo the OCID or fingerprint. 响应里不回显 OCID 与指纹。
         self.assertNotIn(FAKE_TENANCY, resp.text)
         self.assertNotIn(FAKE_FINGERPRINT, resp.text)
 
@@ -245,16 +245,14 @@ class WebOciProfilesTestCase(unittest.TestCase):
         self.assertTrue(data["keys"][0]["key_ready"])
         self.assertEqual(data["pem_failed"], [])
         self.assertTrue(data["restart_needed"])
-        # 配置已写进临时文件。
         content = self._read_config()
         self.assertIn("[NEWPROF]", content)
         self.assertIn(FAKE_TENANCY, content)
-        # pem 已写到归一化路径，权限 600。
+        # The pem was written to the normalized path, mode 600. pem 已写到归一化路径，权限 600。
         pem_path = os.path.join(self._home, "NEWPROF.pem")
         with open(pem_path, "rb") as handle:
             self.assertEqual(handle.read(), FAKE_PEM)
         self.assertEqual(stat.S_IMODE(os.stat(pem_path).st_mode), 0o600)
-        # compartment 环境变量已写进临时 env。
         with open(self._env_path, encoding="utf-8") as handle:
             self.assertIn("MBOT_COMPARTMENT_NEWPROF=%s" % FAKE_TENANCY,
                           handle.read())
@@ -289,7 +287,7 @@ class WebOciProfilesTestCase(unittest.TestCase):
             files={"pem_NEWPROF": ("key.pem", FAKE_PEM,
                                     "application/x-pem-file")})
         self.assertTrue(resp.json()["ok"])
-        # pem 只落在临时 HOME 里，不会写到 /etc。
+        # The pem only lands in the temp HOME, never in /etc. pem 只落在临时 HOME 里，不会写到 /etc。
         self.assertTrue(os.path.exists(
             os.path.join(self._home, "NEWPROF.pem")))
         self.assertIn("key_file = %s" % os.path.join(self._home,
@@ -346,7 +344,7 @@ class WebOciProfilesTestCase(unittest.TestCase):
         self.assertEqual(resp.status_code, 302)
         self.assertIn("/login", resp.headers["location"])
 
-    # ---------- 已配置账号的私钥补传（v1.37.1） ----------
+    # ---------- 已配置账号的私钥补传 ----------
 
     def _setup_configured_profile(self, key_file):
         """往临时配置里写一个已配置账号，并把 web PROFILES 指过去。"""
@@ -402,7 +400,6 @@ class WebOciProfilesTestCase(unittest.TestCase):
         with open(key_path, "rb") as handle:
             self.assertEqual(handle.read(), FAKE_PEM)
         self.assertEqual(stat.S_IMODE(os.stat(key_path).st_mode), 0o600)
-        # 列表随之变已就位。
         listed = self.client.get("/api/profiles").json()
         item = [p for p in listed["profiles"]
                 if p["name"] == "TESTPROF"][0]
@@ -444,7 +441,7 @@ class WebOciProfilesTestCase(unittest.TestCase):
                               files={"key_file": ("key.pem", FAKE_PEM)})
         self.assertEqual(resp.status_code, 401)
 
-    # ---------- 删除已配置账号（v1.38.0） ----------
+    # ---------- 删除已配置账号 ----------
 
     def _setup_profiles_for_delete(self, specs):
         """写临时配置 + env 文件 + patch PROFILES 与 os.environ。
@@ -579,7 +576,7 @@ class WebOciProfilesTestCase(unittest.TestCase):
         self.assertFalse(remove_oci_profile("DROP"))
 
     def test_remove_oci_profile_round_trip_byte_identical(self):
-        # v1.38.1 回归：添加再删除一个段后，文件必须与原来逐字节一致。
+        # Regression: after adding then deleting a section, the file must be byte-identical to the original. 回归：添加再删除一个段后，文件必须与原来逐字节一致。
         from tgbot.handlers_client import (
             append_oci_profile, remove_oci_profile)
         original = ("[KEEP]\nuser=%s\nfingerprint=%s\n"

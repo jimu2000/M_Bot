@@ -277,7 +277,7 @@ class TestPublicRecordStripsSpec(_TempTasksFile):
         views = registry.list()
         self.assertEqual(len(views), 1)
         self.assertNotIn("grab_spec", views[0])
-        # 原始记录仍有规格（恢复用）。
+        # The original record still has the spec (used for recovery). 原始记录仍有规格（恢复用）。
         self.assertIn("grab_spec",
                       task_store.get_record(self.path, record["id"]))
 
@@ -342,7 +342,7 @@ class TestResumeGrabs(_TempTasksFile):
             == "done")
         self.assertTrue(done, "恢复的抢机应在 5 秒内完成")
         grabber_cls = mocks[0]
-        # 只抢剩余 1 台（count=2，已抢 1 台），名字接着编号 -2。
+        # Grab only the 1 remaining instance (count=2, 1 already grabbed); the name continues the numbering with -2. 只抢剩余 1 台（count=2，已抢 1 台），名字接着编号 -2。
         self.assertEqual(grabber_cls.call_count, 1)
         self.assertEqual(grabber_cls.call_args[0][6], "ARM_2026-11-24-2")
         record = task_store.get_record(self.path, task_id)
@@ -358,20 +358,19 @@ class TestResumeGrabs(_TempTasksFile):
         he.resume_interrupted_grabs()
         record = task_store.get_record(self.path, task_id)
         self.assertEqual(record["status"], "done")
-        # 不重跑 Grabber。
         mocks[0].assert_not_called()
-        # 补发通知（后台线程，等它调到 notify_boot_success）。
+        # Re-send the notice (background thread; wait until it calls notify_boot_success). 补发通知（后台线程，等它调到 notify_boot_success）。
         notify_mock = mocks[4]
         self.assertTrue(_wait_for(lambda: notify_mock.called),
                         "已抢满的任务应补发成功通知")
 
     def test_no_spec_and_other_origin_not_resumed(self):
-        # 无规格的 bot 抢机任务：标为已中断。
+        # A bot grab task without a spec: marked interrupted. 无规格的 bot 抢机任务：标为已中断。
         no_spec = task_store.create_record(
             self.path, "bot", "grab", detail="无规格", status="running")
-        # web 来源的带规格任务：bot 恢复绝不碰。
+        # A web-sourced task with a spec: bot recovery never touches it. web 来源的带规格任务：bot 恢复绝不碰。
         web_id, _spec = self._make_running_grab(origin="web", count=1)
-        # bot 来源的非 grab 任务：标为已中断。
+        # A bot-sourced non-grab task: marked interrupted. bot 来源的非 grab 任务：标为已中断。
         other = task_store.create_record(
             self.path, "bot", "bootswap", detail="换盘", status="running")
         mocks = self._start_patches()

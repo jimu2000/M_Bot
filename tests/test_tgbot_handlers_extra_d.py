@@ -213,7 +213,7 @@ class TestDispatchD(PackageDTestCase):
 
 class TestObjectStorageHandlers(PackageDTestCase):
     async def test_handle_objectstorage_lists_buckets(self):
-        # 同 test_confirm_createsender：账号集固定，避免随本机 oci_config 变化。
+        # Same as test_confirm_createsender: a fixed account set, so it does not vary with the local oci_config. 同 test_confirm_createsender：账号集固定，避免随本机 oci_config 变化。
         profiles = {"DEFAULT": {"region": "ap-singapore-1",
                                 "compartment_id": "ocid1.tenancy.oc1..xxxxxxxx"}}
         with patch.object(he, "list_buckets",
@@ -388,7 +388,7 @@ class TestEmailHandlers(PackageDTestCase):
         await he.text_input_callback(update, context)
         self.assertIn("邮箱格式不对", reply_text_of(update))
         self.assertNotIn("pending_sender", context.user_data)
-        # pending_input 已消费，下条文字不再当邮箱处理。
+        # pending_input is consumed; the next text is no longer treated as an email. pending_input 已消费，下条文字不再当邮箱处理。
         self.assertNotIn("pending_input", context.user_data)
 
     async def test_text_input_no_pending_ignored(self):
@@ -398,9 +398,7 @@ class TestEmailHandlers(PackageDTestCase):
         update.effective_message.reply_text.assert_not_awaited()
 
     async def test_confirm_createsender(self):
-        # v1.45.0 修 2：PROFILES 现含 oci_config 里全部有 tenancy 的
-        # 账号，compartment 从真实 tenancy 推导；不 patch 的话断言
-        # 用的 DEFAULT_COMPARTMENT_ID（占位符）与实际值不一致。
+        # PROFILES now includes every account in oci_config that has a tenancy, and the compartment is derived from the real tenancy; without patching, the DEFAULT_COMPARTMENT_ID (placeholder) used by the assertion would not match the real value. PROFILES 现含 oci_config 里全部有 tenancy 的账号，compartment 从真实 tenancy 推导；不 patch 的话断言用的 DEFAULT_COMPARTMENT_ID（占位符）与实际值不一致。
         profiles = {"DEFAULT": {"region": "ap-singapore-1",
                                 "compartment_id": "ocid1.tenancy.oc1..xxxxxxxx"}}
         with patch.object(he, "create_sender") as mock_create, \
@@ -465,7 +463,6 @@ class TestPlanHandlers(PackageDTestCase):
         texts = all_reply_texts(update)
         self.assertTrue(any("已停用" in t for t in texts))
         self.assertFalse(PLANS.get(plan["id"])["enabled"])
-        # 再点一次恢复启用。
         update2 = make_update(callback_data="pl:toggle:p1")
         await he.plan_callback(update2, make_context())
         self.assertTrue(PLANS.get(plan["id"])["enabled"])
@@ -479,7 +476,7 @@ class TestPlanHandlers(PackageDTestCase):
         self.assertIn("确认删除抢机计划 p1", text)
         self.assertIn("c:delplan:p1",
                       all_callback_data(reply_markup_of(update)))
-        # 只提示，不删除。
+        # Only a prompt, nothing is deleted. 只提示，不删除。
         self.assertIsNotNone(PLANS.get("p1"))
 
     async def test_plan_callback_missing(self):
@@ -533,7 +530,7 @@ class TestAddIngressRule(unittest.TestCase):
         }]
         cli = self._mock_cli(existing)
         self.assertFalse(he.add_ingress_rule(cli, FAKE_SECURITY_LIST, 9527))
-        # 只查了一次 get，没调 update。
+        # Only one get was called; update was never called. 只查了一次 get，没调 update。
         self.assertEqual(cli.run.call_count, 1)
 
     def test_new_rule_appended_with_force(self):
@@ -549,7 +546,7 @@ class TestAddIngressRule(unittest.TestCase):
         self.assertEqual(update_args[:3],
                          ["network", "security-list", "update"])
         self.assertIn("--force", update_args)
-        # JSON 里既有旧规则（443）也有新规则（9527）。
+        # The JSON has both the old rule (443) and the new rule (9527). JSON 里既有旧规则（443）也有新规则（9527）。
         payload = json.loads(
             update_args[update_args.index("--ingress-security-rules") + 1])
         self.assertEqual(len(payload), 2)

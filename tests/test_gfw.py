@@ -41,14 +41,14 @@ class GfwEvaluateTests(unittest.TestCase):
         self.assertEqual((verdict, ok, n), ("blocked", 1, 5))
 
     def test_half_up_is_healthy(self):
-        # 5 个探针 3 个通（60%）→ 正常（阈值是“不到一半算被墙”）。
+        # 3 of 5 probes reachable (60%) -> normal (the threshold is "fewer than half reachable counts as walled"). 5 个探针 3 个通（60%）→ 正常（阈值是“不到一半算被墙”）。
         results = ([_probe_result([150.0, None, None]) for _ in range(3)]
                    + [_probe_result([None, None, None]) for _ in range(2)])
         verdict, ok, n, _ = gfw.evaluate_results(results)
         self.assertEqual((verdict, ok, n), ("healthy", 3, 5))
 
     def test_one_packet_enough(self):
-        # 探针只要 1 个包有回包就算可达（单个包丢包不算墙）。
+        # A probe counts as reachable when even one packet gets a reply (one dropped packet is not a wall). 探针只要 1 个包有回包就算可达（单个包丢包不算墙）。
         verdict, ok, n, _ = gfw.evaluate_results(
             [_probe_result([None, None, 200.0]) for _ in range(5)])
         self.assertEqual((verdict, ok, n), ("healthy", 5, 5))
@@ -261,7 +261,7 @@ class GfwCycleTests(unittest.TestCase):
         self.assertEqual(out["status"], "recovered")
         self.assertEqual(out["changes"], 2)
         self.assertEqual(changer.call_count, 2)
-        # 第一次换完仍被墙一条通知，第二次换完恢复一条通知。
+        # After the first change it is still walled: one notice; after the second change it recovers: one notice. 第一次换完仍被墙一条通知，第二次换完恢复一条通知。
         self.assertEqual(len(self.notes), 2)
         self.assertIn("仍被墙", self.notes[0][0])
         self.assertIn("3.3.3.3", self.notes[1][1])
@@ -276,7 +276,7 @@ class GfwCycleTests(unittest.TestCase):
         self.assertEqual(out["status"], "exhausted")
         self.assertEqual(out["changes"], 2)
         self.assertEqual(changer.call_count, 2)
-        # 两次换 IP 通知 + 一条“已暂停”通知。
+        # Two IP-change notices + one "paused" notice. 两次换 IP 通知 + 一条“已暂停”通知。
         self.assertEqual(len(self.notes), 3)
         self.assertIn("已暂停", self.notes[-1][0])
 

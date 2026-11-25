@@ -1,15 +1,14 @@
 {% extends "base.html" %}
-{# 配额页：免费额度汇总（A1 / E2 / 启动盘），数据来自 GET /api/quota #}
+{# Quota page: free-tier summary (A1 / E2 / boot volumes); data comes from GET /api/quota. 配额页：免费额度汇总（A1 / E2 / 启动盘），数据来自 GET /api/quota。 #}
 {% block title %}配额 · M_Bot Oracle开源管理面板{% endblock %}
 
 {% block content %}
 <div class="page-head">
   <h1>免费额度</h1>
   <label for="profile-select" style="color: var(--text-muted);">Profile</label>
-  {# Profile 下拉：由 quota.js 从 GET /api/profiles 动态填充
-     （显示"名字 · 区域中文名"）；选择存 localStorage，切换后带 ?profile= 重新加载 #}
+  {# Profile dropdown: filled dynamically by quota.js from GET /api/profiles (shows "name · region display name"); the choice is stored in localStorage, and switching reloads with ?profile=. Profile 下拉：由 quota.js 从 GET /api/profiles 动态填充（显示“名字 · 区域中文名”）；选择存 localStorage，切换后带 ?profile= 重新加载。 #}
   <select id="profile-select" style="width: auto;" aria-label="切换账号"></select>
-  {# 二级区域下拉：多区订阅的账号才显示（单区账号隐藏） #}
+  {# Second-level region dropdown: only shown for multi-region accounts (hidden for single-region accounts). 二级区域下拉：多区订阅的账号才显示（单区账号隐藏）。 #}
   <span id="region-wrap" hidden>
     <label for="region-select" style="color: var(--text-muted);">区域</label>
     <select id="region-select" style="width: auto;" aria-label="切换区域"></select>

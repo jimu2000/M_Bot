@@ -41,38 +41,34 @@ from datetime import datetime, timedelta, timezone
 from tgbot import config as bot_config
 
 # ================= 配置区（改这里） =================
-# 流量守护默认阈值（GB）：照用户 auto_limit.sh 的 LIMIT_GB（200）。
+# Traffic guard default threshold (GB): matches the user's auto_limit.sh LIMIT_GB (200). 流量守护默认阈值（GB）：照用户 auto_limit.sh 的 LIMIT_GB（200）。
 TRAFFIC_GUARD_DEFAULT_THRESHOLD_GB = 200
-# 流量守护阈值预设（GB），Telegram 菜单里点选：脚本的 10/20/200
-# + 封顶 9TB（9216GB，用户 2026-11-24 定）。
+# Traffic guard threshold presets (GB), picked in the Telegram menu: the script's 10/20/200 plus a 9 TB cap (9216 GB). 流量守护阈值预设（GB），Telegram 菜单里点选：脚本的 10/20/200 + 封顶 9TB（9216GB）。
 TRAFFIC_GUARD_THRESHOLD_PRESETS = [10, 20, 200, 9216]
-# 流量守护动作：notify 仅通知 / block 阻断断网（保留 SSH）/
-# limit 限速 200K。照 auto_limit.sh 的 OVER_LIMIT_MODE
-# （0=阻断，1=限速），另加仅通知。
+# Traffic guard action: notify (notify only) / block (cut the network, keep SSH) / limit (rate-limit to 200K). Mirrors auto_limit.sh's OVER_LIMIT_MODE (0=block, 1=limit), plus notify-only. 流量守护动作：notify 仅通知 / block 阻断断网（保留 SSH）/ limit 限速 200K。照 auto_limit.sh 的 OVER_LIMIT_MODE（0=阻断，1=限速），另加仅通知。
 TRAFFIC_GUARD_ACTIONS = ("notify", "block", "limit")
 TRAFFIC_GUARD_ACTION_LABELS = {
     "notify": "仅通知",
     "block": "阻断断网（保留SSH）",
     "limit": "限速200K",
 }
-# 限速目标（tc 速率）：1600kbit ≈ 200 KB/s，照 auto_limit.sh。
+# Rate-limit target (tc rate): 1600 kbit ≈ 200 KB/s, matching auto_limit.sh. 限速目标（tc 速率）：1600kbit ≈ 200 KB/s，照 auto_limit.sh。
 TRAFFIC_GUARD_RATE_LIMIT = "1600kbit"
-# 流量守护触发后冷却时间（小时）：同一阈值触发后这么久内不再重复执行
-# （防反复阻断/限速；仅通知动作同样冷却，防每 10 分钟刷屏）。
+# Cooldown (hours) after a traffic guard trigger: no repeat action for the same threshold within this window (prevents repeated blocking/limiting; notify-only actions cool down too, so the user is not spammed every 10 minutes). 流量守护触发后冷却时间（小时）：同一阈值触发后这么久内不再重复执行（防反复阻断/限速；仅通知动作同样冷却，防每 10 分钟刷屏）。
 TRAFFIC_GUARD_COOLDOWN_HOURS = 24
-# 停机保活：连续开机失败这么多次后停止尝试该实例并通知用户。
+# Stop-keepalive: stop trying an instance and notify the user after this many consecutive boot failures. 停机保活：连续开机失败这么多次后停止尝试该实例并通知用户。
 KEEPALIVE_MAX_FAILURES = 3
-# SSL 提醒阈值（天）：到期前这些天数时各提醒一次。
+# SSL reminder thresholds (days): one reminder at each of these days before expiry. SSL 提醒阈值（天）：到期前这些天数时各提醒一次。
 SSL_REMIND_DAYS = (30, 14, 7, 1)
-# 配置文件名（存在 DATA_DIR 下）。
+# Config file names (under DATA_DIR). 配置文件名（存在 DATA_DIR 下）。
 TRAFFIC_GUARD_FILE = "traffic_guard.json"
 KEEPALIVE_FILE = "keepalive.json"
 KEEPALIVE_STATE_FILE = "keepalive_state.json"
 SSL_WATCH_FILE = "ssl_watch.json"
 # =====================================================
 
-# 域名格式校验：小写字母 / 数字 / 连字符，至少一个点，单标签不接受。
-# （只校验格式，不查 DNS；国际化域名请用 punycode 形式，如 xn-- 开头。）
+# Domain format validation: lowercase letters / digits / hyphens, at least one dot; single labels are rejected. 域名格式校验：小写字母 / 数字 / 连字符，至少一个点，单标签不接受。
+# (Format only, no DNS lookup; internationalized domains must use punycode, e.g. xn-- prefix.) （只校验格式，不查 DNS；国际化域名请用 punycode 形式，如 xn-- 开头。）
 _DOMAIN_RE = re.compile(
     r"^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
     r"(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$")
@@ -242,9 +238,7 @@ def current_month_transfer_gb(items, now=None):
 
 
 # ---------------- 流量守护：远程命令（经 SSH 执行） ----------------
-# 命令照用户 auto_limit.sh 的逻辑（阻断 / 限速 / vnstat 查流量），
-# 由 handlers_extra 经 tgbot.handlers_client.run_remote_command
-# 发到实例上执行。本模块只生成命令字符串，不连 SSH。
+# Commands mirror the user's auto_limit.sh logic (block / limit / vnstat traffic query), sent to the instance by handlers_extra via tgbot.handlers_client.run_remote_command. This module only builds the command strings and never connects via SSH. 命令照用户 auto_limit.sh 的逻辑（阻断 / 限速 / vnstat 查流量），由 handlers_extra 经 tgbot.handlers_client.run_remote_command 发到实例上执行。本模块只生成命令字符串，不连 SSH。
 
 _GUARD_IFACE_DETECT = (
     "IF=$(ip route show default 2>/dev/null "
@@ -271,8 +265,7 @@ def guard_vnstat_command():
     return _GUARD_IFACE_DETECT + "; vnstat -i \"$IF\" --json m"
 
 
-# 自动安装流量依赖的最长等待（秒）：apt update + 装 vnstat /
-# python3 / curl 三件套，新机实测约 1-3 分钟，300 秒留足余量。
+# Max wait (seconds) for the auto-install of traffic deps: apt update + installing the vnstat / python3 / curl trio takes ~1-3 minutes on a fresh machine in practice, so 300s leaves headroom. 自动安装流量依赖的最长等待（秒）：apt update + 装 vnstat / python3 / curl 三件套，新机实测约 1-3 分钟，300 秒留足余量。
 GUARD_ENSURE_INSTALL_TIMEOUT_SECONDS = 300
 
 

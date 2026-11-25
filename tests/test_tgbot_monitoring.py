@@ -178,19 +178,16 @@ class TestOracleMenuDynamicStates(MonitoringBotTestCase):
         texts = button_texts(oracle_menu_keyboard(0, states=states))
         self.assertIn("9. 实例状态监控通知 (开启)", texts)
         self.assertIn("10. 实例状态监控自启 (关闭)", texts)
-        # 非监控项不带后缀。
         self.assertIn("6. 实例管理", texts)
         self.assertIn("16. GFW自动换IP", texts)
 
     def test_guard_keepalive_states_on_last_page(self):
         states = {"monitor": False, "autostart": False,
                   "traffic_guard": True, "keepalive": True}
-        # 42 项（13 号已删），每页 22 项共 2 页：第 2 页是 24–43 号，
-        # 37/38/39 号都在第 2 页；越界页码钳制到最后一页。
+        # 42 items (No. 13 was deleted), 22 per page over 2 pages: page 2 holds Nos. 24-43, so Nos. 37/38/39 are all on page 2; an out-of-range page clamps to the last page. 42 项（13 号已删），每页 22 项共 2 页：第 2 页是 24–43 号，37/38/39 号都在第 2 页；越界页码钳制到最后一页。
         texts1 = button_texts(oracle_menu_keyboard(1, states=states))
         self.assertIn("37. 流量守护 (开启)", texts1)
         self.assertIn("38. 停机保活 (开启)", texts1)
-        # SSL 监控没有总开关，不带后缀。
         self.assertIn("39. SSL 监控", texts1)
         texts = button_texts(oracle_menu_keyboard(2, states=states))
         self.assertIn("38. 停机保活 (开启)", texts)
@@ -200,7 +197,6 @@ class TestOracleMenuDynamicStates(MonitoringBotTestCase):
         self.assertIn("9. 实例状态监控通知", texts)
 
     def test_new_menu_items_exist(self):
-        # 42 项（13 号已删），每页 22 项共 2 页：37/38/39 号都在第 2 页。
         data1 = button_data(oracle_menu_keyboard(1))
         self.assertIn("o:traffic_guard", data1)
         self.assertIn("o:keepalive", data1)
@@ -212,7 +208,6 @@ class TestOracleMenuDynamicStates(MonitoringBotTestCase):
         first = kb.inline_keyboard[0][0]
         self.assertEqual(first.text, "🔄 切换账号：新加坡（3 个区）")
         self.assertEqual(first.callback_data, "o:profiles")
-        # 不传时没有切换行（第一行是菜单项）
         kb2 = oracle_menu_keyboard(0)
         texts2 = button_texts(kb2)
         self.assertTrue(all(not t.startswith("🔄 切换账号")
@@ -228,9 +223,7 @@ class TestMonitorToggleRefresh(MonitoringBotTestCase):
         self.assertIn("已开启", reply_text_of(update))
         texts = button_texts(reply_markup_of(update))
         self.assertIn("9. 实例状态监控通知 (开启)", texts)
-        # 再切一次：按钮变回关闭（生产上是另一次点按，用新 update
-        # 模拟新的回调 query.id；复用同一个 update 会被 v1.34.0 的
-        # 同回调去重当成同一次点按，走 send_message）。
+        # Toggling again: the button flips back to off (in production this is a separate tap, simulated with a fresh update; reusing the same update is treated as the same tap by the same-callback dedup and goes through send_message). 再切一次：按钮变回关闭（生产上是另一次点按，用新 update 模拟新的回调 query.id；复用同一个 update 会被同回调去重当成同一次点按，走 send_message)。
         update2 = make_update(callback_data="o:monitor")
         await he.handle_monitor(update2, context)
         texts = button_texts(reply_markup_of(update2))
@@ -241,7 +234,6 @@ class TestMonitorToggleRefresh(MonitoringBotTestCase):
         context = make_context()
         await he.handle_autostart(update, context)
         texts = button_texts(reply_markup_of(update))
-        # 开自启时监控也一并开启，两个按钮都显示开启。
         self.assertIn("9. 实例状态监控通知 (开启)", texts)
         self.assertIn("10. 实例状态监控自启 (开启)", texts)
 
@@ -379,11 +371,11 @@ class TestTrafficGuardCallback(MonitoringBotTestCase):
                           return_value=(0, "GUARD-UNBLOCKED", "")) as mock_run:
             await he.traffic_guard_callback(update, context)
         mock_run.assert_called()
-        # 第 1 次调用是解除命令（第 2 次是重渲染菜单时的 vnstat 查询）。
+        # The 1st call is the unblock command (the 2nd is the vnstat query during the menu re-render). 第 1 次调用是解除命令（第 2 次是重渲染菜单时的 vnstat 查询）。
         _host, command = mock_run.call_args_list[0].args
         self.assertIn("TRAFFIC_GUARD", command)
         self.assertIn("tc qdisc del", command)
-        # 结果消息是倒数第二条（最后一条是重渲染的菜单）。
+        # The result message is the second-to-last one (the last is the re-rendered menu). 结果消息是倒数第二条（最后一条是重渲染的菜单）。
         texts = [a.args[0] for a in
                  update.effective_message.reply_text.await_args_list]
         self.assertTrue(any("已解除" in t and "web-server" in t
@@ -453,7 +445,6 @@ class TestTrafficGuardStep(MonitoringBotTestCase):
         self.assertIn("流量守护提醒", texts[0])
         self.assertIn("250.00GB", texts[0])
         self.assertIn("仅通知", texts[0])
-        # 触发时间已记录。
         self.assertIsNotNone(mon.load_traffic_guard()["last_triggered"])
 
     async def test_block_blocks_running_only(self):
@@ -629,12 +620,10 @@ class TestTrafficGuardCommands(MonitoringBotTestCase):
         rx, tx = mon.parse_vnstat_monthly_gb(sample, now=now)
         self.assertAlmostEqual(rx, 11.15, places=2)
         self.assertAlmostEqual(tx, 6.73, places=2)
-        # 没有当月条目时取最后一条。
         now_oct = datetime(2026, 10, 5, tzinfo=timezone.utc)
         rx2, tx2 = mon.parse_vnstat_monthly_gb(sample, now=now_oct)
         self.assertAlmostEqual(rx2, 1.0, places=2)
         self.assertAlmostEqual(tx2, 2.0, places=2)
-        # 解析失败 / 无数据返回 None。
         self.assertIsNone(mon.parse_vnstat_monthly_gb("not json"))
         self.assertIsNone(mon.parse_vnstat_monthly_gb(
             '{"interfaces": [{"traffic": {"month": []}}]}'))
@@ -642,11 +631,10 @@ class TestTrafficGuardCommands(MonitoringBotTestCase):
     def test_ensure_vnstat_command(self):
         """v1.16.0：缺依赖时 apt 安装三件套并启用 vnstat 服务。"""
         cmd = mon.guard_ensure_vnstat_command()
-        # 先检查三件套是否齐全，齐了直接返回 0 不动 apt。
+        # First check whether the three pieces are all present; when complete, return 0 directly without touching apt. 先检查三件套是否齐全，齐了直接返回 0 不动 apt。
         self.assertIn("command -v", cmd)
         self.assertIn("vnstat python3 curl", cmd)
         self.assertIn("exit 0", cmd)
-        # 缺了就安装：非交互 apt + 启用服务。
         self.assertIn("DEBIAN_FRONTEND=noninteractive apt-get update", cmd)
         self.assertIn("apt-get install -y vnstat python3 curl", cmd)
         self.assertIn("systemctl enable --now vnstat", cmd)
@@ -702,7 +690,6 @@ class TestGuardFetch(MonitoringBotTestCase):
                           return_value=(0, self._vnstat_json(6.73), "")):
             total, note = await he._fetch_guard_monthly_gb(
                 context, instances=instances)
-        # 只有 RUNNING 的 web-server 被查（STOPPED 的 e2-test 跳过）。
         self.assertAlmostEqual(total, 6.73, places=2)
         self.assertIn("1 台可达", note)
 
@@ -736,7 +723,7 @@ class TestCheckInstancesJobIntegration(MonitoringBotTestCase):
     """流量守护 / 停机保活不依赖监控开关；自启与保活不重复启动。"""
 
     async def test_guard_runs_when_monitor_off(self):
-        context = make_context()  # 监控开关没开
+        context = make_context()
         mon.save_traffic_guard({"enabled": True, "threshold_gb": 200,
                                 "action": "notify", "last_triggered": None,
                                 "chat_id": TEST_CHAT_ID})
@@ -744,7 +731,7 @@ class TestCheckInstancesJobIntegration(MonitoringBotTestCase):
                           new=AsyncMock(return_value=(250.0, "2 台可达"))), \
              patch.object(he, "list_instances") as mock_list:
             await he.check_instances_job(context)
-            mock_list.assert_not_called()  # 仅通知不需要实例列表
+            mock_list.assert_not_called()
         texts = sent_texts(context)
         self.assertEqual(len(texts), 1)
         self.assertIn("流量守护提醒", texts[0])
@@ -779,7 +766,7 @@ class TestCheckInstancesJobIntegration(MonitoringBotTestCase):
              patch.object(he, "start_instance",
                           return_value=None) as mock_start:
             await he.check_instances_job(context)
-        # 自启与保活都盯着同一台 STOPPED 实例，只启动一次。
+        # Autostart and keepalive both watch the same STOPPED instance, but it is only started once. 自启与保活都盯着同一台 STOPPED 实例，只启动一次。
         mock_start.assert_called_once_with(self.cli, STOPPED_ID)
 
 
@@ -826,7 +813,6 @@ class TestKeepaliveMenu(MonitoringBotTestCase):
         mon.save_keepalive_state({"chat_id": TEST_CHAT_ID,
                                   "failures": {STOPPED_ID: 3},
                                   "gave_up": [STOPPED_ID]})
-        # 关掉再打开：停试标记清掉。
         await he.keepalive_callback(update, context)
         await he.keepalive_callback(update, context)
         state = mon.load_keepalive_state()
@@ -878,7 +864,7 @@ class TestKeepaliveStep(MonitoringBotTestCase):
 
     async def test_not_enabled_stopped_instance_is_ignored(self):
         context = make_context()
-        self._enable(RUNNING_ID)  # 只开 RUNNING 那台
+        self._enable(RUNNING_ID)
         with patch.object(he, "start_instance") as mock_start:
             await he._keepalive_step(context, instances=FAKE_INSTANCES)
             mock_start.assert_not_called()
@@ -915,7 +901,6 @@ class TestKeepaliveStep(MonitoringBotTestCase):
         self.assertIn("第 2 次", texts[1])
         self.assertIn("连续 3 次", texts[2])
         self.assertIn("已停止尝试", texts[2])
-        # 第 4 次不再尝试。
         with patch.object(he, "start_instance") as mock_start:
             await he._keepalive_step(context, instances=FAKE_INSTANCES)
             mock_start.assert_not_called()
@@ -1161,7 +1146,7 @@ class TestSslCheckJob(MonitoringBotTestCase):
         with patch.object(he, "check_ssl_expiry",
                           return_value=self._ssl_result(5)):
             await he.ssl_check_job(context)
-        # 30/14/7 都已跨过，但只发一条提醒。
+        # The 30/14/7-day marks are all crossed, but only one reminder is sent. 30/14/7 都已跨过，但只发一条提醒。
         self.assertEqual(len(sent_texts(context)), 1)
         self.assertEqual(mon.load_ssl_watch()["reminded"],
                          {"example.com": [7, 14, 30]})

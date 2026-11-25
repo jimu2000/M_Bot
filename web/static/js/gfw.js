@@ -8,7 +8,7 @@
   "use strict";
 
   var currentProfile = "DEFAULT";
-  var currentRegion = null; // 当前工作区域，由 fillRegionSelect 恢复（多区账号才有二级下拉）
+  var currentRegion = null;  // Current working region, restored by fillRegionSelect (only multi-region accounts have the second dropdown). 当前工作区域，由 fillRegionSelect 恢复（多区账号才有二级下拉）。
   var statusData = null;
   var instances = [];
 
@@ -134,7 +134,7 @@
     profileSelect.addEventListener("change", function (e) {
       currentProfile = e.target.value;
       MBot.setProfile(currentProfile);
-      // 切账号时区域重置为新账号的主区（与机器人端一致）。
+      // Switching accounts resets the region to the new account's home region (same as the bot). 切账号时区域重置为新账号的主区（与机器人端一致）。
       MBot.setRegion(null);
       currentRegion = MBot.fillRegionSelect(regionSelect, currentProfile);
       loadAll(true);

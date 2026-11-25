@@ -27,7 +27,7 @@ from oci.iam import (
     update_user,
 )
 
-# 占位符（测试里不出现真实 OCID）
+# Placeholders (no real OCID in tests). 占位符（测试里不出现真实 OCID）。
 FAKE_USER = "ocid1.user.oc1..xxxxxxxx"
 FAKE_USER2 = "ocid1.user.oc1..yyyyyyyy"
 FAKE_FP = "aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99"

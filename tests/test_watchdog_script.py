@@ -22,7 +22,7 @@ def _load_script():
     spec = importlib.util.spec_from_file_location(
         "oracle_traffic_guard_tpl", SCRIPT_PATH)
     module = importlib.util.module_from_spec(spec)
-    # 加载时 get_active_iface 会跑 ip route，mock 掉 run_cmd 的底层调用。
+    # Loading runs ip route via get_active_iface, so mock the underlying run_cmd call. 加载时 get_active_iface 会跑 ip route，mock 掉 run_cmd 的底层调用。
     with patch("subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(
             returncode=0, stdout="default via 10.0.0.1 dev eth0\n", stderr="")
@@ -38,15 +38,14 @@ class TestTemplateHasNoSecrets(unittest.TestCase):
             self.text = f.read()
 
     def test_no_hardcoded_bark_keys(self):
-        # 顶层赋值 BARK_KEY = "..." / BARK_ENC_KEY = "..." 不许出现
-        # （读取逻辑里的 env.get("BARK_KEY") 是字符串键名，不算赋值）。
+        # A top-level assignment BARK_KEY = "..." / BARK_ENC_KEY = "..." must not appear (env.get("BARK_KEY") in the read logic is a string key name, not an assignment). 顶层赋值 BARK_KEY = "..." / BARK_ENC_KEY = "..." 不许出现（读取逻辑里的 env.get("BARK_KEY") 是字符串键名，不算赋值）。
         self.assertNotRegex(self.text, r"^BARK_KEY\s*=")
         self.assertNotRegex(self.text, r"^BARK_ENC_KEY\s*=")
         self.assertNotRegex(self.text, r"^BARK_SERVER\s*=")
 
     def test_no_hardcoded_ssh_port(self):
         self.assertNotRegex(self.text, r"^SSH_PORT\s*=")
-        # 注释里可以提 14422（“不要写死 22/14422”），但不能是赋值。
+        # A comment may mention 14422 ("不要写死 22/14422"), but it must not be an assignment. 注释里可以提 14422（“不要写死 22/14422”），但不能是赋值。
         self.assertNotRegex(self.text, r"SSH_PORT\s*=\s*\d+")
 
     def test_has_auto_detect_marker(self):
@@ -222,7 +221,7 @@ class TestCheckTraffic(unittest.TestCase):
         bark, _, _ = self._run_check(6.0)
         self.assertEqual(bark.call_count, 1)
         self.assertIn("5GB", bark.call_args.args[0])
-        # 同月再跑：5GB 档已推过，不再推。
+        # Running again in the same month: the 5 GB tier was already pushed, so do not push again. 同月再跑：5GB 档已推过，不再推。
         bark2, _, _ = self._run_check(6.0)
         self.assertEqual(bark2.call_count, 0)
 

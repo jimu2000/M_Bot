@@ -37,7 +37,7 @@
       opt.textContent = zone.name + (zone.status === "active" ? "" : "（" + (zone.status || "未知") + "）");
       select.appendChild(opt);
     });
-    // 保持上次选中的 Zone（刷新后不跳回第一个）
+    // Keep the last selected Zone (do not jump back to the first one after a refresh). 保持上次选中的 Zone（刷新后不跳回第一个）。
     if (currentZoneId && zones.some(function (z) { return z.id === currentZoneId; })) {
       select.value = currentZoneId;
     } else {
@@ -80,7 +80,7 @@
       nameCell.appendChild(el("b", rec.name || "—"));
       tr.appendChild(nameCell);
 
-      // 内容用 textContent 渲染，不走 innerHTML，防 XSS。
+      // Render content with textContent, never innerHTML, to prevent XSS. 内容用 textContent 渲染，不走 innerHTML，防 XSS。
       tr.appendChild(el("td", rec.content || "—", "mono"));
 
       var proxiedCell = document.createElement("td");

@@ -36,7 +36,7 @@ from web.routes.volumes import clear_volumes_cache
 from web import tasks as tasks_mod
 from web.tasks import TASKS
 
-# 占位符（测试里不出现真实 OCID / IP）
+# Placeholders (no real OCIDs / IPs appear in tests). 占位符（测试里不出现真实 OCID / IP）。
 FAKE_INSTANCE = "ocid1.instance.oc1..testxxxx"
 FAKE_INSTANCE_2 = "ocid1.instance.oc1..testyyyy"
 FAKE_VOLUME = "ocid1.bootvolume.oc1..testxxxx"
@@ -99,7 +99,6 @@ class WebApiTestCase(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        # 生成测试密码哈希并 patch 进 config（绕过启动检查）。
         cls._hash_patcher = patch("web.config.ADMIN_PASSWORD_HASH",
                                   hash_password(TEST_PASSWORD))
         cls._hash_patcher.start()
@@ -110,11 +109,10 @@ class WebApiTestCase(unittest.TestCase):
         cls._hash_patcher.stop()
 
     def setUp(self):
-        # 临时数据目录（hosts.json / tasks.json 写这里，不污染真实目录）。
         self._tmp = tempfile.TemporaryDirectory()
         self._data_dir_patcher = patch("web.config.DATA_DIR", self._tmp.name)
         self._data_dir_patcher.start()
-        # 清服务端缓存（实例列表 / 云报告），避免缓存跨测试串数据。
+        # Clear the server cache (instance list / cloud report) so cached data does not leak across tests. 清服务端缓存（实例列表 / 云报告），避免缓存跨测试串数据。
         clear_instance_list_cache()
         clear_volumes_cache()
         clear_cloud_report_cache()
@@ -182,7 +180,6 @@ class TestAuthApi(WebApiTestCase):
         self.assertFalse(r.json()["ok"])
         self.assertIn("remaining_seconds", r.json())
         self.assertGreater(r.json()["remaining_seconds"], 0)
-        # 锁定时正确密码也进不去。
         r = self._login()
         self.assertEqual(r.status_code, 429)
 
@@ -191,7 +188,6 @@ class TestAuthApi(WebApiTestCase):
         r = self.client.post("/api/auth/logout")
         self.assertEqual(r.status_code, 200)
         self.assertTrue(r.json()["ok"])
-        # 登出后 me 返回 401。
         r = self.client.get("/api/auth/me")
         self.assertEqual(r.status_code, 401)
 
@@ -228,7 +224,6 @@ class TestInstancesApi(WebApiTestCase):
         self.assertEqual(r.status_code, 200)
         body = r.json()
         self.assertTrue(body["ok"])
-        # FAKE_INSTANCES 里 1 台 RUNNING + 1 台 STOPPED，只返回 RUNNING 的。
         self.assertEqual(len(body["instances"]), 1)
         inst = body["instances"][0]
         self.assertEqual(inst["id"], FAKE_INSTANCE)
@@ -238,15 +233,12 @@ class TestInstancesApi(WebApiTestCase):
         self.assertEqual(inst["state"], "RUNNING")
         self.assertEqual(inst["region"], "ap-singapore-1")
         self.assertEqual(inst["timeCreated"], "2026-11-11T10:00:00.000Z")
-        # FAKE 数据无 shape-config，ocpus/memoryInGBs 为 None。
         self.assertIsNone(inst["ocpus"])
         self.assertIsNone(inst["memoryInGBs"])
-        # 旧字段双写（过渡期）。
         self.assertEqual(inst["public-ip"], FAKE_IP)
         self.assertEqual(inst["display-name"], "instance-a1")
         self.assertEqual(inst["lifecycle-state"], "RUNNING")
         mock_list.assert_called_once()
-        # 列表调用时带 include_shape_config=True（取 OCPU/内存用）。
         _args, kwargs = mock_list.call_args
         self.assertTrue(kwargs.get("include_shape_config"))
 
@@ -472,7 +464,6 @@ class TestWatchdogApi(WebApiTestCase):
         mock_install.assert_called_once()
 
     def test_post_reenable(self):
-        # 新版已装、只是 cron 被摘了：文案是“已重新开启”，不是“已升级”。
         ip_patch, key_patch = self._patch_host()
         with ip_patch, key_patch, patch(
                 "web.routes.instances.install_watchdog",
@@ -564,7 +555,6 @@ class TestCpuModelApi(WebApiTestCase):
         r = self.client.get(f"/api/instances/{FAKE_INSTANCE}")
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()["cpu_model"], "AMD EPYC 7742")
-        # 缓存命中时不 SSH。
         mock_fetch.assert_not_called()
 
     @patch("web.routes.instances.get_cpu_model",
@@ -642,7 +632,6 @@ class TestVolumesApi(WebApiTestCase):
         self.assertIsNone(vol["attachmentId"])
         self.assertIsNone(vol["instanceId"])
         self.assertIsNone(vol["instanceName"])
-        # 旧字段双写（过渡期）。
         self.assertEqual(vol["size-in-gbs"], 47)
         self.assertEqual(vol["id"], FAKE_VOLUME)
 
@@ -662,7 +651,6 @@ class TestVolumesApi(WebApiTestCase):
         r = self.client.get("/api/volumes/orphans")
         self.assertEqual(r.status_code, 200)
         self.assertEqual(len(r.json()["volumes"]), 1)
-        # 孤儿盘同样返回 面板形状。
         self.assertEqual(r.json()["volumes"][0]["volumeId"], FAKE_VOLUME)
         self.assertFalse(r.json()["volumes"][0]["attached"])
 
@@ -715,7 +703,6 @@ class TestQuotaApi(WebApiTestCase):
         self.assertEqual(r.status_code, 200)
         body = r.json()
         self.assertTrue(body["ok"])
-        # v1.15.0：配额页用 profileLabel（主区中文名）代替配置键名。
         self.assertEqual(body["profile"], "DEFAULT")
         self.assertEqual(body["profileLabel"], "新加坡")
         self.assertEqual(body["summary"]["a1"]["ocpu_limit"], 4)
@@ -761,15 +748,13 @@ class TestCreateAndTasksApi(WebApiTestCase):
         self.assertEqual(r.status_code, 200)
         task_id = r.json()["task_id"]
         self.assertTrue(task_id)
-        # 默认 root 登录开启：响应带回生成的 UUID 密码（只返回这一次）。
+        # Root login is on by default: the response returns the generated UUID password (only this once). 默认 root 登录开启：响应带回生成的 UUID 密码（只返回这一次）。
         self.assertRegex(r.json()["root_password"], r"^[0-9a-f]{32}$")
-        # 等后台线程完成。
         task = self._wait_task_status(task_id, ("done", "failed"))
         self.assertEqual(task["status"], "done")
         self.assertEqual(task["result"]["instance_id"], FAKE_INSTANCE)
         self.assertEqual(task["result"]["attempts"], 3)
         self.assertEqual(task["result"]["releases"], 1)
-        # 已结束的任务不能取消。
         r = self.client.post(f"/api/tasks/{task_id}/cancel")
         self.assertEqual(r.status_code, 400)
 
@@ -826,7 +811,6 @@ class TestCreateAndTasksApi(WebApiTestCase):
             "min_delay": 20,
             "max_delay": 50,
             "user_data": "#!/bin/bash\necho hi\n",
-            # 关掉 root 登录，脚本原文直通 Grabber（不拼 cloud-init）。
             "root_login": False,
         })
         r = self.client.post("/api/create", json=body)
@@ -844,9 +828,6 @@ class TestCreateAndTasksApi(WebApiTestCase):
         self.assertEqual(kwargs["max_delay"], 50)
         self.assertEqual(kwargs["user_data"], "#!/bin/bash\necho hi\n")
         self.assertEqual(kwargs["target_cpu"], ["7J13", "7745"])
-        # 位置参数仍是原来的 8 个（cli/compartment/AD/shape/image/subnet/
-        # display_name/ssh_keys_file），A1 形状也正确传到位置参数里；
-        # ssh_keys_file 是拼进 guard 公钥的合并文件。
         args = mock_grabber_cls.call_args.args
         self.assertEqual(args[3], "VM.Standard.A1.Flex")
         self.assertEqual(args[7], "/tmp/combined.pub")
@@ -868,8 +849,7 @@ class TestCreateAndTasksApi(WebApiTestCase):
         self.assertEqual(r.status_code, 200)
         password = r.json()["root_password"]
         self.assertRegex(password, r"^[0-9a-f]{32}$")
-        # 等抢机线程构造 Grabber（线程里先写任务文件，POST 返回时
-        # 不一定已调到 Grabber，直接读 call_args 会抢跑）。
+        # Wait for the grabber thread to build its Grabber (the thread writes the task file first; when POST returns it may not have reached the Grabber yet, so reading call_args directly would race). 等抢机线程构造 Grabber（线程里先写任务文件，POST 返回时不一定已调到 Grabber，直接读 call_args 会抢跑）。
         deadline = time.time() + 2.0
         while not mock_grabber_cls.called and time.time() < deadline:
             time.sleep(0.05)
@@ -879,7 +859,6 @@ class TestCreateAndTasksApi(WebApiTestCase):
         self.assertIn(password, kwargs["user_data"])
         task_id = r.json()["task_id"]
         self._wait_task_status(task_id, ("done", "failed"))
-        # 通知在任务 done 之后同一线程里发，等它一下。
         deadline = time.time() + 2.0
         while not mock_notify.called and time.time() < deadline:
             time.sleep(0.05)
@@ -907,7 +886,6 @@ class TestCreateAndTasksApi(WebApiTestCase):
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()["root_password"],
                          "0123456789abcdef0123456789abcdef")
-        # 等抢机线程构造 Grabber（同上，POST 返回时线程不一定已调到）。
         deadline = time.time() + 2.0
         while not mock_grabber_cls.called and time.time() < deadline:
             time.sleep(0.05)
@@ -935,7 +913,6 @@ class TestCreateAndTasksApi(WebApiTestCase):
         r = self.client.post("/api/create", json=body)
         self.assertEqual(r.status_code, 200)
         self.assertIsNone(r.json()["root_password"])
-        # 等抢机线程构造 Grabber（POST 返回时线程不一定已调到）。
         deadline = time.time() + 2.0
         while not mock_grabber_cls.called and time.time() < deadline:
             time.sleep(0.05)
@@ -973,7 +950,6 @@ class TestCreateAndTasksApi(WebApiTestCase):
                 body = dict(CREATE_BODY)
                 body["boot_volume_size_gbs"] = size
                 r = self.client.post("/api/create", json=body)
-                # 校验通过后走到配额预检（mock 不通过）返回 400，而不是 422。
                 self.assertEqual(r.status_code, 400, f"size={size}")
 
     def test_create_region_mismatch_400(self):
@@ -1036,8 +1012,6 @@ class TestCreateAndTasksApi(WebApiTestCase):
         task_id = r.json()["task_id"]
         self._wait_task_status(task_id, ("done", "failed"))
         mock_grabber_cls.assert_called_once()
-        # 位置参数第 8 个是 ssh_keys_file（cli/compartment/AD/shape/
-        # image/subnet/display_name/ssh_keys_file）。
         self.assertEqual(mock_grabber_cls.call_args.args[7], "")
 
     @patch("web.tasks.notify_boot_success",
@@ -1117,7 +1091,6 @@ class TestCreateDefaultsApi(WebApiTestCase):
     def setUp(self):
         super().setUp()
         self._login()
-        # 真实存在的公钥文件（部署时是 web/data/ssh_keys.pub）。
         self._key_file = os.path.join(self._tmp.name, "keys.pub")
         with open(self._key_file, "w", encoding="utf-8") as handle:
             handle.write("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHRlc3QtdGVzdA== test-key\n")
@@ -1246,7 +1219,7 @@ class TestRegionDeps(unittest.TestCase):
     """web/deps.py 的区域解析：有效区域、未订阅、订阅列表查不到时放行。"""
 
     def setUp(self):
-        # 清订阅缓存，避免测试互相串数据。
+        # Clear the subscription cache so tests do not leak data into each other. 清订阅缓存，避免测试互相串数据。
         deps_mod._profile_regions = {}
         deps_mod._profile_regions_at = 0
 
@@ -1271,7 +1244,6 @@ class TestRegionDeps(unittest.TestCase):
     @patch("web.deps.get_profile_regions", return_value={})
     def test_resolve_profile_fail_open_when_list_unavailable(
             self, mock_regions):
-        # 订阅列表查不到（空 dict）时放行，与机器人端一致。
         cli, _compartment = resolve_profile("DEFAULT", "ap-seoul-1")
         self.assertEqual(cli.region, "ap-seoul-1")
 
@@ -1287,10 +1259,7 @@ class TestRegionDeps(unittest.TestCase):
 
     @patch("web.deps.OCIClient")
     def test_get_profile_regions_caches(self, mock_cli_cls):
-        # 两次调用只查一次 OCI（缓存 1 小时）。
-        # v1.45.0 修 2：web.config.PROFILES 现含 oci_config 里全部有
-        # tenancy 的账号；不 patch 的话结果随本机配置变化。测试只测
-        # 缓存逻辑，账号集固定为 1 个。
+        # The test only checks the cache logic, so pin the account set to one account. 测试只测缓存逻辑，账号集固定为 1 个。
         profiles = {"DEFAULT": {"region": "ap-singapore-1",
                                 "compartment_id": "ocid1.tenancy.oc1..aaa"}}
         mock_cli_cls.return_value.run.return_value = {
@@ -1324,7 +1293,6 @@ class TestProfilesApi(WebApiTestCase):
         prof = profs["DEFAULT"]
         self.assertEqual(prof["regionCount"], 3)
         codes = [entry["code"] for entry in prof["regions"]]
-        # 主区排第一，其余按代码排序。
         self.assertEqual(codes, ["ap-singapore-1", "ap-seoul-1",
                                  "us-sanjose-1"])
         self.assertTrue(prof["regions"][0]["isHome"])
@@ -1336,8 +1304,6 @@ class TestProfilesApi(WebApiTestCase):
     @patch("web.routes.profiles.get_profile_regions", return_value={})
     def test_profiles_regions_fallback_to_home(self, mock_regions,
                                                mock_counts):
-        # 订阅列表查不到时 regions 只含主区（前端按单区处理，不显示
-        # 二级菜单）。
         r = self.client.get("/api/profiles")
         self.assertEqual(r.status_code, 200)
         profs = {p["name"]: p for p in r.json()["profiles"]}
@@ -1435,7 +1401,6 @@ class TestNotifyGrabSuccess(unittest.TestCase):
         self.assertEqual(args[1], "ARM_2026-11-24")
         self.assertEqual(args[2], "T")
         self.assertEqual(args[3], 654321)
-        # 传给跟进线程的回调要绑对实例 id。
         with patch.object(tasks_mod, "get_public_ip",
                           return_value=FAKE_IP) as get_ip:
             self.assertEqual(args[0](), FAKE_IP)
@@ -1449,7 +1414,7 @@ class TestNotifyGrabSuccess(unittest.TestCase):
                              side_effect=RuntimeError("boom")):
             tasks_mod._notify_grab_success(
                 self.registry, "g1", MagicMock(), self.params,
-                self.result, self.notify)  # 不抛异常
+                self.result, self.notify)
         self.registry.append_log.assert_called_once()
         self.assertIn("通知失败",
                       self.registry.append_log.call_args[0][1])
@@ -1470,10 +1435,8 @@ class TestHostsApi(WebApiTestCase):
             return f.read()
 
     def test_crud_flow(self):
-        # 列表初始为空。
         r = self.client.get("/api/hosts")
         self.assertEqual(r.json()["hosts"], [])
-        # 新建（带 password 字段，应被丢弃不存储）。
         r = self.client.post("/api/hosts", json={
             "name": "sg-139", "host": FAKE_IP, "port": 14422,
             "username": "root", "auth_type": "password",
@@ -1485,24 +1448,19 @@ class TestHostsApi(WebApiTestCase):
         self.assertEqual(host["name"], "sg-139")
         self.assertNotIn("password", host)
         self.assertIsNone(host["last_used"])
-        # 文件里绝不能有密码明文，也不能有 password 字段
-        # （auth_type 的值 "password" 本身是允许的）。
         text = self._hosts_file_text()
         self.assertNotIn("s3cret-pw-12345", text)
         with open(os.path.join(self._tmp.name, "hosts.json"),
                   encoding="utf-8") as f:
             stored = json.load(f)
         self.assertNotIn("password", stored[0])
-        # 列表里有一台。
         r = self.client.get("/api/hosts")
         self.assertEqual(len(r.json()["hosts"]), 1)
-        # 更新。
         r = self.client.put(f"/api/hosts/{host['id']}",
                             json={"name": "sg-139-renamed", "notes": "改过"})
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()["host"]["name"], "sg-139-renamed")
-        self.assertEqual(r.json()["host"]["host"], FAKE_IP)  # 未改字段保留
-        # 删除。
+        self.assertEqual(r.json()["host"]["host"], FAKE_IP)
         r = self.client.delete(f"/api/hosts/{host['id']}")
         self.assertEqual(r.status_code, 200)
         r = self.client.get("/api/hosts")
@@ -1594,7 +1552,6 @@ class TestPages(WebApiTestCase):
                        "tg-login-btn", "tab-password", "tab-telegram",
                        "one-time-code"):
             self.assertIn(marker, html, marker)
-        # 旧版左右分栏与终端装饰已移除。
         self.assertNotIn("login-side", html)
         self.assertNotIn("login-logo", html)
 
@@ -1636,7 +1593,6 @@ class TestPages(WebApiTestCase):
         html = r.text
         self.assertIn("自动填充", html)
         self.assertIn("SSH 公钥文件路径（面板服务器上的路径，可选）", html)
-        # SSH 公钥输入框不再是必填项（可用域/子网仍是必填）。
         self.assertNotIn(
             'id="ssh-keys-file" placeholder="留空表示不用 SSH 公钥" required',
             html)

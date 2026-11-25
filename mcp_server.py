@@ -28,22 +28,22 @@ import json
 import os
 import sys
 
-# 让脚本在任何工作目录下都能 import 项目内模块（oci.* / clouds.*）。
+# Make the script import project modules (oci.* / clouds.*) from any working directory. 让脚本在任何工作目录下都能 import 项目内模块（oci.* / clouds.*）。
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # ================= 配置区（改这里） =================
-# MCP 服务器名与版本（initialize 返回给客户端）。
+# MCP server name and version (returned to the client in initialize). MCP 服务器名与版本（initialize 返回给客户端）。
 SERVER_NAME = "mbot"
 SERVER_VERSION = "0.1.0"
-# MCP 协议版本（客户端协商用；2024-11-05 是稳定的公开版本）。
+# MCP protocol version (used for client negotiation; 2024-11-05 is a stable public version). MCP 协议版本（客户端协商用；2024-11-05 是稳定的公开版本）。
 PROTOCOL_VERSION = "2024-11-05"
-# 默认 OCI profile / region：优先读环境变量，默认值只是示例，可改。
-# MBOT_OCI_PROFILE：~/.oci/config 里的 profile 名，如 DEFAULT / ACCOUNT2。
+# Default OCI profile / region: environment variables win; the defaults are only examples and can be changed. 默认 OCI profile / region：优先读环境变量，默认值只是示例，可改。
+# MBOT_OCI_PROFILE: a profile name in ~/.oci/config, e.g. DEFAULT / ACCOUNT2. MBOT_OCI_PROFILE：~/.oci/config 里的 profile 名，如 DEFAULT / ACCOUNT2。
 DEFAULT_PROFILE = os.environ.get("MBOT_OCI_PROFILE", "DEFAULT")
-# MBOT_OCI_REGION：如 ap-singapore-1 / us-sanjose-1 / us-chicago-1。
+# MBOT_OCI_REGION: e.g. ap-singapore-1 / us-sanjose-1 / us-chicago-1. MBOT_OCI_REGION：如 ap-singapore-1 / us-sanjose-1 / us-chicago-1。
 DEFAULT_REGION = os.environ.get("MBOT_OCI_REGION", "ap-singapore-1")
-# 默认 compartment OCID（根 compartment 即 tenancy OCID，占位符）。
-# 真实值用 MBOT_OCI_COMPARTMENT_ID 环境变量或工具参数 compartment_id 传入。
+# Default compartment OCID (the root compartment is the tenancy OCID; placeholder). 默认 compartment OCID（根 compartment 即 tenancy OCID，占位符）。
+# Pass the real value via the MBOT_OCI_COMPARTMENT_ID environment variable or the compartment_id tool argument. 真实值用 MBOT_OCI_COMPARTMENT_ID 环境变量或工具参数 compartment_id 传入。
 DEFAULT_COMPARTMENT_ID = os.environ.get(
     "MBOT_OCI_COMPARTMENT_ID", "ocid1.tenancy.oc1..xxxxxxxx")
 # =====================================================
@@ -52,8 +52,7 @@ from oci import instance as oci_instance
 from oci import quota as oci_quota_mod
 from oci.client import OCIClient, OCIError
 
-# Cloudflare 模块由另一位工人并行实现，可能还没就绪：导入失败时不要让
-# 整个服务器起不来，CF 两个工具届时返回"模块未就绪"错误。
+# A Cloudflare module import failure must not bring the whole server down; the two CF tools return a "module not ready" error in that case. Cloudflare 模块导入失败时不要让整个服务器起不来，CF 两个工具届时返回“模块未就绪”错误。
 try:
     from clouds import cloudflare as cf_module
     from clouds.cloudflare import CloudflareError
@@ -364,7 +363,6 @@ def _call_tool(params):
     try:
         result = handler(**arguments)
     except TypeError as e:
-        # 参数名不对 / 缺必填参数。
         raise _JsonRpcError(-32602, f"Invalid params for {name}: {e}")
     return {
         "content": [{"type": "text",
@@ -379,7 +377,7 @@ def handle_request(request):
         return _error_response(None, -32600, "Invalid Request")
     method = request.get("method", "")
     request_id = request.get("id")
-    # 通知（notifications/*）不回响应。
+    # Notifications (notifications/*) get no response. 通知（notifications/*）不回响应。
     if method.startswith("notifications/"):
         return None
     params = request.get("params") or {}
@@ -398,7 +396,7 @@ def handle_request(request):
         raise _JsonRpcError(-32601, f"Method not found: {method}")
     except _JsonRpcError as e:
         return _error_response(request_id, e.code, e.message)
-    except Exception as e:  # 工具内部未预料的异常：不让服务器崩掉
+    except Exception as e:  # An unexpected error inside a tool: do not let the server crash. 工具内部未预料的异常：不让服务器崩掉。
         return _error_response(request_id, -32603, f"Internal error: {e}")
 
 

@@ -42,14 +42,11 @@ from web.deps import (
 router = APIRouter()
 
 # ================= 配置区（改这里） =================
-# 启动盘列表服务端缓存 TTL（秒）：列表接口每次要跑 3 次 OCI CLI
-# （1 次 list + 挂载关系 + 实例名），串行约 5 秒；30 秒内重复访问
-# 直接返回缓存，手动刷新（refresh=1）绕过缓存。
+# Boot volume list server cache TTL (seconds): each list call runs 3 OCI CLI calls (1 list + attachment relations + instance names), about 5s serially; repeat visits within 30s return the cache, and a manual refresh (refresh=1) bypasses it. 启动盘列表服务端缓存 TTL（秒）：列表接口每次要跑 3 次 OCI CLI（1 次 list + 挂载关系 + 实例名），串行约 5 秒；30 秒内重复访问直接返回缓存，手动刷新（refresh=1）绕过缓存。
 VOLUMES_CACHE_TTL = 30
 # =====================================================
 
-# 启动盘列表缓存：(profile, region, "list"/"orphans") ->
-# {"expires": 单调时钟过期点, "payload": 响应体}。只放内存不写盘。
+# Boot volume list cache: (profile, region, "list"/"orphans") -> {"expires": monotonic-clock expiry, "payload": response body}. Memory only, never written to disk. 启动盘列表缓存：(profile, region, "list"/"orphans") -> {"expires": 单调时钟过期点, "payload": 响应体}。只放内存不写盘。
 _VOLUMES_CACHE = {}
 _VOLUMES_CACHE_LOCK = threading.Lock()
 
@@ -68,7 +65,7 @@ def clear_volumes_cache(profile=None):
                 del _VOLUMES_CACHE[key]
 
 
-# 视为“已挂载”的挂载状态（与 list_orphan_boot_volumes 的判断一致）。
+# Attachment states counted as "attached" (same rule as list_orphan_boot_volumes). 视为“已挂载”的挂载状态（与 list_orphan_boot_volumes 的判断一致）。
 _ATTACHED_STATES = ("ATTACHED", "ATTACHING")
 
 
@@ -133,7 +130,6 @@ def format_volume(volume, attachment=None, instance_name=None):
         "attachmentState": state,
         "availabilityDomain": volume.get("availability-domain"),
         "timeCreated": volume.get("time-created"),
-        # 旧字段（过渡期双写）。
         "id": volume.get("id"),
         "display-name": volume.get("display-name"),
         "size-in-gbs": volume.get("size-in-gbs"),

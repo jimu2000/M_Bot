@@ -128,25 +128,22 @@ class TestOracleMenuItems(Phase5TgbotTestCase):
         self.assertEqual(keys["a1health"], "36. A1 配置体检")
 
     def test_menu_still_two_pages(self):
-        # 42 项，每页 22 项，共 2 页（用户要求 2026-11-24：每页加两行，
-        # 第一页显示到 23 号；13 号已删，22 项正好排到 23 号）。
+        # 42 items, 22 per page, 2 pages in total (two more rows per page, so page 1 reaches item 23; with item 13 deleted, 22 items land exactly on item 23). 42 项，每页 22 项，共 2 页（每页加两行，第一页显示到 23 号；13 号已删，22 项正好排到 23 号）。
         keyboard = oracle_menu_keyboard(1)
         labels = [b.text for row in keyboard.inline_keyboard for b in row]
         self.assertIn("35. 批量操作", labels)
         self.assertIn("36. A1 配置体检", labels)
 
     def test_menu_13_removed_top_switch_kept(self):
-        # 用户要求 2026-11-24：13. profile管理 是重复入口（顶行已有
-        # 切换账号按钮），从菜单里删掉；其余编号保持不动，不重新编号。
+        # 13. profile管理 is a duplicate entry (the top row already has the switch-account button), so remove it from the menu; the other numbers stay as-is and are never renumbered. 13. profile管理 是重复入口（顶行已有切换账号按钮），从菜单里删掉；其余编号保持不动，不重新编号。
         keys = dict(ORACLE_MENU_ITEMS)
         self.assertNotIn("profiles", keys)
         self.assertNotIn("13. profile管理", keys.values())
-        self.assertEqual(len(ORACLE_MENU_ITEMS), 42)
-        # 其余编号不动（用户叫惯的叫法）。
+        self.assertEqual(len(ORACLE_MENU_ITEMS), 43)
         self.assertEqual(keys["clients"], "14. 客户端管理")
         self.assertEqual(keys["traffic"], "19. 本月流量")
         self.assertEqual(keys["bark"], "43. Bark 通知设置")
-        # 顶行切换按钮还在，回调仍是 o:profiles。
+        # The top-row switch button is still there, and its callback is still o:profiles. 顶行切换按钮还在，回调仍是 o:profiles。
         keyboard = oracle_menu_keyboard(0, current_account="新加坡（3 个区）")
         top = keyboard.inline_keyboard[0][0]
         self.assertIn("切换账号：新加坡（3 个区）", top.text)
@@ -211,9 +208,8 @@ class TestBatchFlow(Phase5TgbotTestCase):
         update = make_update(callback_data="ba:toggle:0")
         await he.batch_toggle_callback(update, context)
         self.assertEqual(context.user_data["batch_selected"], {0})
-        # 编辑消息刷新键盘（不是发新消息）
+        # Edit the message to refresh the keyboard (do not send a new message). 编辑消息刷新键盘（不是发新消息）。
         update.callback_query.edit_message_text.assert_awaited_once()
-        # 再点一次取消选中
         update2 = make_update(callback_data="ba:toggle:0")
         await he.batch_toggle_callback(update2, context)
         self.assertEqual(context.user_data["batch_selected"], set())
@@ -303,7 +299,7 @@ class TestBatchFlow(Phase5TgbotTestCase):
         self.assertIn("web-server", text)
         self.assertIn("e2-test", text)
         self.assertIn("boom", text)
-        # 执行后清理选中状态
+        # Clear the selection state after executing. 执行后清理选中状态。
         self.assertNotIn("batch_selected", context.user_data)
 
     async def test_confirm_batchterminate_calls_terminate(self):

@@ -19,9 +19,8 @@ from tgbot.bark import send_bark
 logger = logging.getLogger(__name__)
 
 DEFAULT_BOOT_DISK_GB = 47
-# start_ip_followup() 跟进等 IP：开机通知已发出但 IP 还没分配时，
-# 后台继续轮询，最长等 10 分钟，IP 一出来就补发一条 TG 消息。
-# 10 分钟还没 IP 就静默放弃（实例列表里能看到，不再打扰用户）。
+# start_ip_followup() keeps waiting for the IP: when the boot notice is already sent but the IP is not assigned yet, poll in the background for up to 10 minutes and send a follow-up TG message as soon as the IP appears. start_ip_followup() 跟进等 IP：开机通知已发出但 IP 还没分配时，后台继续轮询，最长等 10 分钟，IP 一出来就补发一条 TG 消息。
+# No IP after 10 minutes: give up silently (the instance is visible in the list; do not bother the user further). 10 分钟还没 IP 就静默放弃（实例列表里能看到，不再打扰用户）。
 IP_FOLLOWUP_MAX_SECONDS = 600
 IP_FOLLOWUP_INTERVAL_SECONDS = 30
 
@@ -141,7 +140,7 @@ def cpu_type_label(shape):
 def fmt_boot_success(profile_label, region_label, shape, ocpus,
                      memory_gb, disk_gb, instances, root_password=None,
                      region_code=None, ssh_key_set=False,
-                     cpu_unverified=False):
+                     cpu_unverified=False, cpu_model=None):
     """开机成功通知全文（照 R 探长成功消息的字段结构）。
 
     instances：每台 {"name", "public_ip", "attempts", "elapsed_seconds"}。
@@ -150,10 +149,14 @@ def fmt_boot_success(profile_label, region_label, shape, ocpus,
     region_code 是区域代码（如 ap-seoul-1），有则与中文名一起显示。
     cpu_unverified 为 True 时追加一行 CPU 未验明提醒（抢机时 SSH
     查不到 CPU 型号，实例暂留未释放）。
+    cpu_model: measured CPU model (e.g. "AMD EPYC 7J13"); when given, the
+    cpu line shows it, otherwise it falls back to cpu_type_label(shape).
+    cpu_model 有值时 cpu 类型行显示具体型号（如 "AMD EPYC 7J13"），
+    否则回落到 cpu_type_label(shape) 的 AMD/ARM。
     """
     lines = ["🎉 恭喜，开机成功！"]
     lines.append(f"账号：{profile_label}")
-    lines.append(f"cpu类型：{cpu_type_label(shape)}")
+    lines.append(f"cpu类型：{cpu_model or cpu_type_label(shape)}")
     lines.append(f"cpu数量：{ocpus} 核")
     lines.append(f"内存大小：{memory_gb} GB")
     disk_text = "默认" if disk_gb is None else f"{disk_gb} GB"
@@ -213,7 +216,8 @@ def fmt_notify_outcome(outcome):
 def notify_boot_success(token, chat_id, profile_label, region_label,
                         shape, ocpus, memory_gb, disk_gb, instances,
                         root_password=None, region_code=None,
-                        ssh_key_set=False, cpu_unverified=False):
+                        ssh_key_set=False, cpu_unverified=False,
+                        cpu_model=None):
     """开机成功双通道推送：Telegram + Bark（Bark 未开启时只推 TG）。
 
     返回 {"telegram": bool, "bark": bool, "errors": [str]}。
@@ -224,7 +228,8 @@ def notify_boot_success(token, chat_id, profile_label, region_label,
                             root_password=root_password,
                             region_code=region_code,
                             ssh_key_set=ssh_key_set,
-                            cpu_unverified=cpu_unverified)
+                            cpu_unverified=cpu_unverified,
+                            cpu_model=cpu_model)
     result = {"telegram": False, "bark": False, "errors": []}
     try:
         ok, err = send_telegram_message(token, chat_id, text)
@@ -236,7 +241,7 @@ def notify_boot_success(token, chat_id, profile_label, region_label,
     try:
         ok, err = send_bark("🎉 恭喜，开机成功！", text)
         result["bark"] = ok
-        # Bark 未开启/未配置是正常状态，不记为错误。
+        # Bark not enabled / not configured is a normal state, not an error. Bark 未开启/未配置是正常状态，不记为错误。
         if not ok and "未开启" not in err and "未配置" not in err:
             result["errors"].append(f"Bark：{err}")
     except Exception as exc:  # noqa: BLE001

@@ -22,7 +22,7 @@ from mcp_server import (cf_list_dns_records, cf_list_zones, get_tools,
                         serve_stdio)
 from oci.client import NotFoundError, OCIError
 
-# 占位符（测试里不出现真实 OCID / IP / Token）
+# Placeholders (no real OCID / IP / Token in tests). 占位符（测试里不出现真实 OCID / IP / Token）。
 FAKE_COMPARTMENT = "ocid1.tenancy.oc1..testxxxx"
 FAKE_INSTANCE = "ocid1.instance.oc1..testxxxx"
 FAKE_ZONE_ID = "zone-testxxxx"
@@ -87,7 +87,7 @@ class TestToolRegistration(unittest.TestCase):
             schema = tool["inputSchema"]
             self.assertEqual(schema["type"], "object")
             self.assertIn("properties", schema)
-            # 对外清单不暴露内部 handler。
+            # The public tool list does not expose internal handlers. 对外清单不暴露内部 handler。
             self.assertNotIn("handler", tool)
 
     def test_parameter_lists(self):
@@ -358,8 +358,7 @@ class TestCfModuleMissing(unittest.TestCase):
         self.assertEqual(result["error"], "Cloudflare 模块未就绪")
 
     def test_import_error_fallback_via_reload(self):
-        # sys.modules 里把 clouds.cloudflare 置 None 会让 import 抛 ImportError，
-        # 模拟模块尚未就绪；reload 后 cf_module 应为 None 且模块可正常 import。
+        # Setting clouds.cloudflare to None in sys.modules makes the import raise ImportError, simulating a module that is not ready yet; after reload, cf_module should be None and the module should still import fine. sys.modules 里把 clouds.cloudflare 置 None 会让 import 抛 ImportError，模拟模块尚未就绪；reload 后 cf_module 应为 None 且模块可正常 import。
         with patch.dict(sys.modules, {"clouds.cloudflare": None}):
             importlib.reload(mcp_server)
             try:
@@ -367,7 +366,7 @@ class TestCfModuleMissing(unittest.TestCase):
                 result = mcp_server.cf_list_zones()
                 self.assertFalse(result["ok"])
                 self.assertEqual(result["error"], "Cloudflare 模块未就绪")
-                # OCI 工具不受影响（仍可注册）。
+                # OCI tools are unaffected (still registrable). OCI 工具不受影响（仍可注册）。
                 self.assertEqual(len(mcp_server.get_tools()), 6)
             finally:
                 importlib.reload(mcp_server)
@@ -478,13 +477,13 @@ class TestServeStdio(unittest.TestCase):
             json.dumps({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
                         "params": {"name": "oci_list_instances",
                                    "arguments": {}}}),
-            "",  # 空行应跳过，不产生响应
+            "",
         ]
         out = io.StringIO()
         serve_stdio(io.StringIO("\n".join(lines) + "\n"), out)
         responses = [json.loads(line) for line in
                      out.getvalue().strip().split("\n")]
-        # 通知与空行不产生响应：4 条输入 -> 3 条响应。
+        # Notifications and blank lines produce no response: 4 inputs -> 3 responses. 通知与空行不产生响应：4 条输入 -> 3 条响应。
         self.assertEqual(len(responses), 3)
         self.assertEqual([r["id"] for r in responses], [1, 2, 3])
         self.assertEqual(responses[0]["result"]["serverInfo"]["name"],

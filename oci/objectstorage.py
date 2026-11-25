@@ -32,12 +32,11 @@ import os
 import re
 
 # ================= 配置区（改这里） =================
-# 默认 compartment OCID（占位符）。根 compartment 就是 tenancy OCID。
+# Default compartment OCID (placeholder). The root compartment is the tenancy OCID. 默认 compartment OCID（占位符）。根 compartment 就是 tenancy OCID。
 DEFAULT_COMPARTMENT_ID = "ocid1.tenancy.oc1..xxxxxxxx"
-# 默认区域（如 ap-singapore-1 / us-sanjose-1 / us-chicago-1）。
+# Default region (e.g. ap-singapore-1 / us-sanjose-1 / us-chicago-1). 默认区域（如 ap-singapore-1 / us-sanjose-1 / us-chicago-1）。
 DEFAULT_REGION = "ap-singapore-1"
-# Bucket 名规则（OCI 要求）：1-63 字符，只能含小写字母、数字、点、横线，
-# 且必须以字母或数字开头。
+# Bucket name rules (OCI requires): 1-63 chars, only lowercase letters, digits, dots and hyphens, and must start with a letter or digit. Bucket 名规则（OCI 要求）：1-63 字符，只能含小写字母、数字、点、横线，且必须以字母或数字开头。
 BUCKET_NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9.\-]{0,62}$")
 # =====================================================
 

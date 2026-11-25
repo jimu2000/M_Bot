@@ -32,7 +32,7 @@ from web.ssh import (OUTPUT_BUFFER_LINES, SSHSession, SSHSessionManager,
                      _FallbackSessionStore, build_banner, get_host,
                      load_hosts, router)
 
-# 测试用主机（文档段 / 回环，不是真实 IP）
+# Test hosts (documentation range / loopback, not real IPs). 测试用主机（文档段 / 回环，不是真实 IP）。
 TEST_HOST = "203.0.113.10"
 
 app = FastAPI()
@@ -89,7 +89,7 @@ class TestFallbackSessionStore(unittest.TestCase):
 
 class TestSSHSession(unittest.TestCase):
     def setUp(self):
-        # known_hosts 写到临时目录，不污染仓库
+        # known_hosts goes into a temp directory so the repo is not polluted. known_hosts 写到临时目录，不污染仓库。
         self._tmp = tempfile.TemporaryDirectory()
         self._kh_patch = patch("web.ssh.KNOWN_HOSTS_PATH",
                                Path(self._tmp.name) / "known_hosts")
@@ -136,11 +136,11 @@ class TestSSHSession(unittest.TestCase):
             session = SSHSession()
             with self.assertRaises(paramiko.AuthenticationException):
                 session.connect(TEST_HOST, 22, "root", password="wrong")
-        client.close.assert_called()  # 失败时 client 要关掉，不留半开连接
+        client.close.assert_called()  # On failure the client must be closed, leaving no half-open connection. 失败时 client 要关掉，不留半开连接。
         self.assertFalse(session.is_active())
 
     def test_connect_banner_failure_does_not_block(self):
-        # exec_command 失败（如服务器禁 exec）时连接仍应成功，横幅走兜底
+        # When exec_command fails (e.g. the server forbids exec), the connection should still succeed and the banner falls back. exec_command 失败（如服务器禁 exec）时连接仍应成功，横幅走兜底。
         client, _ = _make_mock_client()
         client.exec_command.side_effect = paramiko.SSHException("exec 禁用")
         with patch.object(ssh_module.paramiko, "SSHClient", return_value=client):
@@ -159,7 +159,7 @@ class TestSSHSession(unittest.TestCase):
             session.send("ls\n")
             channel.send.assert_called_once_with(b"ls\n")
             self.assertEqual(session.recv(), b"hello")
-            self.assertEqual(session.recv(), b"")  # 没数据返回 b""
+            self.assertEqual(session.recv(), b"")
             session.resize(120, 40)
             channel.resize_pty.assert_called_once_with(width=120, height=40)
             session.close()
@@ -194,7 +194,7 @@ class TestSSHSessionManager(unittest.TestCase):
         summaries = self.mgr.list_sessions()
         self.assertEqual(len(summaries), 1)
         self.assertEqual(summaries[0]["session_id"], sid)
-        self.assertNotIn("session", summaries[0])  # 摘要不含 client 对象
+        self.assertNotIn("session", summaries[0])
         self.assertTrue(self.mgr.close_session(sid))
         self.assertIsNone(self.mgr.get(sid))
         self.assertFalse(self.mgr.close_session(sid))
@@ -212,7 +212,7 @@ class TestSSHSessionManager(unittest.TestCase):
             self.mgr.append_output(sid, f"line {i}\n")
         entry = self.mgr.get(sid)
         self.assertEqual(len(entry["output_buffer"]), OUTPUT_BUFFER_LINES)
-        # 最旧的行被丢掉，最新的还在
+        # The oldest rows are dropped, the newest ones stay. 最旧的行被丢掉，最新的还在。
         self.assertIn(f"line {OUTPUT_BUFFER_LINES + 199}\n",
                       entry["output_buffer"])
         snapshot = self.mgr.snapshot(sid)
@@ -227,19 +227,19 @@ class TestSSHSessionManager(unittest.TestCase):
         self.assertIsNone(self.mgr.get(sid))
 
     def test_cleanup_grace_period(self):
-        # WS 断开 1 分钟、SSH 还活着 -> 保留（供重连）
+        # WS disconnected for 1 minute with SSH still alive -> keep (for reconnect). WS 断开 1 分钟、SSH 还活着 -> 保留（供重连）。
         sid = self.mgr.create_session(TEST_HOST, 22, "root", password="x")
         entry = self.mgr.get(sid)
         entry["disconnected_at"] = datetime.now(timezone.utc) - timedelta(minutes=1)
         self.assertEqual(self.mgr.cleanup_idle(), 0)
         self.assertIsNotNone(self.mgr.get(sid))
-        # WS 断开 6 分钟 -> 关闭
+        # WS disconnected for 6 minutes -> close. WS 断开 6 分钟 -> 关闭。
         entry["disconnected_at"] = datetime.now(timezone.utc) - timedelta(minutes=6)
         self.assertEqual(self.mgr.cleanup_idle(), 1)
         self.assertIsNone(self.mgr.get(sid))
 
     def test_cleanup_dead_ssh_without_ws(self):
-        # SSH 已死且无人接管 -> 不用等宽限期，直接清理
+        # SSH is already dead and nobody will take over -> no need to wait out the grace period, clean up directly. SSH 已死且无人接管 -> 不用等宽限期，直接清理。
         sid = self.mgr.create_session(TEST_HOST, 22, "root", password="x")
         entry = self.mgr.get(sid)
         entry["disconnected_at"] = datetime.now(timezone.utc) - timedelta(minutes=1)
@@ -252,10 +252,10 @@ class TestSSHSessionManager(unittest.TestCase):
         entry = self.mgr.get(sid)
         entry["last_active"] = datetime.now(timezone.utc) - timedelta(minutes=29)
         self.mgr.touch(sid)
-        self.assertEqual(self.mgr.cleanup_idle(), 0)  # 刷新后不再超时
+        self.assertEqual(self.mgr.cleanup_idle(), 0)
 
     def test_cleanup_thread_starts_by_default(self):
-        mgr = SSHSessionManager()  # 默认启动后台线程
+        mgr = SSHSessionManager()
         try:
             self.assertIsNotNone(mgr._cleanup_thread)
             self.assertTrue(mgr._cleanup_thread.is_alive())
@@ -407,7 +407,7 @@ class TestWebSocket(_AuthPatchedTestCase):
             ws.send_json({"type": "input", "data": "ls\n"})
             ws.send_json({"type": "resize", "cols": 120, "rows": 40})
             ws.send_json({"type": "ping"})
-            # 收到 pong 说明前两条消息已按序处理完
+            # Receiving pong proves the first two messages were processed in order. 收到 pong 说明前两条消息已按序处理完。
             self.assertEqual(ws.receive_json(), {"type": "pong"})
         mock_session.send.assert_called_once_with("ls\n")
         mock_session.resize.assert_called_once_with(120, 40)
@@ -441,7 +441,7 @@ class TestWebSocket(_AuthPatchedTestCase):
         self.assertEqual(ctx.exception.code, 4404)
 
     def test_disconnect_keeps_session(self):
-        # WS 断开后会话不销毁，只标记断开时间（供 5 分钟内重连）
+        # After the WS disconnects, the session is not destroyed, only its disconnect time is marked (for reconnect within 5 minutes). WS 断开后会话不销毁，只标记断开时间（供 5 分钟内重连）。
         _, entry = self._mock_entry()
         with self.client.websocket_connect("/ws/ssh/sid-1?token=good-token"):
             self.assertTrue(entry["ws_connected"])
@@ -524,7 +524,7 @@ class TestLoopbackSSH(unittest.TestCase):
             except Exception:
                 transport.close()
                 continue
-            # 第一个 channel：exec（欢迎横幅的系统信息命令）
+            # First channel: exec (the system-info command for the welcome banner). 第一个 channel：exec（欢迎横幅的系统信息命令）。
             chan = transport.accept(timeout=3)
             if chan is None:
                 transport.close()
@@ -547,7 +547,7 @@ class TestLoopbackSSH(unittest.TestCase):
             if not transport.is_active():
                 transport.close()
                 continue
-            # 第二个 channel：交互 shell，回显收到的所有数据
+            # Second channel: an interactive shell that echoes back everything received. 第二个 channel：交互 shell，回显收到的所有数据。
             chan2 = transport.accept(timeout=3)
             if chan2 is not None:
                 server.shell_event.wait(timeout=5)
@@ -582,9 +582,7 @@ class TestLoopbackSSH(unittest.TestCase):
                     self.assertIn("Linux testhost", banner)
                     self.assertIn("up 1 day", banner)
                     self.assertTrue(session.is_active())
-                    # host key 已记到 known_hosts
                     self.assertTrue(known_hosts.exists())
-                    # 真实 SSH 通道收发
                     session.send("echo hello\r")
                     out = b""
                     deadline = time.time() + 5

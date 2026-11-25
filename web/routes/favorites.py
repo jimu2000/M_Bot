@@ -25,11 +25,11 @@ from web.deps import error_response, get_current_user
 
 router = APIRouter()
 
-# 收藏夹文件格式版本（固定 1）。
+# Favorites file format version (fixed at 1). 收藏夹文件格式版本（固定 1）。
 FAVORITES_VERSION = 1
-# 单条收藏的命令最大长度（字符）。
+# Max command length (chars) per favorite. 单条收藏的命令最大长度（字符）。
 MAX_COMMAND_LENGTH = 2000
-# 收藏名称最大长度（字符）。
+# Max favorite name length (chars). 收藏名称最大长度（字符）。
 MAX_NAME_LENGTH = 100
 
 _FAVORITES_LOCK = threading.Lock()

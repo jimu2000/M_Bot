@@ -53,26 +53,24 @@ from tgbot import config as bot_config
 logger = logging.getLogger(__name__)
 
 # ================= 配置区（改这里） =================
-# RIPE Atlas API。
+# RIPE Atlas API. RIPE Atlas API。
 ATLAS_API_BASE = "https://atlas.ripe.net/api/v2"
-# 每次检测请求的中国探针数（5 个，电信/联通/移动混合，Atlas 按
-# country=CN 随机分配）；每个探针发的 ping 包数。
+# China probes per check (5, mixed China Telecom/Unicom/Mobile, randomly assigned by Atlas with country=CN); pings sent per probe. 每次检测请求的中国探针数（5 个，电信/联通/移动混合，Atlas 按 country=CN 随机分配）；每个探针发的 ping 包数。
 ATLAS_PROBE_COUNT = 5
 ATLAS_PING_PACKETS = 3
-# 检测结论需要的最少上报探针数；少于这个数时结论是“未知”，不行动。
+# Minimum reporting probes needed for a verdict; below this the verdict is "unknown" and nothing happens. 检测结论需要的最少上报探针数；少于这个数时结论是“未知”，不行动。
 MIN_REPORTED_PROBES = 3
-# 判定被墙的阈值：可达探针占比低于它即被墙（多数不通）。
+# Blocked threshold: blocked when the reachable-probe share is below it (majority unreachable). 判定被墙的阈值：可达探针占比低于它即被墙（多数不通）。
 BLOCKED_RATIO_BELOW = 0.5
-# 等 Atlas 测量结果的最长等待（秒）：测量创建后结果陆续到达，
-# 每 ATLAS_POLL_INTERVAL 秒查一次，够数或超时即停止等待。
+# Max wait (seconds) for Atlas measurement results: results arrive gradually after the measurement is created, so poll every ATLAS_POLL_INTERVAL seconds and stop once enough have arrived or the timeout hits. 等 Atlas 测量结果的最长等待（秒）：测量创建后结果陆续到达，每 ATLAS_POLL_INTERVAL 秒查一次，够数或超时即停止等待。
 ATLAS_RESULT_TIMEOUT = 150
 ATLAS_POLL_INTERVAL = 10
-# 单轮（一次检查周期）最多换 IP 次数；超了停下等下个周期。
+# Max IP changes per round (one check cycle); stop and wait for the next cycle when exceeded. 单轮（一次检查周期）最多换 IP 次数；超了停下等下个周期。
 MAX_IP_CHANGES_PER_CYCLE = 5
-# 定时检查间隔（分钟，bot.py 的 job 用这个值）。
+# Scheduled check interval (minutes; used by the job in bot.py). 定时检查间隔（分钟，bot.py 的 job 用这个值）。
 GFW_CHECK_INTERVAL_MINUTES = 30
 
-# 配置文件名（放 tgbot/data/，与 bark.json / paid_profiles.json 同目录）。
+# Config file name (under tgbot/data/, alongside bark.json / paid_profiles.json). 配置文件名（放 tgbot/data/，与 bark.json / paid_profiles.json 同目录）。
 GFW_CONFIG_FILENAME = "gfw.json"
 
 
@@ -361,8 +359,7 @@ def run_instance_cycle(cli, compartment_id, instance, api_key, notify,
         return {"status": "no_ip", "changes": 0, "ip": "",
                 "detail": f"{name} 没有公网 IP，无法检测"}
     changes = 0
-    pending = None  # 换 IP 后已测过新 IP 是被墙，下一轮直接沿用，
-    # 不重测（省一次 Atlas 积分和一分钟等待）。
+    pending = None  # The new IP was already measured as blocked after the change, so the next round reuses that result instead of re-measuring (saves one Atlas credit and one minute of waiting). 换 IP 后已测过新 IP 是被墙，下一轮直接沿用，不重测（省一次 Atlas 积分和一分钟等待）。
     while True:
         res = pending if pending is not None else checker(api_key,
                                                           current_ip)
@@ -377,7 +374,6 @@ def run_instance_cycle(cli, compartment_id, instance, api_key, notify,
                         "ip": current_ip, "detail": res.get("detail") or ""}
             return {"status": "healthy", "changes": 0, "ip": current_ip,
                     "detail": res.get("detail") or ""}
-        # 被墙：先看本轮换 IP 次数是否用完。
         if changes >= max_changes:
             notify("⚠️ GFW 换 IP 已暂停",
                    f"实例：{name}\n当前 IP：{current_ip}\n"
@@ -399,9 +395,7 @@ def run_instance_cycle(cli, compartment_id, instance, api_key, notify,
                     "detail": f"换 IP 失败：{exc}"}
         changes += 1
         current_ip = new_ip
-        # 换完先不通知，等新 IP 的检测结果出来再一起说
-        # （新 IP 正常 → 一条“已换 + 已恢复”；仍被墙 → 一条
-        # “已换但仍被墙，继续换”，每换一次恰好一条通知）。
+        # Do not notify right after the change; wait for the new IP's check result and report together (new IP healthy -> one "changed + recovered" message; still blocked -> one "changed but still blocked, changing again" message; exactly one notice per change). 换完先不通知，等新 IP 的检测结果出来再一起说（新 IP 正常 → 一条“已换 + 已恢复”；仍被墙 → 一条“已换但仍被墙，继续换”，每换一次恰好一条通知）。
         res2 = checker(api_key, current_ip)
         if res2.get("blocked") is None:
             notify("🔁 GFW 自动换 IP",
@@ -424,7 +418,7 @@ def run_instance_cycle(cli, compartment_id, instance, api_key, notify,
                f"{res.get('detail')}）\n新 IP：{new_ip}\n"
                f"新 IP 国内检测：{res2.get('detail')}，仍被墙，"
                f"继续换（本轮第 {changes} 次）。")
-        pending = res2  # 下一轮开头沿用这次的结果，不重测。
+        pending = res2  # The next round starts by reusing this result, without re-measuring. 下一轮开头沿用这次的结果，不重测。
 
 
 def _resolve_enabled_instances(enabled):

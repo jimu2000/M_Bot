@@ -1,13 +1,13 @@
-// SSH 终端前端（阶段 3）：多标签 xterm.js + WebSocket。
-// 后端协议见 web/ssh.py：input/resize/ping 上行，output（base64）/closed 下行。
-// 断线重连：先调 snapshot 接口回放输出，再重新接上 WebSocket。
+// SSH terminal frontend: multi-tab xterm.js + WebSocket. SSH 终端前端：多标签 xterm.js + WebSocket。
+// Backend protocol, see web/ssh.py: input/resize/ping upstream, output (base64)/closed downstream. 后端协议见 web/ssh.py：input/resize/ping 上行，output（base64）/closed 下行。
+// Reconnect after a drop: first replay output via the snapshot API, then reattach the WebSocket. 断线重连：先调 snapshot 接口回放输出，再重新接上 WebSocket。
 
 'use strict';
 
 // ---------- 配置 ----------
-const MAX_RECONNECT = 3;            // WebSocket 断线自动重连次数
-const RECONNECT_DELAYS = [1000, 2000, 3000];  // 每次重连的等待（毫秒）
-const STATS_INTERVAL_MS = 5000;     // /api/system 轮询间隔
+const MAX_RECONNECT = 3;  // Max automatic WebSocket reconnect attempts after a drop. WebSocket 断线自动重连次数。
+const RECONNECT_DELAYS = [1000, 2000, 3000];  // Wait before each reconnect (milliseconds). 每次重连的等待（毫秒）。
+const STATS_INTERVAL_MS = 5000;  // /api/system poll interval. /api/system 轮询间隔。
 
 // ---------- 小工具 ----------
 function $(id) { return document.getElementById(id); }
@@ -54,9 +54,9 @@ function confirmPaste(lineCount) {
 // ---------- 终端管理器：每标签一个 xterm 实例 + 一条 WebSocket ----------
 class TerminalManager {
   constructor() {
-    this.tabs = new Map();  // sessionId -> {term, fit, ws, label, el, tabEl, reconnects, closed}
+    this.tabs = new Map();  // sessionId -> {term, fit, ws, label, el, tabEl, reconnects, closed}. sessionId -> {term, fit, ws, label, el, tabEl, reconnects, closed}。
     this.activeId = null;
-    this.hosts = [];        // /api/hosts 读到的已保存主机
+    this.hosts = [];  // Saved hosts read from /api/hosts. /api/hosts 读到的已保存主机。
     this.statsTimer = null;
   }
 
@@ -88,9 +88,8 @@ class TerminalManager {
     this.tabs.set(sessionId, tab);
     this.switchTab(sessionId);
 
-    // 键盘输入：单字符直接发；多行内容（粘贴）走粘贴保护。
-    // 说明：xterm.js 的粘贴经 onData 以整块文本到达，区别于逐字按键，
-    // 因此在 onData 里按“是否含多行”判断即可拦截多行粘贴。
+    // Keyboard input: single chars are sent directly; multi-line content (paste) goes through paste protection. 键盘输入：单字符直接发；多行内容（粘贴）走粘贴保护。
+    // Note: xterm.js paste arrives via onData as one whole block, unlike per-key typing, so checking "contains multiple lines" in onData is enough to catch multi-line pastes. 说明：xterm.js 的粘贴经 onData 以整块文本到达，区别于逐字按键，因此在 onData 里按“是否含多行”判断即可拦截多行粘贴。
     term.onData(async (data) => {
       if (tab.closed || !tab.ws || tab.ws.readyState !== WebSocket.OPEN) return;
       const lines = data.split(/\r\n|\r|\n/).filter((l) => l.length > 0);
@@ -98,12 +97,12 @@ class TerminalManager {
         const ok = await confirmPaste(lines.length);
         if (tab.closed || !tab.ws || tab.ws.readyState !== WebSocket.OPEN) return;
         if (ok) {
-          // 确认执行：换行转回车，让远端逐行执行
+          // Confirm: convert newlines to Enter so the remote side executes line by line. 确认执行：换行转回车，让远端逐行执行。
           tab.ws.send(JSON.stringify({
             type: 'input', data: data.replace(/\r\n|\n/g, '\r'),
           }));
         } else {
-          // 取消：只粘贴第一行文本，不带回车，不执行
+          // Cancel: paste only the first line of text, without Enter, without executing. 取消：只粘贴第一行文本，不带回车，不执行。
           tab.ws.send(JSON.stringify({ type: 'input', data: lines[0] }));
         }
       } else {
@@ -111,7 +110,6 @@ class TerminalManager {
       }
     });
 
-    // 终端尺寸变化 -> 发 resize 消息
     term.onResize(({ cols, rows }) => {
       if (tab.ws && tab.ws.readyState === WebSocket.OPEN) {
         tab.ws.send(JSON.stringify({ type: 'resize', cols, rows }));
@@ -153,7 +151,7 @@ class TerminalManager {
     }
     $('terminal-empty').classList.add('hidden');
     this._refreshStats();
-    // SFTP 面板开着时，切标签要按新会话刷新文件列表
+    // When the SFTP panel is open, switching tabs refreshes the file list for the new session. SFTP 面板开着时，切标签要按新会话刷新文件列表。
     if (sftpPanel && sftpPanel.isOpen()) sftpPanel.load();
   }
 
@@ -176,7 +174,6 @@ class TerminalManager {
         this.activeId = null;
         $('terminal-empty').classList.remove('hidden');
         $('sys-stats').classList.add('hidden');
-        // 没会话了，SFTP 面板也关掉
         if (sftpPanel && sftpPanel.isOpen()) sftpPanel.close();
       }
     }
@@ -192,7 +189,6 @@ class TerminalManager {
     ws.onopen = () => {
       tab.reconnects = 0;
       tab.tabEl.classList.remove('reconnecting', 'disconnected');
-      // 刚接上时同步一次终端尺寸
       ws.send(JSON.stringify({
         type: 'resize', cols: tab.term.cols, rows: tab.term.rows,
       }));
@@ -207,11 +203,11 @@ class TerminalManager {
         tab.term.write(`\r\n\x1b[1;31m[SSH 会话已断开：${msg.reason || ''}]\x1b[0m\r\n`);
         tab.tabEl.classList.add('disconnected');
       }
-      // pong：心跳回应，无需处理
+      // pong: heartbeat reply, nothing to do. pong：心跳回应，无需处理。
     };
 
     ws.onclose = () => {
-      if (tab.closed) return;  // 主动关闭，不重连
+      if (tab.closed) return;
       tab.tabEl.classList.add('reconnecting');
       this._reconnect(sessionId);
     };
@@ -250,7 +246,7 @@ class TerminalManager {
     const tab = this.tabs.get(this.activeId);
     if (!tab) return;
     tab.reconnects = 0;
-    if (tab.ws) tab.ws.close();  // onclose 会触发 _reconnect
+    if (tab.ws) tab.ws.close();
     else this._reconnect(this.activeId);
   }
 
@@ -323,8 +319,7 @@ class TerminalManager {
       const resp = await fetch('/api/system');
       if (!resp.ok) throw new Error('no stats');
       const s = await resp.json();
-      // 兼容两种返回格式：{cpu_percent, mem_percent, disk_percent}
-      // 或 {cpu: {percent}, memory: {...}, disk: {...}}
+      // Compatible with two response formats: {cpu_percent, mem_percent, disk_percent} or {cpu: {percent}, memory: {...}, disk: {...}}. 兼容两种返回格式：{cpu_percent, mem_percent, disk_percent} 或 {cpu: {percent}, memory: {...}, disk: {...}}。
       const cpu = s.cpu_percent ?? s.cpu?.percent ?? s.cpu;
       const mem = s.mem_percent ?? s.memory?.percent ?? s.mem;
       const disk = s.disk_percent ?? s.disk?.percent ?? s.disk;
@@ -333,7 +328,7 @@ class TerminalManager {
       $('stat-disk').textContent = `DISK ${fmtPct(disk)}`;
       badge.classList.remove('hidden');
     } catch (e) {
-      badge.classList.add('hidden');  // /api/system 未就绪时隐藏，不报错
+      badge.classList.add('hidden');  // Hide when /api/system is not ready, without erroring. /api/system 未就绪时隐藏，不报错。
     }
   }
 }
@@ -344,11 +339,11 @@ function fmtPct(v) {
   return String(v);
 }
 
-// ---------- SFTP 文件面板（阶段 3b） ----------
-// 后端接口见 web/sftp.py；路径一律由后端校验（限定在家目录内）。
-const SFTP_MAX_EDIT = 1024 * 1024;  // 与后端 MAX_EDIT_BYTES 一致
-const CHUNKED_UPLOAD_THRESHOLD = 1024 * 1024;  // 超过 1MB 的文件走分块上传
-// 前端双击判断用（后端白名单的子集；后端是最终校验，漏了也只是走下载）
+// ---------- SFTP file panel ----------
+// Backend API, see web/sftp.py; paths are always validated by the backend (confined to the home directory). 后端接口见 web/sftp.py；路径一律由后端校验（限定在家目录内）。
+const SFTP_MAX_EDIT = 1024 * 1024;  // Same as the backend MAX_EDIT_BYTES. 与后端 MAX_EDIT_BYTES 一致。
+const CHUNKED_UPLOAD_THRESHOLD = 1024 * 1024;  // Files over 1 MB use chunked upload. 超过 1MB 的文件走分块上传。
+// For the frontend double-click check (a subset of the backend allowlist; the backend is the final check, so a miss only falls back to download). 前端双击判断用（后端白名单的子集；后端是最终校验，漏了也只是走下载）。
 const SFTP_TEXT_EXTS = new Set([
   'txt', 'md', 'log', 'json', 'yaml', 'yml', 'toml', 'ini', 'cfg', 'conf',
   'sh', 'py', 'js', 'ts', 'css', 'html', 'xml', 'csv', 'sql',
@@ -391,7 +386,7 @@ class SFTPPanel {
       return;
     }
     $('sftp-panel').classList.add('open');
-    this.load();  // 每次打开都按当前活动会话重新加载
+    this.load();
   }
 
   close() { $('sftp-panel').classList.remove('open'); }
@@ -448,7 +443,7 @@ class SFTPPanel {
     const bar = $('sftp-breadcrumb');
     bar.innerHTML = '';
     const path = this.currentPath || this.home || '/';
-    // 家目录为根：显示“家目录”，其下各级可点
+    // The home directory is the root: it shows as "家目录" and each level below is clickable. 家目录为根：显示“家目录”，其下各级可点。
     const homeBtn = document.createElement('button');
     homeBtn.className = 'sftp-crumb';
     homeBtn.textContent = '家目录';
@@ -566,7 +561,7 @@ class SFTPPanel {
     const sid = this.mgr.activeId;
     if (!sid || !files.length) return;
     for (const file of files) {
-      // 大文件走分块上传（带进度条，可取消）；小文件走原单次上传
+      // Large files use chunked upload (with a progress bar, cancellable); small files use the original single upload. 大文件走分块上传（带进度条，可取消）；小文件走原单次上传。
       if (file.size > CHUNKED_UPLOAD_THRESHOLD) {
         await this._uploadChunked(sid, file);
       } else {
@@ -641,7 +636,7 @@ class SFTPPanel {
       showToast(`已上传 ${file.name}`);
     } catch (err) {
       if (err.message === '__cancelled__' && uploadId) {
-        // 用户取消：调 cancel 删临时分块（需 confirm=true）
+        // User cancelled: call cancel to delete the temp chunks (needs confirm=true). 用户取消：调 cancel 删临时分块（需 confirm=true）。
         try {
           await this._api(`${base}/cancel`, {
             method: 'POST',
@@ -772,9 +767,8 @@ class SFTPPanel {
     $('sftp-upload-btn').addEventListener('click', () => $('sftp-file-input').click());
     $('sftp-file-input').addEventListener('change', (e) => {
       this.uploadFiles(e.target.files);
-      e.target.value = '';  // 允许重复选同一文件再次上传
+      e.target.value = '';  // Allow re-selecting the same file to upload it again. 允许重复选同一文件再次上传。
     });
-    // 拖拽上传：拖到面板任意位置
     const panel = $('sftp-panel');
     panel.addEventListener('dragover', (e) => {
       e.preventDefault();
@@ -790,8 +784,8 @@ class SFTPPanel {
   }
 }
 
-// ---------- 收藏命令面板（阶段 5 工作包 E） ----------
-// 后端接口：GET/POST/DELETE /api/term-favorites。
+// ---------- Favorites panel ----------
+// Backend API: GET/POST/DELETE /api/term-favorites. 后端接口：GET/POST/DELETE /api/term-favorites。
 class FavoritesPanel {
   constructor(mgr) {
     this.mgr = mgr;
@@ -913,8 +907,8 @@ class FavoritesPanel {
   }
 }
 
-// ---------- 批量命令执行（阶段 5 工作包 E） ----------
-// 后端接口：POST /api/batch/exec、GET /api/batch/{id}、POST /api/batch/{id}/cancel。
+// ---------- Batch command execution ----------
+// Backend API: POST /api/batch/exec, GET /api/batch/{id}, POST /api/batch/{id}/cancel. 后端接口：POST /api/batch/exec、GET /api/batch/{id}、POST /api/batch/{id}/cancel。
 const BatchExec = {
   hosts: [],
   batchId: null,
@@ -1051,17 +1045,16 @@ const BatchExec = {
   },
 };
 
-// 模块级单例：TerminalManager 切标签/关标签时通知面板刷新
+// Module-level singleton: the TerminalManager notifies the panel to refresh when tabs are switched/closed. 模块级单例：TerminalManager 切标签/关标签时通知面板刷新。
 let sftpPanel = null;
 let favPanel = null;
 
 // ---------- 页面初始化 ----------
 document.addEventListener('DOMContentLoaded', () => {
   const mgr = new TerminalManager();
-  window.terminalManager = mgr;  // 调试用
+  window.terminalManager = mgr;
   mgr.startStatsPolling();
 
-  // 窗口 resize 时 fit 当前终端
   window.addEventListener('resize', () => {
     if (mgr.activeId) {
       const tab = mgr.tabs.get(mgr.activeId);
@@ -1069,7 +1062,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  // 新建连接弹窗
   const openConnectModal = () => {
     mgr.loadHosts();
     $('connect-error').classList.add('hidden');
@@ -1082,7 +1074,7 @@ document.addEventListener('DOMContentLoaded', () => {
     btn.addEventListener('click', () => $(btn.dataset.close).classList.add('hidden'));
   });
 
-  // 选了已保存主机 -> 自动填 host/port/username
+  // A saved host was selected -> auto-fill host/port/username. 选了已保存主机 -> 自动填 host/port/username。
   $('conn-host-select').addEventListener('change', (e) => {
     const host = mgr.hosts.find((h) => String(h.id) === e.target.value);
     if (!host) return;
@@ -1106,29 +1098,28 @@ document.addEventListener('DOMContentLoaded', () => {
         keyPath: $('conn-key-path').value.trim() || null,
       });
       $('connect-modal').classList.add('hidden');
-      $('conn-password').value = '';  // 密码不留在表单里
+      $('conn-password').value = '';  // Passwords are never left in the form. 密码不留在表单里。
     } catch (err) {
       errEl.textContent = err.message;
       errEl.classList.remove('hidden');
     }
   });
 
-  // SFTP 文件面板（阶段 3b）：右侧滑出
+  // ---------- SFTP file panel: slides out from the right ----------
   sftpPanel = new SFTPPanel(mgr);
-  window.sftpPanel = sftpPanel;  // 调试用
+  window.sftpPanel = sftpPanel;
   $('btn-sftp').addEventListener('click', () => sftpPanel.toggle());
 
-  // 收藏命令面板（阶段 5 工作包 E）：左侧滑出
+  // ---------- Favorites panel: slides out from the left ----------
   favPanel = new FavoritesPanel(mgr);
-  window.favPanel = favPanel;  // 调试用
+  window.favPanel = favPanel;
   $('btn-favorites').addEventListener('click', () => favPanel.toggle());
 
-  // 批量命令执行（阶段 5 工作包 E）
+  // ---------- Batch command execution ----------
   $('btn-batch').addEventListener('click', () => BatchExec.open());
   $('batch-run').addEventListener('click', () => BatchExec.run());
   $('batch-cancel').addEventListener('click', () => BatchExec.cancel());
 
-  // 全屏：CSS 全屏 + fit
   $('btn-fullscreen').addEventListener('click', () => {
     $('terminal-page').classList.toggle('fullscreen');
     if (mgr.activeId) {
@@ -1137,6 +1128,5 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  // 断开重连
   $('btn-reconnect').addEventListener('click', () => mgr.manualReconnect());
 });

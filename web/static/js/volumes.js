@@ -5,23 +5,18 @@
   var volumes = [];
   var orphans = [];
   var backups = [];
-  var currentProfile = null; // 当前账号（profile），由 fillProfileSelect 恢复
-  var currentRegion = null; // 当前工作区域，由 fillRegionSelect 恢复（多区账号才有二级下拉）
-  var loadGen = 0; // 加载代次：每次 loadAll 递增，旧代次的异步结果不再
-                   // 写回共享列表，避免快速切账号时新旧数据串台。
+  var currentProfile = null;  // Current account (profile), restored by fillProfileSelect. 当前账号（profile），由 fillProfileSelect 恢复。
+  var currentRegion = null;  // Current working region, restored by fillRegionSelect (only multi-region accounts have the second dropdown). 当前工作区域，由 fillRegionSelect 恢复（多区账号才有二级下拉）。
+  var loadGen = 0;  // Load generation: incremented on every loadAll; async results from an old generation no longer write back to the shared lists, so fast account switching cannot mix old and new data. 加载代次：每次 loadAll 递增，旧代次的异步结果不再写回共享列表，避免快速切账号时新旧数据串台。
   var resizeTarget = null;
   var deleteTarget = null;
   var vpusTarget = null;
-  var restoreTarget = null; // 恢复目标备份（归一化后）
+  var restoreTarget = null;
   var deleteBackupTarget = null;
-  var selectedBackups = {}; // 多选删除：已选备份 id -> true
-  var backupPaid = false; // 当前账号是否付费（备份不限 5 个）
+  var selectedBackups = {};  // Multi-select delete: selected backup id -> true. 多选删除：已选备份 id -> true。
+  var backupPaid = false;  // Whether the current account is paid (backups are not capped at 5). 当前账号是否付费（备份不限 5 个）。
 
-  // 字段归一化：后端返回 面板形状（camelCase）
-  // {volumeId, attachmentId, displayName, sizeInGBs, vpusPerGB,
-  //  lifecycleState, instanceId, instanceName, attached, attachmentState,
-  //  availabilityDomain, timeCreated}，过渡期同时双写旧字段，
-  // 这里优先认新字段，旧字段作兜底。
+  // Field normalization: the backend returns panel shapes (camelCase) {volumeId, attachmentId, displayName, sizeInGBs, vpusPerGB, lifecycleState, instanceId, instanceName, attached, attachmentState, availabilityDomain, timeCreated}; during the transition both old and new fields are written, and new fields win here with old ones as fallback. 字段归一化：后端返回面板形状（camelCase）{volumeId, attachmentId, displayName, sizeInGBs, vpusPerGB, lifecycleState, instanceId, instanceName, attached, attachmentState, availabilityDomain, timeCreated}，过渡期同时双写旧字段，这里优先认新字段，旧字段作兜底。
   function norm(v) {
     return {
       id: v.volumeId || v.id,
@@ -60,7 +55,7 @@
     var vpusCell = showInstance
       ? "<td>" + esc(v.vpus != null ? v.vpus : "—") + "</td>"
       : "";
-    // 已删除的盘是墓碑记录，扩容/改 VPU/备份/删除都无效，不给操作按钮。
+    // A deleted volume is a tombstone record: resize / VPU change / backup / delete are all invalid, so no action buttons are given. 已删除的盘是墓碑记录，扩容/改 VPU/备份/删除都无效，不给操作按钮。
     var actionsCell = (v.state || "").toUpperCase() === "TERMINATED"
       ? '<td><span style="color: var(--text-faint);">已删除</span></td>'
       : '<td><div class="row-actions">' +
@@ -81,9 +76,7 @@
     );
   }
 
-  // 备份字段归一化：后端返回 面板形状（camelCase）
-  // {backupId, displayName, bootVolumeId, sizeInGBs, lifecycleState,
-  //  sourceType, type, timeCreated, imageId}，过渡期同时双写旧字段。
+  // Backup field normalization: the backend returns panel shapes (camelCase) {backupId, displayName, bootVolumeId, sizeInGBs, lifecycleState, sourceType, type, timeCreated, imageId}, with old fields written alongside during the transition. 备份字段归一化：后端返回面板形状（camelCase）{backupId, displayName, bootVolumeId, sizeInGBs, lifecycleState, sourceType, type, timeCreated, imageId}，过渡期同时双写旧字段。
   function normBackup(b) {
     return {
       id: b.backupId || b.id,
@@ -106,8 +99,7 @@
     return '<span class="badge badge-gray">' + MBot.escapeHtml(state || "—") + "</span>";
   }
 
-  // 来源卷名：备份记录只有 bootVolumeId，在已加载的卷列表里找名字，
-  // 找不到（来源盘已删）就显示截断的 OCID。
+  // Source volume name: a backup record only carries bootVolumeId, so look the name up in the loaded volume list; when not found (the source volume was deleted), show the truncated OCID. 来源卷名：备份记录只有 bootVolumeId，在已加载的卷列表里找名字，找不到（来源盘已删）就显示截断的 OCID。
   function sourceVolumeName(bootVolumeId) {
     if (!bootVolumeId) return "—";
     var all = volumes.concat(orphans);
@@ -170,8 +162,7 @@
   }
 
   function render() {
-    // 已删除 / 删除中的盘一律不显示（用户要求 2026-11-24：屏蔽掉）；
-    // 主表只放未删除的盘，AVAILABLE 在前。
+    // Deleted / deleting volumes are never shown; the main table only holds non-deleted volumes, AVAILABLE first. 已删除 / 删除中的盘一律不显示；主表只放未删除的盘，AVAILABLE 在前。
     var live = [];
     volumes.forEach(function (v) {
       var s = (norm(v).state || "").toUpperCase();
@@ -196,9 +187,7 @@
     renderBackups();
   }
 
-  // 切账号 / 初次加载时先显示“加载中…”，而不是空列表：
-  // 空列表会被误读为“没有数据”，且配额标题若不重置会一直闪
-  // 旧账号的数字（浏览器实测 2026-11-24）。
+  // When switching accounts / on first load, show "loading..." instead of an empty list: an empty list is misread as "no data", and a quota title that is not reset keeps flashing the old account's numbers. 切账号 / 初次加载时先显示“加载中…”，而不是空列表：空列表会被误读为“没有数据”，且配额标题若不重置会一直闪旧账号的数字。
   function showLoading() {
     document.getElementById("volume-tbody").innerHTML =
       '<tr><td colspan="6" style="text-align: center; color: var(--text-muted);">加载中…</td></tr>';
@@ -212,17 +201,16 @@
     q.style.color = "";
   }
 
-  // 加载备份列表 + 配额（走前端缓存；force=true 时跳过缓存重新拉取）。
-  // 两个请求并行发（配额与列表无关），各自失败时各自降级。
+  // Load the backup list + quota (through the frontend cache; force=true skips the cache and re-fetches). 加载备份列表 + 配额（走前端缓存；force=true 时跳过缓存重新拉取）。
+  // The two requests go out in parallel (quota and list are independent); each degrades on its own failure. 两个请求并行发（配额与列表无关），各自失败时各自降级。
   async function loadBackups(force) {
-    var gen = loadGen; // 捕获当前代次，切账号后旧代次不再写回
+    var gen = loadGen;  // Capture the current generation; an old generation no longer writes back after an account switch. 捕获当前代次，切账号后旧代次不再写回。
     var prof = (currentProfile || "DEFAULT") + ":" + (currentRegion || "");
     var backupsPromise = MBot.cachedApi("bb:list:" + prof,
       MBot.withProfile("/api/boot-backups", currentProfile, currentRegion), !!force);
     var quotaPromise = MBot.cachedApi("bb:quota:" + prof,
       MBot.withProfile("/api/boot-backups/quota", currentProfile, currentRegion), !!force);
-    // 先挂一个空 catch，避免中途切账号提前 return 后未处理的 rejection
-    // 在控制台刷警告（后面 await 原 promise 时错误仍会正常抛出）。
+    // Attach an empty catch first, so an early return from switching accounts mid-flight does not leave an unhandled rejection warning in the console (the error still throws normally when the original promise is awaited later). 先挂一个空 catch，避免中途切账号提前 return 后未处理的 rejection 在控制台刷警告（后面 await 原 promise 时错误仍会正常抛出）。
     backupsPromise.catch(function () {});
     quotaPromise.catch(function () {});
     try {
@@ -258,11 +246,10 @@
     renderBackups();
   }
 
-  // 加载卷列表 + 孤儿盘（走前端缓存；force=true 时跳过缓存重新拉取）。
-  // 两个请求并行发，各自失败时各自降级；force 时带 refresh=1 绕过
-  // 服务端 30 秒缓存。
+  // Load the volume list + orphan volumes (through the frontend cache; force=true skips the cache and re-fetches). 加载卷列表 + 孤儿盘（走前端缓存；force=true 时跳过缓存重新拉取）。
+  // The two requests go out in parallel and degrade independently; force sends refresh=1 to bypass the 30s server cache. 两个请求并行发，各自失败时各自降级；force 时带 refresh=1 绕过服务端 30 秒缓存。
   async function loadAll(force) {
-    var gen = ++loadGen; // 新一代次加载开始，旧代次的结果作废
+    var gen = ++loadGen;  // A new generation starts loading; the old generation's results are void. 新一代次加载开始，旧代次的结果作废。
     var prof = (currentProfile || "DEFAULT") + ":" + (currentRegion || "");
     var volUrl = MBot.withProfile("/api/volumes", currentProfile, currentRegion);
     var orphUrl = MBot.withProfile("/api/volumes/orphans", currentProfile, currentRegion);
@@ -272,8 +259,6 @@
     }
     var volPromise = MBot.cachedApi("vol:list:" + prof, volUrl, !!force);
     var orphPromise = MBot.cachedApi("vol:orphans:" + prof, orphUrl, !!force);
-    // 先挂空 catch，避免中途切账号提前 return 后未处理的 rejection
-    // 在控制台刷警告（后面 await 原 promise 时错误仍会正常抛出）。
     volPromise.catch(function () {});
     orphPromise.catch(function () {});
     try {
@@ -289,7 +274,7 @@
     try {
       var o = await orphPromise;
       if (gen !== loadGen) return;
-      // 兼容两种返回键名：orphans 或 volumes
+      // Compatible with both return key names: orphans or volumes. 兼容两种返回键名：orphans 或 volumes。
       orphans = o.orphans || o.volumes || [];
     } catch (err) {
       if (gen !== loadGen) return;
@@ -298,7 +283,7 @@
     }
     if (gen !== loadGen) return;
     render();
-    // 备份列表依赖卷列表做来源卷名映射，所以在卷加载完之后再拉。
+    // The backup list needs the volume list for the source-volume name mapping, so fetch it only after volumes have loaded. 备份列表依赖卷列表做来源卷名映射，所以在卷加载完之后再拉。
     await loadBackups(force);
   }
 
@@ -311,9 +296,7 @@
   }
 
   document.addEventListener("DOMContentLoaded", function () {
-    // 先填 profile 下拉（恢复上次选择），再填区域下拉（多区账号才显示），
-    // 最后按当前账号 + 区域加载列表；profiles 接口失败时仍按默认账号加载，
-    // 不让页面空白。
+    // Fill the profile dropdown first (restoring the last choice), then the region dropdown (only for multi-region accounts), then load the list for the current account + region; when the profiles API fails, still load with the default account so the page is never blank. 先填 profile 下拉（恢复上次选择），再填区域下拉（多区账号才显示），最后按当前账号 + 区域加载列表；profiles 接口失败时仍按默认账号加载，不让页面空白。
     var profileSelect = document.getElementById("profile-select");
     var regionSelect = document.getElementById("region-select");
     showLoading();
@@ -327,13 +310,10 @@
     profileSelect.addEventListener("change", function (e) {
       currentProfile = e.target.value;
       MBot.setProfile(currentProfile);
-      // 切账号时区域重置为新账号的主区（与机器人端一致）。
+      // Switching accounts resets the region to the new account's home region (same as the bot). 切账号时区域重置为新账号的主区（与机器人端一致）。
       MBot.setRegion(null);
       currentRegion = MBot.fillRegionSelect(regionSelect, currentProfile);
-      // 切账号时先清空列表、显示加载中（含配额标题），再加载新
-      // 账号数据，避免旧账号数据一直显示到新数据回来（同
-      // instances.js v1.6.0 的做法；浏览器实测 2026-11-24：不清空
-      // 时切换后仍显示旧账号数据，配额标题还会闪旧数字）。
+      // When switching accounts, clear the list and show loading (including the quota title) first, then load the new account's data, so old-account data is not shown until the new data arrives (same approach as instances.js). 切账号时先清空列表、显示加载中（含配额标题），再加载新账号数据，避免旧账号数据一直显示到新数据回来（同 instances.js 的做法；浏览器实测：不清空时切换后仍显示旧账号数据，配额标题还会闪旧数字）。
       volumes = [];
       orphans = [];
       backups = [];
@@ -353,7 +333,6 @@
     });
     document.getElementById("btn-refresh-volumes").addEventListener("click", function () { loadAll(true); });
 
-    // 两张表共用一套操作按钮处理
     ["volume-tbody", "orphan-tbody"].forEach(function (tbodyId) {
       document.getElementById(tbodyId).addEventListener("click", function (e) {
         var btn = e.target.closest("[data-act]");
@@ -379,7 +358,6 @@
             vpusTarget.vpus != null ? String(vpusTarget.vpus) : "10";
           MBot.openModal("vpus-modal");
         } else if (act === "backup") {
-          // 备份启动卷：配额检查 + 满了提示删最早，全在共享流程里。
           var bv = norm(vol);
           MBot.backupBootVolume(bv.id, currentProfile).then(function (created) {
             if (created) loadBackups(true);
@@ -392,7 +370,6 @@
       });
     });
 
-    // 备份表的操作按钮：恢复 / 删除
     document.getElementById("backup-tbody").addEventListener("click", function (e) {
       var btn = e.target.closest("[data-act]");
       if (!btn || btn.disabled) return;
@@ -414,7 +391,6 @@
       }
     });
 
-    // 备份多选：行复选框勾选 / 全选
     document.getElementById("backup-tbody").addEventListener("change", function (e) {
       var box = e.target.closest(".backup-check");
       if (!box) return;
@@ -430,7 +406,6 @@
       updateBackupSelectionUI();
     });
 
-    // 批量删除所选备份：二次确认后调 delete-batch
     document.getElementById("btn-delete-selected-backups").addEventListener("click", async function () {
       var ids = Object.keys(selectedBackups).filter(function (id) { return selectedBackups[id]; });
       if (ids.length === 0) return;
@@ -463,7 +438,7 @@
       }
     });
 
-    // 付费账号开关：与机器人端共用同一份配置
+    // Paid-account switch: shares the same config as the bot. 付费账号开关：与机器人端共用同一份配置。
     document.getElementById("btn-toggle-paid").addEventListener("click", async function () {
       try {
         var res = await MBot.api(MBot.withProfile("/api/boot-backups/paid", currentProfile, currentRegion), {
@@ -479,13 +454,13 @@
       }
     });
 
-    // 恢复表单：形状选 A1 时显示 CPU/内存选择，其他形状隐藏
+    // Restore form: CPU/memory choices show only when the shape is A1; other shapes hide them. 恢复表单：形状选 A1 时显示 CPU/内存选择，其他形状隐藏。
     document.getElementById("restore-shape").addEventListener("change", function (e) {
       document.getElementById("restore-flex-group").hidden =
         e.target.value !== "VM.Standard.A1.Flex";
     });
 
-    // 确认从备份恢复（原机不动，新开一台实例；启动盘重建需几分钟）
+    // Confirm restore from backup (the original machine is untouched; a new instance is built, and rebuilding the boot volume takes a few minutes). 确认从备份恢复（原机不动，新开一台实例；启动盘重建需几分钟）。
     document.getElementById("restore-form").addEventListener("submit", async function (e) {
       e.preventDefault();
       if (!restoreTarget) return;
@@ -518,7 +493,6 @@
       }
     });
 
-    // 确认删除备份
     document.getElementById("btn-confirm-delete-backup").addEventListener("click", async function () {
       if (!deleteBackupTarget) return;
       try {
@@ -532,7 +506,6 @@
       }
     });
 
-    // 确认扩容
     document.getElementById("resize-form").addEventListener("submit", async function (e) {
       e.preventDefault();
       if (!resizeTarget) return;
@@ -555,7 +528,6 @@
       }
     });
 
-    // 确认改 VPU
     document.getElementById("vpus-form").addEventListener("submit", async function (e) {
       e.preventDefault();
       if (!vpusTarget) return;
@@ -578,7 +550,6 @@
       }
     });
 
-    // 确认删除
     document.getElementById("btn-confirm-delete-volume").addEventListener("click", async function () {
       if (!deleteTarget) return;
       try {

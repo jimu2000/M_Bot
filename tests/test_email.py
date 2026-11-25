@@ -26,7 +26,7 @@ from oci.email import (
     list_senders,
 )
 
-# 占位符（测试里不出现真实 OCID / 密码）
+# Placeholders (no real OCID / password in tests). 占位符（测试里不出现真实 OCID / 密码）。
 FAKE_COMPARTMENT = "ocid1.tenancy.oc1..xxxxxxxx"
 FAKE_USER = "ocid1.user.oc1..xxxxxxxx"
 FAKE_SENDER = "ocid1.emailsender.oc1..xxxxxxxx"

@@ -56,7 +56,7 @@ class TestCreateRecord(TaskStoreTestCase):
         self.assertEqual(record["id"], "web-b1")
 
     def test_legacy_ids_count_toward_web_numbering(self):
-        # 旧版网页任务 ID 是无前缀的 g1/g2：新分配要避让，不能撞号。
+        # Old web task ids are unprefixed g1/g2: new allocations must avoid them and never collide. 旧版网页任务 ID 是无前缀的 g1/g2：新分配要避让，不能撞号。
         task_store._write_records_unlocked(
             self.path, [{"id": "g1", "kind": "grab", "status": "done",
                          "detail": "", "label": "旧", "logs": [],
@@ -200,7 +200,7 @@ class TestCrossProcessVisibility(TaskStoreTestCase):
         web_id = web.create("grab", "web 抢机", label="web 抢机")
         self.assertEqual(bot_id, "bot-g1")
         self.assertEqual(web_id, "web-g1")
-        # 网页端能看到 bot 的任务，bot 端能看到网页的任务。
+        # The web side can see the bot's tasks, and the bot side can see the web's tasks. 网页端能看到 bot 的任务，bot 端能看到网页的任务。
         self.assertEqual(web.get(bot_id)["label"], "bot 抢机")
         self.assertEqual(bot.get(web_id)["label"], "web 抢机")
         web_ids = {t["id"] for t in web.list()}
@@ -234,7 +234,7 @@ class TestCrossProcessVisibility(TaskStoreTestCase):
         task_id = web.create("grab", "web 抢机")
         self.assertTrue(bot.cancel(task_id))
         self.assertTrue(web.get(task_id)["cancel_requested"])
-        # 取消请求发出后，网页端的监听线程应置位 stop_event。
+        # After the cancel request is sent, the web side's watch thread should set stop_event. 取消请求发出后，网页端的监听线程应置位 stop_event。
         stop_event = web.stop_event(task_id)
         thread = task_store.start_cancel_watcher(
             self.path, task_id, stop_event, interval=0.05)
@@ -262,8 +262,7 @@ class TestCrossProcessVisibility(TaskStoreTestCase):
         web_id = web.create("grab", "web 抢机")
         bot.recover()
         self.assertEqual(bot.get(bot_id)["status"], "cancelled")
-        # 网页任务还是 pending（线程未启动时就是 pending），bot 的
-        # 恢复不该动它。
+        # The web task is still pending (that is the state before its thread starts), and the bot's recovery must not touch it. 网页任务还是 pending（线程未启动时就是 pending），bot 的恢复不该动它。
         self.assertEqual(web.get(web_id)["status"], "pending")
         web.recover()
         self.assertEqual(web.get(web_id)["status"], "cancelled")

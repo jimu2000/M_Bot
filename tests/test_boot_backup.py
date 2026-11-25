@@ -30,7 +30,7 @@ from oci.boot_backup import (
 )
 from oci.client import OCIError
 
-# 占位符（测试里不出现真实 OCID）
+# Placeholders (no real OCID in tests). 占位符（测试里不出现真实 OCID）。
 FAKE_COMPARTMENT = "ocid1.tenancy.oc1..xxxxxxxx"
 FAKE_BV = "ocid1.bootvolume.oc1..aaaa"
 FAKE_BV_NEW = "ocid1.bootvolume.oc1..bbbb"
@@ -60,7 +60,7 @@ class TestListBackups(unittest.TestCase):
 
     def test_list_command_and_sort(self):
         cli = MagicMock()
-        # 故意打乱顺序返回，验证本地按 time-created 升序重排。
+        # Returned deliberately out of order to verify the local re-sort by time-created ascending. 故意打乱顺序返回，验证本地按 time-created 升序重排。
         cli.run.return_value = {"data": [
             _backup("ocid1.bootvolumebackup.oc1..new", "new",
                     "2026-11-24T10:00:00+00:00"),
@@ -87,9 +87,7 @@ class TestListBackups(unittest.TestCase):
         self.assertIn(FAKE_BV, args)
 
     def test_list_excludes_terminated_by_default(self):
-        # 已删除的备份 OCI 侧仍会列出一段时间，默认不显示（与配额计数
-        # 只数未删除的一致；浏览器实测 2026-11-24 发现列表里有
-        # TERMINATED 行而配额显示 3/5 对不上）。
+        # A deleted backup still shows up in OCI's listing for a while, but is hidden by default (consistent with quota counting only non-deleted ones). 已删除的备份 OCI 侧仍会列出一段时间，默认不显示（与配额计数只数未删除的一致）。
         cli = MagicMock()
         cli.run.return_value = {"data": [
             _backup("ocid1.bootvolumebackup.oc1..gone", "gone",
@@ -147,7 +145,7 @@ class TestCreateBackup(unittest.TestCase):
 
     def test_create_default_name_uses_volume_name(self):
         cli = MagicMock()
-        # create 先查卷名（oci.volume.get_boot_volume），再 create。
+        # create first looks up the volume name (oci.volume.get_boot_volume), then creates. create 先查卷名（oci.volume.get_boot_volume），再 create。
         with patch("oci.volume.get_boot_volume") as mock_get:
             mock_get.return_value = {"display-name": "my-instance"}
             cli.run.return_value = {"data": _backup(
@@ -186,8 +184,7 @@ class TestDefaultBackupName(unittest.TestCase):
         self.assertTrue(name.startswith("boot-volume-backup-"), name)
 
     def test_uses_configured_timezone_time(self):
-        # 名字里的时间戳用 _backup_name_now()（北京时间），不是 UTC：
-        # 固定它返回 2026-11-24 04:30，名字后缀必须是 20261124-0430。
+        # The timestamp in the name uses _backup_name_now() (Beijing time), not UTC: pinning it to 2026-11-24 04:30 means the name suffix must be 20261124-0430. 名字里的时间戳用 _backup_name_now()（北京时间），不是 UTC：固定它返回 2026-11-24 04:30，名字后缀必须是 20261124-0430。
         from datetime import datetime
 
         fixed = datetime(2026, 11, 24, 4, 30)
@@ -353,7 +350,7 @@ class TestGetSourceInstanceShape(unittest.TestCase):
     def test_source_gone_returns_none(self):
         cli = MagicMock()
         backup = _backup(FAKE_BACKUP, "b1", "2026-11-23T10:00:00+00:00")
-        # 来源启动卷已删：get_boot_volume 抛异常，函数返回 None 不抛。
+        # Source boot volume deleted: get_boot_volume raises, the function returns None instead of raising. 来源启动卷已删：get_boot_volume 抛异常，函数返回 None 不抛。
         with patch("oci.volume.get_boot_volume",
                    side_effect=Exception("not found")):
             result = get_source_instance_shape(cli, FAKE_COMPARTMENT, backup)
@@ -400,14 +397,14 @@ class TestRestore(unittest.TestCase):
         self.assertEqual(result["ocpus"], 2)
         self.assertEqual(result["memory_gb"], 12)
         calls = [c[0][0] for c in cli.run.call_args_list]
-        # 第 1 步：从备份建启动卷（带 --boot-volume-backup-id 与等待参数）。
+        # Step 1: build a boot volume from the backup (with --boot-volume-backup-id and the wait flag). 第 1 步：从备份建启动卷（带 --boot-volume-backup-id 与等待参数）。
         create_call = next(c for c in calls
                            if c[:3] == ["bv", "boot-volume", "create"])
         self.assertIn("--boot-volume-backup-id", create_call)
         self.assertIn(FAKE_BACKUP, create_call)
         self.assertIn("--wait-for-state", create_call)
         self.assertIn("AVAILABLE", create_call)
-        # 第 2 步：用新启动卷开机（--source-boot-volume-id，无 image 参数）。
+        # Step 2: launch with the new boot volume (--source-boot-volume-id, no image argument). 第 2 步：用新启动卷开机（--source-boot-volume-id，无 image 参数）。
         launch_call = next(c for c in calls
                            if c[:3] == ["compute", "instance", "launch"])
         self.assertIn("--source-boot-volume-id", launch_call)
@@ -431,7 +428,7 @@ class TestRestore(unittest.TestCase):
         self.assertEqual(result["shape"], "VM.Standard.E2.1.Micro")
         launch_call = next(c[0][0] for c in cli.run.call_args_list
                            if c[0][0][:3] == ["compute", "instance", "launch"])
-        # E2 固定规格：不传 --shape-config；ssh_keys_file 为空时不传公钥参数。
+        # E2 is a fixed shape: no --shape-config is passed; when ssh_keys_file is empty, no public-key argument is passed. E2 固定规格：不传 --shape-config；ssh_keys_file 为空时不传公钥参数。
         self.assertNotIn("--shape-config", launch_call)
         self.assertNotIn("--ssh-authorized-keys-file", launch_call)
 
@@ -458,7 +455,7 @@ class TestRestore(unittest.TestCase):
                 availability_domain=FAKE_AD, subnet_id=FAKE_SUBNET,
                 display_name="restored-1", ssh_keys_file="")
         self.assertIn("CREATING", str(ctx.exception))
-        # 非 AVAILABLE 时只查了一次备份，没建卷没开机。
+        # When not AVAILABLE, the backup was checked only once; no volume was built and nothing was launched. 非 AVAILABLE 时只查了一次备份，没建卷没开机。
         self.assertEqual(cli.run.call_count, 1)
 
     def test_restore_launch_failure_cleans_up_new_volume(self):
@@ -483,7 +480,7 @@ class TestRestore(unittest.TestCase):
                     availability_domain=FAKE_AD, subnet_id=FAKE_SUBNET,
                     display_name="restored-1", ssh_keys_file="",
                     shape="VM.Standard.A1.Flex", ocpus=1, memory_gb=6)
-            # launch 失败后尽力删掉第 1 步建出来的启动卷，不留孤儿盘。
+            # After a failed launch, best-effort delete the boot volume built in step 1, leaving no orphan volume. launch 失败后尽力删掉第 1 步建出来的启动卷，不留孤儿盘。
             mock_delete.assert_called_once_with(cli, FAKE_BV_NEW)
 
 

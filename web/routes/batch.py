@@ -27,7 +27,7 @@ from web.deps import error_response, get_current_user
 from web.routes.hosts import get_host
 
 try:
-    # 危险命令黑名单 + 远程执行（与 Telegram /command 共用同一份实现）。
+    # Dangerous-command denylist + remote execution (shares the same implementation as Telegram /command). 危险命令黑名单 + 远程执行（与 Telegram /command 共用同一份实现）。
     from tgbot.handlers_client import (
         COMMAND_TIMEOUT_SECONDS,
         RemoteCommandError,
@@ -43,9 +43,9 @@ except ImportError:  # pragma: no cover - tgbot 依赖缺失时的降级分支
 router = APIRouter()
 
 # ================= 配置区（改这里） =================
-# 单次批量最多主机数（防一次选几百台拖垮面板）。
+# Max hosts per batch run (so one selection of hundreds of hosts cannot drag the panel down). 单次批量最多主机数（防一次选几百台拖垮面板）。
 BATCH_MAX_HOSTS = 20
-# 每台主机 stdout/stderr 各保留的最大字符数，超了截断并加提示。
+# Max chars kept per host for stdout/stderr; beyond that, truncate and note it. 每台主机 stdout/stderr 各保留的最大字符数，超了截断并加提示。
 BATCH_MAX_OUTPUT_CHARS = 20000
 # =====================================================
 
@@ -82,7 +82,7 @@ class BatchRegistry:
             "id": batch_id,
             "command": command,
             "host_ids": list(host_ids),
-            "status": "running",  # running / done / cancelled
+            "status": "running",
             "cancel_requested": False,
             "results": {},
             "created_at": time.time(),
@@ -118,7 +118,7 @@ class BatchRegistry:
             self._batches.clear()
 
 
-# 全局单例（单进程内共享）。
+# Global singleton (shared within a single process). 全局单例（单进程内共享）。
 BATCHES = BatchRegistry()
 
 

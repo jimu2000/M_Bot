@@ -52,7 +52,7 @@ def quota_summary(profile: str = Query(default=None),
     profile_name = profile or config.DEFAULT_PROFILE
     return {"ok": True,
             "profile": profile_name,
-            # 显示名（主区中文名；v1.15.0 新增，配额页用它代替配置键名）。
+            # Display name (home-region display name; the quota page uses it instead of the config key name). 显示名（主区中文名；配额页用它代替配置键名）。
             "profileLabel": config.profile_display_name(profile_name),
             "summary": summary}
 

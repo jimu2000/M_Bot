@@ -134,8 +134,7 @@ class TestModuleLevelApp(unittest.TestCase):
             importlib.reload(app_module)
             self.assertIsNotNone(getattr(app_module, "app", None))
             self.assertEqual(app_module.app.title, "M_Bot Web 面板")
-        # 恢复：删掉模块级 app 再 reload（reload 不清空旧命名空间，
-        # 不删会残留），无哈希时不应重建。
+        # Restore: delete the module-level app, then reload (reload does not clear the old namespace, so leftovers remain without the delete); with no hash, it should not rebuild. 恢复：删掉模块级 app 再 reload（reload 不清空旧命名空间，不删会残留），无哈希时不应重建。
         del app_module.app
         importlib.reload(app_module)
         self.assertFalse(hasattr(app_module, "app"))
@@ -165,16 +164,15 @@ class TestPageContext(IntegrationTestCase):
         self._login()
         r = self.client.get("/overview")
         self.assertEqual(r.status_code, 200)
-        # 侧边栏"主机"链接带 active（current_page=overview 生效）。
+        # The sidebar "主机" link carries active (current_page=overview takes effect). 侧边栏“主机”链接带 active（current_page=overview 生效）。
         self.assertIn('data-page="overview" class="active"', r.text)
-        # 顶栏资源区显示登录用户名。
+        # The top-bar resource area shows the logged-in username. 顶栏资源区显示登录用户名。
         self.assertIn('id="res-username">admin<', r.text)
 
     def test_sidebar_has_single_overview_link(self):
         self._login()
         r = self.client.get("/overview")
-        # 侧边栏里指向 /overview 的链接只有一个（顶栏另有一个图标快捷
-        # 方式，不计入侧边栏；data-page 属性只在侧边栏链接上出现）。
+        # There is exactly one sidebar link to /overview (the top bar has a separate icon shortcut that does not count as a sidebar link; the data-page attribute only appears on sidebar links). 侧边栏里指向 /overview 的链接只有一个（顶栏另有一个图标快捷方式，不计入侧边栏；data-page 属性只在侧边栏链接上出现）。
         self.assertEqual(r.text.count('data-page="overview"'), 1)
 
     def test_all_pages_render_200(self):

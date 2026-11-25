@@ -20,7 +20,7 @@ from fastapi.testclient import TestClient
 from web.app import create_app
 from web.auth import LOGIN_GUARD, SESSIONS, hash_password
 
-# 测试密码：运行时随机生成（不在代码里写任何固定口令）。
+# Test password: generated randomly at runtime (no fixed password is ever written in code). 测试密码：运行时随机生成（不在代码里写任何固定口令）。
 TEST_PASSWORD = secrets.token_urlsafe(16)
 
 
@@ -83,7 +83,7 @@ class TestFavoritesCrud(FavoritesTestCase):
         self.assertEqual(len(r.json()["items"]), 1)
         self.assertEqual(r.json()["items"][0]["id"], item["id"])
 
-        # 文件落盘，结构为 {version, items}。
+        # Written to disk with the structure {version, items}. 文件落盘，结构为 {version, items}。
         with open(self._favorites_file(), encoding="utf-8") as f:
             data = json.load(f)
         self.assertEqual(data["version"], 1)

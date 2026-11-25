@@ -11,12 +11,9 @@ OCI 本身继续走 oci/ 模块（调官方 OCI CLI），不在 clouds/ 里再�
 """
 
 # ================= 配置区（改这里） =================
-# 凭据注入（硬规则）：
-#   - 各云凭据一律用环境变量注入，绝不硬编码进代码，也不写进仓库。
-#   - 各云的环境变量名见对应 stub 文件头（如 aws.py 用
-#     AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_DEFAULT_REGION）。
-#   - __init__ 只保存配置，不做真实连接；缺凭据也不报错，
-#     调用方法时才由具体实现决定如何报错。
+# Credential injection (hard rule): credentials for every cloud come only from environment variables — never hardcoded in code and never written into the repo. 凭据注入（硬规则）：各云凭据一律用环境变量注入，绝不硬编码进代码，也不写进仓库。
+# Each cloud's environment variable names are listed in its stub file header (e.g. aws.py uses AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_DEFAULT_REGION). 各云的环境变量名见对应 stub 文件头（如 aws.py 用 AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_DEFAULT_REGION）。
+# __init__ only stores the config and makes no real connection; missing credentials do not error — the method call decides how to fail. __init__ 只保存配置，不做真实连接；缺凭据也不报错，调用方法时才由具体实现决定如何报错。
 # =====================================================
 
 import abc

@@ -16,7 +16,7 @@ from oci.client import OCIError  # noqa: E402
 from tgbot import config as bot_config  # noqa: E402
 from tgbot import handlers  # noqa: E402
 
-# 占位符（测试里不出现真实 OCID / IP；203.0.113.0/24 是文档专用网段）
+# Placeholders (no real OCID / IP in tests; 203.0.113.0/24 is the documentation range). 占位符（测试里不出现真实 OCID / IP；203.0.113.0/24 是文档专用网段）。
 FAKE_COMPARTMENT = "ocid1.tenancy.oc1..xxxxxxxx"
 FAKE_INSTANCES = [
     {
@@ -105,13 +105,11 @@ class HandlersTestCase(unittest.IsolatedAsyncioTestCase):
     """基类：白名单 + OCI 边界 mock + 假 handlers_extra 模块。"""
 
     def setUp(self):
-        # 白名单只放 ALLOWED_USER。
         self._allowed = patch.object(
             bot_config, "ALLOWED_USER_IDS", {ALLOWED_USER})
         self._allowed.start()
         self.addCleanup(self._allowed.stop)
 
-        # get_cli / get_compartment / get_current_profile 不走真实配置。
         self.cli = MagicMock()
         self._cli = patch("tgbot.handlers.get_cli",
                           return_value=self.cli)
@@ -126,9 +124,7 @@ class HandlersTestCase(unittest.IsolatedAsyncioTestCase):
         self._profile.start()
         self.addCleanup(self._profile.stop)
 
-        # 假 handlers_extra 模块（隔离测试：不调真实扩展模块，避免
-        # 扩展逻辑的 OCI 调用漏进核心命令测试）：注入 sys.modules 并
-        # 挂到 tgbot 包上，`from tgbot import handlers_extra` 才能拿到它。
+        # A fake handlers_extra module (test isolation: the real extension module is not called, so no OCI call from extension logic leaks into core command tests): injected into sys.modules and attached to the tgbot package, so `from tgbot import handlers_extra` can pick it up. 假 handlers_extra 模块（隔离测试：不调真实扩展模块，避免扩展逻辑的 OCI 调用漏进核心命令测试）：注入 sys.modules 并挂到 tgbot 包上，`from tgbot import handlers_extra` 才能拿到它。
         import tgbot as tgbot_pkg
 
         self._tgbot_pkg = tgbot_pkg
@@ -226,7 +222,6 @@ class TestCommands(HandlersTestCase):
         mock_list.assert_called_once_with(self.cli, FAKE_COMPARTMENT)
         self.assertEqual(context.user_data["instances"], FAKE_INSTANCES)
         text = update.effective_message.reply_text.call_args.args[0]
-        # 文字只剩标题 + 各组数量；实例名在按钮上。
         self.assertIn("2 台", text)
         self.assertIn("🟢 运行中 1 台 · 🟡 已停止 1 台", text)
         self.assertNotIn("instance-a1", text)
@@ -238,7 +233,7 @@ class TestCommands(HandlersTestCase):
         self.assertIn("instance-e2 · E2 · 已停止", texts)
 
     async def test_instances_command_enriches_ip(self):
-        # _load_instance_list 先调 attach_public_ips 补 IP 再存、再格式化。
+        # _load_instance_list calls attach_public_ips to fill in IPs first, then stores and formats. _load_instance_list 先调 attach_public_ips 补 IP 再存、再格式化。
         update = make_message_update()
         context = make_context()
         enriched = [dict(FAKE_INSTANCES[0], **{"public-ip": FAKE_IP}),
@@ -251,7 +246,6 @@ class TestCommands(HandlersTestCase):
         mock_attach.assert_called_once_with(self.cli, FAKE_INSTANCES)
         self.assertEqual(context.user_data["instances"], enriched)
         text = update.effective_message.reply_text.call_args.args[0]
-        # 文字只剩标题 + 各组数量；IP 在对应按钮上。
         self.assertIn("🟢 运行中 1 台 · 🟡 已停止 1 台", text)
         self.assertNotIn(FAKE_IP, text)
         keyboard = update.effective_message.reply_text.call_args.kwargs[
@@ -298,8 +292,8 @@ class TestOracleMenuCallback(HandlersTestCase):
         keyboard = update.callback_query.edit_message_text.call_args.kwargs[
             "reply_markup"]
         data = _all_callback_data(keyboard)
-        self.assertIn("o:page:0", data)   # 第 2 页有"上一页"
-        self.assertIn("o:logs", data)     # 第 34 项在第 2 页
+        self.assertIn("o:page:0", data)
+        self.assertIn("o:logs", data)
 
     async def test_page_invalid(self):
         update = make_callback_update("o:page:xx")
@@ -354,7 +348,7 @@ class TestInstanceListCallback(HandlersTestCase):
     async def test_list(self):
         update = make_callback_update("i:list")
         context = make_context()
-        # v1.15.0：列表标题用账号显示名（假模块补上缓存显示名函数）。
+        # The list title uses the account display name (the fake module provides the cached display-name function). 列表标题用账号显示名（假模块补上缓存显示名函数）。
         self.extra.get_cached_profile_display_name = (
             lambda profile: "新加坡（3 个区）")
         with patch("tgbot.handlers.list_instances",
@@ -373,7 +367,7 @@ class TestInstanceListCallback(HandlersTestCase):
                       _all_button_texts(keyboard))
 
     async def test_noop_callback(self):
-        # 分组标题按钮：只应答，不改消息、不发新消息。
+        # A group-title button only answers the callback; it does not edit the message or send a new one. 分组标题按钮：只应答，不改消息、不发新消息。
         update = make_callback_update("i:noop")
         await handlers.noop_callback(update, make_context())
         update.callback_query.answer.assert_awaited_once()
@@ -508,8 +502,7 @@ class TestInstanceActionCallback(HandlersTestCase):
         self.assertIn("c:terminate:0", _all_callback_data(keyboard))
 
     async def test_terminate_confirm_escapes_html_in_name(self):
-        # v1.45.0 修 10：实例名可能含 <>&，parse_mode="HTML" 的确认框
-        # 必须转义，否则 Telegram 解析失败或被注入标签。
+        # An instance name may contain <>&, so the confirmation box with parse_mode="HTML" must escape it, or Telegram fails to parse it or gets an injected tag. 实例名可能含 <>&，parse_mode="HTML" 的确认框必须转义，否则 Telegram 解析失败或被注入标签。
         evil = dict(FAKE_INSTANCES[0],
                     **{"display-name": 'test<b>&"x"'})
         context = make_context()
@@ -521,7 +514,7 @@ class TestInstanceActionCallback(HandlersTestCase):
         self.assertEqual(call.kwargs.get("parse_mode"), "HTML")
         self.assertIn("test&lt;b&gt;&amp;", text)
         self.assertNotIn("<b>&", text)
-        # <b> 警告标签本身还在（只转义了实例名）。
+        # The <b> warning tag itself is still there (only the instance name is escaped). <b> 警告标签本身还在（只转义了实例名）。
         self.assertIn("<b>终止后将永久删除引导卷", text)
 
     async def test_ip_forward(self):
@@ -529,8 +522,7 @@ class TestInstanceActionCallback(HandlersTestCase):
         context = self._context_with_instances()
         await handlers.instance_action_callback(update, context)
         self.assertEqual(context.user_data["pending_idx"], "0")
-        # 实例操作 "ip" 转发为 "changeip"（换 IP 确认流程），不是菜单 2
-        # 的 "ip" 总览。
+        # The instance action "ip" is forwarded to "changeip" (the change-IP confirmation flow), not to menu 2's "ip" overview. 实例操作 "ip" 转发为 "changeip"（换 IP 确认流程），不是菜单 2 的 "ip" 总览。
         self.extra.dispatch_oracle_action.assert_awaited_once_with(
             "changeip", update, context)
 
@@ -601,7 +593,7 @@ class TestConfirmCallback(HandlersTestCase):
         with patch("tgbot.handlers.terminate_instance") as mock_term:
             await handlers.confirm_callback(
                 update, self._context_with_instances())
-        # 只传 (cli, id)，靠 terminate_instance 默认值删引导卷。
+        # Only (cli, id) is passed; terminate_instance's default deletes the boot volume. 只传 (cli, id)，靠 terminate_instance 默认值删引导卷。
         mock_term.assert_called_once_with(self.cli, "ocid1.instance.oc1..aaaa")
         text = update.callback_query.edit_message_text.call_args.args[0]
         self.assertIn("已终止", text)

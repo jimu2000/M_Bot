@@ -21,7 +21,7 @@ from oci.client import NotFoundError
 from web.app import create_app
 from web.auth import LOGIN_GUARD, SESSIONS, hash_password
 
-# 占位符（测试里不出现真实 OCID / IP）
+# Placeholders (no real OCID / IP in tests). 占位符（测试里不出现真实 OCID / IP）。
 FAKE_INSTANCE = "ocid1.instance.oc1..testxxxx"
 FAKE_INSTANCE_2 = "ocid1.instance.oc1..testyyyy"
 FAKE_VOLUME = "ocid1.bootvolume.oc1..testxxxx"

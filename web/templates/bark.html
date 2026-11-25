@@ -1,11 +1,5 @@
 {% extends "base.html" %}
-{# Bark 通知设置页：菜单 43 的网页版。数据来自 GET /api/bark/status；
-   地址/Key 走 POST /api/bark/config，开关走 POST /api/bark/toggle，
-   测试推送走 POST /api/bark/test，自动生成 Key 走
-   POST /api/bark/generate-key（返回 Key 原文 + 二维码，只显示一次）。
-   与机器人端共用 tgbot/data/bark.json，两边改的配置互相可见。
-   Key 与地址原文绝不在页面上显示（地址只显示脱敏版），自动生成
-   的 Key 例外：生成后必须同步到 Bark App，所以显示一次 + 二维码。 #}
+{# Bark notification settings page: the web version of menu 43. Data comes from GET /api/bark/status; address/Key go through POST /api/bark/config, the switch through POST /api/bark/toggle, test push through POST /api/bark/test, and auto-generating a Key through POST /api/bark/generate-key (returns the raw Key + a QR code, shown only once). It shares tgbot/data/bark.json with the bot, so config changed on either side is visible on the other. The raw Key and address are never shown on the page (only the redacted address); the auto-generated Key is the exception: after generating it must be synced into the Bark App, so it is shown once + a QR code. Bark 通知设置页：菜单 43 的网页版。数据来自 GET /api/bark/status；地址/Key 走 POST /api/bark/config，开关走 POST /api/bark/toggle，测试推送走 POST /api/bark/test，自动生成 Key 走 POST /api/bark/generate-key（返回 Key 原文 + 二维码，只显示一次）。与机器人端共用 tgbot/data/bark.json，两边改的配置互相可见。Key 与地址原文绝不在页面上显示（地址只显示脱敏版），自动生成的 Key 例外：生成后必须同步到 Bark App，所以显示一次 + 二维码。 #}
 {% block title %}Bark 通知设置 · M_Bot Oracle开源管理面板{% endblock %}
 
 {% block content %}

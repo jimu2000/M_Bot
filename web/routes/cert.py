@@ -32,37 +32,36 @@ from web.deps import error_response, get_current_user
 router = APIRouter()
 
 # ================= 配置区（改这里） =================
-# acme.sh 家目录（部署时 root 运行，默认 /root/.acme.sh）。
+# acme.sh home directory (deployed as root; default /root/.acme.sh). acme.sh 家目录（部署时 root 运行，默认 /root/.acme.sh）。
 ACME_HOME = os.environ.get("MBOT_ACME_HOME",
                            os.path.expanduser("~/.acme.sh"))
-# acme.sh 可执行文件路径（默认 ACME_HOME 下的 acme.sh）。
+# Path to the acme.sh executable (default: acme.sh under ACME_HOME). acme.sh 可执行文件路径（默认 ACME_HOME 下的 acme.sh）。
 ACME_SH = os.environ.get("MBOT_ACME_SH", os.path.join(ACME_HOME, "acme.sh"))
-# 默认域名（不设时自动检测第一个找到的证书的域名）。
+# Default domain (when unset, auto-detect the domain of the first certificate found). 默认域名（不设时自动检测第一个找到的证书的域名）。
 CERT_DOMAIN = os.environ.get("MBOT_CERT_DOMAIN", "")
-# certbot live 目录（默认 /etc/letsencrypt/live）。
+# certbot live directory (default /etc/letsencrypt/live). certbot live 目录（默认 /etc/letsencrypt/live）。
 CERTBOT_LIVE_DIR = os.environ.get("MBOT_CERTBOT_LIVE_DIR",
                                   "/etc/letsencrypt/live")
-# lego 证书目录（多个时冒号分隔；默认先用户目录后 /etc/lego）。
+# lego certificate directories (colon-separated when multiple; default: user dir first, then /etc/lego). lego 证书目录（多个时冒号分隔；默认先用户目录后 /etc/lego）。
 LEGO_CERT_DIRS = [d for d in os.environ.get(
     "MBOT_LEGO_CERT_DIRS",
     os.path.join(os.path.expanduser("~"), ".lego", "certificates")
     + ":/etc/lego/certificates").split(":") if d]
-# nginx 配置（找 ssl_certificate 用；面板自己的 vhost 放第一位）。
+# nginx config (used to find ssl_certificate; the panel's own vhost comes first). nginx 配置（找 ssl_certificate 用；面板自己的 vhost 放第一位）。
 NGINX_CONF_GLOBS = [
     "/etc/nginx/conf.d/mbot-panel.conf",
     "/etc/nginx/conf.d/*.conf",
     "/etc/nginx/sites-enabled/*",
 ]
-# 续期命令超时（秒）：acme.sh 续期含 DNS/HTTP 验证，一般 1 分钟内完成。
+# Renewal command timeout (seconds): an acme.sh renewal includes DNS/HTTP validation and usually finishes within a minute. 续期命令超时（秒）：acme.sh 续期含 DNS/HTTP 验证，一般 1 分钟内完成。
 RENEW_TIMEOUT_SECONDS = 300
-# 剩余时间小于这么多小时即判为“即将过期”（7 天）。
+# A certificate is "expiring soon" when less than this many hours remain (7 days). 剩余时间小于这么多小时即判为“即将过期”（7 天）。
 EXPIRING_THRESHOLD_HOURS = 7 * 24
-# 续期输出保留的最大字符数。
+# Maximum characters of renewal output to keep. 续期输出保留的最大字符数。
 RENEW_MAX_OUTPUT_CHARS = 10000
 # =====================================================
 
-# 域名格式校验（只校验字符，不查 DNS；acme.sh 命令用列表参数传，
-# 不经过 shell，校验只是第一道防线）。
+# Domain format check (characters only, no DNS lookup; the acme.sh command is passed as a list, not through a shell, so the check is only a first line of defense). 域名格式校验（只校验字符，不查 DNS；acme.sh 命令用列表参数传，不经过 shell，校验只是第一道防线）。
 _DOMAIN_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$")
 
 try:
@@ -352,7 +351,7 @@ class RenewRegistry:
         task = {
             "id": task_id,
             "domain": domain,
-            "status": "running",  # running / done / failed
+            "status": "running",
             "output": "",
             "error": None,
             "startedAt": time.time(),
@@ -373,7 +372,7 @@ class RenewRegistry:
             self._tasks.clear()
 
 
-# 全局单例（单进程内共享）。
+# Global singleton (shared within a single process). 全局单例（单进程内共享）。
 RENEW_TASKS = RenewRegistry()
 
 

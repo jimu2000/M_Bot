@@ -21,15 +21,14 @@
 """
 
 # ================= 配置区（改这里） =================
-# 默认 compartment OCID（占位符）。根 compartment 就是 tenancy OCID。
+# Default compartment OCID (placeholder). The root compartment is the tenancy OCID. 默认 compartment OCID（占位符）。根 compartment 就是 tenancy OCID。
 DEFAULT_COMPARTMENT_ID = "ocid1.tenancy.oc1..xxxxxxxx"
-# 默认区域（如 ap-singapore-1 / us-sanjose-1 / us-chicago-1）。
+# Default region (e.g. ap-singapore-1 / us-sanjose-1 / us-chicago-1). 默认区域（如 ap-singapore-1 / us-sanjose-1 / us-chicago-1）。
 DEFAULT_REGION = "ap-singapore-1"
-# 免费额度：Always Free 账号的块存储卷 + 启动盘总容量上限（GB）。
-# total_boot_volume_gb() 的返回值配合 quota 模块用，不要超过这个数。
+# Free quota: the total block-storage volume + boot volume capacity cap (GB) for Always Free accounts. 免费额度：Always Free 账号的块存储卷 + 启动盘总容量上限（GB）。
+# total_boot_volume_gb()'s return value is used with the quota module; do not exceed this number. total_boot_volume_gb() 的返回值配合 quota 模块用，不要超过这个数。
 FREE_BOOT_VOLUME_GB = 200
-# 启动盘 VPU（每 GB 的性能单位）的有效值：10=默认（平衡）、
-# 20=高性能、30=超高性能（OCI 只认这三档）。
+# Valid boot volume VPU (performance units per GB) values: 10 = default (balanced), 20 = high performance, 30 = ultra-high performance (OCI only accepts these three). 启动盘 VPU（每 GB 的性能单位）的有效值：10=默认（平衡）、20=高性能、30=超高性能（OCI 只认这三档）。
 VALID_VPUS_PER_GB = (10, 20, 30)
 # =====================================================
 
@@ -57,14 +56,13 @@ def _simplify_boot_volume(item):
         "size-in-gbs": item.get("size-in-gbs"),
         "lifecycle-state": item.get("lifecycle-state"),
         "availability-domain": item.get("availability-domain"),
-        # 创建时间（Web 磁盘列表的 timeCreated 列用；API 未返回时为 None）。
+        # Creation time (used by the web disk list's timeCreated column; None when the API does not return it). 创建时间（Web 磁盘列表的 timeCreated 列用；API 未返回时为 None）。
         "time-created": item.get("time-created"),
     }
-    # 启动盘资源本身不带 instance-id（实测：2026-11-23），但如果 API
-    # 将来返回该字段，这里会一并保留，供孤儿盘判断做兜底。
+    # A boot volume resource itself carries no instance-id, but if the API ever returns that field, it is kept here as a fallback for orphan-volume detection. 启动盘资源本身不带 instance-id，但如果 API 将来返回该字段，这里会一并保留，供孤儿盘判断做兜底。
     if item.get("instance-id"):
         simplified["instance-id"] = item["instance-id"]
-    # VPU（每 GB 的性能单位）：API 返回时保留，供"改 VPU"显示当前值。
+    # VPU (performance units per GB): kept when the API returns it, to show the current value in "改 VPU". VPU（每 GB 的性能单位）：API 返回时保留，供“改 VPU”显示当前值。
     if item.get("vpus-per-gb") is not None:
         simplified["vpus-per-gb"] = item["vpus-per-gb"]
     return simplified
@@ -139,9 +137,7 @@ def resize_boot_volume(cli, boot_volume_id, size_in_gbs):
     result = cli.run(["bv", "boot-volume", "update",
                       "--boot-volume-id", boot_volume_id,
                       "--size-in-gbs", str(size),
-                      # --force 必加：不加时 OCI CLI 会交互确认，
-                      # subprocess 无 stdin 应答会一直挂到超时
-                      # （同类问题见实例升降配，2026-11-23 真实验证）。
+                      # --force is required: without it the OCI CLI asks for interactive confirmation, and a subprocess with no stdin to answer hangs until timeout (the same problem as instance scale-up/down). --force 必加：不加时 OCI CLI 会交互确认，subprocess 无 stdin 应答会一直挂到超时（同类问题见实例升降配）。
                       "--force"])
     return _extract_data(result)
 
@@ -242,7 +238,7 @@ def list_orphan_boot_volumes(cli, compartment_id):
         记录，且没有 instance-id 字段（兜底）。
     """
     volumes = list_boot_volumes(cli, compartment_id)
-    # 按启动盘实际所在的 AD 逐个查挂载关系（attachment list 必须带 AD）。
+    # Check the attachment relation per availability domain where the boot volume actually lives (attachment list requires the AD). 按启动盘实际所在的 AD 逐个查挂载关系（attachment list 必须带 AD）。
     attached_ids = set()
     for ad in {v.get("availability-domain") for v in volumes if v.get("availability-domain")}:
         for att in list_boot_volume_attachments(cli, compartment_id, ad):

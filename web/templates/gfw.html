@@ -1,8 +1,5 @@
 {% extends "base.html" %}
-{# GFW 自动换 IP 页：菜单 16 的网页版。数据来自 GET /api/gfw/status 与
-   GET /api/gfw/instances；开关走 POST /api/gfw/toggle，Key 走
-   POST /api/gfw/key，立即检查走 POST /api/gfw/check-now。
-   与机器人端共用 tgbot/data/gfw.json，两边改的开关互相可见。 #}
+{# GFW auto IP-change page: the web version of menu 16. Data comes from GET /api/gfw/status and GET /api/gfw/instances; the switch goes through POST /api/gfw/toggle, the Key through POST /api/gfw/key, and an immediate check through POST /api/gfw/check-now. It shares tgbot/data/gfw.json with the bot, so a switch changed on either side is visible on the other. GFW 自动换 IP 页：菜单 16 的网页版。数据来自 GET /api/gfw/status 与 GET /api/gfw/instances；开关走 POST /api/gfw/toggle，Key 走 POST /api/gfw/key，立即检查走 POST /api/gfw/check-now。与机器人端共用 tgbot/data/gfw.json，两边改的开关互相可见。 #}
 {% block title %}GFW 自动换 IP · M_Bot Oracle开源管理面板{% endblock %}
 
 {% block content %}
@@ -10,7 +7,7 @@
   <h1>GFW 自动换 IP</h1>
   <label for="profile-select" style="color: var(--text-muted);">Profile</label>
   <select id="profile-select" style="width: auto;" aria-label="切换账号"></select>
-  {# 二级区域下拉：多区订阅的账号才显示（单区账号隐藏） #}
+  {# Second-level region dropdown: only shown for multi-region accounts (hidden for single-region accounts). 二级区域下拉：多区订阅的账号才显示（单区账号隐藏）。 #}
   <span id="region-wrap" hidden>
     <label for="region-select" style="color: var(--text-muted);">区域</label>
     <select id="region-select" style="width: auto;" aria-label="切换区域"></select>

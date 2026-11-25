@@ -38,13 +38,12 @@ from pydantic import BaseModel
 from web.deps import error_response, get_current_user, get_oci_client
 
 try:
-    # 正式接口：clouds/cloudflare.py 由另一工人并行编写。
     from clouds.cloudflare import (  # noqa: F401  (CloudflareClient 供类型参考)
         CloudflareClient,
         CloudflareError,
         get_client,
     )
-except ImportError:  # clouds.cloudflare 尚未落地时不让面板崩掉，接口报 502
+except ImportError:  # While clouds.cloudflare is not ready, do not let the panel crash; the endpoints return 502. clouds.cloudflare 尚未落地时不让面板崩掉，接口报 502。
     CloudflareClient = None
     get_client = None
 
@@ -56,7 +55,7 @@ except ImportError:  # clouds.cloudflare 尚未落地时不让面板崩掉，接
             self.kind = kind
 
 try:
-    # 凭据管理（v1.26.0）：配置文件优先，环境变量兜底。
+    # Credential management: config file first, environment variables as fallback. 凭据管理：配置文件优先，环境变量兜底。
     from tgbot.cf_config import (
         clear_cf_config,
         extract_cf_from_host,
@@ -65,7 +64,7 @@ try:
         resolve_cf_credentials,
         validate_and_save,
     )
-except ImportError:  # 未落地时回落到纯环境变量方式
+except ImportError:  # Falls back to the pure environment-variable approach when the config is not ready. 未落地时回落到纯环境变量方式。
     clear_cf_config = None
     extract_cf_from_host = None
     get_configured_cf_client = None
@@ -74,11 +73,11 @@ except ImportError:  # 未落地时回落到纯环境变量方式
     validate_and_save = None
 
 try:
-    # 提取凭据时用：按实例 OCID 查公网 IP，再拼 SSH 主机记录。
+    # Used when extracting credentials: look up the public IP by instance OCID, then build the SSH host record. 提取凭据时用：按实例 OCID 查公网 IP，再拼 SSH 主机记录。
     from oci.email import is_valid_email
     from oci.network import get_public_ip
     from tgbot.cpu_model import host_for_ip
-except ImportError:  # 提取接口不可用时只影响提取，其他 DNS 功能正常
+except ImportError:  # When the extract endpoint is unavailable, only extraction is affected; other DNS features keep working. 提取接口不可用时只影响提取，其他 DNS 功能正常。
     is_valid_email = None
     get_public_ip = None
     host_for_ip = None
@@ -86,18 +85,18 @@ except ImportError:  # 提取接口不可用时只影响提取，其他 DNS 功�
 
 router = APIRouter()
 
-# 允许的记录类型（超出时 pydantic 校验返回 422）。
+# Allowed record types (anything else fails pydantic validation with 422). 允许的记录类型（超出时 pydantic 校验返回 422）。
 RECORD_TYPES = ("A", "AAAA", "CNAME", "TXT", "MX")
 
-# CloudflareError kind -> HTTP 状态码。
+# CloudflareError kind -> HTTP status code: not_configured (not configured) / auth_failed (auth failure, a panel config problem) / not_found (Zone / record does not exist) / rate_limited (Cloudflare rate limit). CloudflareError kind -> HTTP 状态码：未配置 / 认证失败（面板自身配置问题）/ Zone / 记录不存在 / Cloudflare 限流。
 _CF_STATUS = {
-    "config": 502,      # 未配置
-    "auth": 502,        # 认证失败（面板自身配置问题）
-    "not_found": 404,   # Zone / 记录不存在
-    "rate_limit": 429,  # Cloudflare 限流
+    "config": 502,
+    "auth": 502,
+    "not_found": 404,
+    "rate_limit": 429,
 }
 
-# kind -> 固定中文文案（不把 API 原始错误细节返回给前端）。
+# kind -> fixed Chinese message (the API's raw error details are never returned to the frontend). kind -> 固定中文文案（不把 API 原始错误细节返回给前端）。
 _CF_MESSAGE = {
     "config": "Cloudflare 未配置或认证失败",
     "auth": "Cloudflare 未配置或认证失败",

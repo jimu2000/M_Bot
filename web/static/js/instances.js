@@ -6,25 +6,25 @@
   "use strict";
   var MBot = window.MBot;
   var instances = [];
-  var volumesByInstance = {}; // 启动盘：实例 id -> /api/volumes 条目（卡片显示用）
-  var selected = {}; // 选中实例的 id 集合（对象当集合用）
-  var currentProfile = null; // 当前账号（profile），由 fillProfileSelect 恢复
-  var currentRegion = null; // 当前工作区域，由 fillRegionSelect 恢复（多区账号才有二级下拉）
-  var loading = true; // 加载中时卡片区显示占位，不闪旧数据
-  var terminateTarget = null; // 待终止的实例
-  var terminatePreserve = false; // 终止时是否保留引导卷
-  var renameTarget = null; // 待改名的实例
-  var reinstallTarget = null; // 待重装的实例
-  var changeIpTarget = null; // 待换 IP 的实例
-  var ipTarget = null; // IP 管理弹窗当前实例
-  var bootVolumeTarget = null; // 启动盘弹窗当前实例 {instance, volumeId, size}
-  var resizeTarget = null; // 待升降配的实例
-  var detailTarget = null; // 详情弹窗当前实例 {id, name, state}
-  var bootswapTarget = null; // 待恢复引导卷的实例
-  var bootswapSelected = null; // 已选备份的 OCID
-  var bootBackupDelTarget = null; // 待删历史备份的实例
-  var cpuRefreshTimer = null; // CPU 型号延迟补拉的定时器（每轮只补拉一次）
-  var consoleCommand = ""; // 当前串行控制台连接命令（供复制）
+  var volumesByInstance = {};  // Boot volumes: instance id -> /api/volumes entry (used by card rendering). 启动盘：实例 id -> /api/volumes 条目（卡片显示用）。
+  var selected = {};
+  var currentProfile = null;
+  var currentRegion = null;  // Current working region, restored by fillRegionSelect (only multi-region accounts have the second dropdown). 当前工作区域，由 fillRegionSelect 恢复（多区账号才有二级下拉）。
+  var loading = true;  // While loading, the card area shows placeholders instead of flashing stale data. 加载中时卡片区显示占位，不闪旧数据。
+  var terminateTarget = null;
+  var terminatePreserve = false;
+  var renameTarget = null;
+  var reinstallTarget = null;
+  var changeIpTarget = null;
+  var ipTarget = null;
+  var bootVolumeTarget = null;  // Boot-volume modal's current instance {instance, volumeId, size}. 启动盘弹窗当前实例 {instance, volumeId, size}。
+  var resizeTarget = null;
+  var detailTarget = null;  // Detail modal's current instance {id, name, state}. 详情弹窗当前实例 {id, name, state}。
+  var bootswapTarget = null;
+  var bootswapSelected = null;
+  var bootBackupDelTarget = null;
+  var cpuRefreshTimer = null;  // Timer for the delayed CPU-model refetch (at most one refetch per load round). CPU 型号延迟补拉的定时器（每轮只补拉一次）。
+  var consoleCommand = "";
 
   var BATCH_LABEL = {
     start: "批量开机",
@@ -33,10 +33,8 @@
     terminate: "批量删除",
   };
 
-  // 字段归一化：后端返回 面板形状（camelCase）
-  // {id, name, publicIp, shape, state, ocpus, memoryInGBs, region, timeCreated}，
-  // 过渡期同时双写旧字段，这里优先认新字段，旧字段作兜底。
-  // 注意：列表只含 RUNNING 实例。
+  // Field normalization: the backend returns panel shapes (camelCase) {id, name, publicIp, shape, state, ocpus, memoryInGBs, region, timeCreated}; during the transition both old and new fields are written, and new fields win here with old ones as fallback. 字段归一化：后端返回面板形状（camelCase）{id, name, publicIp, shape, state, ocpus, memoryInGBs, region, timeCreated}，过渡期同时双写旧字段，这里优先认新字段，旧字段作兜底。
+  // Note: the list only contains RUNNING instances. 注意：列表只含 RUNNING 实例。
   function norm(inst) {
     return {
       id: inst.id,
@@ -53,15 +51,17 @@
     };
   }
 
+  // State badge: Chinese mode shows Chinese (RUNNING -> 运行中、TERMINATED -> 已终止、STOPPED -> 已停止, etc.; the map is INSTANCE_STATE_ZH in i18n.js); English mode and unknown states show the OCI original. 状态徽标：中文模式显示中文（RUNNING→运行中、TERMINATED→已终止、STOPPED→已停止等，映射表在 i18n.js 的 INSTANCE_STATE_ZH），英文模式与未知状态显示 OCI 原文。
   function stateBadge(state) {
     var s = (state || "").toUpperCase();
-    if (s === "RUNNING") return '<span class="badge badge-green">RUNNING</span>';
-    if (s === "STOPPED") return '<span class="badge badge-gray">STOPPED</span>';
-    if (s === "TERMINATED") return '<span class="badge badge-red">TERMINATED</span>';
-    return '<span class="badge badge-amber">' + MBot.escapeHtml(state || "—") + "</span>";
+    var label = window.MBotI18n ? window.MBotI18n.instanceStateLabel(state) : (state || "—");
+    if (s === "RUNNING") return '<span class="badge badge-green">' + MBot.escapeHtml(label) + "</span>";
+    if (s === "STOPPED") return '<span class="badge badge-gray">' + MBot.escapeHtml(label) + "</span>";
+    if (s === "TERMINATED") return '<span class="badge badge-red">' + MBot.escapeHtml(label) + "</span>";
+    return '<span class="badge badge-amber">' + MBot.escapeHtml(label || "—") + "</span>";
   }
 
-  // E2.1.Micro 后面加“永久免费”。
+  // E2.1.Micro is followed by "永久免费" (permanently free). E2.1.Micro 后面加“永久免费”。
   function fmtShape(shape) {
     if (shape === "VM.Standard.E2.1.Micro" || shape === "E2.1.Micro") {
       return shape + "永久免费";
@@ -69,7 +69,6 @@
     return shape;
   }
 
-  // 启动盘格子：大小 · VPU + 状态徽标 + 已附加徽标；无数据时显示 "—"
   function bootVolumeCell(inst) {
     var esc = MBot.escapeHtml;
     var vol = volumesByInstance[String(inst.id)];
@@ -79,9 +78,11 @@
     var state = (vol.lifecycleState || vol["lifecycle-state"] || "").toUpperCase();
     var stateHtml = "";
     if (state === "AVAILABLE") {
-      stateHtml = '<span class="badge badge-green">AVAILABLE</span>';
+      var availLabel = window.MBotI18n ? window.MBotI18n.volumeStateLabel(state) : state;
+      stateHtml = '<span class="badge badge-green">' + esc(availLabel) + "</span>";
     } else if (state) {
-      stateHtml = '<span class="badge badge-amber">' + esc(state) + "</span>";
+      var otherLabel = window.MBotI18n ? window.MBotI18n.volumeStateLabel(state) : state;
+      stateHtml = '<span class="badge badge-amber">' + esc(otherLabel) + "</span>";
     }
     var attachedHtml = vol.attached
       ? '<span class="badge badge-blue">已附加</span>' : "";
@@ -101,7 +102,10 @@
 
   function updateBatchBar() {
     var count = selectedIds().length;
-    document.getElementById("batch-count").textContent = "已选 " + count + " 台";
+    var batchEl = document.getElementById("batch-count");
+    batchEl.textContent = window.MBotI18n
+      ? window.MBotI18n.t("instances.selected", { n: count })
+      : "已选 " + count + " 台";
     var buttons = document.querySelectorAll("[data-batch]");
     buttons.forEach(function (btn) { btn.disabled = count === 0; });
     var selectAll = document.getElementById("select-all");
@@ -139,9 +143,8 @@
       var spec = (inst.ocpus != null && inst.memory_gb != null)
         ? inst.ocpus + " OCPU / " + inst.memory_gb + " GB" : "—";
       var created = inst.created ? esc(MBot.formatTime(inst.created)) : "—";
-      // 按钮矩阵（固定顺序）：关机/启动、重启、串行控制台、重命名、
-      // 升降级、修复、重置镜像、IP 管理、启动盘、删除、删除（保留启动盘）。
-      // 启停/重启按状态显示；升降级只对 A1.Flex 显示。
+      // Button matrix (fixed order): power off/on, restart, serial console, rename, resize, repair, reset image, IP management, boot volume, delete, delete (keep boot volume). 按钮矩阵（固定顺序）：关机/启动、重启、串行控制台、重命名、升降级、修复、重置镜像、IP 管理、启动盘、删除、删除（保留启动盘）。
+      // Power/restart follow the instance state; resize only shows for A1.Flex. 启停/重启按状态显示；升降级只对 A1.Flex 显示。
       var actions = "";
       if (stopped) actions += '<button type="button" class="btn btn-sm btn-primary" data-act="start">启动</button>';
       if (running) {
@@ -184,14 +187,8 @@
     updateBatchBar();
   }
 
-  // 加载实例列表（实例请求不走前端缓存，每次进页重新拉：CPU 型号是
-  // 后端收到第一次请求后才触发检测的，缓存里的旧空值会让卡片一直
-  // 显示“未检测”；后端 30 秒服务端缓存已足够保护。force=true 时
-  // 再带 refresh=1 绕过服务端缓存）。后端并行取公网 IP，首次约 3-5 秒。
-  // 实例与启动盘两个请求并行发（启动盘复用 volumes 页的 "vol:list:"
-  // 缓存键），启动盘按 instanceId 拼到卡片上；启动盘拉取失败时降级
-  // （卡片显示"—"），不影响实例列表。切账号/区域期间旧请求的结果
-  // 直接丢弃，不覆盖新数据。
+  // Load the instance list (instance requests bypass the frontend cache and re-fetch on every page entry: the CPU model is only detected after the backend receives its first request, so a cached old empty value would leave cards stuck on "not detected"; the backend's 30s server cache is protection enough. force=true also sends refresh=1 to bypass the server cache). The backend fetches public IPs in parallel; the first load takes ~3-5s. 加载实例列表（实例请求不走前端缓存，每次进页重新拉：CPU 型号是后端收到第一次请求后才触发检测的，缓存里的旧空值会让卡片一直显示“未检测”；后端 30 秒服务端缓存已足够保护。force=true 时再带 refresh=1 绕过服务端缓存）。后端并行取公网 IP，首次约 3-5 秒。
+  // The instance and boot-volume requests go out in parallel (boot volumes reuse the volumes page's "vol:list:" cache key) and volumes are joined onto cards by instanceId; a volume fetch failure degrades (cards show "—") without affecting the instance list. Results arriving while switching account/region are discarded, never overwriting new data. 实例与启动盘两个请求并行发（启动盘复用 volumes 页的 "vol:list:" 缓存键），启动盘按 instanceId 拼到卡片上；启动盘拉取失败时降级（卡片显示"—"），不影响实例列表。切账号/区域期间旧请求的结果直接丢弃，不覆盖新数据。
   async function loadInstances(force) {
     if (cpuRefreshTimer) {
       clearTimeout(cpuRefreshTimer);
@@ -208,7 +205,6 @@
       if (force) url += (url.indexOf("?") === -1 ? "?" : "&") + "refresh=1";
       var volUrl = MBot.withProfile("/api/volumes", currentProfile, currentRegion);
       if (force) volUrl += (volUrl.indexOf("?") === -1 ? "?" : "&") + "refresh=1";
-      // 两个请求同时发出，启动盘失败时降级为 null（不影响实例列表）。
       var volPromise = MBot.cachedApi("vol:list:" + (currentProfile || "DEFAULT") + ":" + (currentRegion || ""), volUrl, !!force).catch(function () { return null; });
       var data = await MBot.api(url);
       if (profileAtStart !== currentProfile || regionAtStart !== currentRegion) return;
@@ -224,7 +220,6 @@
           }
         });
       }
-      // 刷新后清理已不存在实例的选中状态
       var alive = {};
       instances.forEach(function (raw) { alive[String(raw.id)] = true; });
       Object.keys(selected).forEach(function (id) {
@@ -243,11 +238,7 @@
     }
   }
 
-  // CPU 型号延迟补拉：后端收到第一次列表请求时才触发 CPU 检测（SSH 查
-  // /proc/cpuinfo，要 1-3 秒），当时返回的 cpuModel 还是空；5 秒后带
-  // refresh=1 重新拉一次（绕过 30 秒服务端缓存），只更新卡片上的
-  // CPU 型号文字，不整页重绘。每轮列表加载只补拉一次（检测不到的
-  // 机器不再反复刷），切账号/区域后旧定时器在 loadInstances 里清掉。
+  // Delayed CPU-model refetch: the backend only starts CPU detection (SSH /proc/cpuinfo, 1-3s) when it receives the first list request, so cpuModel is still empty then; refetch after 5s with refresh=1 (bypassing the 30s server cache) and update only the CPU text on cards, without a full re-render. At most one refetch per load round (undetectable machines are not re-polled), and the old timer is cleared in loadInstances when switching account/region. CPU 型号延迟补拉：后端收到第一次列表请求时才触发 CPU 检测（SSH 查 /proc/cpuinfo，要 1-3 秒），当时返回的 cpuModel 还是空；5 秒后带 refresh=1 重新拉一次（绕过 30 秒服务端缓存），只更新卡片上的 CPU 型号文字，不整页重绘。每轮列表加载只补拉一次（检测不到的机器不再反复刷），切账号/区域后旧定时器在 loadInstances 里清掉。
   function scheduleCpuRefresh() {
     if (cpuRefreshTimer) return;
     var missing = instances.some(function (inst) { return !inst.cpuModel; });
@@ -277,11 +268,9 @@
         if (cell) cell.textContent = fresh.cpuModel;
       });
     } catch (err) {
-      // 补拉失败静默（卡片仍显示“未检测”，下次进页再拉）。
     }
   }
 
-  // 实例操作：start / stop / restart，成功后清前端缓存并刷新列表
   async function instanceAction(id, action, label) {
     try {
       await MBot.api(MBot.withProfile("/api/instances/" + encodeURIComponent(id) + "/" + action, currentProfile, currentRegion), { method: "POST" });
@@ -293,7 +282,6 @@
     }
   }
 
-  // 实例详情弹窗：点实例名打开，显示形状/规格/内外网 IP/IPv6/可用域/启动盘/创建时间
   async function showDetail(instId) {
     try {
       var res = await MBot.api(MBot.withProfile("/api/instances/" + encodeURIComponent(instId), currentProfile, currentRegion));
@@ -326,16 +314,19 @@
         name: inst["display-name"] || "—",
         state: inst["lifecycle-state"] || "",
       };
-      // 引导卷备份 / 恢复 / 删除历史备份只对运行中 / 已停止的实例可用
+      document.getElementById("detail-modal").dataset.instanceId = instId;
+      document.getElementById("detail-bind-domain-btn").hidden =
+        !res.public_ip;
+      // Boot-volume backup / restore / delete-old-backups are only available for RUNNING / STOPPED instances. 引导卷备份 / 恢复 / 删除历史备份只对运行中 / 已停止的实例可用。
       var bootButtonsOn = detailTarget.state === "RUNNING" || detailTarget.state === "STOPPED";
       document.getElementById("detail-bootbackup-btn").hidden = !bootButtonsOn;
       document.getElementById("detail-bootswap-btn").hidden = !bootButtonsOn;
       document.getElementById("detail-bootbackup-del-btn").hidden = !bootButtonsOn;
-      // 看门狗只对运行中的实例可用（要 SSH 上去装脚本）
+      // The watchdog is only available for RUNNING instances (it must SSH in to install its scripts). 看门狗只对运行中的实例可用（要 SSH 上去装脚本）。
       var watchdogOn = detailTarget.state === "RUNNING";
       document.getElementById("detail-watchdog").textContent = watchdogOn ? "查询中…" : "—";
       document.getElementById("detail-watchdog-btn").hidden = true;
-      // CPU 重新检测也只对运行中的实例可用
+      // CPU re-detection is only available for RUNNING instances. CPU 重新检测也只对运行中的实例可用。
       document.getElementById("detail-cpu-btn").hidden = !watchdogOn;
       MBot.openModal("detail-modal");
       if (watchdogOn) refreshWatchdog();
@@ -344,7 +335,7 @@
     }
   }
 
-  // 看门狗状态：详情弹窗打开后单独查（SSH 探针慢，不阻塞详情本身）
+  // Watchdog status is fetched separately after the detail modal opens (the SSH probe is slow and must not block the detail itself). 看门狗状态：详情弹窗打开后单独查（SSH 探针慢，不阻塞详情本身）。
   var watchdogState = null;
   async function refreshWatchdog() {
     var labelEl = document.getElementById("detail-watchdog");
@@ -391,7 +382,6 @@
     }
   }
 
-  // CPU 型号重新检测：详情弹窗按钮用，强制 SSH 重测并更新显示
   async function refreshCpuModel() {
     if (!detailTarget) return;
     var btn = document.getElementById("detail-cpu-btn");
@@ -414,7 +404,6 @@
     }
   }
 
-  // 引导卷恢复弹窗：列该实例启动盘的可用备份，选一个确认后起后台任务
   async function showBootswap() {
     if (!detailTarget) return;
     bootswapTarget = detailTarget;
@@ -464,8 +453,7 @@
     }
   }
 
-  // 引导卷备份：给详情里的实例做 FULL 备份；免费额度满了（409 + full）
-  // 时改弹删除历史备份弹窗，让用户先删再建
+  // Boot-volume backup: make a FULL backup for the instance in the detail modal; when the free quota is full (409 + full), open the delete-old-backups modal instead so the user deletes first, then creates. 引导卷备份：给详情里的实例做 FULL 备份；免费额度满了（409 + full）时改弹删除历史备份弹窗，让用户先删再建。
   async function createBootBackup() {
     if (!detailTarget) return;
     var btn = document.getElementById("detail-bootbackup-btn");
@@ -490,7 +478,6 @@
     }
   }
 
-  // 删除历史备份弹窗：列本实例启动盘的备份，多选后批量删除
   async function showBootBackupDelete() {
     if (!detailTarget) return;
     bootBackupDelTarget = detailTarget;
@@ -534,8 +521,6 @@
     }
   }
 
-  // IP 管理弹窗：显示当前公网 IPv4 / 内网 IP / IPv6，三个操作按钮
-  // 复用已有的换 IP 弹窗与 addIpv6/deleteIpv6 流程
   async function showIpManage(inst) {
     ipTarget = inst;
     document.getElementById("ip-name").textContent = norm(inst).name;
@@ -545,7 +530,7 @@
     MBot.openModal("ip-modal");
     try {
       var res = await MBot.api(MBot.withProfile("/api/instances/" + encodeURIComponent(inst.id), currentProfile, currentRegion));
-      if (ipTarget !== inst) return; // 弹窗期间切了实例，丢弃旧结果
+      if (ipTarget !== inst) return;  // The instance changed while the modal was open; discard the stale result. 弹窗期间切了实例，丢弃旧结果。
       document.getElementById("ip-public").textContent = res.public_ip || "—";
       document.getElementById("ip-private").textContent = res.private_ip || "—";
       var ipv6 = res.ipv6_addresses;
@@ -558,9 +543,8 @@
     }
   }
 
-  // 启动盘弹窗：详情优先用详情接口的启动盘字段（现查，最新），
-  // 查不到时退回卡片拼好的启动盘数据；都没有时报错不打开。
-  // 扩容复用 POST /api/volumes/{id}/resize。
+  // Boot-volume modal: prefer the detail API's boot-volume fields (freshly fetched, newest); fall back to the volume data already joined onto the card when unavailable; error and do not open when neither exists. 启动盘弹窗：详情优先用详情接口的启动盘字段（现查，最新），查不到时退回卡片拼好的启动盘数据；都没有时报错不打开。
+  // Resize reuses POST /api/volumes/{id}/resize. 扩容复用 POST /api/volumes/{id}/resize。
   async function showBootVolume(inst) {
     var n = norm(inst);
     var vol = null;
@@ -578,7 +562,6 @@
         };
       }
     } catch (err) {
-      // 详情失败时退回列表里拼好的启动盘数据
     }
     if (!vol) {
       var joined = volumesByInstance[String(inst.id)];
@@ -615,7 +598,6 @@
     MBot.openModal("boot-volume-modal");
   }
 
-  // 附加 IPv6：确认后直接执行，成功后回显新地址
   async function addIpv6(inst) {
     var name = norm(inst).name;
     var ok = await MBot.confirmDialog(
@@ -632,7 +614,6 @@
     }
   }
 
-  // 删除全部 IPv6：二次确认；无 IPv6 时后端返回 ok + 提示
   async function deleteIpv6(inst) {
     var name = norm(inst).name;
     var ok = await MBot.confirmDialog(
@@ -655,7 +636,6 @@
     }
   }
 
-  // 尝试修复：确认后调接口，在弹窗里展示修复报告
   async function doRepair(inst) {
     var name = norm(inst).name;
     var ok = await MBot.confirmDialog(
@@ -685,7 +665,7 @@
     }
   }
 
-  // 终止确认弹窗：删除与删除（保留启动盘）共用，按模式切换标题/警告/按钮文案
+  // Terminate confirm modal: delete and delete (keep boot volume) share it, switching title / warning / button text by mode. 终止确认弹窗：删除与删除（保留启动盘）共用，按模式切换标题/警告/按钮文案。
   function openTerminateModal(inst, preserve) {
     terminateTarget = inst;
     terminatePreserve = !!preserve;
@@ -704,7 +684,6 @@
     MBot.openModal("terminate-modal");
   }
 
-  // 批量操作：调 POST /api/instances/batch，汇报每台结果
   async function batchAction(action, label, confirm) {
     var ids = selectedIds();
     if (ids.length === 0) return;
@@ -732,9 +711,7 @@
   }
 
   document.addEventListener("DOMContentLoaded", function () {
-    // 先填 profile 下拉（恢复上次选择），再填区域下拉（多区账号才显示），
-    // 最后按当前账号 + 区域加载列表；profiles 接口失败时仍按默认账号加载，
-    // 不让页面空白。
+    // Fill the profile dropdown first (restoring the last choice), then the region dropdown (only shown for multi-region accounts), then load the list for the current account + region; when the profiles API fails, still load with the default account so the page is never blank. 先填 profile 下拉（恢复上次选择），再填区域下拉（多区账号才显示），最后按当前账号 + 区域加载列表；profiles 接口失败时仍按默认账号加载，不让页面空白。
     var profileSelect = document.getElementById("profile-select");
     var regionSelect = document.getElementById("region-select");
     MBot.fillProfileSelect(profileSelect).then(function (profile) {
@@ -747,12 +724,11 @@
     profileSelect.addEventListener("change", function (e) {
       currentProfile = e.target.value;
       MBot.setProfile(currentProfile);
-      // 切账号时区域重置为新账号的主区（与机器人端一致）。
+      // Switching accounts resets the region to the new account's home region (same as the bot). 切账号时区域重置为新账号的主区（与机器人端一致）。
       MBot.setRegion(null);
       currentRegion = MBot.fillRegionSelect(regionSelect, currentProfile);
       selected = {};
-      // 切账号时先清空列表并显示加载占位，再加载新账号数据，
-      // 避免旧账号卡片闪一帧（v1.3.0 留下的小瑕疵）。
+      // When switching accounts, clear the list and show loading placeholders first, then load the new account's data, so old-account cards never flash for a frame. 切账号时先清空列表并显示加载占位，再加载新账号数据，避免旧账号卡片闪一帧。
       instances = [];
       volumesByInstance = {};
       loading = true;
@@ -771,7 +747,9 @@
     });
     document.getElementById("btn-refresh-instances").addEventListener("click", function () { loadInstances(true); });
 
-    // 全选 / 取消全选（批量栏里的复选框）
+    // Re-render dynamic text after a language switch (state badges, selected counts, etc. go through the i18n dictionary). 语言切换后重渲染动态文案（状态徽标、已选台数等走 i18n 字典）。
+    window.addEventListener("mbot-lang-change", function () { render(); });
+
     document.getElementById("select-all").addEventListener("change", function (e) {
       if (e.target.checked) {
         instances.forEach(function (raw) { selected[String(raw.id)] = true; });
@@ -781,7 +759,6 @@
       render();
     });
 
-    // 批量操作按钮
     document.querySelectorAll("[data-batch]").forEach(function (btn) {
       btn.addEventListener("click", async function () {
         var action = btn.getAttribute("data-batch");
@@ -789,7 +766,6 @@
         var targets = selectedInstances();
         if (targets.length === 0) return;
         if (action === "terminate") {
-          // 批量删除用专用二次确认弹窗（列出待删实例名）
           document.getElementById("batch-terminate-count").textContent = targets.length;
           document.getElementById("batch-terminate-names").innerHTML =
             targets.map(function (raw) {
@@ -806,7 +782,6 @@
       });
     });
 
-    // 卡片区事件委托：勾选 / 复制 IP / 各操作按钮
     document.getElementById("instance-grid").addEventListener("click", function (e) {
       var checkbox = e.target.closest("[data-select]");
       if (checkbox) {
@@ -833,7 +808,6 @@
       else if (act === "restart") instanceAction(instId, "restart", "重启");
       else if (act === "detail") showDetail(instId);
       else if (act === "ssh") {
-        // 终端页目前不接受 ?host=/?instance= 参数，直接跳终端页
         window.location.href = "/terminal";
       } else if (act === "ip-manage") showIpManage(inst);
       else if (act === "boot-volume") showBootVolume(inst);
@@ -880,7 +854,6 @@
       }
     });
 
-    // 确认终止：带 confirm:true；保留模式多传 preserve_boot_volume:true
     document.getElementById("btn-confirm-terminate").addEventListener("click", async function () {
       if (!terminateTarget) return;
       var inst = terminateTarget;
@@ -902,17 +875,14 @@
       }
     });
 
-    // 详情弹窗里的“引导卷恢复”按钮：打开备份选择弹窗
     document.getElementById("detail-bootswap-btn").addEventListener("click", function () {
       showBootswap();
     });
 
-    // 详情弹窗里的“引导卷备份”按钮：直接创建备份（满 5 个时改弹删除弹窗）
     document.getElementById("detail-bootbackup-btn").addEventListener("click", function () {
       createBootBackup();
     });
 
-    // 详情弹窗里的“删除历史备份”按钮：打开多选删除弹窗
     document.getElementById("detail-bootbackup-del-btn").addEventListener("click", function () {
       showBootBackupDelete();
     });
@@ -923,7 +893,6 @@
       refreshCpuModel();
     });
 
-    // 删除历史备份确认：批量删除所选备份
     document.getElementById("bootbackup-del-confirm-btn").addEventListener("click", async function () {
       if (!bootBackupDelTarget) return;
       var ids = Array.prototype.slice.call(
@@ -949,7 +918,6 @@
       }
     });
 
-    // 引导卷恢复确认：起后台任务，跳任务页看进度
     document.getElementById("bootswap-confirm-btn").addEventListener("click", async function () {
       if (!bootswapTarget || !bootswapSelected) return;
       var btn = document.getElementById("bootswap-confirm-btn");
@@ -970,7 +938,6 @@
       }
     });
 
-    // IP 管理弹窗里的三个操作：换 IP 复用换 IP 弹窗，IPv6 复用已有流程
     document.getElementById("btn-ip-change").addEventListener("click", function () {
       if (!ipTarget) return;
       changeIpTarget = ipTarget;
@@ -991,15 +958,12 @@
       deleteIpv6(inst);
     });
 
-    // 启动盘弹窗里的"备份启动卷"：配额检查 + 满了提示删最早，全在共享流程里
     document.getElementById("btn-boot-volume-backup").addEventListener("click", async function () {
       if (!bootVolumeTarget || !bootVolumeTarget.volumeId) return;
       var created = await MBot.backupBootVolume(bootVolumeTarget.volumeId, currentProfile);
       if (created) MBot.closeModal("boot-volume-modal");
     });
 
-    // 启动盘弹窗里的"恢复启动卷"：复用详情页的引导卷恢复流程
-    // （showBootswap 读 detailTarget，把启动盘弹窗的实例放进去即可）
     document.getElementById("btn-boot-volume-restore").addEventListener("click", function () {
       if (!bootVolumeTarget || !bootVolumeTarget.instance) return;
       detailTarget = bootVolumeTarget.instance;
@@ -1007,7 +971,7 @@
       showBootswap();
     });
 
-    // 启动盘扩容：前端先校验新容量大于当前容量，后端再校验一次
+    // Boot-volume resize: the frontend validates the new size is larger than the current one first; the backend validates again. 启动盘扩容：前端先校验新容量大于当前容量，后端再校验一次。
     document.getElementById("boot-volume-form").addEventListener("submit", async function (e) {
       e.preventDefault();
       if (!bootVolumeTarget) return;
@@ -1041,7 +1005,6 @@
       }
     });
 
-    // 确认换 IP：带 confirm:true，成功后回显旧 IP → 新 IP
     document.getElementById("btn-confirm-change-ip").addEventListener("click", async function () {
       if (!changeIpTarget) return;
       var inst = changeIpTarget;
@@ -1059,7 +1022,7 @@
       }
     });
 
-    // 确认升/降配：前端先按免费额度上限校验，后端再校验一次
+    // Confirm resize: the frontend validates against the free-tier cap first; the backend validates again. 确认升/降配：前端先按免费额度上限校验，后端再校验一次。
     document.getElementById("resize-form").addEventListener("submit", async function (e) {
       e.preventDefault();
       if (!resizeTarget) return;
@@ -1087,13 +1050,11 @@
       }
     });
 
-    // 确认批量删除：带 confirm:true
     document.getElementById("btn-confirm-batch-terminate").addEventListener("click", async function () {
       MBot.closeModal("batch-terminate-modal");
       await batchAction("terminate", "批量删除", true);
     });
 
-    // 确认改名
     document.getElementById("rename-form").addEventListener("submit", async function (e) {
       e.preventDefault();
       if (!renameTarget) return;
@@ -1116,7 +1077,7 @@
       }
     });
 
-    // 确认重装：输入名必须与实例名完全一致
+    // Confirm reinstall: the typed name must match the instance name exactly. 确认重装：输入名必须与实例名完全一致。
     document.getElementById("reinstall-form").addEventListener("submit", async function (e) {
       e.preventDefault();
       if (!reinstallTarget) return;
@@ -1139,7 +1100,6 @@
       }
     });
 
-    // 复制串行控制台连接命令
     document.getElementById("btn-copy-console").addEventListener("click", function () {
       if (consoleCommand) MBot.copyText(consoleCommand, "连接命令");
     });

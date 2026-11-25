@@ -21,7 +21,7 @@ from web.app import create_app
 from web.auth import LOGIN_GUARD, SESSIONS, hash_password
 from web.routes.cloudreport import clear_cloud_report_cache
 
-# 测试密码：运行时随机生成（不在代码里写任何固定口令）。
+# Test password: generated randomly at runtime (no fixed password is ever written in code). 测试密码：运行时随机生成（不在代码里写任何固定口令）。
 TEST_PASSWORD = secrets.token_urlsafe(16)
 
 FAKE_INSTANCE = "ocid1.instance.oc1..testxxxx"
@@ -55,7 +55,7 @@ class CloudReportTestCase(unittest.TestCase):
         self._data_dir_patcher.start()
         self._profiles_patcher = patch("web.config.PROFILES", FAKE_PROFILES)
         self._profiles_patcher.start()
-        # 清云报告缓存，避免缓存跨测试串数据。
+        # Clear the cloud report cache so cached data does not leak across tests. 清云报告缓存，避免缓存跨测试串数据。
         clear_cloud_report_cache()
         LOGIN_GUARD.reset()
         SESSIONS.reset()
@@ -99,13 +99,12 @@ class TestCloudReport(CloudReportTestCase):
         self.assertEqual(len(body["groups"]), 2)
         group = body["groups"][0]
         self.assertEqual(group["profile"], "DEFAULT")
-        # v1.15.0：总览页用 profileLabel（主区中文名）代替配置键名。
+        # The overview page uses profileLabel (the home-region display name) instead of the config key name. 总览页用 profileLabel（主区中文名）代替配置键名。
         self.assertEqual(group["profileLabel"], "新加坡")
         self.assertEqual(group["region"], "ap-singapore-1")
         self.assertEqual(group["instances"]["total"], 2)
         self.assertEqual(group["instances"]["byState"],
                          {"RUNNING": 1, "STOPPED": 1})
-        # TERMINATED 的盘不计入。
         self.assertEqual(group["volumes"], {"count": 1, "totalGB": 47})
         self.assertEqual(group["quota"]["a1"],
                          {"usedOcpu": 2, "capOcpu": 4,

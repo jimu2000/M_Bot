@@ -74,8 +74,7 @@ class TestFetchMtdCost(unittest.TestCase):
         self.assertEqual(currency, "SGD")
 
     def test_blank_currency_falls_back_to_sgd(self):
-        # 真实 API 实测：零费用账号返回一个 amount 0.0、currency ' '
-        # 的条目，空白币种要回退到 SGD。
+        # Real API behavior: a zero-cost account returns one entry with amount 0.0 and currency ' ' (blank); a blank currency falls back to SGD. 真实 API 实测：零费用账号返回一个 amount 0.0、currency ' ' 的条目，空白币种要回退到 SGD。
         cli = MagicMock()
         cli.run.return_value = {"data": {"items": [
             {"computed-amount": 0.0, "currency": " "},
@@ -170,7 +169,7 @@ class TestCheckAccountBilling(unittest.TestCase):
             res = bill.check_account_billing("DEFAULT")
         mock_stop.assert_not_called()
         self.assertEqual(res["stopped"], [])
-        # 仍记录为付费运行中（告警里能看到），只是不停。
+        # Still recorded as paid-and-running (visible in the alert), just not stopped. 仍记录为付费运行中（告警里能看到），只是不停。
         self.assertEqual(len(res["paid_running"]), 1)
 
     def test_stop_failure_recorded(self):
@@ -249,11 +248,11 @@ class TestCollectBillingAlerts(unittest.TestCase):
                 res, {"DEFAULT": {"mtd_cost": 0.0}}), [])
 
     def test_first_run_no_prev_no_cost_alert(self):
-        # 首次运行无上次状态、费用为 0：不告警。
+        # First run with no previous state and zero cost: no alert. 首次运行无上次状态、费用为 0：不告警。
         self.assertEqual(bill.collect_billing_alerts([self._res()], {}), [])
 
     def test_over_budget_alone_no_alert(self):
-        # 已超预算但无新增收费（已知历史账单）：不重复告警。
+        # Over budget but no new charges (a known historical bill): do not alert again. 已超预算但无新增收费（已知历史账单）：不重复告警。
         res = [self._res(mtd_cost=13.46, over_budget=True)]
         self.assertEqual(
             bill.collect_billing_alerts(
@@ -269,7 +268,7 @@ class TestCollectBillingAlerts(unittest.TestCase):
         self.assertIn("预算 1.00 SGD", alerts[0])
 
     def test_tiny_increase_no_alert(self):
-        # 增加 <= 0.01（四舍五入噪声）：不告警。
+        # An increase <= 0.01 (rounding noise): no alert. 增加 <= 0.01（四舍五入噪声）：不告警。
         res = [self._res(mtd_cost=0.205)]
         self.assertEqual(
             bill.collect_billing_alerts(
@@ -406,7 +405,7 @@ class TestBillingCheckJob(unittest.IsolatedAsyncioTestCase):
         mock_notify.assert_called_once()
         self.assertIn("账单检查失败",
                       mock_notify.call_args[0][3])
-        # 检查失败的账号不写进 state（下次仍按旧费用比对）。
+        # An account whose check failed is not written into state (next time it is still compared against the old cost). 检查失败的账号不写进 state（下次仍按旧费用比对）。
         self.assertEqual(self.saved_state, {})
 
     async def test_paid_instance_alert_pins(self):

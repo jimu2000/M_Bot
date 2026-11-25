@@ -21,14 +21,14 @@ from oci.network import (assign_public_ip, attach_public_ips,
                          get_vnic, list_private_ips, list_public_ips,
                          list_vnics, wait_for_public_ip)
 
-# 占位符（测试里不出现真实 OCID / IP）
+# Placeholders (no real OCID / IP in tests). 占位符（测试里不出现真实 OCID / IP）。
 FAKE_COMPARTMENT = "ocid1.tenancy.oc1..xxxxxxxx"
 FAKE_INSTANCE = "ocid1.instance.oc1..xxxxxxxx"
 FAKE_VNIC = "ocid1.vnic.oc1..xxxxxxxx"
 FAKE_VNIC_2 = "ocid1.vnic.oc1..yyyyyyyy"
 FAKE_PUBLIC_IP = "ocid1.publicip.oc1..xxxxxxxx"
 FAKE_PRIVATE_IP = "ocid1.privateip.oc1..xxxxxxxx"
-FAKE_IP = "203.0.113.10"  # TEST-NET-3，文档保留地址，非真实 IP
+FAKE_IP = "203.0.113.10"  # TEST-NET-3, a documentation-reserved address, not a real IP. TEST-NET-3，文档保留地址，非真实 IP。
 
 
 def _mock_cli():
@@ -52,7 +52,7 @@ class TestListVnics(unittest.TestCase):
         ]}
         result = list_vnics(self.cli, FAKE_INSTANCE)
         self.assertEqual(len(result), 2)
-        # 只保留精简字段，多余字段（如 mac-address）被去掉
+        # Only the slim fields are kept; extra fields (e.g. mac-address) are dropped. 只保留精简字段，多余字段（如 mac-address）被去掉。
         self.assertEqual(result[0], {
             "id": FAKE_VNIC, "display-name": "vnic-1",
             "public-ip": FAKE_IP, "private-ip": "10.0.0.5",
@@ -181,7 +181,7 @@ class TestDeletePublicIp(unittest.TestCase):
         self.cli = _mock_cli()
 
     def test_delete_uses_force_flag(self):
-        self.cli.run.return_value = None  # delete 成功时无输出
+        self.cli.run.return_value = None
         self.assertIsNone(delete_public_ip(self.cli, FAKE_PUBLIC_IP))
         self.cli.run.assert_called_once_with(
             ["network", "public-ip", "delete",
@@ -220,17 +220,17 @@ class TestChangePublicIp(unittest.TestCase):
         因为 OCI 拒绝给已绑公网 IP 的内网 IP 再绑一个（409 Conflict）。
         """
         responses = [
-            # 1. list-vnics：主 VNIC
+            # 1. list-vnics: the primary VNIC. 1. list-vnics：主 VNIC。
             {"data": [{"id": FAKE_VNIC, "display-name": "vnic-1",
                        "public-ip": "203.0.113.1", "private-ip": "10.0.0.5",
                        "is-primary": True}]},
-            # 2. list private-ip：主内网 IP
+            # 2. list private-ip: the primary private IP. 2. list private-ip：主内网 IP。
             {"data": [{"id": FAKE_PRIVATE_IP, "ip-address": "10.0.0.5",
                        "is-primary": True, "display-name": "primary"}]},
-            # 3. instance get：取 AD
+            # 3. instance get: fetch the AD. 3. instance get：取 AD。
             {"data": {"id": FAKE_INSTANCE,
                       "availability-domain": "AD-1"}},
-            # 4. list public-ip（AD 作用域）：已绑的旧临时 IP
+            # 4. list public-ip (AD-scoped): the old ephemeral IP already attached. 4. list public-ip（AD 作用域）：已绑的旧临时 IP。
             {"data": [{"id": "ocid1.publicip.oc1..oldip",
                        "ip-address": "203.0.113.1", "lifetime": "EPHEMERAL",
                        "lifecycle-state": "ASSIGNED",
@@ -238,13 +238,13 @@ class TestChangePublicIp(unittest.TestCase):
              if old_ip_present else []},
         ]
         if old_ip_present:
-            # 5. delete 旧临时 IP
+            # 5. delete the old ephemeral IP. 5. delete 旧临时 IP。
             responses.append(None)
         responses += [
-            # 6. create 保留 IP：新 IP
+            # 6. create a reserved IP: the new IP. 6. create 保留 IP：新 IP。
             {"data": {"id": FAKE_PUBLIC_IP, "ip-address": FAKE_IP,
                       "lifetime": "RESERVED"}},
-            # 7. update 绑定
+            # 7. update to attach it. 7. update 绑定。
             {"data": {"id": FAKE_PUBLIC_IP, "ip-address": FAKE_IP,
                       "lifecycle-state": "ASSIGNED"}},
         ]
@@ -254,7 +254,7 @@ class TestChangePublicIp(unittest.TestCase):
         self.cli.run.side_effect = self._full_flow_responses()
         result = change_public_ip(self.cli, FAKE_COMPARTMENT, FAKE_INSTANCE)
         self.assertEqual(result, FAKE_IP)
-        # 断言调用顺序与参数（先删旧 IP 再绑新 IP）
+        # Assert the call order and arguments (delete the old IP before attaching the new one). 断言调用顺序与参数（先删旧 IP 再绑新 IP）。
         self.assertEqual(self.cli.run.call_args_list, [
             call(["compute", "instance", "list-vnics",
                   "--instance-id", FAKE_INSTANCE]),
@@ -300,7 +300,7 @@ class TestChangePublicIp(unittest.TestCase):
             {"id": FAKE_VNIC, "is-primary": False}]}
         with self.assertRaises(ValueError):
             change_public_ip(self.cli, FAKE_COMPARTMENT, FAKE_INSTANCE)
-        # 只查了 VNIC 就停下，没有创建任何 IP
+        # Stopped after only checking the VNIC; no IP was created. 只查了 VNIC 就停下，没有创建任何 IP。
         self.assertEqual(self.cli.run.call_count, 1)
 
     def test_no_primary_private_ip_raises_before_creating_ip(self):
@@ -310,7 +310,7 @@ class TestChangePublicIp(unittest.TestCase):
         ]
         with self.assertRaises(ValueError):
             change_public_ip(self.cli, FAKE_COMPARTMENT, FAKE_INSTANCE)
-        # 只查了 VNIC + 内网 IP 就停下，没有创建任何 IP
+        # Stopped after only checking the VNIC + private IP; no IP was created. 只查了 VNIC + 内网 IP 就停下，没有创建任何 IP。
         self.assertEqual(self.cli.run.call_count, 2)
 
 
@@ -343,7 +343,7 @@ class TestAttachPublicIps(unittest.TestCase):
         with patch("oci.network.get_public_ip",
                    return_value=FAKE_IP) as mock_get:
             attach_public_ips(self.cli, instances)
-        # 只查了 RUNNING 的那台，已终止/终止中的不查。
+        # Only the RUNNING instance is queried; terminated / terminating ones are not. 只查了 RUNNING 的那台，已终止/终止中的不查。
         mock_get.assert_called_once_with(
             self.cli, "ocid1.instance.oc1..aaaa")
         self.assertEqual(instances[0]["public-ip"], FAKE_IP)

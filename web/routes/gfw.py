@@ -69,8 +69,7 @@ def _notify_chat_id():
 
 def _check_now_thread():
     """check-now 的后台线程体：跑一轮监控，完事发汇总通知。"""
-    token = bot_config.TELEGRAM_BOT_TOKEN  # 直接读变量：未配置时为空，
-    # 线程静默返回（get_token() 会抛 RuntimeError，不适合后台线程）。
+    token = bot_config.TELEGRAM_BOT_TOKEN  # Read the variable directly: empty when unconfigured, and the thread returns silently (get_token() raises RuntimeError, which does not belong in a background thread). 直接读变量：未配置时为空，线程静默返回（get_token() 会抛 RuntimeError，不适合后台线程）。
     chat_id = _notify_chat_id()
     if not token or not chat_id:
         return

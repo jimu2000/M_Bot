@@ -1,45 +1,42 @@
 {% extends "base.html" %}
-{# 主机面板：已保存会话卡片网格（对应原版 terminal-list.jpg） #}
+{# Host panel: a grid of saved-session cards (mirrors the original terminal-list.jpg). 主机面板：已保存会话卡片网格（对应原版 terminal-list.jpg）。 #}
 {% block title %}主机 · M_Bot Oracle开源管理面板{% endblock %}
 
 {% block content %}
 <div class="page-head">
-  <h1>已保存会话 <span class="count-badge" id="host-count">0</span></h1>
-  <input type="text" class="search-input" id="host-search" placeholder="按名称 / IP 搜索" aria-label="搜索主机">
+  <h1><span data-i18n="overview.saved">已保存会话</span> <span class="count-badge" id="host-count">0</span></h1>
+  <input type="text" class="search-input" id="host-search" placeholder="按名称 / IP 搜索" data-i18n-placeholder="overview.search_ph" aria-label="搜索主机">
   <div class="spacer"></div>
-  <button type="button" class="btn btn-primary" id="btn-add-host">＋ 添加主机</button>
+  <button type="button" class="btn btn-primary" id="btn-add-host" data-i18n="overview.add_host">＋ 添加主机</button>
 </div>
 
-{# 云报告卡片（阶段 5 工作包 E）：各账号实例/磁盘/配额汇总，来自 GET /api/cloud-report/summary #}
+{# Cloud report card: per-account instance / disk / quota summary, from GET /api/cloud-report/summary. 云报告卡片：各账号实例/磁盘/配额汇总，来自 GET /api/cloud-report/summary。 #}
 <div class="card" id="cloud-report-card" style="margin-bottom: 16px;">
   <div style="display: flex; align-items: center; gap: 8px;">
-    <h2 style="margin: 0;">云报告</h2>
-    <button type="button" class="btn btn-sm" id="btn-refresh-cloud-report" title="绕过缓存重新汇总" style="margin-left: auto;">↻ 刷新</button>
+    <h2 style="margin: 0;" data-i18n="overview.cloud_report">云报告</h2>
+    <button type="button" class="btn btn-sm" id="btn-refresh-cloud-report" title="绕过缓存重新汇总" style="margin-left: auto;" data-i18n="overview.refresh">↻ 刷新</button>
   </div>
-  <p id="cloud-report-loading" style="color: var(--text-muted);">加载中…</p>
+  <p id="cloud-report-loading" style="color: var(--text-muted);" data-i18n="overview.loading">加载中…</p>
   <div id="cloud-report-body" hidden></div>
   <p id="cloud-report-generated" style="color: var(--text-muted); font-size: 0.9em;" hidden></p>
 </div>
 
-{# 主机卡片由 overview.js 从 GET /api/hosts 渲染 #}
+{# Host cards are rendered by overview.js from GET /api/hosts. 主机卡片由 overview.js 从 GET /api/hosts 渲染。 #}
 <div class="host-grid" id="host-grid"></div>
 
-{# 空状态：还没有保存的主机 #}
 <div class="empty-state" id="host-empty" hidden>
   <div class="big">🖥️</div>
-  <p>还没有保存的主机</p>
-  <p>点右上角「添加主机」，把常用服务器保存下来，一键连终端。</p>
-  <button type="button" class="btn btn-primary" id="btn-add-host-empty">添加主机</button>
+  <p data-i18n="overview.no_hosts">还没有保存的主机</p>
+  <p data-i18n="overview.add_hint">点右上角「添加主机」，把常用服务器保存下来，一键连终端。</p>
+  <button type="button" class="btn btn-primary" id="btn-add-host-empty" data-i18n="overview.add_host_plain">添加主机</button>
 </div>
 
-{# 加载失败提示 #}
 <div class="empty-state" id="host-error" hidden>
   <div class="big">⚠️</div>
   <p id="host-error-text">加载主机列表失败</p>
-  <button type="button" class="btn" id="btn-retry-hosts">重试</button>
+  <button type="button" class="btn" id="btn-retry-hosts" data-i18n="overview.retry">重试</button>
 </div>
 
-{# 添加 / 编辑主机弹窗 #}
 <div class="modal-overlay" id="host-modal" hidden>
   <div class="modal-box">
     <div class="modal-head">
@@ -74,11 +71,11 @@
             <option value="key">密钥</option>
           </select>
         </div>
-        {# 密码不在这里保存：后端不存密码明文，连接时每次现输密码 #}
+        {# Passwords are not saved here: the backend stores no plaintext password, and the password is typed live at every connect. 密码不在这里保存：后端不存密码明文，连接时每次现输密码。 #}
         <div class="form-group" id="host-password-group">
           <p class="hint">密码认证的主机不在面板保存密码，连接时由终端提示输入。</p>
         </div>
-        {# 密钥认证用服务器上的密钥文件路径，不粘贴私钥内容 #}
+        {# Key auth uses a key file path on the server; never paste private key contents. 密钥认证用服务器上的密钥文件路径，不粘贴私钥内容。 #}
         <div class="form-group" id="host-key-group" hidden>
           <label for="host-key-path">密钥文件路径（本机服务端上的路径）</label>
           <input type="text" id="host-key-path" placeholder="例如：/root/.ssh/id_ed25519">

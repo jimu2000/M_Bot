@@ -53,41 +53,33 @@ from datetime import datetime, timezone
 
 try:
     from zoneinfo import ZoneInfo
-except ImportError:  # Python < 3.9 没有 zoneinfo
+except ImportError:  # Python < 3.9 has no zoneinfo. Python < 3.9 没有 zoneinfo。
     ZoneInfo = None
 
 # ================= 配置区（改这里） =================
-# 默认 compartment OCID（占位符）。根 compartment 就是 tenancy OCID。
+# Default compartment OCID (placeholder). The root compartment is the tenancy OCID. 默认 compartment OCID（占位符）。根 compartment 就是 tenancy OCID。
 DEFAULT_COMPARTMENT_ID = "ocid1.tenancy.oc1..xxxxxxxx"
-# 默认区域（如 ap-singapore-1 / us-sanjose-1 / us-chicago-1）。
+# Default region (e.g. ap-singapore-1 / us-sanjose-1 / us-chicago-1). 默认区域（如 ap-singapore-1 / us-sanjose-1 / us-chicago-1）。
 DEFAULT_REGION = "ap-singapore-1"
-# 免费额度：Always Free 账号每个租户最多 5 个卷备份（启动卷备份与
-# 块存储卷备份共用这个额度；本模块只数启动卷备份）。
+# Free tier: an Always Free tenancy holds at most 5 volume backups (boot-volume backups share this quota with block-volume backups; this module only counts boot-volume backups). 免费额度：Always Free 账号每个租户最多 5 个卷备份（启动卷备份与块存储卷备份共用这个额度；本模块只数启动卷备份）。
 FREE_BACKUP_LIMIT = 5
-# 备份类型：只做 FULL 全量（INCREMENTAL 增量依赖链式备份，恢复时
-# 必须整条链都在，删最早备份会断链；全量备份各自独立，可单独删除）。
+# Backup type: FULL only (INCREMENTAL depends on a backup chain, and restore needs the whole chain present, so deleting the earliest backup breaks the chain; full backups are independent and can be deleted individually). 备份类型：只做 FULL 全量（INCREMENTAL 增量依赖链式备份，恢复时必须整条链都在，删最早备份会断链；全量备份各自独立，可单独删除）。
 BACKUP_TYPE = "FULL"
-# 恢复时形状查不到的默认值：A1.Flex 1 核 / 6GB（免费额度内最小档）。
+# Default shape when the restore cannot find the source shape: A1.Flex 1 OCPU / 6 GB (the smallest free-tier tier). 恢复时形状查不到的默认值：A1.Flex 1 核 / 6GB（免费额度内最小档）。
 DEFAULT_RESTORE_SHAPE = "VM.Standard.A1.Flex"
 DEFAULT_RESTORE_OCPUS = 1
 DEFAULT_RESTORE_MEMORY_GB = 6
-# 备份默认名里的时间戳用的时区：北京时间（与面板显示的创建时间一致；
-# 原来用 UTC，名字里的日期会比显示的创建时间早一天，2026-11-24 浏览器
-# 实测发现）。zoneinfo 不可用时回退到 UTC。
+# Timezone for the timestamp in default backup names: Beijing time (matching the creation time shown in the panel; UTC used to make the date in the name a day earlier than the displayed creation time). Falls back to UTC when zoneinfo is unavailable. 备份默认名里的时间戳用的时区：北京时间（与面板显示的创建时间一致；原来用 UTC，名字里的日期会比显示的创建时间早一天）。zoneinfo 不可用时回退到 UTC。
 BACKUP_NAME_TIMEZONE = "Asia/Shanghai"
-# 删最早备份后立即创建时，OCI 侧配额计数可能还没同步（实测 2026-11-24
-# 芝加哥：删完立即创建报 LimitExceeded），创建失败时按此重试：
-# 最多尝试次数（首创 + 重试）与每次间隔（秒）。
+# After deleting the earliest backup, OCI's quota counter may not have synced yet (creating immediately after a delete can report LimitExceeded), so a failed create retries as follows: 删最早备份后立即创建时，OCI 侧配额计数可能还没同步（删完立即创建报 LimitExceeded），创建失败时按此重试：
+# max attempts (first create + retries) and interval between attempts (seconds). 最多尝试次数（首创 + 重试）与每次间隔（秒）。
 CREATE_LIMIT_RETRY_ATTEMPTS = 5
 CREATE_LIMIT_RETRY_INTERVAL_SECONDS = 15
-# 恢复第 1 步（从备份建启动卷）等 AVAILABLE 的最长等待（秒）：
-# 47GB 的盘实测约几分钟，1200 秒（20 分钟）留足余量。
+# Max wait (seconds) for step 1 of restore (build a boot volume from the backup until AVAILABLE): a 47 GB volume takes a few minutes in practice, so 1200s (20 min) leaves headroom. 恢复第 1 步（从备份建启动卷）等 AVAILABLE 的最长等待（秒）：47GB 的盘实测约几分钟，1200 秒（20 分钟）留足余量。
 RESTORE_WAIT_MAX_SECONDS = 1200
-# 等 AVAILABLE 时的轮询间隔（秒）。
+# Poll interval (seconds) while waiting for AVAILABLE. 等 AVAILABLE 时的轮询间隔（秒）。
 RESTORE_WAIT_INTERVAL_SECONDS = 15
-# 备份创建后等 AVAILABLE 的最长等待（秒）：47GB 全量备份实测约几分钟，
-# 1800 秒（30 分钟）留足余量；轮询间隔 30 秒（备份创建是慢操作，
-# 不必像恢复建卷那样 15 秒一查）。
+# Max wait (seconds) for a backup to become AVAILABLE after creation: a 47 GB full backup takes a few minutes in practice, so 1800s (30 min) leaves headroom; poll every 30s (backup creation is slow, no need to poll every 15s like a restore build). 备份创建后等 AVAILABLE 的最长等待（秒）：47GB 全量备份实测约几分钟，1800 秒（30 分钟）留足余量；轮询间隔 30 秒（备份创建是慢操作，不必像恢复建卷那样 15 秒一查）。
 BACKUP_WATCH_MAX_SECONDS = 1800
 BACKUP_WATCH_INTERVAL_SECONDS = 30
 # =====================================================
@@ -411,7 +403,7 @@ def restore_boot_volume_backup(cli, compartment_id, backup_id,
         if memory_gb is None:
             memory_gb = DEFAULT_RESTORE_MEMORY_GB
 
-    # 第 1 步：从备份建新启动卷，等到 AVAILABLE。
+    # Step 1: build a new boot volume from the backup, wait until AVAILABLE. 第 1 步：从备份建新启动卷，等到 AVAILABLE。
     volume_name = f"{display_name}-boot-volume"
     created = _extract_data(cli.run(
         ["bv", "boot-volume", "create",
@@ -426,7 +418,7 @@ def restore_boot_volume_backup(cli, compartment_id, backup_id,
     if not new_volume_id:
         raise ValueError("从备份创建启动卷后未返回 OCID，恢复中止。")
 
-    # 第 2 步：用新启动卷 launch 新实例。
+    # Step 2: launch a new instance with the new boot volume. 第 2 步：用新启动卷 launch 新实例。
     args = ["compute", "instance", "launch",
             "--availability-domain", availability_domain,
             "--compartment-id", compartment_id,
@@ -444,7 +436,7 @@ def restore_boot_volume_backup(cli, compartment_id, backup_id,
     try:
         launched = _extract_data(cli.run(args)) or {}
     except Exception:
-        # launch 失败：尽力删掉第 1 步建出来的启动卷，不留孤儿盘。
+        # On launch failure: best-effort delete the boot volume built in step 1, leaving no orphan volume. launch 失败：尽力删掉第 1 步建出来的启动卷，不留孤儿盘。
         try:
             from oci.volume import delete_boot_volume
             delete_boot_volume(cli, new_volume_id)

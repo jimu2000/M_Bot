@@ -47,19 +47,19 @@ except ImportError:  # pragma: no cover - 依赖缺失时的降级分支
 router = APIRouter()
 
 # ================= 配置区（改这里） =================
-# 巡检调度器开关：设 MBOT_ENABLE_INSPECT_SCHEDULER=1 才在面板启动时
-# 启动 APScheduler。默认关闭（测试与不需要定时巡检的部署不受影响）。
+# Inspection scheduler switch: set MBOT_ENABLE_INSPECT_SCHEDULER=1 to start APScheduler when the panel boots. 巡检调度器开关：设 MBOT_ENABLE_INSPECT_SCHEDULER=1 才在面板启动时启动 APScheduler。
+# Off by default (tests and deployments that do not need scheduled inspections are unaffected). 默认关闭（测试与不需要定时巡检的部署不受影响）。
 ENABLE_INSPECT_SCHEDULER = os.environ.get(
     "MBOT_ENABLE_INSPECT_SCHEDULER", "") == "1"
-# 调度器每隔这么多秒重新从文件同步一次计划。
+# The scheduler re-syncs plans from file every this many seconds. 调度器每隔这么多秒重新从文件同步一次计划。
 INSPECT_SYNC_INTERVAL_SECONDS = 60
-# 报告列表最多返回这么多份（按生成时间倒序）。
+# Max reports returned in the list (newest first). 报告列表最多返回这么多份（按生成时间倒序）。
 INSPECT_REPORTS_LIMIT = 20
 # =====================================================
 
-# 报告文件名格式：{计划id}-{时间戳}.json（时间戳为 epoch 秒）。
+# Report filename format: {plan-id}-{timestamp}.json (timestamp is epoch seconds). 报告文件名格式：{计划id}-{时间戳}.json（时间戳为 epoch 秒）。
 _REPORT_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+-\d+\.json$")
-# 巡检目标：实例 OCID 前缀（"all" 表示全部实例）。
+# Inspection target: instance OCID prefix ("all" means all instances). 巡检目标：实例 OCID 前缀（"all" 表示全部实例）。
 _INSTANCE_OCID_PREFIX = "ocid1.instance.oc1."
 
 
@@ -159,7 +159,7 @@ class InspectScheduleRegistry:
         self._save([])
 
 
-# 全局巡检计划注册表（单进程内共享；多进程靠文件同步）。
+# Global inspection-plan registry (shared within a single process; multi-process syncs via files). 全局巡检计划注册表（单进程内共享；多进程靠文件同步）。
 SCHEDULES = InspectScheduleRegistry()
 
 
@@ -234,7 +234,7 @@ def run_inspection(schedule, notify=True):
         "%Y-%m-%dT%H:%M:%SZ")
     report["ok"] = not report["errors"]
 
-    # 写盘（失败静默跳过，不影响返回）。
+    # Write to disk (silently skipped on failure; does not affect the return). 写盘（失败静默跳过，不影响返回）。
     try:
         os.makedirs(_reports_dir(), exist_ok=True)
         name = f"{schedule_id}-{int(started)}.json"

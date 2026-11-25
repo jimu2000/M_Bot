@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{# 任务管理：抢机 / 创建等后台任务列表，点行展开看日志 #}
+{# Task management: background task list (grabs / creates, etc.); click a row to expand its logs. 任务管理：抢机 / 创建等后台任务列表，点行展开看日志。 #}
 {% block title %}任务管理 · M_Bot Oracle开源管理面板{% endblock %}
 
 {% block content %}
@@ -39,7 +39,7 @@
   <a class="btn btn-primary" href="/create">创建实例</a>
 </div>
 
-{# 抢机计划：定时抢机（APScheduler cron 表达式） #}
+{# Grab plans: scheduled grabs (APScheduler cron expressions). 抢机计划：定时抢机（APScheduler cron 表达式）。 #}
 <h2 style="font-size: 16px; margin: 26px 0 12px;">抢机计划</h2>
 <p style="color: var(--text-muted); margin-top: -8px;">
   按 cron 表达式定时启动抢机任务；计划触发时复用创建实例的抢机逻辑。

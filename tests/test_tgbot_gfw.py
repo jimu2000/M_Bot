@@ -114,7 +114,7 @@ class TestHandleAutoip(GfwHandlerTestCase):
             import asyncio
             asyncio.run(he.handle_autoip(update, context))
         stored = context.user_data["gfw_instances"]
-        self.assertEqual(len(stored), 2)  # STOPPED 的那台不列
+        self.assertEqual(len(stored), 2)
         texts = button_texts(reply_markup_of(update))
         self.assertTrue(any("web-1" in t and "203.0.113.10" in t
                             for t in texts))

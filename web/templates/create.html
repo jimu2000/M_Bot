@@ -1,11 +1,10 @@
 {% extends "base.html" %}
-{# 创建实例：四卡表单 + 快捷开机（对应原版 cloud-create.jpg）
-   镜像 OCID 全部是占位符，真实值由后端按区域/架构解析。 #}
+{# Create instance: a four-card form + quick boot (mirrors the original cloud-create.jpg). All image OCIDs are placeholders; the backend resolves the real values by region/architecture. 创建实例：四卡表单 + 快捷开机（对应原版 cloud-create.jpg）。镜像 OCID 全部是占位符，真实值由后端按区域/架构解析。 #}
 {% block title %}创建实例 · M_Bot Oracle开源管理面板{% endblock %}
 
 {% block content %}
 <div class="page-head">
-  <h1>创建实例</h1>
+  <h1 data-i18n="create.title">创建实例</h1>
 </div>
 
 <div class="alert alert-error" id="create-error" hidden></div>
@@ -14,15 +13,15 @@
   <div class="create-grid">
     {# ---- 卡 1：基础配置 ---- #}
     <section class="card">
-      <h2 class="card-title">🖥️ 基础配置</h2>
+      <h2 class="card-title" data-i18n="create.basic">🖥️ 基础配置</h2>
       <div class="card-body">
         <div class="form-group">
           <label for="profile">账号 / 区域</label>
-          {# Profile 下拉：由 create.js 从 GET /api/profiles 动态填充 #}
+          {# Profile dropdown: filled dynamically by create.js from GET /api/profiles. Profile 下拉：由 create.js 从 GET /api/profiles 动态填充。 #}
           <select id="profile"></select>
           <p class="hint">镜像、子网、可用域须与所选账号的区域一致；切换账号或区域后可用域与子网自动重新填充。</p>
         </div>
-        {# 二级区域下拉：多区订阅的账号才显示（单区账号隐藏） #}
+        {# Second-level region dropdown: only shown for multi-region accounts (hidden for single-region accounts). 二级区域下拉：多区订阅的账号才显示（单区账号隐藏）。 #}
         <div class="form-group" id="region-wrap" hidden>
           <label for="region-select">工作区域</label>
           <select id="region-select"></select>
@@ -59,7 +58,7 @@
 
     {# ---- 卡 2：系统配置 ---- #}
     <section class="card">
-      <h2 class="card-title">⚙️ 系统配置</h2>
+      <h2 class="card-title" data-i18n="create.system">⚙️ 系统配置</h2>
       <div class="card-body">
         <div class="form-group">
           <label for="image-id">镜像</label>
@@ -93,7 +92,7 @@
 
     {# ---- 卡 3：网络与安全 ---- #}
     <section class="card">
-      <h2 class="card-title">🛡️ 网络与安全</h2>
+      <h2 class="card-title" data-i18n="create.network">🛡️ 网络与安全</h2>
       <div class="card-body">
         <div class="form-row" style="margin-bottom: 14px;">
           <label class="switch">
@@ -138,7 +137,7 @@
 
     {# ---- 卡 4：高级选项 ---- #}
     <section class="card">
-      <h2 class="card-title">⌨️ 高级选项</h2>
+      <h2 class="card-title" data-i18n="create.advanced">⌨️ 高级选项</h2>
       <div class="card-body">
         <div class="form-row">
           <div class="form-group">
@@ -152,7 +151,7 @@
         </div>
         <div class="form-group">
           <label for="target-cpu">目标 CPU（可选）</label>
-          <input type="text" id="target-cpu" placeholder="例如：7J13，留空表示不筛选">
+          <input type="text" id="target-cpu" placeholder="例如：7J13，留空默认只留 7J13">
           <p class="hint">抢到实例后会先核对 CPU 型号，不符合的自动释放并继续抢。</p>
         </div>
         <div class="form-group">
@@ -165,7 +164,7 @@
 
   {# ---- 快捷开机：点一张卡片填满表单 ---- #}
   <section class="card">
-    <h2 class="card-title">⚡ 快捷开机</h2>
+    <h2 class="card-title" data-i18n="create.quick_boot">⚡ 快捷开机</h2>
     <div class="card-body">
       <div class="preset-grid" id="preset-grid">
         <div class="preset-card" data-shape="VM.Standard.E2.1.Micro" data-ocpus="1" data-memory="1" data-arch="x86_64" data-disk="47" tabindex="0" role="button">
@@ -185,7 +184,7 @@
   </section>
 
   <div class="submit-row">
-    <button type="submit" class="btn btn-primary" id="btn-create">开始创建</button>
+    <button type="submit" class="btn btn-primary" id="btn-create" data-i18n="create.submit">开始创建</button>
   </div>
 </form>
 {% endblock %}

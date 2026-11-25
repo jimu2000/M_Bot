@@ -22,11 +22,11 @@ import time
 from web import config
 
 # ================= 配置区（改这里） =================
-# 密码哈希算法与参数（pbkdf2_hmac，标准库实现，不依赖第三方包）。
+# Password hash algorithm and parameters (pbkdf2_hmac, stdlib implementation, no third-party dependency). 密码哈希算法与参数（pbkdf2_hmac，标准库实现，不依赖第三方包）。
 HASH_ALGORITHM = "sha256"
 HASH_ITERATIONS = 100000
 SALT_BYTES = 16
-# 哈希字符串格式：pbkdf2_sha256$iterations$salt_hex$hash_hex
+# Hash string format: pbkdf2_sha256$iterations$salt_hex$hash_hex. 哈希字符串格式：pbkdf2_sha256$iterations$salt_hex$hash_hex。
 HASH_PREFIX = "pbkdf2_sha256"
 # =====================================================
 
@@ -81,7 +81,7 @@ class LoginGuard:
                              if base_minutes is None else base_minutes)
         self.max_minutes = (config.LOCKOUT_MAX_MINUTES
                             if max_minutes is None else max_minutes)
-        # username -> {"failures": int, "locked_until": float, "lock_level": int}
+        # username -> {"failures": int, "locked_until": float, "lock_level": int}: per-user lockout state. username -> {"failures": int, "locked_until": float, "lock_level": int}：每用户的锁定状态。
         self._records = {}
 
     def _record(self, username):
@@ -103,7 +103,7 @@ class LoginGuard:
     def record_failure(self, username):
         """记一次登录失败；达阈值时锁定（时长按锁定级别翻倍，封顶）。"""
         if self.is_locked(username):
-            # 已锁定时不再重复记（避免锁定期间的尝试延长锁定时长）。
+            # While locked, do not count further attempts (so tries during the lockout do not extend it). 已锁定时不再重复记（避免锁定期间的尝试延长锁定时长）。
             return
         record = self._record(username)
         record["failures"] += 1
@@ -174,12 +174,11 @@ class SessionStore:
 
 
 # ---------------- Telegram 登录验证码 ----------------
-# Telegram 验证码登录（阶段 5 工作包 E）：6 位数字码，5 分钟过期，
-# 一次性；发码按客户端 IP 60 秒冷却（防刷）。验证码绝不写日志。
+# Telegram code login: a 6-digit code, 5 minutes to expire, single-use; codes are sent with a 60-second per-client-IP cooldown (anti-abuse). Codes are never written to logs. Telegram 验证码登录：6 位数字码，5 分钟过期，一次性；发码按客户端 IP 60 秒冷却（防刷）。验证码绝不写日志。
 
 TELEGRAM_CODE_EXPIRE_SECONDS = 5 * 60
 TELEGRAM_CODE_COOLDOWN_SECONDS = 60
-# 一键登录链接有效期（秒）：与验证码一致，5 分钟。
+# One-click login link lifetime (seconds): same as the code, 5 minutes. 一键登录链接有效期（秒）：与验证码一致，5 分钟。
 MAGIC_LOGIN_EXPIRE_SECONDS = 5 * 60
 
 
@@ -295,7 +294,7 @@ class MagicLoginStore:
         self._tokens.clear()
 
 
-# 全局单例（单进程内共享）。
+# Global singleton (shared within a single process). 全局单例（单进程内共享）。
 LOGIN_GUARD = LoginGuard()
 SESSIONS = SessionStore()
 TELEGRAM_CODES = TelegramCodeStore()

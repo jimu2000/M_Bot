@@ -36,14 +36,13 @@
 import re
 
 # ================= 配置区（改这里） =================
-# 默认 compartment OCID（占位符）。根 compartment 就是 tenancy OCID。
+# Default compartment OCID (placeholder). The root compartment is the tenancy OCID. 默认 compartment OCID（占位符）。根 compartment 就是 tenancy OCID。
 DEFAULT_COMPARTMENT_ID = "ocid1.tenancy.oc1..xxxxxxxx"
-# 默认区域（如 ap-singapore-1 / us-sanjose-1 / us-chicago-1）。
+# Default region (e.g. ap-singapore-1 / us-sanjose-1 / us-chicago-1). 默认区域（如 ap-singapore-1 / us-sanjose-1 / us-chicago-1）。
 DEFAULT_REGION = "ap-singapore-1"
-# SMTP 凭据的默认描述（创建时 --description 必填）。
+# Default description for SMTP credentials (--description is required at creation). SMTP 凭据的默认描述（创建时 --description 必填）。
 DEFAULT_SMTP_DESCRIPTION = "mbot"
-# 邮箱格式校验（宽松版：只要形如 本地@域名.后缀 就放行，
-# 真正的可用性由 OCI 验证邮件确认）。
+# Email format check (lenient: anything shaped local@domain.suffix passes; real deliverability is confirmed by OCI's verification email). 邮箱格式校验（宽松版：只要形如 本地@域名.后缀 就放行，真正的可用性由 OCI 验证邮件确认）。
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 # =====================================================
 

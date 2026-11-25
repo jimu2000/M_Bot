@@ -76,7 +76,7 @@ class TestNewForm(unittest.TestCase):
         self.assertEqual(form["count"], 1)
         self.assertEqual(form["delays"], [])
         self.assertEqual(form["ssh_key"], "use")
-        self.assertTrue(form["root_login"])  # 默认开：建完实例一定能 root 登录
+        self.assertTrue(form["root_login"])  # On by default: a built instance must always allow root login. 默认开：建完实例一定能 root 登录。
         self.assertTrue(form["public_ip"])
         self.assertFalse(form["ipv6"])
         self.assertIsNone(form["script"])
@@ -89,7 +89,6 @@ class TestToggleOption(unittest.TestCase):
         self.assertTrue(changed)
         self.assertIsNone(notice)
         self.assertEqual(form["cpu"], "arm")
-        # 再点取消选择。
         changed, _ = bf.toggle_option(form, "cpu", "arm")
         self.assertTrue(changed)
         self.assertIsNone(form["cpu"])
@@ -111,7 +110,6 @@ class TestToggleOption(unittest.TestCase):
 
     def test_disk_default_toggle(self):
         form = bf.new_form()
-        # 默认已是 None，点"默认"无变化。
         changed, _ = bf.toggle_option(form, "disk", "default")
         self.assertFalse(changed)
         bf.toggle_option(form, "disk", "100")
@@ -122,14 +120,13 @@ class TestToggleOption(unittest.TestCase):
 
     def test_binary_rows(self):
         form = bf.new_form()
-        # 点当前值无变化。
         changed, _ = bf.toggle_option(form, "key", "use")
         self.assertFalse(changed)
         changed, _ = bf.toggle_option(form, "key", "none")
         self.assertTrue(changed)
         self.assertEqual(form["ssh_key"], "none")
         changed, _ = bf.toggle_option(form, "root", "on")
-        self.assertFalse(changed)  # root 默认已开
+        self.assertFalse(changed)
         changed, _ = bf.toggle_option(form, "root", "off")
         self.assertTrue(changed)
         self.assertFalse(form["root_login"])
@@ -148,12 +145,10 @@ class TestToggleOption(unittest.TestCase):
         bf.toggle_option(form, "delay", "5")
         bf.toggle_option(form, "delay", "20")
         self.assertEqual(form["delays"], [5, 20])
-        # 第三个被拒绝并给提示。
         changed, notice = bf.toggle_option(form, "delay", "60")
         self.assertFalse(changed)
         self.assertIn("最多选两个", notice)
         self.assertEqual(form["delays"], [5, 20])
-        # 取消一个后可以再选。
         bf.toggle_option(form, "delay", "5")
         changed, _ = bf.toggle_option(form, "delay", "60")
         self.assertTrue(changed)
@@ -243,7 +238,6 @@ class TestSetCustom(unittest.TestCase):
         ok, error = bf.set_custom(form, "delay", "90")
         self.assertFalse(ok)
         self.assertIn("最多选两个", error)
-        # 重复值不报错也不重复添加。
         ok, _ = bf.set_custom(form, "delay", "7")
         self.assertTrue(ok)
         self.assertEqual(form["delays"], [7, 30])
@@ -266,7 +260,6 @@ class TestResolve(unittest.TestCase):
         shape, note = bf.resolve_shape(_filled_form(cpu="amd"))
         self.assertEqual(shape, "VM.Standard.E2.1.Micro")
         self.assertIsNone(note)
-        # INTEL 无免费机型：提示后按 E2 创建。
         shape, note = bf.resolve_shape(_filled_form(cpu="intel"))
         self.assertEqual(shape, "VM.Standard.E2.1.Micro")
         self.assertIn("Intel", note)
@@ -279,7 +272,6 @@ class TestResolve(unittest.TestCase):
         self.assertEqual(bf.resolve_arch(_filled_form(cpu="arm")), "aarch64")
         self.assertEqual(bf.resolve_arch(_filled_form(cpu="amd")), "x86_64")
         self.assertEqual(bf.resolve_arch(_filled_form(cpu="intel")), "x86_64")
-        # 自定义形状默认 x86_64。
         self.assertEqual(
             bf.resolve_arch(_filled_form(cpu="VM.Standard.E3.Flex")),
             "x86_64")
@@ -388,7 +380,6 @@ class TestValidateForm(unittest.TestCase):
         self.assertIn("未配置子网（环境变量 MBOT_PLAN_SUBNET_ID）", errors)
         self.assertIn("未配置 SSH 公钥文件（环境变量 MBOT_PLAN_SSH_KEYS_FILE）",
                       errors)
-        # 不用公钥时不检查公钥文件。
         form = _filled_form(ssh_key="none", root_login=True)
         errors = bf.validate_form(form, empty)
         self.assertFalse(any("公钥文件" in e for e in errors))
@@ -474,7 +465,7 @@ class TestBuildPreset(unittest.TestCase):
         self.assertIsNone(preset["startup_script"])
         self.assertFalse(preset["root_login"])
         self.assertEqual((preset["min_delay"], preset["max_delay"]), (5, 20))
-        self.assertNotIn("user_data", preset)  # 启动时才生成
+        self.assertNotIn("user_data", preset)
         self.assertNotIn("root_password", preset)
 
     def test_e2_preset(self):
@@ -497,25 +488,22 @@ class TestBuildPreset(unittest.TestCase):
         self.assertIn("未选 CPU 类型", str(ctx.exception))
 
     def test_display_name_format(self):
-        # 免费实例：类型 + 北京时间日期（UTC 17:00 已是次日凌晨 1 点）。
+        # Free instance: type + Beijing-time date (17:00 UTC is already 01:00 next day). 免费实例：类型 + 北京时间日期（UTC 17:00 已是次日凌晨 1 点）。
         now = datetime(2026, 11, 24, 17, 0, tzinfo=timezone.utc)
         name = bf.generate_display_name("VM.Standard.A1.Flex", 1, 6, now=now)
         self.assertEqual(name, "ARM_2026-11-25")
         name = bf.generate_display_name("VM.Standard.E2.1.Micro", 1, 1, now=now)
         self.assertEqual(name, "AMD_2026-11-25")
-        # 其他形状沿用旧格式。
         name = bf.generate_display_name("VM.Standard.E3.Flex", 2, 16)
         self.assertRegex(name, r"^bot-e3-flex-2c16g-\d{8}-\d{6}$")
 
 
 class TestRootPassword(unittest.TestCase):
     def test_uuid_hex_format(self):
-        # v1.11.0：默认 root 密码是 UUID4 的 32 位十六进制（去掉
-        # 连字符），与 R 探长开机通知里的密码格式一致。
         password = bf.generate_root_password()
         self.assertEqual(len(password), 32)
         self.assertRegex(password, r"^[0-9a-f]{32}$")
-        # 冒号/井号/引号/反斜杠/空白绝不能出现（YAML 与 chpasswd 安全）。
+        # Colons / hashes / quotes / backslashes / whitespace must never appear (YAML and chpasswd safety). 冒号/井号/引号/反斜杠/空白绝不能出现（YAML 与 chpasswd 安全）。
         for bad in ": #\"'\\` \t":
             self.assertNotIn(bad, password)
 
@@ -536,8 +524,7 @@ class TestBuildUserData(unittest.TestCase):
         self.assertIn("root:Ab1!xxxx", data)
         self.assertIn("ssh_pwauth: true", data)
         self.assertIn("expire: false", data)
-        # v1.39.1：Ubuntu 镜像默认 disable_root + 禁 root 密码登录，
-        # 只改密码不够，必须同时放行 root 登录。
+        # Ubuntu images default to disable_root + no root password login, so changing the password alone is not enough; root login must also be allowed. Ubuntu 镜像默认 disable_root + 禁 root 密码登录，只改密码不够，必须同时放行 root 登录。
         self.assertIn("disable_root: false", data)
         self.assertIn("60-mbot-root-login.conf", data)
         self.assertIn("PermitRootLogin yes", data)
@@ -561,10 +548,9 @@ class TestBuildUserData(unittest.TestCase):
         self.assertIn(bf.STARTUP_SCRIPT_PATH, data)
         self.assertIn("runcmd:", data)
         self.assertIn("echo hi", data)
-        # 脚本行应缩进在 content 块里（6 空格）。
+        # Script lines must be indented inside the content block (6 spaces). 脚本行应缩进在 content 块里（6 空格）。
         self.assertIn("      echo hi", data)
-        # v1.39.1：密码+脚本分支也要放行 root 登录；reload 要在
-        # 跑脚本之前执行。
+        # The password+script branch must also allow root login, and the reload must run before the script. 密码+脚本分支也要放行 root 登录；reload 要在跑脚本之前执行。
         self.assertIn("disable_root: false", data)
         self.assertIn("60-mbot-root-login.conf", data)
         self.assertIn("PermitRootLogin yes", data)
@@ -577,7 +563,6 @@ class TestBuildUserData(unittest.TestCase):
         with self.assertRaises(ValueError):
             bf.build_user_data("Ab1!xxxx",
                                "#cloud-config\nruncmd:\n  - echo hi")
-        # 没有 root 密码时 cloud-config 脚本原样通过。
         data = bf.build_user_data(None, "#cloud-config\nruncmd:\n  - echo hi")
         self.assertTrue(data.startswith("#cloud-config"))
 
@@ -596,7 +581,6 @@ class TestFormFromPreset(unittest.TestCase):
                     "delays", "ssh_key", "root_login", "public_ip", "ipv6"):
             self.assertEqual(back[key], form[key], key)
         self.assertIsNone(back["script"])
-        # 往返后的表单仍能校验通过并生成等价预设。
         self.assertEqual(bf.validate_form(back, FAKE_DEPLOY), [])
         rebuilt = bf.build_preset(back, FAKE_DEPLOY)
         self.assertEqual(rebuilt["shape"], preset["shape"])
@@ -613,7 +597,6 @@ class TestFormFromPreset(unittest.TestCase):
         back = bf.form_from_preset(preset)
         self.assertEqual(back["cpu"], "amd")
         self.assertEqual(back["os"], "ubuntu")
-        # E2 固定规格，表单里核心/内存留空。
         self.assertIsNone(back["ocpus"])
         self.assertIsNone(back["memory_gb"])
         self.assertEqual(bf.validate_form(back, FAKE_DEPLOY), [])
@@ -621,7 +604,6 @@ class TestFormFromPreset(unittest.TestCase):
         self.assertEqual((rebuilt["ocpus"], rebuilt["memory_gb"]), (1, 1))
 
     def test_old_preset_without_cpu_os(self):
-        # 旧版预设没有 cpu/os：形状反推 cpu，镜像反推 os。
         preset = {"shape": "VM.Standard.A1.Flex", "ocpus": 2,
                   "memory_gb": 12, "image_id": FAKE_OL_AARCH64,
                   "ssh_keys_file": None, "root_login": True,
@@ -649,7 +631,6 @@ class TestFormFromPreset(unittest.TestCase):
         back = bf.form_from_preset(preset)
         self.assertEqual(back["cpu"], "amd")
         self.assertEqual(back["os"], "ocid1.image.oc1..custom000")
-        # 自定义镜像 OCID 仍能校验通过（原样当镜像用）。
         self.assertEqual(bf.validate_form(back, FAKE_DEPLOY), [])
 
 
@@ -675,7 +656,6 @@ class TestFmtAndKeyboard(unittest.TestCase):
         form = _filled_form()
         kb = bf.boot_form_keyboard(form)
         rows = kb.inline_keyboard
-        # 16 行：一键开机行 + 12 个选项行 + 确认/保存行 + 返回行。
         self.assertEqual(len(rows), 16)
         self.assertEqual(rows[0][0].callback_data, "bf:oneclick:amd")
         callbacks = [b.callback_data for row in rows for b in row]
@@ -686,10 +666,8 @@ class TestFmtAndKeyboard(unittest.TestCase):
         self.assertIn("bf:confirm", callbacks)
         self.assertIn("bf:save", callbacks)
         self.assertIn("o:menu", callbacks)
-        # 64 字节限制。
         for cb in callbacks:
             self.assertLessEqual(len(cb.encode("utf-8")), 64)
-        # 已选项带 ✅。
         texts = [b.text for row in rows for b in row]
         self.assertIn("✅ ARM", texts)
         self.assertIn("✅ Ubuntu", texts)
@@ -727,7 +705,6 @@ class TestFmtAndKeyboard(unittest.TestCase):
         self.assertIn("✅ 可以创建", text)
 
     def test_fmt_summary_shows_password_when_present(self):
-        # v1.11.0：确认页就显示 root 密码（确认时已生成），并提醒保存。
         preset = {
             "shape": "VM.Standard.A1.Flex", "ocpus": 1, "memory_gb": 6,
             "display_name": "ARM_2026-11-24",
@@ -743,7 +720,6 @@ class TestFmtAndKeyboard(unittest.TestCase):
         self.assertIn("注意📢：root密码机器人不会记忆，请注意保存", text)
 
     def test_fmt_summary_old_preset_no_new_keys(self):
-        # 旧版保存的预设缺新字段，展示不能崩。
         preset = {
             "shape": "VM.Standard.E2.1.Micro", "ocpus": 1, "memory_gb": 1,
             "display_name": "e2-micro", "image_id": FAKE_IMAGE_X86_64,
@@ -818,7 +794,7 @@ class TestRegionDeployDefaults(unittest.TestCase):
         self.assertEqual(deploy["image_aarch64"], FAKE_IMAGE_AARCH64)
 
     def test_profile_not_passed_never_uses_region_plan(self):
-        # 不传 profile 时不查区域配置（子网按租户，不能跨账号用）
+        # Without a profile, do not look up the region config (subnets belong to a tenancy and cannot be used across accounts). 不传 profile 时不查区域配置（子网按租户，不能跨账号用）。
         plan = {"availability_domain": "wgwP:AP-SEOUL-1-AD-1"}
         with patch("tgbot.config.get_region_plan",
                    return_value=plan) as mock_plan, \
@@ -857,7 +833,7 @@ class TestGetRegionPlan(unittest.TestCase):
             self.assertEqual(
                 bot_config.get_region_plan("DEFAULT", "ap-seoul-1"),
                 {"subnet_id": "ocid1.subnet.seoul"})
-            # 同区域不同账号不能串用
+            # Different accounts in the same region must not share configs. 同区域不同账号不能串用。
             self.assertEqual(
                 bot_config.get_region_plan("ACCOUNT2", "ap-seoul-1"), {})
             self.assertEqual(

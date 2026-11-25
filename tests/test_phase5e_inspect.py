@@ -29,7 +29,7 @@ from web.routes.inspect import (
     stop_inspect_scheduler,
 )
 
-# 测试密码：运行时随机生成（不在代码里写任何固定口令）。
+# Test password: generated randomly at runtime (no fixed password is ever written in code). 测试密码：运行时随机生成（不在代码里写任何固定口令）。
 TEST_PASSWORD = secrets.token_urlsafe(16)
 
 FAKE_INSTANCE = "ocid1.instance.oc1..testxxxx"
@@ -179,16 +179,13 @@ class TestRunInspection(InspectTestCase):
         self.assertTrue(report["ok"])
         self.assertEqual(len(report["instances"]), 2)
         self.assertEqual(report["instances"][0]["state"], "RUNNING")
-        # TERMINATED 的盘不计入。
         self.assertEqual(report["volumes"], {"count": 1, "totalGB": 47})
         self.assertTrue(report["quota"]["overallOk"])
         self.assertEqual(report["quota"]["a1"]["usedOcpu"], 2)
         self.assertEqual(report["errors"], [])
-        # 报告写盘。
         report_path = os.path.join(self._tmp.name, "inspect_reports",
                                    report["reportFile"])
         self.assertTrue(os.path.exists(report_path))
-        # Telegram 摘要发了一次。
         mock_notify.assert_called_once()
         text = mock_notify.call_args[0][0]
         self.assertIn("insp1", text)
@@ -233,7 +230,7 @@ class TestRunInspection(InspectTestCase):
                                  "targets": ["all"]})
         self.assertFalse(report["ok"])
         self.assertTrue(any("巡检查询失败" in e for e in report["errors"]))
-        # 失败也写盘、也发通知。
+        # A failure also writes the report and sends the notice. 失败也写盘、也发通知。
         self.assertIn("reportFile", report)
         mock_notify.assert_called_once()
 
@@ -249,7 +246,7 @@ class TestRunInspection(InspectTestCase):
         r = self.client.post(
             f"/api/inspect-schedules/{schedule['id']}/run")
         self.assertEqual(r.status_code, 202)
-        # 等后台线程跑完（报告文件出现）。
+        # Wait for the background thread to finish (the report file appears). 等后台线程跑完（报告文件出现）。
         deadline = time.time() + 5
         reports_dir = os.path.join(self._tmp.name, "inspect_reports")
         while time.time() < deadline:
@@ -291,7 +288,7 @@ class TestInspectScheduler(InspectTestCase):
         self.assertIsNotNone(scheduler)
         self.assertIs(start_inspect_scheduler(), scheduler)
         stop_inspect_scheduler()
-        # 停掉后可再次启动（新调度器实例）。
+        # After stopping, it can start again (a new scheduler instance). 停掉后可再次启动（新调度器实例）。
         scheduler2 = start_inspect_scheduler()
         self.assertIsNotNone(scheduler2)
         self.assertIsNot(scheduler2, scheduler)

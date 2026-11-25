@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{# Rescue: pre-checks / safe restore / diskless rescue / orphan volumes / Netboot guide / console connections. 救机：前置检查 / 安全恢复 / 无盘救机 / 孤儿盘 / Netboot 向导 / 控制台连接。 #}
+{% block title %}救机 · M_Bot Oracle开源管理面板{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1>救机</h1>
+  <label for="profile-select" style="color: var(--text-muted);">Profile</label>
+  <select id="profile-select" style="width: auto;" aria-label="切换账号"></select>
+  <span id="region-wrap" hidden>
+    <label for="region-select" style="color: var(--text-muted);">区域</label>
+    <select id="region-select" style="width: auto;" aria-label="切换区域"></select>
+  </span>
+  <div class="spacer"></div>
+  <button type="button" class="btn" id="btn-refresh-rescue">↻ 刷新</button>
+</div>
+
+<p style="color: var(--text-muted);">按 ARM 真机实测结论实现：无盘实例无法原地救回，只能从备份新建实例；
+恢复盘在成为某实例启动盘之前没有归属实例，attach 一律被拒；孤儿盘按“无挂载记录 + 源自备份恢复”判定。</p>
+
+<div class="card">
+  <h2 style="font-size: 16px; margin: 0 0 12px;">前置检查</h2>
+  <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+    <select id="preflight-instance" style="width: auto;" aria-label="选择实例"></select>
+    <select id="preflight-action" style="width: auto;" aria-label="选择操作">
+      <option value="start">开机</option>
+      <option value="restore">安全恢复</option>
+      <option value="delete_volume">删盘</option>
+      <option value="terminate">终止实例</option>
+      <option value="rebuild_from_backup">无盘救机</option>
+    </select>
+    <button type="button" class="btn" id="btn-preflight">检查</button>
+  </div>
+  <div id="preflight-result" style="margin-top: 12px; white-space: pre-wrap;"></div>
+</div>
+
+<div class="card" style="margin-top: 16px;">
+  <h2 style="font-size: 16px; margin: 0 0 12px;">安全恢复（先建后删）</h2>
+  <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+    <select id="restore-instance" style="width: auto;" aria-label="选择实例"></select>
+    <select id="restore-backup" style="width: auto;" aria-label="选择备份"></select>
+    <button type="button" class="btn" id="btn-safe-restore">开始安全恢复</button>
+  </div>
+  <div id="restore-result" style="margin-top: 12px; white-space: pre-wrap;"></div>
+</div>
+
+<div class="card" style="margin-top: 16px;">
+  <h2 style="font-size: 16px; margin: 0 0 12px;">无盘救机（从备份新建实例）</h2>
+  <p style="color: var(--text-muted);">原实例无法原地救回：从备份恢复成盘，再以该盘启动一台新实例。
+  代价是新 OCID 与新公网 IP，旧实例无法复活。</p>
+  <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+    <select id="diskless-instance" style="width: auto;" aria-label="选择实例"></select>
+    <button type="button" class="btn" id="btn-diskless-plan">查看方案</button>
+  </div>
+  <div id="diskless-result" style="margin-top: 12px; white-space: pre-wrap;"></div>
+</div>
+
+<div class="card" style="margin-top: 16px;">
+  <h2 style="font-size: 16px; margin: 0 0 12px;">孤儿盘（可清理腾额度）</h2>
+  <div class="table-wrap">
+    <table class="data" id="orphan-table">
+      <thead>
+        <tr>
+          <th>名称</th>
+          <th>大小</th>
+          <th>状态</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody id="orphan-tbody">
+        <tr><td colspan="4" style="text-align: center; color: var(--text-muted);">加载中…</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p id="orphan-total" style="color: var(--text-muted);"></p>
+</div>
+
+<div class="card" style="margin-top: 16px;">
+  <h2 style="font-size: 16px; margin: 0 0 12px;">Netboot 救机向导（盘在、系统砖了）</h2>
+  <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+    <select id="netboot-instance" style="width: auto;" aria-label="选择实例"></select>
+    <button type="button" class="btn" id="btn-netboot">查看向导</button>
+    <button type="button" class="btn" id="btn-netboot-console">创建控制台连接</button>
+  </div>
+  <div id="netboot-result" style="margin-top: 12px; white-space: pre-wrap;"></div>
+</div>
+
+<div class="card" style="margin-top: 16px;">
+  <h2 style="font-size: 16px; margin: 0 0 12px;">控制台连接</h2>
+  <p style="color: var(--text-muted);">串行控制台只接受 RSA 密钥，ed25519 会被 OCI 拒绝。</p>
+  <div id="console-list" style="white-space: pre-wrap;">加载中…</div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="/static/js/rescue.js"></script>
+{% endblock %}

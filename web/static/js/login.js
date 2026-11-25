@@ -3,12 +3,12 @@
   "use strict";
   var MBot = window.MBot;
   var lockoutTimer = null;
-  var captchaId = null;      // 当前图形验证码 id（后端开启验证码时才有）
+  var captchaId = null;  // Current captcha id (only exists when the backend enables captchas). 当前图形验证码 id（后端开启验证码时才有）。
   var captchaEnabled = false;
-  var tgCodeId = null;       // 当前 Telegram 验证码 id
+  var tgCodeId = null;  // Current Telegram code id. 当前 Telegram 验证码 id。
   var tgCooldownTimer = null;
 
-  // 锁定倒计时：seconds 秒后解除，期间禁用登录按钮
+  // Lockout countdown: unlocked after `seconds` seconds; the login button is disabled meanwhile. 锁定倒计时：seconds 秒后解除，期间禁用登录按钮。
   function startLockoutCountdown(seconds) {
     var info = document.getElementById("lockout-info");
     var countEl = document.getElementById("lockout-countdown");
@@ -45,7 +45,7 @@
     if (el) el.hidden = true;
   }
 
-  // 图形验证码：拉取 /api/auth/captcha，开启时显示图片与输入框
+  // Captcha: fetch /api/auth/captcha; show the image and input when enabled. 图形验证码：拉取 /api/auth/captcha，开启时显示图片与输入框。
   async function loadCaptcha() {
     var block = document.getElementById("captcha-block");
     var img = document.getElementById("captcha-image");
@@ -65,13 +65,13 @@
         block.hidden = true;
       }
     } catch (err) {
-      // 拉取失败时当作未开启（后端关闭验证码时该接口仍返回 enabled=false）
+      // Treat a fetch failure as disabled (the endpoint still returns enabled=false when the backend has captchas off). 拉取失败时当作未开启（后端关闭验证码时该接口仍返回 enabled=false）。
       captchaEnabled = false;
       block.hidden = true;
     }
   }
 
-  // Telegram 发码冷却倒计时（后端 60 秒冷却，这里同步显示）
+  // Telegram code cooldown countdown (the backend cools down for 60s; shown in sync here). Telegram 发码冷却倒计时（后端 60 秒冷却，这里同步显示）。
   function startTgCooldown(seconds) {
     var btn = document.getElementById("tg-send-btn");
     if (!btn) return;
@@ -92,7 +92,6 @@
     tgCooldownTimer = setInterval(tick, 1000);
   }
 
-  // 标签页切换：密码登录 / Telegram 验证码登录
   function switchTab(which) {
     var tabPassword = document.getElementById("tab-password");
     var tabTelegram = document.getElementById("tab-telegram");
@@ -112,8 +111,8 @@
     hideError();
   }
 
-  // 一键登录链接：/login?token=...（Telegram 消息里带的链接，点开即登录）
-  // 先用 replaceState 把 token 从地址栏抹掉（不进浏览器历史），再消费。
+  // One-click login link: the link in the /login?token=... message; opening it logs in directly. 一键登录链接：/login?token=... 消息里带的链接，点开即登录。
+  // First wipe the token from the address bar with replaceState (so it never enters browser history), then consume it. 先用 replaceState 把 token 从地址栏抹掉（不进浏览器历史），再消费。
   async function tryMagicLogin() {
     var params = new URLSearchParams(window.location.search);
     var token = params.get("token");
@@ -145,7 +144,7 @@
     var captchaImg = document.getElementById("captcha-image");
     if (captchaImg) captchaImg.addEventListener("click", loadCaptcha);
 
-    // 忘记密码：面板没有自助找回，提示用 Telegram 机器人 /raninfo 重置
+    // Forgot password: the panel has no self-service recovery; prompt to reset via the Telegram bot /raninfo. 忘记密码：面板没有自助找回，提示用 Telegram 机器人 /raninfo 重置。
     var forgotLink = document.getElementById("forgot-password-link");
     if (forgotLink) {
       forgotLink.addEventListener("click", function (e) {
@@ -157,7 +156,6 @@
     if (tabTelegram) tabTelegram.addEventListener("click", function () { switchTab("telegram"); });
     if (tabPassword) tabPassword.addEventListener("click", function () { switchTab("password"); });
 
-    // Telegram：发送验证码
     var tgSendBtn = document.getElementById("tg-send-btn");
     if (tgSendBtn) {
       tgSendBtn.addEventListener("click", async function () {
@@ -189,7 +187,6 @@
       });
     }
 
-    // Telegram：验证码登录
     if (tgForm) {
       tgForm.addEventListener("submit", async function (e) {
         e.preventDefault();
@@ -243,7 +240,7 @@
       btn.disabled = true;
       btn.textContent = "登录中…";
       try {
-        // noRedirect：登录页自己处理 401/429，不跳回登录页
+        // noRedirect: the login page handles 401/429 itself instead of bouncing back to the login page. noRedirect：登录页自己处理 401/429，不跳回登录页。
         await MBot.api("/api/auth/login", {
           method: "POST",
           body: body,
@@ -252,14 +249,14 @@
         window.location.href = "/overview";
       } catch (err) {
         if (err.status === 429) {
-          // 锁定：后端返回 remaining_seconds；兼容其他常见键名，缺失时默认 30 分钟
+          // Lockout: the backend returns remaining_seconds; other common key names are accepted as fallback, defaulting to 30 minutes when missing. 锁定：后端返回 remaining_seconds；兼容其他常见键名，缺失时默认 30 分钟。
           var seconds = (err.data && (err.data.remaining_seconds || err.data.retry_after_seconds || err.data.retry_after)) || 1800;
           var msg = err.data && (err.data.detail || err.data.message);
           if (msg) showError(msg);
           startLockoutCountdown(seconds);
         } else {
           showError(err.message || "登录失败，请重试");
-          // 验证码错误时刷新一张新的（旧的已一次性作废）
+          // On a captcha error, fetch a fresh one (the old one is single-use and already void). 验证码错误时刷新一张新的（旧的已一次性作废）。
           if (captchaEnabled) loadCaptcha();
         }
       } finally {

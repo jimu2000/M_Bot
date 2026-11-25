@@ -21,7 +21,7 @@ from oci.client import (AuthError, NotFoundError, OCIClient, OCIError,
                         read_oci_config_profiles, resolve_oci_config_path)
 import oci.client as oci_client_mod
 
-# 占位符（测试里不出现真实 OCID）
+# Placeholders (no real OCID in tests). 占位符（测试里不出现真实 OCID）。
 FAKE_COMPARTMENT = "ocid1.tenancy.oc1..xxxxxxxx"
 
 
@@ -52,8 +52,7 @@ class TestClassifyError(unittest.TestCase):
         self.assertIs(classify_error("NotFound"), NotFoundError)
 
     def test_not_authorized_or_not_found(self):
-        # OCI 对不存在的资源返回 NotAuthorizedOrNotFound（404），必须判为 NotFound
-        # 而不是 AuthError（实测：2026-11-23）。
+        # OCI returns NotAuthorizedOrNotFound (404) for a missing resource; it must map to NotFound, not AuthError. OCI 对不存在的资源返回 NotAuthorizedOrNotFound（404），必须判为 NotFound 而不是 AuthError。
         self.assertIs(classify_error('"code": "NotAuthorizedOrNotFound"'),
                       NotFoundError)
 

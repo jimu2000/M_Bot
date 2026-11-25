@@ -17,7 +17,7 @@ from oci.instance import (find_instance_by_name, get_instance,
                           list_instances, restart_instance, start_instance,
                           stop_instance, terminate_instance)
 
-# 占位符（测试里不出现真实 OCID）
+# Placeholders (no real OCID in tests). 占位符（测试里不出现真实 OCID）。
 FAKE_COMPARTMENT = "ocid1.tenancy.oc1..xxxxxxxx"
 FAKE_INSTANCE = "ocid1.instance.oc1..xxxxxxxx"
 FAKE_IMAGE = "ocid1.image.oc1..xxxxxxxx"
@@ -31,7 +31,7 @@ FAKE_LIST_RESPONSE = {
             "shape": "VM.Standard.A1.Flex",
             "lifecycle-state": "RUNNING",
             "time-created": "2026-11-11T10:00:00.000Z",
-            "region": "ap-singapore-1",  # 精简列表里不应出现
+            "region": "ap-singapore-1",
         },
         {
             "id": "ocid1.instance.oc1..bbbb",
@@ -70,7 +70,7 @@ class TestListInstances(unittest.TestCase):
         self.assertEqual(result[0]["shape"], "VM.Standard.A1.Flex")
         self.assertEqual(result[0]["lifecycle-state"], "RUNNING")
         self.assertEqual(result[1]["display-name"], "instance-e2")
-        # 精简列表只保留 5 个字段，多余字段被去掉
+        # The slim list keeps only 5 fields; extra fields are dropped. 精简列表只保留 5 个字段，多余字段被去掉。
         self.assertNotIn("region", result[0])
         self.assertEqual(set(result[0]),
                          {"id", "display-name", "shape",
@@ -111,7 +111,7 @@ class TestGetInstanceState(unittest.TestCase):
         self.assertEqual(get_instance_state(cli, FAKE_INSTANCE), "RUNNING")
 
     def test_unwrapped_response(self):
-        # 容忍不带 {"data": ...} 包装的响应
+        # Tolerate a response without the {"data": ...} wrapper. 容忍不带 {"data": ...} 包装的响应。
         cli = _mock_cli({"lifecycle-state": "STOPPED"})
         self.assertEqual(get_instance_state(cli, FAKE_INSTANCE), "STOPPED")
 
@@ -224,7 +224,7 @@ class TestTerminateInstance(unittest.TestCase):
         self.assertEqual(args[i + 1], "true")
 
     def test_includes_force_flag(self):
-        # 非交互调用必须跳过确认提示
+        # A non-interactive call must skip the confirmation prompt. 非交互调用必须跳过确认提示。
         cli = _mock_cli({})
         terminate_instance(cli, FAKE_INSTANCE)
         args = cli.run.call_args[0][0]

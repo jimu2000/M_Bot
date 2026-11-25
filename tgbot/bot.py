@@ -25,27 +25,27 @@ from telegram.ext import (
     filters,
 )
 
-# 把项目根目录加到 sys.path 开头（保证 `import oci` 解析到本项目
-# 的 oci/ 包，而不是系统里可能装的 OCI Python SDK 同名包）。
+# Prepend the project root to sys.path so `import oci` resolves to this project's oci/ package (not a same-named OCI Python SDK that may be installed system-wide). 把项目根目录加到 sys.path 开头（保证 `import oci` 解析到本项目的 oci/ 包，而不是系统里可能装的 OCI Python SDK 同名包）。
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from tgbot import bind_domain  # noqa: E402
 from tgbot import config as bot_config  # noqa: E402
 from tgbot import handlers, handlers_client, handlers_extra  # noqa: E402
 from tgbot import handlers_menu  # noqa: E402
+from tgbot import rescue as rescue_module  # noqa: E402
 from tgbot.services import run_sync  # noqa: E402
 
 # ================= 配置区（改这里） =================
-# 实例状态监控间隔（分钟）：check_instances_job 每隔这么久检查一次。
+# Instance monitoring interval (minutes): check_instances_job checks this often. 实例状态监控间隔（分钟）：check_instances_job 每隔这么久检查一次。
 MONITOR_INTERVAL_MINUTES = 10
-# 每日报告发送时间（24 小时制，机器人所在机器的本地时区）。
+# Daily report time (24-hour clock, local timezone of the machine the bot runs on). 每日报告发送时间（24 小时制，机器人所在机器的本地时区）。
 DAILY_REPORT_TIME = datetime.time(hour=8, minute=0)
-# SSL 证书到期检查时间（每天一次，机器人所在机器的本地时区）。
+# SSL cert expiry check time (once a day, local timezone of the machine the bot runs on). SSL 证书到期检查时间（每天一次，机器人所在机器的本地时区）。
 SSL_CHECK_TIME = datetime.time(hour=8, minute=30)
-# 账单预警检查时间（每天一次，北京时间早上 8 点；带时区，
-# 不受机器人所在机器时区影响）。
+# Billing alert check time (once a day, 08:00 Beijing time; timezone-aware, unaffected by the timezone of the machine the bot runs on). 账单预警检查时间（每天一次，北京时间早上 8 点；带时区，不受机器人所在机器时区影响）。
 BILLING_CHECK_TIME = datetime.time(hour=8, minute=0,
                                    tzinfo=ZoneInfo("Asia/Shanghai"))
-# 日志级别。
+# Log level. 日志级别。
 LOG_LEVEL = "INFO"
 # =====================================================
 
@@ -62,7 +62,7 @@ def _setup_logging():
             logging.StreamHandler(sys.stdout),
         ],
     )
-    # httpx / telegram 的 DEBUG 日志太多，压到 WARNING。
+    # httpx / telegram DEBUG logs are too noisy; suppress them to WARNING. httpx / telegram 的 DEBUG 日志太多，压到 WARNING。
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("telegram").setLevel(logging.WARNING)
 
@@ -94,7 +94,7 @@ async def _post_init(application):
 
 def build_application():
     """构建 Application 并注册全部命令/回调/定时任务。返回 Application。"""
-    token = bot_config.get_token()  # 未配置时抛 RuntimeError，启动即失败
+    token = bot_config.get_token()  # Raises RuntimeError when unconfigured, so startup fails immediately. 未配置时抛 RuntimeError，启动即失败。
     if not bot_config.ALLOWED_USER_IDS:
         raise RuntimeError(
             "未配置白名单：请设置环境变量 MBOT_ALLOWED_USERS（逗号分隔的 "
@@ -109,8 +109,11 @@ def build_application():
     application.add_handler(CommandHandler("oracle", handlers.oracle_command))
     application.add_handler(CommandHandler("instances",
                                            handlers.instances_command))
+    application.add_handler(CommandHandler("lang", handlers.lang_command))
     application.add_handler(CommandHandler("bark",
                                            handlers_extra.bark_command))
+    application.add_handler(CommandHandler("rescue",
+                                           rescue_module.rescue_command))
     application.add_handler(CommandHandler("domain",
                                            handlers_extra.handle_domain))
     # ---- 客户端工具命令（阶段 5 工作包 B） ----
@@ -184,7 +187,7 @@ def build_application():
         handlers_extra.task_cancel_callback, pattern=r"^t:cancel:"))
     application.add_handler(CallbackQueryHandler(
         handlers_extra.profile_region_callback, pattern=r"^pr:"))
-    # 注意：pr: 必须注册在 p: 之前（"pr:..." 也匹配 ^p:，先注册的先处理）。
+    # Note: pr: must be registered before p: ("pr:..." also matches ^p:, and the first registered handler wins). 注意：pr: 必须注册在 p: 之前（"pr:..." 也匹配 ^p:，先注册的先处理）。
     application.add_handler(CallbackQueryHandler(
         handlers_extra.profile_callback, pattern=r"^p:"))
     application.add_handler(CallbackQueryHandler(
@@ -247,6 +250,8 @@ def build_application():
     application.add_handler(CallbackQueryHandler(
         handlers_extra.cf_callback, pattern=r"^cf:"))
     application.add_handler(CallbackQueryHandler(
+        bind_domain.bind_domain_callback, pattern=r"^bd:"))
+    application.add_handler(CallbackQueryHandler(
         handlers_extra.batch_toggle_callback, pattern=r"^ba:toggle:"))
     application.add_handler(CallbackQueryHandler(
         handlers_extra.batch_next_callback, pattern=r"^ba:next$"))
@@ -284,32 +289,36 @@ def build_application():
         handlers_client.memclear_callback, pattern=r"^mc:"))
     # ---- 菜单命令回调（handlers_menu：/oci 确认 / /admin 菜单） ----
     application.add_handler(CallbackQueryHandler(
+        rescue_module.rescue_callback, pattern=r"^rs:"))
+    application.add_handler(CallbackQueryHandler(
         handlers_menu.oci_callback, pattern=r"^oci:"))
     application.add_handler(CallbackQueryHandler(
         handlers_menu.admin_callback, pattern=r"^adm:"))
 
     # ---- 文字输入（改名 / 重装确认，见 handlers_extra.text_input_callback） ----
-    # 只处理纯文字消息；命令仍走下面的 unknown_command。
+    # Only plain text messages are handled here; commands still go to unknown_command below. 只处理纯文字消息；命令仍走下面的 unknown_command。
     application.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND,
         handlers_extra.text_input_callback))
+    # ---- Bind-domain subdomain input ----
+    # Only handled when user_data has bind_domain_pending and a Zone is already selected; other text input returns False and does not affect the two handlers above. 只在 user_data 有 bind_domain_pending 且已选 Zone 时处理，其他文字输入返回 False，不影响上面两个 handler。
+    application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND,
+        bind_domain.bind_domain_text_input))
     # ---- 客户端工具的待输入消息（阶段 5 工作包 B） ----
-    # 纯文本按 user_data 里的待输入状态分发（无状态时静默忽略，
-    # 与上面的 text_input_callback 共存，各自只处理自己的状态）；
-    # 文件只在 /uploadapi 等待上传时处理。
+    # Plain text is dispatched by the pending-input state in user_data (silently ignored when there is no state; coexists with text_input_callback above, each handling only its own state); 纯文本按 user_data 里的待输入状态分发（无状态时静默忽略，与上面的 text_input_callback 共存，各自只处理自己的状态）；
+    # files are only handled while /uploadapi is waiting for an upload. 文件只在 /uploadapi 等待上传时处理。
     application.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND,
         handlers_client.handle_client_text_input))
     application.add_handler(MessageHandler(
         filters.Document.ALL, handlers_client.handle_client_document))
     # ---- 开机表单的脚本文件上传（菜单 1 表单） ----
-    # 只在 pending_input 是 boot_script 时处理，与上面的
-    # handle_client_document 共存（各自只认自己的状态）。
+    # Boot-script file upload for the menu-1 boot form: only handled while pending_input is boot_script, coexisting with handle_client_document above (each recognizes only its own state). 开机表单的脚本文件上传（菜单 1 表单）：只在 pending_input 是 boot_script 时处理，与上面的 handle_client_document 共存（各自只认自己的状态）。
     application.add_handler(MessageHandler(
         filters.Document.ALL, handlers_extra.boot_form_document_callback))
     # ---- /oci 的 config 文件上传与粘贴文本 ----
-    # 只在 oci_awaiting 状态时处理，与上面的 document/text 处理
-    # 共存（各自只认自己的状态；ua_awaiting 优先于 oci_awaiting）。
+    # /oci config file upload and pasted text: only handled in the oci_awaiting state, coexisting with the document/text handlers above (each recognizes only its own state; ua_awaiting takes priority over oci_awaiting). /oci 的 config 文件上传与粘贴文本：只在 oci_awaiting 状态时处理，与上面的 document/text 处理共存（各自只认自己的状态；ua_awaiting 优先于 oci_awaiting）。
     application.add_handler(MessageHandler(
         filters.Document.ALL, handlers_menu.handle_oci_document))
     application.add_handler(MessageHandler(
@@ -362,8 +371,7 @@ def main():
     _setup_logging()
     logger = logging.getLogger(__name__)
     application = build_application()
-    # 启动恢复：本来源还在跑的抢机任务按 grab_spec 恢复重跑，
-    # 其余未结束任务标为已中断（网页端的任务不动）。
+    # Startup recovery: grab tasks from this source that are still running resume from their grab_spec; other unfinished tasks are marked interrupted (web-side tasks are untouched). 启动恢复：本来源还在跑的抢机任务按 grab_spec 恢复重跑，其余未结束任务标为已中断（网页端的任务不动）。
     handlers_extra.resume_interrupted_grabs()
     logger.info("机器人启动，白名单用户：%s",
                 sorted(bot_config.ALLOWED_USER_IDS))

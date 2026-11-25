@@ -41,7 +41,7 @@ from web.routes.instances import clear_instance_list_cache
 from web.routes.volumes import clear_volumes_cache
 from web.tasks import TASKS
 
-# 占位符（测试里不出现真实 OCID / IP）
+# Placeholders (no real OCID / IP in tests). 占位符（测试里不出现真实 OCID / IP）。
 FAKE_INSTANCE = "ocid1.instance.oc1..testxxxx"
 FAKE_VNIC = "ocid1.vnic.oc1..testxxxx"
 FAKE_PRIVATE_IP = "ocid1.privateip.oc1..testxxxx"
@@ -174,12 +174,12 @@ class TestChangeIpApi(InstanceOpsTestCase):
         """换 IP 成功后清实例列表服务端缓存，下次列表重新查询。"""
         self.client.get("/api/instances")
         self.client.get("/api/instances")
-        self.assertEqual(mock_list.call_count, 1)  # 第二次命中缓存
+        self.assertEqual(mock_list.call_count, 1)  # The second call hits the cache. 第二次命中缓存。
         r = self.client.post(f"/api/instances/{FAKE_INSTANCE}/change-ip",
                              json={"confirm": True})
         self.assertEqual(r.status_code, 200)
         self.client.get("/api/instances")
-        self.assertEqual(mock_list.call_count, 2)  # 缓存已清，重新查询
+        self.assertEqual(mock_list.call_count, 2)  # The cache is cleared, so it queries again. 缓存已清，重新查询。
 
 
 class TestIpv6Api(InstanceOpsTestCase):
@@ -526,7 +526,7 @@ class TestOciInstanceOpsHelpers(unittest.TestCase):
         self.assertFalse(report["repaired"])
         self.assertEqual(report["public_ip"], FAKE_OLD_IP)
         self.assertIsNone(report["new_ip"])
-        self.assertEqual(cli.run.call_count, 2)  # 只查不写
+        self.assertEqual(cli.run.call_count, 2)  # Read-only, no writes. 只查不写。
 
     def test_repair_instance_ip_missing_creates(self):
         """缺失公网 IP 时创建并绑定临时 IP，repaired=True。"""

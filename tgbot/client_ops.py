@@ -25,28 +25,27 @@ import subprocess
 import sys
 
 # ================= 配置区（改这里） =================
-# 两个 systemd 服务名（部署时 systemd 单元就是这两个名字）。
+# The two systemd service names (the deployed systemd units carry exactly these names). 两个 systemd 服务名（部署时 systemd 单元就是这两个名字）。
 WEB_SERVICE = "rbot-clone-web"
 BOT_SERVICE = "rbot-clone-bot"
-# 服务列表（顺序与 Telegram 客户端管理菜单的按钮下标一致：0=面板，1=机器人）。
+# Service list (order matches the Telegram client-management menu button indexes: 0 = panel, 1 = bot). 服务列表（顺序与 Telegram 客户端管理菜单的按钮下标一致：0=面板，1=机器人）。
 SERVICES = (WEB_SERVICE, BOT_SERVICE)
-# 云面板端口（UFW 放行用）。
+# Cloud panel port (used for the UFW allow rule). 云面板端口（UFW 放行用）。
 PANEL_PORT = 9527
-# 项目根目录（默认取本文件所在仓库的根目录；部署在 /opt/rbot-clone 时
-# 就是 /opt/rbot-clone；测试时可传 path 参数覆盖）。
+# Project root directory (defaults to the repo root of this file; /opt/rbot-clone when deployed there; tests can override it with the path argument). 项目根目录（默认取本文件所在仓库的根目录；部署在 /opt/rbot-clone 时就是 /opt/rbot-clone；测试时可传 path 参数覆盖）。
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-# 各命令的超时（秒）。
+# Timeout (seconds) per command. 各命令的超时（秒）。
 SYSTEMCTL_TIMEOUT = 60
 GIT_TIMEOUT = 120
 PIP_TIMEOUT = 300
 UFW_TIMEOUT = 30
 SSH_TIMEOUT = 30
-# UFW 放行到远程面板服务器时的 SSH 端口与用户。
+# SSH port and user for the UFW allow rule to the remote panel server. UFW 放行到远程面板服务器时的 SSH 端口与用户。
 SSH_PORT = 14422
 SSH_USER = "root"
 # =====================================================
 
-# systemctl is-active 可能返回的状态（白名单之外的输出一律当 unknown）。
+# Possible systemctl is-active outputs (anything outside the allowlist counts as unknown). systemctl is-active 可能返回的状态（白名单之外的输出一律当 unknown）。
 _KNOWN_STATES = ("active", "inactive", "failed", "activating",
                  "deactivating", "reloading")
 
@@ -157,7 +156,7 @@ def upgrade_client(path=None):
     if pip.returncode != 0:
         detail = (pip.stderr or pip.stdout or "").strip()
         raise RuntimeError(f"pip install 失败：{detail[:300]}")
-    # 先重启面板，再重启机器人（重启机器人会杀掉当前进程）。
+    # Restart the panel first, then the bot (restarting the bot kills the current process). 先重启面板，再重启机器人（重启机器人会杀掉当前进程）。
     restart_service(WEB_SERVICE)
     restart_service(BOT_SERVICE)
     lines = [line for line in (pull.stdout or "").splitlines() if line.strip()]

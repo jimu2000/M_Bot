@@ -15,7 +15,7 @@ from oci.quota import (can_launch, can_launch_batch, get_a1_usage,
                        get_boot_volume_usage, get_e2_usage,
                        get_free_tier_summary)
 
-# 占位符（测试里不出现真实 OCID）
+# Placeholders (no real OCID in tests). 占位符（测试里不出现真实 OCID）。
 FAKE_COMPARTMENT = "ocid1.tenancy.oc1..xxxxxxxx"
 
 
@@ -63,8 +63,8 @@ def _make_cli(instances, boot_volumes):
     return cli
 
 
-# 默认场景：A1 用了 4 核/18GB（已满），E2 有 1 台，启动盘 141GB。
-# 与真实账号新加坡区的现状一致。
+# Default scenario: A1 uses 4 OCPUs / 18 GB (full), 1 E2 instance, 141 GB of boot volume. 默认场景：A1 用了 4 核/18GB（已满），E2 有 1 台，启动盘 141GB。
+# Matches the current state of the real account's Singapore region. 与真实账号新加坡区的现状一致。
 DEFAULT_INSTANCES = [
     _a1("a1-1", "a1-main", 3, 12),
     _a1("a1-2", "a1-small", 1, 6),
@@ -84,7 +84,7 @@ class TestGetA1Usage(unittest.TestCase):
     def test_sums_running_a1_only(self):
         cli = _make_cli(DEFAULT_INSTANCES, DEFAULT_BOOT_VOLUMES)
         result = get_a1_usage(cli, FAKE_COMPARTMENT)
-        # 只统计 RUNNING 的 A1：3+1 核，12+6GB；已终止的与 E2 不算
+        # Only RUNNING A1 counts: 3+1 OCPUs, 12+6 GB; terminated and E2 instances do not count. 只统计 RUNNING 的 A1：3+1 核，12+6GB；已终止的与 E2 不算。
         self.assertEqual(result["ocpu_used"], 4)
         self.assertEqual(result["ocpu_limit"], 4)
         self.assertEqual(result["memory_used_gb"], 18)
@@ -124,7 +124,7 @@ class TestGetBootVolumeUsage(unittest.TestCase):
         ]
         cli = _make_cli(DEFAULT_INSTANCES, vols)
         result = get_boot_volume_usage(cli, FAKE_COMPARTMENT)
-        # 3 块 AVAILABLE 的 47GB；删除中（TERMINATING）与已删除（TERMINATED）的不算
+        # 3 AVAILABLE 47 GB volumes; TERMINATING and TERMINATED ones do not count. 3 块 AVAILABLE 的 47GB；删除中（TERMINATING）与已删除（TERMINATED）的不算。
         self.assertEqual(result["used_gb"], 141)
         self.assertEqual(result["limit_gb"], 200)
         self.assertEqual(len(result["volumes"]), 3)
@@ -151,7 +151,7 @@ class TestGetFreeTierSummary(unittest.TestCase):
         self.assertTrue(result["overall_ok"])
 
     def test_summary_over_limit(self):
-        # A1 OCPU 超限（5 核）-> overall_ok 为 False，remaining 为负
+        # A1 OCPU over the limit (5 OCPUs) -> overall_ok is False and remaining is negative. A1 OCPU 超限（5 核）-> overall_ok 为 False，remaining 为负。
         instances = [_a1("a1-big", "a1-over", 5, 24)]
         cli = _make_cli(instances, [])
         result = get_free_tier_summary(cli, FAKE_COMPARTMENT)
@@ -175,7 +175,7 @@ class TestCanLaunch(unittest.TestCase):
         self.assertEqual(reason, "E2 已满（2/2）")
 
     def test_a1_ocpu_insufficient(self):
-        # 默认场景 A1 OCPU 已满（4/4），再要 1 核开不了
+        # In the default scenario A1 OCPU is already full (4/4), so one more OCPU cannot be launched. 默认场景 A1 OCPU 已满（4/4），再要 1 核开不了。
         cli = _make_cli(DEFAULT_INSTANCES, DEFAULT_BOOT_VOLUMES)
         ok, reason = can_launch(cli, FAKE_COMPARTMENT,
                                 "VM.Standard.A1.Flex", ocpus=1, memory_gb=6)
@@ -184,7 +184,7 @@ class TestCanLaunch(unittest.TestCase):
         self.assertIn("4/4", reason)
 
     def test_a1_memory_insufficient(self):
-        # OCPU 够（3/4）但内存不够（剩 6GB，要 12GB）
+        # Enough OCPUs (3/4) but not enough memory (6 GB left, 12 GB wanted). OCPU 够（3/4）但内存不够（剩 6GB，要 12GB）。
         instances = [_a1("a1-1", "a1-main", 3, 18)]
         cli = _make_cli(instances, DEFAULT_BOOT_VOLUMES)
         ok, reason = can_launch(cli, FAKE_COMPARTMENT,
@@ -193,7 +193,7 @@ class TestCanLaunch(unittest.TestCase):
         self.assertIn("内存不足", reason)
 
     def test_boot_volume_insufficient(self):
-        # 启动盘只剩 40GB < 47GB，E2 与 A1 都开不了
+        # Only 40 GB of boot volume left < 47 GB, so neither E2 nor A1 can be launched. 启动盘只剩 40GB < 47GB，E2 与 A1 都开不了。
         volumes = [_boot_volume("bv-1", "boot-1", 160)]
         cli = _make_cli([], volumes)
         ok, reason = can_launch(cli, FAKE_COMPARTMENT,
@@ -203,7 +203,7 @@ class TestCanLaunch(unittest.TestCase):
         self.assertIn("40GB", reason)
 
     def test_a1_can_launch(self):
-        # A1 只用了 3 核/12GB，启动盘余量足，可以再开 1 核 6GB
+        # A1 uses only 3 OCPUs / 12 GB and there is enough boot volume left, so one more 1 OCPU / 6 GB instance fits. A1 只用了 3 核/12GB，启动盘余量足，可以再开 1 核 6GB。
         instances = [_a1("a1-1", "a1-main", 3, 12)]
         cli = _make_cli(instances, DEFAULT_BOOT_VOLUMES)
         ok, reason = can_launch(cli, FAKE_COMPARTMENT,
@@ -223,7 +223,6 @@ class TestCanLaunchBatch(unittest.TestCase):
     """批量开机配额预检：单台规则 × 数量。"""
 
     def test_single_matches_can_launch(self):
-        # count=1 与 can_launch 结论一致。
         instances = [_a1("a1-1", "a1-main", 3, 12)]
         cli = _make_cli(instances, DEFAULT_BOOT_VOLUMES)
         ok, reason = can_launch_batch(cli, FAKE_COMPARTMENT,
@@ -233,8 +232,7 @@ class TestCanLaunchBatch(unittest.TestCase):
         self.assertEqual(reason, "可以创建")
 
     def test_batch_a1_ok(self):
-        # A1 用了 2 核/12GB，剩 2 核/12GB，开 2 台 1 核/6GB 刚好够；
-        # 启动盘只用了 47GB（剩 153GB），2 台 × 47GB 也够。
+        # A1 uses 2 OCPUs / 12 GB, leaving 2 OCPUs / 12 GB, so exactly 2 instances of 1 OCPU / 6 GB fit; boot volume uses only 47 GB (153 GB left), so 2 x 47 GB also fits. A1 用了 2 核/12GB，剩 2 核/12GB，开 2 台 1 核/6GB 刚好够；启动盘只用了 47GB（剩 153GB），2 台 × 47GB 也够。
         instances = [_a1("a1-1", "a1-main", 2, 12)]
         volumes = [_boot_volume("bv-1", "boot-1", 47)]
         cli = _make_cli(instances, volumes)
@@ -244,7 +242,7 @@ class TestCanLaunchBatch(unittest.TestCase):
         self.assertTrue(ok)
 
     def test_batch_a1_ocpu_insufficient(self):
-        # 剩 1 核，2 台各要 1 核 -> 不足（单台能开，批量不能）。
+        # 1 OCPU left, 2 instances each need 1 OCPU -> not enough (one instance fits, a batch of two does not). 剩 1 核，2 台各要 1 核 -> 不足（单台能开，批量不能）。
         instances = [_a1("a1-1", "a1-main", 3, 12)]
         cli = _make_cli(instances, DEFAULT_BOOT_VOLUMES)
         ok, reason = can_launch_batch(cli, FAKE_COMPARTMENT,
@@ -255,7 +253,7 @@ class TestCanLaunchBatch(unittest.TestCase):
         self.assertIn("2 台需要 2 核", reason)
 
     def test_batch_a1_memory_insufficient(self):
-        # OCPU 够（剩 2 核），内存剩 12GB，2 台各要 12GB -> 不足。
+        # Enough OCPUs (2 left) but only 12 GB of memory left, and 2 instances each need 12 GB -> not enough. OCPU 够（剩 2 核），内存剩 12GB，2 台各要 12GB -> 不足。
         instances = [_a1("a1-1", "a1-main", 2, 12)]
         cli = _make_cli(instances, DEFAULT_BOOT_VOLUMES)
         ok, reason = can_launch_batch(cli, FAKE_COMPARTMENT,
@@ -266,14 +264,13 @@ class TestCanLaunchBatch(unittest.TestCase):
         self.assertIn("2 台需要 24GB", reason)
 
     def test_batch_e2_ok(self):
-        # E2 剩 1 台，开 1 台够。
         cli = _make_cli(DEFAULT_INSTANCES, DEFAULT_BOOT_VOLUMES)
         ok, _ = can_launch_batch(cli, FAKE_COMPARTMENT,
                                  "VM.Standard.E2.1.Micro", count=1)
         self.assertTrue(ok)
 
     def test_batch_e2_count_insufficient(self):
-        # E2 剩 1 台，要开 2 台 -> 不足。
+        # 1 E2 slot left, 2 instances wanted -> not enough. E2 剩 1 台，要开 2 台 -> 不足。
         cli = _make_cli(DEFAULT_INSTANCES, DEFAULT_BOOT_VOLUMES)
         ok, reason = can_launch_batch(cli, FAKE_COMPARTMENT,
                                       "VM.Standard.E2.1.Micro", count=2)
@@ -282,7 +279,7 @@ class TestCanLaunchBatch(unittest.TestCase):
         self.assertIn("需要 2 台", reason)
 
     def test_batch_boot_volume_multiplied(self):
-        # 启动盘剩 59GB，2 台各 47GB（默认）需要 94GB -> 不足。
+        # 59 GB of boot volume left; 2 instances at 47 GB each (default) need 94 GB -> not enough. 启动盘剩 59GB，2 台各 47GB（默认）需要 94GB -> 不足。
         cli = _make_cli([], DEFAULT_BOOT_VOLUMES)
         ok, reason = can_launch_batch(cli, FAKE_COMPARTMENT,
                                       "VM.Standard.E2.1.Micro", count=2)
@@ -291,7 +288,7 @@ class TestCanLaunchBatch(unittest.TestCase):
         self.assertIn("2 台需要 94GB", reason)
 
     def test_batch_boot_volume_custom_size(self):
-        # 自定义 100GB/台，1 台就需要 100GB > 59GB 余量 -> 不足。
+        # A custom 100 GB per instance means 1 instance already needs 100 GB > 59 GB remaining -> not enough. 自定义 100GB/台，1 台就需要 100GB > 59GB 余量 -> 不足。
         cli = _make_cli([], DEFAULT_BOOT_VOLUMES)
         ok, reason = can_launch_batch(cli, FAKE_COMPARTMENT,
                                       "VM.Standard.E2.1.Micro", count=1,

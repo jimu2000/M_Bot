@@ -29,42 +29,39 @@ import shutil
 import subprocess
 
 # ================= 配置区（改这里） =================
-# OCI CLI 可执行文件路径，按以下顺序解析（部署到不同机器时不用改代码）：
-#   1. 环境变量 MBOT_OCI_CLI（部署时可显式指定）；
-#   2. PATH 里的 oci（pip install oci-cli 装进 venv 时就在 PATH 里）；
-#   3. 回退 ~/oci-venv/bin/oci（本机开发环境的旧路径）。
+# OCI CLI executable path, resolved in this order (no code change needed when deploying to a different machine): OCI CLI 可执行文件路径，按以下顺序解析（部署到不同机器时不用改代码）：
+#   1. Env var MBOT_OCI_CLI (can be set explicitly at deploy time); 1. 环境变量 MBOT_OCI_CLI（部署时可显式指定）；
+#   2. oci on PATH (pip install oci-cli puts it on PATH when installed into a venv); 2. PATH 里的 oci（pip install oci-cli 装进 venv 时就在 PATH 里）；
+#   3. Fallback ~/oci-venv/bin/oci (old path of the local dev environment). 3. 回退 ~/oci-venv/bin/oci（本机开发环境的旧路径）。
 OCI_CLI = (os.environ.get("MBOT_OCI_CLI")
            or shutil.which("oci")
            or os.path.expanduser("~/oci-venv/bin/oci"))
-# OCI 配置文件路径：M_Bot 管理的 OCI 配置放 root 家目录（~/oci_config），
-# 与 R-Bot 的放置习惯一致——配置与私钥都在 /root，不用 ~/.oci/ 子目录。
-# 解析优先级（resolve_oci_config_path）：
-#   1. 环境变量 MBOT_OCI_CONFIG_FILE（显式指定，部署/测试用）；
-#   2. OCI CLI 官方环境变量 OCI_CLI_CONFIG_FILE（尊重用户已有设置）；
-#   3. ~/oci_config（存在时用它）；
-#   4. 回退 ~/.oci/config（旧部署的兼容路径）。
-# 首次通过机器人上传配置时，旧文件会自动迁移到 ~/oci_config
-# （见 tgbot/handlers_client.py 的 append_oci_profile）。
+# OCI config file path: M_Bot-managed OCI config lives in root's home dir (~/oci_config), matching R-Bot's placement habit — config and private keys both under /root, no ~/.oci/ subdirectory. OCI 配置文件路径：M_Bot 管理的 OCI 配置放 root 家目录（~/oci_config），与 R-Bot 的放置习惯一致——配置与私钥都在 /root，不用 ~/.oci/ 子目录。
+# Resolution priority (resolve_oci_config_path): 解析优先级（resolve_oci_config_path）：
+#   1. Env var MBOT_OCI_CONFIG_FILE (explicit, for deploys/tests); 1. 环境变量 MBOT_OCI_CONFIG_FILE（显式指定，部署/测试用）；
+#   2. The OCI CLI's official env var OCI_CLI_CONFIG_FILE (respect existing user settings); 2. OCI CLI 官方环境变量 OCI_CLI_CONFIG_FILE（尊重用户已有设置）；
+#   3. ~/oci_config (when it exists); 3. ~/oci_config（存在时用它）；
+#   4. Fallback ~/.oci/config (compatibility path for old deploys). 4. 回退 ~/.oci/config（旧部署的兼容路径）。
+# On first config upload via the bot, the old file is auto-migrated to ~/oci_config (see tgbot/handlers_client.py append_oci_profile). 首次通过机器人上传配置时，旧文件会自动迁移到 ~/oci_config（见 tgbot/handlers_client.py 的 append_oci_profile）。
 OCI_CONFIG_ENV_VAR = "MBOT_OCI_CONFIG_FILE"
 OCI_CONFIG_ROOT_PATH = os.path.expanduser("~/oci_config")
 OCI_CONFIG_LEGACY_PATH = os.path.expanduser("~/.oci/config")
-# OCI 配置文件里的 profile 名（多账号时建多个 profile，如 DEFAULT / ACCOUNT2）。
+# Profile name in the OCI config file (build several profiles for multi-account, e.g. DEFAULT / ACCOUNT2). OCI 配置文件里的 profile 名（多账号时建多个 profile，如 DEFAULT / ACCOUNT2）。
 DEFAULT_PROFILE = "DEFAULT"
-# 默认区域（如 ap-singapore-1 / us-sanjose-1 / us-chicago-1）。
+# Default region (e.g. ap-singapore-1 / us-sanjose-1 / us-chicago-1). 默认区域（如 ap-singapore-1 / us-sanjose-1 / us-chicago-1）。
 DEFAULT_REGION = "ap-singapore-1"
-# 单次命令超时（秒）。launch 建议 120 以上，list/get 一般 60 就够。
+# Per-command timeout (seconds). launch wants 120+, list/get are usually fine with 60. 单次命令超时（秒）。launch 建议 120 以上，list/get 一般 60 就够。
 DEFAULT_TIMEOUT = 120
-# OCI 代理（阶段 5 工作包 E）：代理只影响 OCI CLI 子进程的环境变量，
+# OCI proxy: the proxy only affects the OCI CLI subprocess's env vars, never the global environment. Resolution priority: OCI 代理：代理只影响 OCI CLI 子进程的环境变量，不改全局环境。解析优先级：
 # 不改全局环境。解析优先级：
-#   1. 环境变量 MBOT_OCI_PROXY（如 "http://127.0.0.1:7890"）；
-#   2. JSON 文件（见 PROXY_FILE，Web 设置页 /api/settings/oci-proxy 写它），
-#      格式 {"proxy": "http://127.0.0.1:7890"}，proxy 为空字符串表示不代理。
-#   3. 都没有时不设代理。
-# 文件路径可用环境变量 MBOT_OCI_PROXY_FILE 覆盖（测试用）。
+#   1. Env var MBOT_OCI_PROXY (e.g. "http://127.0.0.1:7890"); 1. 环境变量 MBOT_OCI_PROXY（如 "http://127.0.0.1:7890"）；
+#   2. JSON file (see PROXY_FILE; written by the web settings page /api/settings/oci-proxy), format {"proxy": "http://127.0.0.1:7890"}; an empty proxy string means no proxy. 2. JSON 文件（见 PROXY_FILE，Web 设置页 /api/settings/oci-proxy 写它），格式 {"proxy": "http://127.0.0.1:7890"}，proxy 为空字符串表示不代理。
+#   3. No proxy when neither is set. 3. 都没有时不设代理。
+# The file path can be overridden with env var MBOT_OCI_PROXY_FILE (for tests). 文件路径可用环境变量 MBOT_OCI_PROXY_FILE 覆盖（测试用）。
 PROXY_FILE = os.environ.get(
     "MBOT_OCI_PROXY_FILE",
     os.path.expanduser("~/workspace/rbot-clone/web/data/oci_proxy.json"))
-# 代理地址允许的协议前缀（与 tgbot 机器人代理 PROXY_SCHEMES 一致）。
+# Allowed protocol prefixes for the proxy address (same as the bot's PROXY_SCHEMES). 代理地址允许的协议前缀（与 tgbot 机器人代理 PROXY_SCHEMES 一致）。
 PROXY_SCHEMES = ("http://", "https://", "socks5://")
 # =====================================================
 
@@ -183,10 +180,8 @@ class NotFoundError(OCIError):
     """资源不存在：404 / NotFound。"""
 
 
-# 错误文本 -> 异常类的匹配表（按顺序检查，先匹配的优先）。
-# 注意：OCI 对不存在的资源返回 "NotAuthorizedOrNotFound"（404），这是防枚举的
-# 设计（不透露资源是否存在）。它必须排在 "NotAuthorized" 之前，否则会被误判为
-# 认证失败。实测验证：2026-11-23 用不存在的实例 OCID 调 get，返回的就是这个 code。
+# Error text -> exception class mapping (checked in order; first match wins). 错误文本 -> 异常类的匹配表（按顺序检查，先匹配的优先）。
+# Note: for a missing resource OCI returns "NotAuthorizedOrNotFound" (404), an anti-enumeration design (it does not reveal whether the resource exists). It must sort before "NotAuthorized", or it is misread as an auth failure. 注意：OCI 对不存在的资源返回 "NotAuthorizedOrNotFound"（404），这是防枚举的设计（不透露资源是否存在）。它必须排在 "NotAuthorized" 之前，否则会被误判为认证失败。
 _ERROR_PATTERNS = [
     ("Out of host capacity", OutOfCapacityError),
     ("TooManyRequests", RateLimitError),
@@ -219,8 +214,7 @@ class OCIClient:
         self.region = region
         self.oci_cli = oci_cli
         self.timeout = timeout
-        # proxy：显式传入的代理地址；None 表示每次调用时自动解析
-        # （环境变量 MBOT_OCI_PROXY 或 oci_proxy.json），设置后立即生效。
+        # proxy: an explicitly passed proxy address; None means resolve on every call (env var MBOT_OCI_PROXY or oci_proxy.json) and take effect immediately after being set. proxy：显式传入的代理地址；None 表示每次调用时自动解析（环境变量 MBOT_OCI_PROXY 或 oci_proxy.json），设置后立即生效。
         self.proxy = proxy
 
     def run_raw(self, args, profile=None, region=None, timeout=None):

@@ -5,7 +5,7 @@
 
   document.addEventListener("DOMContentLoaded", function () {
     var form = document.getElementById("change-password-form");
-    if (!form) return; // 登录页等没有改密码弹窗的页面直接跳过
+    if (!form) return;  // Pages without the change-password modal, like the login page, skip this directly. 登录页等没有改密码弹窗的页面直接跳过。
     form.addEventListener("submit", async function (e) {
       e.preventDefault();
       var oldPassword = document.getElementById("cp-old-password").value;

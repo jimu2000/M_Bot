@@ -180,8 +180,8 @@ class TestMenuPageSize(unittest.TestCase):
         self.assertNotIn("24. 清除缓存和占用", texts)
 
     def test_two_pages_total(self):
-        self.assertEqual(len(ORACLE_MENU_ITEMS), 42)
-        # 第 2 页含最后一项；越界页码钳制到最后一页。
+        self.assertEqual(len(ORACLE_MENU_ITEMS), 43)
+        # Page 2 contains the last item; an out-of-range page is clamped to the last page. 第 2 页含最后一项；越界页码钳制到最后一页。
         texts = [b.text for row in oracle_menu_keyboard(1).inline_keyboard
                  for b in row]
         self.assertIn("43. Bark 通知设置", texts)
@@ -303,7 +303,7 @@ class TestInstanceBootBackupDelete(BootBackupInstanceTestCase):
         self.assertIn("ib:mst:0", datas)
         self.assertIn("ib:mst:1", datas)
         self.assertIn("ib:mscancel", datas)
-        self.assertNotIn("ib:msdel", datas)  # 未选时不显示删除按钮
+        self.assertNotIn("ib:msdel", datas)
 
     async def test_mstoggle(self):
         context = make_context()
@@ -387,7 +387,7 @@ class TestSwitchInPlace(BootBackupInstanceTestCase):
         self.assertIn("当前账号", text)
 
     async def test_handle_profiles_falls_back_without_query(self):
-        update = make_update()  # 无 callback_query（命令触发）
+        update = make_update()  # No callback_query (triggered by a command). 无 callback_query（命令触发）。
         context = make_context()
         context.user_data["profile"] = "DEFAULT"
         with patch.object(he, "get_profile_region_counts",

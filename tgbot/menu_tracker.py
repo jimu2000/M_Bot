@@ -19,10 +19,9 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# user_data 里的键：当前活动的选择框消息 ID。
+# user_data key: the message id of the currently active picker. user_data 里的键：当前活动的选择框消息 ID。
 LIVE_MENU_KEY = "live_menu_id"
-# user_data 里的键：上一次已清理被点消息的回调 query.id（同一回调
-# 多次回复时，只有第一次删被点消息、走回复；之后走 send_message）。
+# user_data key: the callback query.id of the last cleaned-up tapped message (when one callback replies several times, only the first deletes the tapped message and replies; later ones use send_message). user_data 里的键：上一次已清理被点消息的回调 query.id（同一回调多次回复时，只有第一次删被点消息、走回复；之后走 send_message）。
 _CLEANED_QUERY_KEY = "_menu_cleaned_query"
 
 
@@ -82,14 +81,14 @@ async def reply(update, context, text, reply_markup=None, parse_mode=None):
         return None
     sent_id = getattr(sent, "message_id", None)
     if chat_id is not None:
-        # 先删被点的消息（回调时，只删一次），再删之前跟踪的选择框。
+        # Delete the tapped message first (only once per callback), then the previously tracked picker. 先删被点的消息（回调时，只删一次），再删之前跟踪的选择框。
         if query is not None and not tapped_gone:
             user_data[_CLEANED_QUERY_KEY] = query_id
             if query.message is not None:
                 await _delete_message_safe(
                     context.bot, chat_id, query.message.message_id)
         await delete_live_menu(context, chat_id, except_id=sent_id)
-    # 跟踪更新：带键盘 = 新选择框；不带 = 结果，选择框使命完成。
+    # Tracker update: with a keyboard = a new picker; without = a result, and the picker's job is done. 跟踪更新：带键盘 = 新选择框；不带 = 结果，选择框使命完成。
     if reply_markup is not None:
         if chat_id is not None and sent_id is not None:
             user_data[LIVE_MENU_KEY] = sent_id

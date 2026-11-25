@@ -20,7 +20,7 @@ from oci.client import (OCIClient, OutOfCapacityError, QuotaExceededError,
 from oci.grabber import (BACKOFF_INITIAL, CREATE_INTERVAL, CREATE_JITTER,
                          Grabber)
 
-# 占位符（测试里不出现真实 OCID）
+# Placeholders (no real OCIDs appear in tests). 占位符（测试里不出现真实 OCID）。
 FAKE_COMPARTMENT = "ocid1.tenancy.oc1..xxxxxxxx"
 FAKE_AD = "xxxx:AP-SINGAPORE-1-AD-1"
 FAKE_IMAGE = "ocid1.image.oc1.ap-singapore-1.xxxxxxxx"
@@ -89,7 +89,6 @@ def _run_text_dispatch(list_result="", launch_results=None, get_result="TERMINAT
 
 class TestTryLaunchOnce(unittest.TestCase):
     def test_success_returns_ocid(self):
-        # ① try_launch_once 成功返回 OCID
         cli = MagicMock(spec=OCIClient)
         cli.run_text.side_effect = _run_text_dispatch(
             list_result="", launch_results=[FAKE_INSTANCE_A])
@@ -97,7 +96,6 @@ class TestTryLaunchOnce(unittest.TestCase):
         self.assertEqual(grabber.try_launch_once(), FAKE_INSTANCE_A)
 
     def test_launch_command_contains_no_retry(self):
-        # 单次 try_launch_once 的命令构造检查：launch 必须带 --no-retry
         cli = MagicMock(spec=OCIClient)
         cli.run_text.side_effect = _run_text_dispatch(
             list_result="", launch_results=[FAKE_INSTANCE_A])
@@ -111,7 +109,6 @@ class TestTryLaunchOnce(unittest.TestCase):
         self.assertIn("VM.Standard.E2.1.Micro", launch_args[0])
 
     def test_existing_instance_reused_without_launch(self):
-        # 防重复建：同名实例在 15 分钟内创建时直接返回，不调 launch
         created = datetime.now(timezone.utc).isoformat()
         cli = MagicMock(spec=OCIClient)
         cli.run_text.side_effect = _run_text_dispatch(
@@ -124,7 +121,6 @@ class TestTryLaunchOnce(unittest.TestCase):
         self.assertEqual(launch_calls, [])
 
     def test_old_same_name_instance_is_not_reused(self):
-        # 同名实例是 1 小时前建的（日期名重名）：不当重复响应，正常 launch
         created = (datetime.now(timezone.utc)
                    - timedelta(hours=1)).isoformat()
         cli = MagicMock(spec=OCIClient)
@@ -136,7 +132,6 @@ class TestTryLaunchOnce(unittest.TestCase):
         self.assertEqual(grabber.try_launch_once(), FAKE_INSTANCE_B)
 
     def test_missing_created_falls_back_to_old_behavior(self):
-        # 查不到创建时间时按旧行为：有同名就返回，不冒险重复建
         cli = MagicMock(spec=OCIClient)
         cli.run_text.side_effect = _run_text_dispatch(
             list_result=json.dumps({"id": FAKE_INSTANCE_A}))
@@ -144,8 +139,7 @@ class TestTryLaunchOnce(unittest.TestCase):
         self.assertEqual(grabber.try_launch_once(), FAKE_INSTANCE_A)
 
     def test_terminated_same_name_is_not_reused(self):
-        # 已终止的同名实例即使在 15 分钟内创建也不复用（2026-11-24
-        # 首尔实测教训：复用死机会把抢机结果变成无法使用的实例）
+        # A terminated same-name instance is never reused even when created within 15 minutes: reusing a dead machine turns the grab result into an unusable instance. 已终止的同名实例即使在 15 分钟内创建也不复用：复用死机会把抢机结果变成无法使用的实例。
         created = datetime.now(timezone.utc).isoformat()
         cli = MagicMock(spec=OCIClient)
         cli.run_text.side_effect = _run_text_dispatch(
@@ -157,7 +151,6 @@ class TestTryLaunchOnce(unittest.TestCase):
         self.assertEqual(grabber.try_launch_once(), FAKE_INSTANCE_B)
 
     def test_stopped_same_name_is_not_reused(self):
-        # 已停止的同名实例也不复用（用户要的是一台新开的运行中机器）
         created = datetime.now(timezone.utc).isoformat()
         cli = MagicMock(spec=OCIClient)
         cli.run_text.side_effect = _run_text_dispatch(
@@ -169,7 +162,6 @@ class TestTryLaunchOnce(unittest.TestCase):
         self.assertEqual(grabber.try_launch_once(), FAKE_INSTANCE_B)
 
     def test_running_same_name_list_shape_is_reused(self):
-        # 新查询返回列表：RUNNING 的同名实例在 15 分钟内照常复用
         created = datetime.now(timezone.utc).isoformat()
         cli = MagicMock(spec=OCIClient)
         cli.run_text.side_effect = _run_text_dispatch(
@@ -183,7 +175,6 @@ class TestTryLaunchOnce(unittest.TestCase):
         self.assertEqual(launch_calls, [])
 
     def test_newest_terminated_but_older_running_is_reused(self):
-        # 最新同名已终止、较早同名还在运行：复用运行中的那台
         now = datetime.now(timezone.utc)
         cli = MagicMock(spec=OCIClient)
         cli.run_text.side_effect = _run_text_dispatch(
@@ -198,7 +189,6 @@ class TestTryLaunchOnce(unittest.TestCase):
         self.assertEqual(grabber.try_launch_once(), FAKE_INSTANCE_A)
 
     def test_find_existing_null_returns_none(self):
-        # 无同名实例时 list 返回 null，find_existing 返回 None
         cli = MagicMock(spec=OCIClient)
         cli.run_text.side_effect = _run_text_dispatch(
             list_result="null", launch_results=[FAKE_INSTANCE_A])
@@ -206,7 +196,6 @@ class TestTryLaunchOnce(unittest.TestCase):
         self.assertEqual(grabber.try_launch_once(), FAKE_INSTANCE_A)
 
     def test_out_of_capacity_returns_none(self):
-        # ② 无容量返回 None（不抛异常，由 run() 决定重试）
         cli = MagicMock(spec=OCIClient)
         cli.run_text.side_effect = _run_text_dispatch(
             list_result="",
@@ -215,7 +204,6 @@ class TestTryLaunchOnce(unittest.TestCase):
         self.assertIsNone(grabber.try_launch_once())
 
     def test_rate_limit_propagates(self):
-        # 429 往上抛（由 run() 做指数退避）
         cli = MagicMock(spec=OCIClient)
         cli.run_text.side_effect = _run_text_dispatch(
             list_result="",
@@ -225,7 +213,6 @@ class TestTryLaunchOnce(unittest.TestCase):
             grabber.try_launch_once()
 
     def test_quota_propagates(self):
-        # 配额不足往上抛（由 run() 停下）
         cli = MagicMock(spec=OCIClient)
         cli.run_text.side_effect = _run_text_dispatch(
             list_result="",
@@ -238,7 +225,6 @@ class TestTryLaunchOnce(unittest.TestCase):
 class TestRun(unittest.TestCase):
     @patch("oci.grabber.time.sleep")
     def test_rate_limit_backoff_doubles(self, mock_sleep):
-        # ③ run 循环里 429 触发退避，等待时间翻倍（60 -> 120）
         cli = MagicMock(spec=OCIClient)
         cli.run_text.side_effect = _run_text_dispatch(
             list_result="",
@@ -257,7 +243,6 @@ class TestRun(unittest.TestCase):
 
     @patch("oci.grabber.time.sleep")
     def test_quota_stops_and_emits_event(self, mock_sleep):
-        # ④ 配额不足时 run 抛 QuotaExceededError 且调了 on_event("quota")
         cli = MagicMock(spec=OCIClient)
         cli.run_text.side_effect = _run_text_dispatch(
             list_result="",
@@ -269,20 +254,18 @@ class TestRun(unittest.TestCase):
         quota_calls = [c for c in on_event.call_args_list
                        if c.args and c.args[0] == "quota"]
         self.assertEqual(len(quota_calls), 1)
-        # 配额不足直接停下，不应再重试（launch 只调了一次）
         launch_calls = [c for c in cli.run_text.call_args_list
                         if "launch" in c.args[0]]
         self.assertEqual(len(launch_calls), 1)
 
     @patch("oci.grabber.time.sleep")
     def test_wrong_cpu_terminates_and_continues(self, mock_sleep):
-        # ⑤ CPU 不对时终止实例并继续抢，最终返回第二个实例
         cli = MagicMock(spec=OCIClient)
         cli.run_text.side_effect = _run_text_dispatch(
             list_result="",
             launch_results=[FAKE_INSTANCE_A, FAKE_INSTANCE_B],
             get_result="TERMINATED")
-        cli.run.return_value = None  # terminate 不返回 JSON
+        cli.run.return_value = None
         events = []
         grabber = _make_grabber(cli=cli, target_cpu="7J13",
                                 on_event=lambda e, m: events.append(e))
@@ -296,7 +279,6 @@ class TestRun(unittest.TestCase):
         self.assertEqual(result.releases, 1)
         self.assertEqual(grabber.cpu_check_hook.call_count, 2)
         self.assertEqual(mock_ip.call_count, 2)
-        # terminate 只调了一次（第一台），且带永久删引导卷参数
         terminate_calls = [c for c in cli.run.call_args_list
                            if "terminate" in c.args[0]]
         self.assertEqual(len(terminate_calls), 1)
@@ -310,13 +292,12 @@ class TestRun(unittest.TestCase):
 
     @patch("oci.grabber.time.sleep")
     def test_target_cpu_list_keeps_any_match(self, mock_sleep):
-        # target_cpu 传列表：7745 也留，7551 释放
         cli = MagicMock(spec=OCIClient)
         cli.run_text.side_effect = _run_text_dispatch(
             list_result="",
             launch_results=[FAKE_INSTANCE_A, FAKE_INSTANCE_B],
             get_result="TERMINATED")
-        cli.run.return_value = None  # terminate 不返回 JSON
+        cli.run.return_value = None
         events = []
         grabber = _make_grabber(cli=cli, target_cpu=["7J13", "7745"],
                                 on_event=lambda e, m: events.append(e))
@@ -328,12 +309,12 @@ class TestRun(unittest.TestCase):
         self.assertEqual(result.instance_id, FAKE_INSTANCE_B)
         self.assertEqual(result.attempts, 2)
         self.assertEqual(result.releases, 1)
+        self.assertEqual(result.cpu_model, "AMD EPYC 7745")
         self.assertIn("wrong_cpu", events)
         self.assertIn("done", events)
 
     @patch("oci.grabber.time.sleep")
     def test_cpu_check_none_keeps_instance(self, mock_sleep):
-        # hook 返回 None（查不到型号）：暂留第一台，不释放
         cli = MagicMock(spec=OCIClient)
         cli.run_text.side_effect = _run_text_dispatch(
             list_result="", launch_results=[FAKE_INSTANCE_A])
@@ -347,6 +328,7 @@ class TestRun(unittest.TestCase):
         self.assertEqual(result.instance_id, FAKE_INSTANCE_A)
         self.assertEqual(result.attempts, 1)
         self.assertEqual(result.releases, 0)
+        self.assertIsNone(result.cpu_model)
         self.assertIn("cpu_check_failed", events)
         self.assertIn("done", events)
         terminate_calls = [c for c in cli.run.call_args_list
@@ -355,7 +337,6 @@ class TestRun(unittest.TestCase):
 
     @patch("oci.grabber.time.sleep")
     def test_cpu_check_raises_keeps_instance(self, mock_sleep):
-        # hook 抛异常：同样暂留，不杀抢机
         cli = MagicMock(spec=OCIClient)
         cli.run_text.side_effect = _run_text_dispatch(
             list_result="", launch_results=[FAKE_INSTANCE_A])
@@ -369,11 +350,11 @@ class TestRun(unittest.TestCase):
             result = grabber.run()
         self.assertEqual(result.instance_id, FAKE_INSTANCE_A)
         self.assertEqual(result.releases, 0)
+        self.assertIsNone(result.cpu_model)
         self.assertIn("cpu_check_failed", events)
         self.assertIn("done", events)
 
     def test_target_cpus_normalized(self):
-        # 字符串归一成单元素列表，列表原样，None/空串归一成空列表
         self.assertEqual(_make_grabber(target_cpu="7J13").target_cpus,
                          ["7J13"])
         self.assertEqual(
@@ -385,7 +366,6 @@ class TestRun(unittest.TestCase):
 
     @patch("oci.grabber.time.sleep")
     def test_no_capacity_retries_then_succeeds(self, mock_sleep):
-        # 无容量时按 interval 等待后重试，抢到后返回统计
         cli = MagicMock(spec=OCIClient)
         cli.run_text.side_effect = _run_text_dispatch(
             list_result="",
@@ -404,7 +384,6 @@ class TestRun(unittest.TestCase):
 
     @patch("oci.grabber.time.sleep")
     def test_max_attempts_raises(self, mock_sleep):
-        # 达到 max_attempts 仍没抢到时抛 RuntimeError
         cli = MagicMock(spec=OCIClient)
         cli.run_text.side_effect = _run_text_dispatch(
             list_result="",
@@ -419,7 +398,6 @@ class TestRun(unittest.TestCase):
 
 class TestJitter(unittest.TestCase):
     def test_interval_within_range(self):
-        # ⑥ 抖动：interval 计算在 [20, 30] 范围内
         grabber = _make_grabber()
         for _ in range(200):
             wait = grabber._next_interval()
@@ -429,7 +407,6 @@ class TestJitter(unittest.TestCase):
 
 class TestCancellation(unittest.TestCase):
     def test_preset_stop_event_cancels_before_launch(self):
-        # ⑦ stop_event 事先置位：run() 立即抛 GrabCancelledError，不发 launch
         import threading
 
         from oci.grabber import GrabCancelledError
@@ -448,7 +425,6 @@ class TestCancellation(unittest.TestCase):
 
     @patch("oci.grabber.time.sleep")
     def test_stop_during_run_cancels_after_first_attempt(self, mock_sleep):
-        # ⑧ 运行中置位 stop_event：第一次无容量后即取消，不再重试
         import threading
 
         from oci.grabber import GrabCancelledError
@@ -470,11 +446,9 @@ class TestCancellation(unittest.TestCase):
         launch_calls = [c for c in cli.run_text.call_args_list
                         if "launch" in c.args[0]]
         self.assertEqual(len(launch_calls), 1)
-        # _sleep 用 stop_event.wait 实现，time.sleep 不应被调到
         mock_sleep.assert_not_called()
 
     def test_sleep_returns_immediately_when_stopped(self):
-        # ⑨ _sleep 在 stop_event 置位时立即返回 True（不真等）
         import threading
         import time as time_module
 
@@ -486,7 +460,6 @@ class TestCancellation(unittest.TestCase):
         self.assertLess(time_module.monotonic() - started, 1.0)
 
     def test_get_public_ip_cancelled(self):
-        # ⑩ 等公网 IP 时取消：抛 GrabCancelledError
         import threading
 
         from oci.grabber import GrabCancelledError
@@ -494,7 +467,7 @@ class TestCancellation(unittest.TestCase):
         stop_event = threading.Event()
         stop_event.set()
         cli = MagicMock(spec=OCIClient)
-        cli.run_text.return_value = ""  # 还没分配 IP
+        cli.run_text.return_value = ""
         grabber = _make_grabber(cli=cli, stop_event=stop_event)
         with self.assertRaises(GrabCancelledError):
             grabber.get_public_ip(FAKE_INSTANCE_A)
@@ -504,8 +477,7 @@ class TestLaunchOptions(unittest.TestCase):
     """launch 命令的可选参数构造（阶段 3b：shape-config 等接入）。"""
 
     def test_a1_flex_shape_config(self):
-        # A1.Flex + ocpus=4/memory_gb=24 时 launch 含 --shape-config，
-        # JSON 解析后 ocpus=4、memoryInGBs=24（注意 memoryInGBs 的大小写）。
+        # A1.Flex + ocpus=4/memory_gb=24: launch includes --shape-config, and the parsed JSON has ocpus=4, memoryInGBs=24 (note the memoryInGBs casing). A1.Flex + ocpus=4/memory_gb=24 时 launch 含 --shape-config，JSON 解析后 ocpus=4、memoryInGBs=24（注意 memoryInGBs 的大小写）。
         _, args = _launch_once_with(shape="VM.Standard.A1.Flex",
                                     ocpus=4, memory_gb=24)
         self.assertIn("--shape-config", args)
@@ -514,56 +486,45 @@ class TestLaunchOptions(unittest.TestCase):
         self.assertEqual(config, {"ocpus": 4, "memoryInGBs": 24})
 
     def test_e2_never_gets_shape_config(self):
-        # E2.1.Micro 是固定规格：即使传了 ocpus/memory 也不传 shape-config。
         _, args = _launch_once_with(shape="VM.Standard.E2.1.Micro",
                                     ocpus=4, memory_gb=24)
         self.assertNotIn("--shape-config", args)
 
     def test_flex_shape_config_requires_both_values(self):
-        # Flex 形状只传 ocpus（缺 memory_gb）时不传 shape-config。
         _, args = _launch_once_with(shape="VM.Standard.A1.Flex",
                                     ocpus=4, memory_gb=None)
         self.assertNotIn("--shape-config", args)
 
     def test_boot_volume_size(self):
-        # boot_volume_size_gbs=100 时含 --boot-volume-size-in-gbs 100。
         _, args = _launch_once_with(boot_volume_size_gbs=100)
         self.assertIn("--boot-volume-size-in-gbs", args)
         self.assertEqual(args[args.index("--boot-volume-size-in-gbs") + 1],
                          "100")
 
     def test_boot_volume_size_default_absent(self):
-        # 不传 boot_volume_size_gbs 时不加该参数（用 OCI 默认值）。
         _, args = _launch_once_with()
         self.assertNotIn("--boot-volume-size-in-gbs", args)
 
     def test_assign_public_ip_false(self):
-        # assign_public_ip=False 时 --assign-public-ip false。
         _, args = _launch_once_with(assign_public_ip=False)
         self.assertEqual(args[args.index("--assign-public-ip") + 1], "false")
 
     def test_assign_public_ip_default_true(self):
-        # 默认（不传）时 --assign-public-ip true，与旧行为一致。
         _, args = _launch_once_with()
         self.assertEqual(args[args.index("--assign-public-ip") + 1], "true")
 
     def test_assign_ipv6_true(self):
-        # assign_ipv6=True 时含 --assign-ipv6-ip true。
-        # 注意：OCI CLI 3.96.3 没有 --assign-ipv6 参数，IPv6 分配的实际
-        # 参数名是 --assign-ipv6-ip（`oci compute instance launch --help`
-        # 实测），所以实现传的是 --assign-ipv6-ip。
+        # Note: OCI CLI 3.96.3 has no --assign-ipv6 flag; the actual flag for IPv6 assignment is --assign-ipv6-ip (verified with `oci compute instance launch --help`), so the implementation passes --assign-ipv6-ip. 注意：OCI CLI 3.96.3 没有 --assign-ipv6 参数，IPv6 分配的实际参数名是 --assign-ipv6-ip（`oci compute instance launch --help` 实测），所以实现传的是 --assign-ipv6-ip。
         _, args = _launch_once_with(assign_ipv6=True)
         self.assertIn("--assign-ipv6-ip", args)
         self.assertEqual(args[args.index("--assign-ipv6-ip") + 1], "true")
         self.assertNotIn("--assign-ipv6", args)
 
     def test_assign_ipv6_default_false(self):
-        # 默认（不传）时不加 IPv6 参数。
         _, args = _launch_once_with()
         self.assertNotIn("--assign-ipv6-ip", args)
 
     def test_user_data_file_content(self):
-        # user_data 非空时含 --user-data-file，且指向的文件内容就是脚本原文。
         script = "#!/bin/bash\necho hello\n"
         grabber, args = _launch_once_with(user_data=script)
         try:
@@ -575,24 +536,19 @@ class TestLaunchOptions(unittest.TestCase):
             grabber.cleanup()
 
     def test_user_data_empty_absent(self):
-        # user_data 为空字符串 / None 时不传 --user-data-file。
         for empty in ("", None):
             _, args = _launch_once_with(user_data=empty)
             self.assertNotIn("--user-data-file", args)
 
     def test_no_ssh_keys_file_omits_parameter(self):
-        # ssh_keys_file=None 时不传 --ssh-authorized-keys-file
-        # （表单里"不用公钥" + root 密码登录的组合）。
         _, args = _launch_once_with(ssh_keys_file=None)
         self.assertNotIn("--ssh-authorized-keys-file", args)
 
     def test_empty_ssh_keys_file_omits_parameter(self):
-        # ssh_keys_file="" 同样不传该参数。
         _, args = _launch_once_with(ssh_keys_file="")
         self.assertNotIn("--ssh-authorized-keys-file", args)
 
     def test_ssh_keys_file_present_by_default(self):
-        # 默认（传了公钥文件）时照常传该参数。
         _, args = _launch_once_with()
         self.assertIn("--ssh-authorized-keys-file", args)
         self.assertEqual(
@@ -601,7 +557,6 @@ class TestLaunchOptions(unittest.TestCase):
 
     @patch("oci.grabber.time.sleep")
     def test_run_cleans_up_user_data_file(self, mock_sleep):
-        # run() 结束（正常返回）后启动脚本临时文件被删除。
         cli = MagicMock(spec=OCIClient)
         cli.run_text.side_effect = _run_text_dispatch(
             list_result="", launch_results=[FAKE_INSTANCE_A])
@@ -617,8 +572,6 @@ class TestDelayRange(unittest.TestCase):
     """min_delay/max_delay 到 interval/jitter 的映射。"""
 
     def test_custom_delay_range(self):
-        # Grabber(min_delay=20, max_delay=50) 的 _next_interval 多次采样
-        # 都落在 [20, 50] 内（interval=35、jitter=15）。
         grabber = _make_grabber(min_delay=20, max_delay=50)
         self.assertEqual(grabber._interval, 35)
         self.assertEqual(grabber._jitter, 15)
@@ -628,13 +581,11 @@ class TestDelayRange(unittest.TestCase):
             self.assertLessEqual(wait, 50)
 
     def test_default_delay_unchanged(self):
-        # 不传 min/max 时仍为 25 +/- 5（模块常量默认值）。
         grabber = _make_grabber()
         self.assertEqual(grabber._interval, CREATE_INTERVAL)
         self.assertEqual(grabber._jitter, CREATE_JITTER)
 
     def test_partial_delay_falls_back_to_default(self):
-        # 只传一个（另一个为 None/0）时回退到默认 25 +/- 5。
         for kwargs in ({"min_delay": 20}, {"max_delay": 50},
                        {"min_delay": 20, "max_delay": 0}):
             grabber = _make_grabber(**kwargs)
@@ -642,7 +593,6 @@ class TestDelayRange(unittest.TestCase):
             self.assertEqual(grabber._jitter, CREATE_JITTER)
 
     def test_min_greater_than_max_raises(self):
-        # min_delay > max_delay 时构造即抛 ValueError。
         with self.assertRaises(ValueError):
             _make_grabber(min_delay=50, max_delay=20)
 

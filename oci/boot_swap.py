@@ -56,18 +56,16 @@ from oci.volume import (
 )
 
 # ================= 配置区（改这里） =================
-# 默认 compartment OCID（占位符）。根 compartment 就是 tenancy OCID。
+# Default compartment OCID (placeholder). The root compartment is the tenancy OCID. 默认 compartment OCID（占位符）。根 compartment 就是 tenancy OCID。
 DEFAULT_COMPARTMENT_ID = "ocid1.tenancy.oc1..xxxxxxxx"
-# 各步等待上限（秒）：47GB 的盘从备份建卷实测约几分钟，1200 秒留足余量；
-# 原生换盘（停机 + 换盘 + 开机）通常 3-6 分钟，900 秒留足余量；换盘后
-# 等实例回到原状态 600 秒；拆盘 / 挂盘（辅助函数）通常 1-3 分钟。
+# Per-step wait caps (seconds): building a volume from a backup takes a few minutes for a 47 GB disk, so 1200s leaves headroom; a native swap (stop + swap + start) usually takes 3-6 minutes, so 900s leaves headroom; waiting for the instance to return to its pre-swap state, 600s; detach / attach (helper functions) usually 1-3 minutes. 各步等待上限（秒）：47GB 的盘从备份建卷实测约几分钟，1200 秒留足余量；原生换盘（停机 + 换盘 + 开机）通常 3-6 分钟，900 秒留足余量；换盘后等实例回到原状态 600 秒；拆盘 / 挂盘（辅助函数）通常 1-3 分钟。
 SWAP_DETACH_MAX_SECONDS = 300
 SWAP_ATTACH_MAX_SECONDS = 300
 SWAP_REPLACE_MAX_SECONDS = 900
 SWAP_STATE_MAX_SECONDS = 600
-# 轮询实例状态的间隔（秒）。
+# Poll interval (seconds) for instance state. 轮询实例状态的间隔（秒）。
 SWAP_POLL_INTERVAL_SECONDS = 10
-# 新启动盘显示名后缀（实例名 + 后缀）。
+# New boot disk display-name suffix (instance name + suffix). 新启动盘显示名后缀（实例名 + 后缀）。
 SWAP_VOLUME_NAME_SUFFIX = "-restored-boot-volume"
 # =====================================================
 
@@ -279,15 +277,18 @@ def _replace_failed_error(cli, compartment_id, instance_id,
 
 
 def swap_boot_volume(cli, compartment_id, instance_id, backup_id,
-                     on_step=None):
+                     on_step=None, delete_old_volume=True):
     """用备份替换实例的启动盘（原地恢复，见模块 docstring）。
 
     on_step：可选回调，每步开始时调 on_step(中文进度文本)。
+    delete_old_volume=False 时换盘成功后不删旧盘（救机安全恢复用：
+    旧盘是备份源盘时留给用户手动处理）。
     成功返回 {"old_boot_volume_id", "new_boot_volume_id",
               "rolled_back": False, "was_running": bool,
               "old_volume_deleted": bool}（旧盘删除成功为 True；
     删除失败时恢复仍算成功，old_volume_deleted 为 False，调用方
-    应在消息里警告用户手动删除旧盘）。
+    应在消息里警告用户手动删除旧盘；delete_old_volume=False 时
+    old_volume_deleted 恒为 False）。
     失败抛 BootSwapError（替换失败时 OCI 会自动回滚，见
     rolled_back）或 ValueError（前置校验不通过：备份不可用 /
     实例状态不对 / 找不到挂载关系 / 额度不够）。
@@ -296,14 +297,14 @@ def swap_boot_volume(cli, compartment_id, instance_id, backup_id,
         if on_step is not None:
             on_step(text)
 
-    # 前置校验 1：备份必须 AVAILABLE。
+    # Pre-check 1: the backup must be AVAILABLE. 前置校验 1：备份必须 AVAILABLE。
     backup = get_boot_volume_backup(cli, backup_id)
     if backup.get("lifecycle-state") != "AVAILABLE":
         state = backup.get("lifecycle-state") or "未知"
         raise ValueError(
             f"备份「{backup.get('display-name') or backup_id}」当前状态是 "
             f"{state}，只有 AVAILABLE 状态的备份才能恢复。")
-    # 前置校验 2：实例状态必须是 RUNNING 或 STOPPED。
+    # Pre-check 2: the instance must be RUNNING or STOPPED. 前置校验 2：实例状态必须是 RUNNING 或 STOPPED。
     detail = _unwrap(get_instance(cli, instance_id)) or {}
     state = detail.get("lifecycle-state")
     if state not in ("RUNNING", "STOPPED"):
@@ -313,12 +314,12 @@ def swap_boot_volume(cli, compartment_id, instance_id, backup_id,
     was_running = state == "RUNNING"
     ad = detail.get("availability-domain")
     name = detail.get("display-name") or instance_id[-4:]
-    # 前置校验 3：找到当前挂着的启动盘。
+    # Pre-check 3: find the currently attached boot volume. 前置校验 3：找到当前挂着的启动盘。
     attachment = get_boot_volume_attachment(cli, compartment_id, instance_id)
     if attachment is None:
         raise ValueError("找不到该实例当前挂载的启动盘，无法换盘。")
     old_volume_id = attachment.get("boot-volume-id")
-    # 前置校验 4：启动盘额度够放新盘（新盘先建、旧盘后删，峰值仍需额度）。
+    # Pre-check 4: enough boot-volume quota for the new disk (the new disk is built first and the old one deleted later, so the peak still needs quota). 前置校验 4：启动盘额度够放新盘（新盘先建、旧盘后删，峰值仍需额度）。
     size_gb = backup.get("size-in-gbs") or 0
     ok, remaining = check_boot_volume_space(cli, compartment_id, size_gb)
     if not ok:
@@ -326,7 +327,7 @@ def swap_boot_volume(cli, compartment_id, instance_id, backup_id,
             f"启动盘额度不足：还剩 {remaining}GB，新盘需要 {size_gb}GB。"
             "请先删除不用的启动盘再恢复。")
 
-    # 第 1 步：从备份建新启动卷，等到 AVAILABLE。
+    # Step 1: build a new boot volume from the backup, wait until AVAILABLE. 第 1 步：从备份建新启动卷，等到 AVAILABLE。
     step("① 从备份创建新启动盘…")
     volume_name = f"{name}{SWAP_VOLUME_NAME_SUFFIX}"
     created = cli.run(
@@ -342,9 +343,8 @@ def swap_boot_volume(cli, compartment_id, instance_id, backup_id,
     if not new_volume_id:
         raise ValueError("从备份创建启动卷后未返回 OCID，恢复中止。")
 
-    # 第 2 步：OCI 原生换盘（停机→换盘→恢复原状态，失败自动回滚）。
-    # 手动 detach + attach 行不通：从备份恢复的盘 attach 会报
-    # Conflict，必须走原生接口（见模块 docstring）。
+    # Step 2: native OCI volume swap (stop -> swap -> restore original state; rolls back automatically on failure). 第 2 步：OCI 原生换盘（停机→换盘→恢复原状态，失败自动回滚）。
+    # Manual detach + attach does not work: attaching a volume restored from a backup reports Conflict; the native API must be used (see the module docstring). 手动 detach + attach 行不通：从备份恢复的盘 attach 会报 Conflict，必须走原生接口（见模块 docstring）。
     step("② 正在替换启动盘（OCI 原生换盘）…")
     try:
         replace_boot_volume(cli, instance_id, new_volume_id)
@@ -352,7 +352,7 @@ def swap_boot_volume(cli, compartment_id, instance_id, backup_id,
         raise _replace_failed_error(cli, compartment_id, instance_id,
                                     old_volume_id, new_volume_id,
                                     was_running, exc) from exc
-    # 等新盘挂上（轮询挂载关系，直到挂着的是新盘）。
+    # Wait for the new disk to attach (poll the attachment until the attached volume is the new one). 等新盘挂上（轮询挂载关系，直到挂着的是新盘）。
     try:
         wait_for_boot_volume_attachment(cli, compartment_id, instance_id,
                                         new_volume_id,
@@ -361,7 +361,7 @@ def swap_boot_volume(cli, compartment_id, instance_id, backup_id,
         raise _replace_failed_error(cli, compartment_id, instance_id,
                                     old_volume_id, new_volume_id,
                                     was_running, exc) from exc
-    # 等实例回到换盘前状态（在运行的回到 RUNNING，已停止的保持 STOPPED）。
+    # Wait for the instance to return to its pre-swap state (a running one returns to RUNNING; a stopped one stays STOPPED). 等实例回到换盘前状态（在运行的回到 RUNNING，已停止的保持 STOPPED）。
     target_state = "RUNNING" if was_running else "STOPPED"
     try:
         wait_for_instance_state(cli, instance_id, target_state,
@@ -374,16 +374,16 @@ def swap_boot_volume(cli, compartment_id, instance_id, backup_id,
             old_boot_volume_id=old_volume_id,
             new_boot_volume_id=new_volume_id) from exc
 
-    # 第 3 步（v1.35.0）：换盘成功后删除旧启动盘，不留旧盘占额度。
-    # 旧盘此时已拆下（新盘已挂上且实例回到原状态）；OCI 拒绝删除仍
-    # 在用的盘，万一旧盘还挂着这里只会报错，不会误删。删除失败不影响
-    # 恢复结果，只在返回里标记，调用方在消息里警告用户手动删除。
+    # Step 3: after a successful swap, delete the old boot volume so it does not keep occupying quota. 第 3 步：换盘成功后删除旧启动盘，不留旧盘占额度。
+    # Skipped when delete_old_volume=False (rescue safe-restore: the old disk is the backup's source disk, left for the user to handle manually); a delete failure does not affect the restore result, only marks it in the return value, and the caller warns the user in the message to delete it manually. delete_old_volume=False 时跳过（救机安全恢复：旧盘是备份源盘，留给用户手动处理）；删除失败不影响恢复结果，只在返回里标记，调用方在消息里警告用户手动删除。
     step("③ 正在删除旧启动盘…")
-    old_volume_deleted = True
-    try:
-        delete_boot_volume(cli, old_volume_id)
-    except Exception:  # noqa: BLE001 - 删盘失败只警告，不影响恢复结果
-        old_volume_deleted = False
+    old_volume_deleted = False
+    if delete_old_volume:
+        old_volume_deleted = True
+        try:
+            delete_boot_volume(cli, old_volume_id)
+        except Exception:  # noqa: BLE001 - 删盘失败只警告，不影响恢复结果
+            old_volume_deleted = False
 
     return {"old_boot_volume_id": old_volume_id,
             "new_boot_volume_id": new_volume_id,

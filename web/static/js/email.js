@@ -45,7 +45,7 @@
     }).join("");
   }
 
-  // 清掉凭据结果区（关闭后密码不再留在页面上）。
+  // Clear the credential result area (after closing, the password no longer stays on the page). 清掉凭据结果区（关闭后密码不再留在页面上）。
   function clearSmtpResult() {
     document.getElementById("smtp-username-result").value = "";
     document.getElementById("smtp-password-result").value = "";
@@ -76,7 +76,6 @@
     loadAll();
     document.getElementById("btn-refresh-email").addEventListener("click", loadAll);
 
-    // 创建发件人
     document.getElementById("create-sender-form").addEventListener("submit", async function (e) {
       e.preventDefault();
       var email = document.getElementById("sender-email").value.trim();
@@ -94,7 +93,7 @@
       }
     });
 
-    // 生成 SMTP 凭据（密码只显示一次）
+    // Generate SMTP credentials (the password is shown only once). 生成 SMTP 凭据（密码只显示一次）。
     document.getElementById("create-smtp-form").addEventListener("submit", async function (e) {
       e.preventDefault();
       var userId = document.getElementById("smtp-user").value;
@@ -125,14 +124,13 @@
       }
     });
 
-    // 复制凭据
     document.getElementById("btn-copy-smtp").addEventListener("click", async function () {
       var username = document.getElementById("smtp-username-result").value;
       var password = document.getElementById("smtp-password-result").value;
       await MBot.copyText("用户名：" + username + "\n密码：" + password, "SMTP 凭据");
     });
 
-    // 关闭凭据结果区（同时清掉页面上的密码）
+    // Close the credential result area (clearing the password from the page at the same time). 关闭凭据结果区（同时清掉页面上的密码）。
     document.getElementById("btn-close-smtp").addEventListener("click", clearSmtpResult);
   });
 })();

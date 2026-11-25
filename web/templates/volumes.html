@@ -1,15 +1,14 @@
 {% extends "base.html" %}
-{# 启动盘：引导卷表格 + 孤儿盘区域 #}
+{# Boot volumes: the boot volume table + the orphan volume area. 启动盘：引导卷表格 + 孤儿盘区域。 #}
 {% block title %}启动盘 · M_Bot Oracle开源管理面板{% endblock %}
 
 {% block content %}
 <div class="page-head">
   <h1>启动盘</h1>
   <label for="profile-select" style="color: var(--text-muted);">Profile</label>
-  {# Profile 下拉：由 volumes.js 从 GET /api/profiles 动态填充
-     （显示"名字 · 区域中文名"）；选择存 localStorage，切换后带 ?profile= 重新加载 #}
+  {# Profile dropdown: filled dynamically by volumes.js from GET /api/profiles (shows "name · region display name"); the choice is stored in localStorage, and switching reloads with ?profile=. Profile 下拉：由 volumes.js 从 GET /api/profiles 动态填充（显示“名字 · 区域中文名”）；选择存 localStorage，切换后带 ?profile= 重新加载。 #}
   <select id="profile-select" style="width: auto;" aria-label="切换账号"></select>
-  {# 二级区域下拉：多区订阅的账号才显示（单区账号隐藏） #}
+  {# Second-level region dropdown: only shown for multi-region accounts (hidden for single-region accounts). 二级区域下拉：多区订阅的账号才显示（单区账号隐藏）。 #}
   <span id="region-wrap" hidden>
     <label for="region-select" style="color: var(--text-muted);">区域</label>
     <select id="region-select" style="width: auto;" aria-label="切换区域"></select>
@@ -43,7 +42,7 @@
   <p>没有找到启动盘</p>
 </div>
 
-{# 孤儿盘：未挂载到任何实例的盘 #}
+{# Orphan volumes: disks not attached to any instance. 孤儿盘：未挂载到任何实例的盘。 #}
 <h2 style="font-size: 16px; margin: 26px 0 12px;">孤儿盘（未挂载）</h2>
 <div class="card">
   <div class="table-wrap">
@@ -63,7 +62,7 @@
   </div>
 </div>
 
-{# 启动卷备份：每个账号免费 5 个；从备份可恢复出一台新实例（原机不动） #}
+{# Boot volume backups: 5 free per account; a backup can restore a new instance (the original machine is untouched). 启动卷备份：每个账号免费 5 个；从备份可恢复出一台新实例（原机不动）。 #}
 <h2 style="font-size: 16px; margin: 26px 0 12px;">
   启动卷备份
   <span id="backup-quota" style="color: var(--text-muted); font-weight: normal; font-size: 13px;"></span>
@@ -93,7 +92,6 @@
   </div>
 </div>
 
-{# 扩容弹窗 #}
 <div class="modal-overlay" id="resize-modal" hidden>
   <div class="modal-box">
     <div class="modal-head">
@@ -117,7 +115,6 @@
   </div>
 </div>
 
-{# 改 VPU 弹窗 #}
 <div class="modal-overlay" id="vpus-modal" hidden>
   <div class="modal-box">
     <div class="modal-head">
@@ -145,7 +142,6 @@
   </div>
 </div>
 
-{# 删除二次确认弹窗 #}
 <div class="modal-overlay" id="delete-volume-modal" hidden>
   <div class="modal-box">
     <div class="modal-head">
@@ -163,7 +159,7 @@
   </div>
 </div>
 
-{# 从备份恢复弹窗：新实例名默认"<备份名>-restored"，形状默认来源实例形状 #}
+{# Restore-from-backup modal: the new instance name defaults to "<backup name>-restored", and the shape defaults to the source instance's shape. 从备份恢复弹窗：新实例名默认“<备份名>-restored”，形状默认来源实例形状。 #}
 <div class="modal-overlay" id="restore-modal" hidden>
   <div class="modal-box">
     <div class="modal-head">
@@ -210,7 +206,6 @@
   </div>
 </div>
 
-{# 删除备份二次确认弹窗 #}
 <div class="modal-overlay" id="delete-backup-modal" hidden>
   <div class="modal-box">
     <div class="modal-head">

@@ -46,7 +46,7 @@ from tgbot.bark import send_bark
 
 router = APIRouter()
 
-# 新密码强度要求：至少 8 位，且同时包含字母与数字。
+# New password strength: at least 8 chars, containing both letters and digits. 新密码强度要求：至少 8 位，且同时包含字母与数字。
 MIN_PASSWORD_LENGTH = 8
 
 
@@ -258,15 +258,14 @@ def telegram_send_code(request: Request):
                      "retry_after_seconds": remaining})
     code_id, code = TELEGRAM_CODES.create()
     magic_token = MAGIC_LOGIN_TOKENS.create()
-    # 一键登录链接地址：优先用配置的公网地址，否则用请求自身的 Host
-    # 拼（反代需透传 Host；链接点开即登录，与验证码同等效力）。
+    # One-click login link address: prefer the configured public address, otherwise build it from the request's own Host (a reverse proxy must pass Host through; opening the link logs in, with the same force as the code). 一键登录链接地址：优先用配置的公网地址，否则用请求自身的 Host 拼（反代需透传 Host；链接点开即登录，与验证码同等效力）。
     base_url = config.PANEL_URL or str(request.base_url).rstrip("/")
     sent = send_to_allowed_users(
         f"【M_Bot 面板登录】验证码：{code}，5 分钟内有效，"
         f"请勿告诉他人。如非本人操作请忽略。\n"
         f"点这里直接登录：{base_url}/login?token={magic_token}")
     if sent <= 0:
-        # 发送失败：作废这条码与链接（不进冷却，用户可立即重试）。
+        # Send failure: void this code and link (no cooldown; the user can retry immediately). 发送失败：作废这条码与链接（不进冷却，用户可立即重试）。
         TELEGRAM_CODES.revoke(code_id)
         MAGIC_LOGIN_TOKENS.revoke(magic_token)
         return error_response(
@@ -274,7 +273,7 @@ def telegram_send_code(request: Request):
             "MBOT_TELEGRAM_TOKEN 与 MBOT_ALLOWED_USERS",
             status_code=503)
     TELEGRAM_CODES.mark_sent(client_key)
-    # 双通道：Bark 已配置且开启时同步推一条（含验证码与一键登录链接）。
+    # Dual channel: when Bark is configured and enabled, push one message in sync (with the code and the one-click login link). 双通道：Bark 已配置且开启时同步推一条（含验证码与一键登录链接）。
     _push_bark_login_code(code, base_url, magic_token)
     return {"ok": True, "codeId": code_id,
             "expiresInSeconds": TELEGRAM_CODE_EXPIRE_SECONDS}

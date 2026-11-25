@@ -35,7 +35,7 @@ from tgbot.handlers_client import (  # noqa: E402
     RemoteCommandError,
 )
 
-# 占位符（测试里不出现真实 OCID / IP；203.0.113.0/24 是文档专用网段）
+# Placeholders (no real OCIDs / IPs appear in tests; 203.0.113.0/24 is a documentation range). 占位符（测试里不出现真实 OCID / IP；203.0.113.0/24 是文档专用网段）。
 ALLOWED_USER = 123
 DENIED_USER = 999
 FAKE_COMPARTMENT = "ocid1.tenancy.oc1..fake"
@@ -176,7 +176,7 @@ class TestDangerousCommands(unittest.TestCase):
             "poweroff",
             "echo hi > /dev/sda",
             "cat x >> /dev/sdb1",
-            "RM -RF /",  # 大小写不敏感
+            "RM -RF /",
         ]
         for cmd in blocked:
             with self.subTest(cmd=cmd):
@@ -269,7 +269,7 @@ class TestValidateSshPublicKey(unittest.TestCase):
         self.assertFalse(ok)
 
     def test_rejects_blob_type_mismatch(self):
-        # 声明 ed25519，blob 里嵌的却是 ssh-rsa。
+        # Declares ed25519, but the blob embeds ssh-rsa. 声明 ed25519，blob 里嵌的却是 ssh-rsa。
         raw = b"ssh-rsa"
         blob = struct.pack(">I", len(raw)) + raw + b"\x01" * 32
         key = f"ssh-ed25519 {base64.b64encode(blob).decode()}"
@@ -337,7 +337,7 @@ class TestSshKeyStorage(unittest.TestCase):
         line = hc.fmt_ssh_key_line({"key": key}, 0)
         self.assertIn("ssh-ed25519", line)
         self.assertIn("my-laptop", line)
-        # 完整 base64 不出现在列表行里（只留尾 8 位）。
+        # The full base64 never appears in list rows (only the last 8 chars are kept). 完整 base64 不出现在列表行里（只留尾 8 位）。
         self.assertNotIn(key.split()[1], line)
 
 
@@ -457,7 +457,7 @@ class TestCloudflareSection(unittest.TestCase):
         self.assertEqual(parsed["cloudflare"]["email"], "user@example.com")
 
     def test_parse_cloudflare_incomplete_ignored(self):
-        # 只有 Key 没邮箱：凭据不可用，当没有。
+        # Key without an email: the credential is unusable, treated as absent. 只有 Key 没邮箱：凭据不可用，当没有。
         parsed = hc.parse_oci_config_text(
             FAKE_CONFIG_TEXT + "\n[cloudflare]\ncf_key = fake-key\n")
         self.assertIsNone(parsed["error"])
@@ -566,7 +566,7 @@ class TestAppendOciProfile(unittest.TestCase):
 
     def test_append_without_trailing_newline(self):
         with open(self.path, "w", encoding="utf-8") as f:
-            f.write("[DEFAULT]\nuser = ocid1.user.oc1..fake")  # 无尾换行
+            f.write("[DEFAULT]\nuser = ocid1.user.oc1..fake")
         parsed = hc.parse_oci_config_text(FAKE_CONFIG_TEXT)
         hc.append_oci_profile("NEWACC", parsed["fields"], self.path)
         with open(self.path, encoding="utf-8") as f:
@@ -592,7 +592,7 @@ class TestAppendOciProfile(unittest.TestCase):
         self.assertTrue(hc.profile_exists_in_config("DEFAULT", self.path))
 
 
-# ================= v1.28.0：R-Bot 格式 / 根目录配置 =================
+# ================= R-Bot 格式 / 根目录配置 =================
 
 FAKE_RBOT_CONFIG_TEXT = """#在oci=begin和oci=end之间放入你的API配置信息 支持多个配置文件
 oci=begin
@@ -1143,7 +1143,7 @@ class TestMemhogCommands(unittest.TestCase):
         cmd = hc.build_memhog_command()
         self.assertIn("nohup python3 -c", cmd)
         self.assertIn("/proc/meminfo", cmd)
-        self.assertIn("0.25", cmd)  # 25% 比例
+        self.assertIn("0.25", cmd)
         self.assertIn("bytearray", cmd)
         self.assertIn("echo $!", cmd)
         self.assertIn(hc.MEMHOG_LOG_PATH, cmd)
@@ -1168,7 +1168,7 @@ class TestMemhogCommands(unittest.TestCase):
         self.assertEqual(hc.build_drop_caches_command(False),
                          "sync; echo 3 > /proc/sys/vm/drop_caches")
         sudo_cmd = hc.build_drop_caches_command(True)
-        # 非 root 时必须 sudo sh -c 包住重定向（sudo echo 3 > ... 不生效）。
+        # When not root, the redirect must be wrapped in sudo sh -c (sudo echo 3 > ... does not work). 非 root 时必须 sudo sh -c 包住重定向（sudo echo 3 > ... 不生效）。
         self.assertEqual(sudo_cmd,
                          "sync; sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'")
 
@@ -1190,7 +1190,7 @@ class TestMemHogStorage(unittest.TestCase):
         self.assertEqual(entry["pid"], 4242)
         self.assertEqual(entry["host"], FAKE_IP)
         self.assertIn("started", entry)
-        # 落盘格式与任务要求一致：{OCID: {pid, started, host}}。
+        # On-disk format, matching the task requirement: {OCID: {pid, started, host}}. 落盘格式与任务要求一致：{OCID: {pid, started, host}}。
         with open(self.path, encoding="utf-8") as f:
             saved = json.load(f)
         self.assertEqual(set(saved[FAKE_INSTANCE_ID]),
@@ -1452,7 +1452,6 @@ class TestCommandHandlers(ClientHandlersTestCase):
             await hc.handle_client_text_input(update, context)
         mock_run.assert_not_called()
         self.assertIn("拒绝执行", last_reply_text(update))
-        # 拒绝后会话仍在，可继续发其他命令。
         self.assertTrue(context.user_data["cmd_awaiting"])
 
     async def test_text_success_chunked(self):
@@ -1507,7 +1506,6 @@ class TestCommandHandlers(ClientHandlersTestCase):
         update.effective_message.reply_text.assert_not_awaited()
 
     async def test_text_router_skips_pending_input(self):
-        # 改名/重装流程（pending_input）存在时，文本归另一 handler 处理。
         context = self._awaiting_context()
         context.user_data["pending_input"] = {"kind": "rename", "idx": 0}
         update = make_message_update(text="new-name")
@@ -1551,14 +1549,12 @@ class TestPubkeyHandlers(ClientHandlersTestCase):
     async def test_pubkey_delete_requires_confirm(self):
         hc.add_ssh_key(fake_pubkey(), self.tmp_keys)
         context = make_context()
-        # 第一步：点删除，只弹确认，不删。
         update = make_callback_update("pk:del:0")
         await hc.pubkey_callback(update, context)
         self.assertIn("确认删除", last_reply_text(update))
         self.assertIn("pk:confirmdel:0",
                       all_callback_data(reply_markup_of(update)))
         self.assertEqual(len(hc.load_ssh_keys(self.tmp_keys)), 1)
-        # 第二步：点确认，才真正删除。
         update2 = make_callback_update("pk:confirmdel:0")
         await hc.pubkey_callback(update2, context)
         self.assertIn("已删除", last_reply_text(update2))
@@ -1645,7 +1641,7 @@ class TestUploadapiHandlers(ClientHandlersTestCase):
         self.assertIn("确认添加", text)
         self.assertIn("NEWACC", text)
         self.assertIn("ap-singapore-1", text)
-        # 用户 OCID 只显示后 4 位，不贴完整 OCID。
+        # A user OCID shows only its last 4 chars, never the full OCID. 用户 OCID 只显示后 4 位，不贴完整 OCID。
         self.assertNotIn("ocid1.user.oc1..fake", text)
         self.assertIn("ua:confirm",
                       all_callback_data(reply_markup_of(update)))
@@ -1735,7 +1731,7 @@ class TestMemballoonHandlers(ClientHandlersTestCase):
             await hc.handle_memballoon(update, context)
         text = last_reply_text(update)
         self.assertIn("web-server", text)
-        self.assertNotIn("e2-test", text)  # STOPPED 的不列
+        self.assertNotIn("e2-test", text)
         data = all_callback_data(reply_markup_of(update))
         self.assertIn("mh:pick:0", data)
         self.assertEqual(len(context.user_data["instances"]), 1)
@@ -1871,8 +1867,8 @@ class TestMemclearHandlers(ClientHandlersTestCase):
             await hc.memclear_callback(update, context)
         mock_clear.assert_called_once()
         args = mock_clear.call_args.args
-        self.assertEqual(args[1], 4242)   # pid 传进去了
-        self.assertEqual(args[2], False)  # root 不用 sudo
+        self.assertEqual(args[1], 4242)
+        self.assertEqual(args[2], False)
         self.assertEqual(hc.load_mem_hogs(self.tmp_hogs), {})
         text = last_sent_text(update, context)
         self.assertIn("已杀掉占用进程 PID 4242", text)
@@ -1889,7 +1885,7 @@ class TestMemclearHandlers(ClientHandlersTestCase):
              patch.object(hc, "clear_memhog_on_host",
                           return_value=clear_result) as mock_clear:
             await hc.memclear_callback(update, context)
-        self.assertIsNone(mock_clear.call_args.args[1])  # pid 为 None
+        self.assertIsNone(mock_clear.call_args.args[1])
         text = last_sent_text(update, context)
         self.assertIn("无占用进程", text)
         self.assertIn("清缓存成功", text)
@@ -1904,7 +1900,7 @@ class TestMemclearHandlers(ClientHandlersTestCase):
              patch.object(hc, "clear_memhog_on_host",
                           return_value=clear_result) as mock_clear:
             await hc.memclear_callback(update, self._stored_context())
-        self.assertEqual(mock_clear.call_args.args[2], True)  # 非 root 用 sudo
+        self.assertEqual(mock_clear.call_args.args[2], True)
 
     async def test_go_pid_already_gone(self):
         self.write_hogs({FAKE_INSTANCE_ID: {
@@ -1948,7 +1944,7 @@ class TestMemclearHandlers(ClientHandlersTestCase):
                           side_effect=RemoteCommandError("SSH 连接失败")):
             await hc.memclear_callback(update, context)
         self.assertIn("清除失败", last_sent_text(update, context))
-        # SSH 失败时不知道远端状态，记录保留（不误删）。
+        # On SSH failure the remote state is unknown, so the record is kept (never delete by mistake). SSH 失败时不知道远端状态，记录保留（不误删）。
         self.assertIn(FAKE_INSTANCE_ID, hc.load_mem_hogs(self.tmp_hogs))
 
 

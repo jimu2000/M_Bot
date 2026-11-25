@@ -1,6 +1,4 @@
-/* SSH 终端页样式（阶段 3）。
-   深色主题，布局参考 docs/screenshots/terminal.jpg：顶部标签栏 + 终端区，
-   终端内右上角悬浮 CPU/MEM/DISK。 */
+/* SSH terminal page styles. Dark theme; layout follows docs/screenshots/terminal.jpg: top tab bar + terminal area, with CPU/MEM/DISK floating at the terminal's top-right corner. SSH 终端页样式。深色主题，布局参考 docs/screenshots/terminal.jpg：顶部标签栏 + 终端区，终端内右上角悬浮 CPU/MEM/DISK。 */
 
 :root {
   --term-bg: #0b0e1a;
@@ -16,14 +14,10 @@
 
 * { box-sizing: border-box; }
 
-/* 注意：不设全局 body 样式，避免覆盖 base.html 的主题；
-   深色背景只作用在 .terminal-page 内。 */
+/* Note: no global body styles, so base.html's theme is not overridden; the dark background only applies inside .terminal-page. 注意：不设全局 body 样式，避免覆盖 base.html 的主题；深色背景只作用在 .terminal-page 内。 */
 
-/* ---------- 整体布局 ----------
-   在 base.html 的 <main class="content"> 里：顶栏 54px + 资源栏 46px +
-   content 上下 padding（20px + 40px）共 160px，从视口高度里扣掉。 */
+/* Overall layout: inside base.html's <main class="content">, top bar 54px + resource bar 46px + content vertical padding (20px + 40px) = 160px, subtracted from the viewport height. 整体布局：在 base.html 的 <main class="content"> 里：顶栏 54px + 资源栏 46px + content 上下 padding（20px + 40px）共 160px，从视口高度里扣掉。 */
 .terminal-page {
-  position: relative;  /* SFTP 面板绝对定位的参照 */
   display: flex;
   flex-direction: column;
   height: calc(100vh - 160px);
@@ -35,7 +29,7 @@
   overflow: hidden;
 }
 
-/* 全屏模式：占满视口，隐藏页面其他元素只留终端 */
+/* Fullscreen mode: fills the viewport, hiding every other page element except the terminal. 全屏模式：占满视口，隐藏页面其他元素只留终端。 */
 .terminal-page.fullscreen {
   position: fixed;
   inset: 0;
@@ -90,7 +84,7 @@
   flex-shrink: 0;
 }
 
-/* 断线重连中：黄点；已断开：红点 */
+/* Reconnecting: yellow dot; disconnected: red dot. 断线重连中：黄点；已断开：红点。 */
 .tab.reconnecting .tab-dot { background: #e5b83b; }
 .tab.disconnected .tab-dot { background: var(--term-red); }
 
@@ -181,7 +175,6 @@
 .terminal-empty p { margin: 0; }
 .terminal-empty-hint { font-size: 13px; }
 
-/* 终端内右上角小字：CPU/MEM/DISK */
 .sys-stats {
   position: absolute;
   top: 8px;
@@ -282,10 +275,7 @@
   margin: 10px 0 0;
 }
 
-/* ---------- SFTP 文件面板（阶段 3b） ----------
-   右侧滑出抽屉：绝对定位覆盖终端右侧 420px，transform 做滑入动画。
-   颜色复用 --term-* 变量，与深色终端风格一致；亮色模式下 base.html
-   的 data-mode="light" 时用下方覆盖规则换浅色。 */
+/* SFTP file panel: right slide-out drawer, absolutely positioned over the terminal's right 420px, animated with transform. Colors reuse the --term-* variables for the dark terminal look; in light mode (base.html sets data-mode="light") the override rules below switch to light colors. SFTP 文件面板：右侧滑出抽屉：绝对定位覆盖终端右侧 420px，transform 做滑入动画。颜色复用 --term-* 变量，与深色终端风格一致；亮色模式下 base.html 的 data-mode="light" 时用下方覆盖规则换浅色。 */
 .sftp-panel {
   position: absolute;
   top: 0;
@@ -473,7 +463,6 @@
   flex-shrink: 0;
 }
 
-/* 在线编辑弹窗：宽版 + 等宽文本区 */
 .term-modal-box-wide { width: 720px; }
 
 #sftp-editor-text {
@@ -492,7 +481,7 @@
   tab-size: 2;
 }
 
-/* 亮色模式：面板换浅色（base.html 用 data-mode="light" 标记） */
+/* Light mode: the panel switches to light colors (base.html marks it with data-mode="light"). 亮色模式：面板换浅色（base.html 用 data-mode="light" 标记）。 */
 html[data-mode="light"] .sftp-panel {
   background: #f4f5fb;
   box-shadow: -8px 0 24px rgba(0, 0, 0, 0.15);
@@ -522,8 +511,7 @@ html[data-mode="light"] #sftp-editor-text {
 
 .hidden { display: none !important; }
 
-/* ---------- 收藏命令面板（阶段 5 工作包 E） ----------
-   左侧滑出抽屉，与 SFTP 面板对称。 */
+/* Favorites panel: left slide-out drawer, symmetric with the SFTP panel. 收藏命令面板：左侧滑出抽屉，与 SFTP 面板对称。 */
 .fav-panel {
   position: absolute;
   top: 0;
@@ -597,7 +585,7 @@ html[data-mode="light"] .fav-panel {
   box-shadow: 8px 0 24px rgba(0, 0, 0, 0.15);
 }
 
-/* ---------- 分块上传进度条（阶段 5 工作包 E） ---------- */
+/* ---------- 分块上传进度条 ---------- */
 .sftp-upload-progress {
   padding: 8px 12px;
   border-bottom: 1px solid var(--term-border);
@@ -634,7 +622,7 @@ html[data-mode="light"] .fav-panel {
   color: var(--term-muted);
 }
 
-/* ---------- 批量命令弹窗（阶段 5 工作包 E） ---------- */
+/* ---------- 批量命令弹窗 ---------- */
 .batch-host-list {
   max-height: 180px;
   overflow-y: auto;

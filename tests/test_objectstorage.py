@@ -25,7 +25,7 @@ from oci.objectstorage import (
     upload_object,
 )
 
-# 占位符（测试里不出现真实 OCID / 命名空间）
+# Placeholders (no real OCID / namespace in tests). 占位符（测试里不出现真实 OCID / 命名空间）。
 FAKE_COMPARTMENT = "ocid1.tenancy.oc1..xxxxxxxx"
 FAKE_NAMESPACE = "fake-namespace"
 FAKE_BUCKET = "test-bucket"

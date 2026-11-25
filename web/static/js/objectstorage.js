@@ -103,7 +103,7 @@
     renderObjects();
   }
 
-  // 上传用 multipart（MBot.api 只发 JSON），这里直接用 fetch。
+  // Uploads use multipart (MBot.api only sends JSON), so use fetch directly here. 上传用 multipart（MBot.api 只发 JSON），这里直接用 fetch。
   async function uploadFile(bucketName, file, objectName) {
     var formData = new FormData();
     formData.append("file", file);
@@ -142,7 +142,6 @@
       loadBuckets();
     });
 
-    // Bucket 表操作按钮
     document.getElementById("bucket-tbody").addEventListener("click", function (e) {
       var btn = e.target.closest("[data-act]");
       if (!btn) return;
@@ -159,7 +158,6 @@
       }
     });
 
-    // 对象表操作按钮
     document.getElementById("object-tbody").addEventListener("click", function (e) {
       var btn = e.target.closest("[data-act]");
       if (!btn) return;
@@ -169,7 +167,6 @@
       MBot.openModal("delete-object-modal");
     });
 
-    // 确认创建 Bucket
     document.getElementById("create-bucket-form").addEventListener("submit", async function (e) {
       e.preventDefault();
       var name = document.getElementById("bucket-name").value.trim();
@@ -188,7 +185,6 @@
       }
     });
 
-    // 确认删除 Bucket
     document.getElementById("btn-confirm-delete-bucket").addEventListener("click", async function () {
       if (!deleteBucketTarget) return;
       var empty = document.getElementById("delete-bucket-empty").checked;
@@ -204,7 +200,6 @@
       }
     });
 
-    // 确认删除对象
     document.getElementById("btn-confirm-delete-object").addEventListener("click", async function () {
       if (!currentBucket || !deleteObjectTarget) return;
       try {
@@ -220,7 +215,6 @@
       }
     });
 
-    // 上传对象
     document.getElementById("upload-form").addEventListener("submit", async function (e) {
       e.preventDefault();
       if (!currentBucket) return;

@@ -84,7 +84,6 @@ class TestPlanRegistry(PlansTestCase):
         self.assertEqual(plan["memory_gb"], 24)
         self.assertTrue(plan["enabled"])
         self.assertEqual(len(PLANS.list()), 1)
-        # 持久化到文件。
         with open(os.path.join(self._tmp.name, "grabber_plans.json"),
                   encoding="utf-8") as f:
             stored = json.load(f)
@@ -109,9 +108,8 @@ class TestPlanRegistry(PlansTestCase):
         PLANS.add("0 3 * * *", SHAPE_A1, 1, 6)
         PLANS.delete("p2")
         plan = PLANS.add("0 4 * * *", SHAPE_A1, 1, 6)
-        # id 按现存计划的最大数字后缀 +1：删掉 p2 后只剩 p1，新计划是 p2。
-        # 复用已删 id 是安全的：调度器同步时先删全部 plan job 再重建，
-        # 且 add_job 带 replace_existing=True，不会残留旧 cron。
+        # The id is the largest existing plan's numeric suffix + 1: after deleting p2 only p1 remains, so the new plan is p2. id 按现存计划的最大数字后缀 +1：删掉 p2 后只剩 p1，新计划是 p2。
+        # Reusing a deleted id is safe: the scheduler sync deletes all plan jobs and rebuilds them, and add_job uses replace_existing=True, so no stale cron survives. 复用已删 id 是安全的：调度器同步时先删全部 plan job 再重建，且 add_job 带 replace_existing=True，不会残留旧 cron。
         self.assertEqual(plan["id"], "p2")
 
     def test_add_invalid_cron_rejected(self):
@@ -179,12 +177,12 @@ class TestPlanGrabParams(PlansTestCase):
         self.assertEqual(params["shape"], SHAPE_A1)
         self.assertEqual(params["ocpus"], 4)
         self.assertEqual(params["memory_gb"], 24)
-        # 缺的字段用 PLAN_DEFAULTS 补。
+        # Missing fields are filled from PLAN_DEFAULTS. 缺的字段用 PLAN_DEFAULTS 补。
         self.assertTrue(params["availability_domain"])
         self.assertTrue(params["image_id"])
         self.assertTrue(params["subnet_id"])
         self.assertTrue(params["ssh_keys_file"])
-        # display_name 没填时用 默认名 + 计划 id。
+        # When display_name is empty, use the default name + plan id. display_name 没填时用 默认名 + 计划 id。
         self.assertEqual(params["display_name"], "plan-grab-p1")
 
     def test_explicit_fields_win(self):
@@ -256,7 +254,6 @@ class TestRunPlanJob(PlansTestCase):
         """计划的 profile 不存在时触发失败也不抛异常（调度器线程内吞掉）。"""
         plan = PLANS.add("0 2 * * *", SHAPE_A1, 1, 6, profile="NOPE")
         with patch("web.tasks.start_grab_task") as mock_start:
-            # 不抛异常，且没启动抢机。
             _run_plan_job(plan["id"])
             mock_start.assert_not_called()
 
@@ -270,7 +267,6 @@ class TestPlanScheduler(PlansTestCase):
         job_ids = {job.id for job in scheduler.get_jobs()}
         self.assertIn("plan-p1", job_ids)
         self.assertNotIn("plan-p2", job_ids)
-        # 每分钟同步 job 也注册了。
         self.assertIn("plans-refresh", job_ids)
 
     def test_start_is_idempotent(self):
@@ -284,25 +280,24 @@ class TestPlanScheduler(PlansTestCase):
         plan = PLANS.add("0 2 * * *", SHAPE_A1, 1, 6)
         scheduler = start_plan_scheduler()
         self.assertIn("plan-p1", {j.id for j in scheduler.get_jobs()})
-        # 停用后刷新，job 被移除；同步 job 还在。
+        # After disabling and refreshing, the job is removed; the sync job stays. 停用后刷新，job 被移除；同步 job 还在。
         PLANS.set_enabled(plan["id"], False)
         refresh_plan_scheduler()
         job_ids = {j.id for j in scheduler.get_jobs()}
         self.assertNotIn("plan-p1", job_ids)
         self.assertIn("plans-refresh", job_ids)
-        # 再启用后刷新，job 回来。
+        # After re-enabling and refreshing, the job is back. 再启用后刷新，job 回来。
         PLANS.set_enabled(plan["id"], True)
         refresh_plan_scheduler()
         self.assertIn("plan-p1", {j.id for j in scheduler.get_jobs()})
-        # 删除后刷新，job 被移除。
         PLANS.delete(plan["id"])
         refresh_plan_scheduler()
         self.assertNotIn("plan-p1", {j.id for j in scheduler.get_jobs()})
 
     def test_refresh_without_scheduler_is_noop(self):
         PLANS.add("0 2 * * *", SHAPE_A1, 1, 6)
-        refresh_plan_scheduler()  # 调度器未启动时不报错
-        stop_plan_scheduler()  # 同样不报错
+        refresh_plan_scheduler()
+        stop_plan_scheduler()
 
     def test_corrupt_cron_in_file_skipped(self):
         """计划文件被手工改坏（cron 非法）时调度器跳过该计划，不崩。"""

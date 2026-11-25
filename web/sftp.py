@@ -42,14 +42,14 @@ from web.ssh import manager, require_auth
 logger = logging.getLogger(__name__)
 
 # ================= 配置区（放文件顶端，方便修改）=================
-MAX_UPLOAD_BYTES = 100 * 1024 * 1024   # 单文件上传上限（100MB），超限 413
-MAX_EDIT_BYTES = 1024 * 1024           # 在线编辑文件大小上限（1MB），超限 413
-CHUNK_SIZE = 64 * 1024                 # 上传/下载分块大小（64KB，流式不占内存）
-CHUNK_UPLOAD_SIZE = 1024 * 1024        # 分块上传的建议分块大小（1MB）
-UPLOAD_STALE_HOURS = 24                # 分块上传临时目录保留时长（小时）
+MAX_UPLOAD_BYTES = 100 * 1024 * 1024  # Single-file upload cap (100 MB); 413 when exceeded. 单文件上传上限（100MB），超限 413。
+MAX_EDIT_BYTES = 1024 * 1024  # Online-edit file size cap (1 MB); 413 when exceeded. 在线编辑文件大小上限（1MB），超限 413。
+CHUNK_SIZE = 64 * 1024  # Upload/download chunk size (64 KB, streamed without holding memory). 上传/下载分块大小（64KB，流式不占内存）。
+CHUNK_UPLOAD_SIZE = 1024 * 1024  # Suggested chunk size for chunked uploads (1 MB). 分块上传的建议分块大小（1MB）。
+UPLOAD_STALE_HOURS = 24  # How long chunked-upload temp dirs are kept (hours). 分块上传临时目录保留时长（小时）。
 
-# 在线编辑允许的文本扩展名（小写，含点）；无扩展名文件也允许编辑。
-# 不在白名单里的按二进制处理，拒绝在线编辑（走下载）。
+# Text extensions allowed for online editing (lowercase, with dot); files with no extension are also editable. 在线编辑允许的文本扩展名（小写，含点）；无扩展名文件也允许编辑。
+# Anything outside the allowlist is treated as binary and refused for online editing (use download instead). 不在白名单里的按二进制处理，拒绝在线编辑（走下载）。
 TEXT_EXTENSIONS = frozenset({
     ".txt", ".md", ".markdown", ".rst", ".log", ".json", ".json5",
     ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".config",
@@ -228,10 +228,10 @@ def _sftp_error(exc: Exception, action: str) -> HTTPException:
         if errno == 13:
             return HTTPException(status_code=403,
                                  detail=f"{action}失败：没有权限")
-        if errno == 39:  # 目录非空
+        if errno == 39:
             return HTTPException(status_code=400,
                                  detail="目录非空，请先清空目录后再删除")
-        if errno == 17:  # 已存在
+        if errno == 17:
             return HTTPException(status_code=400,
                                  detail=f"{action}失败：目标已存在")
         return HTTPException(status_code=400, detail=f"{action}失败：{exc}")
@@ -258,10 +258,10 @@ def _entry_info(sftp: paramiko.SFTPClient, home: str, dir_path: str,
     if is_symlink:
         full = posixpath.join(dir_path, name)
         try:
-            target_stat = sftp.stat(full)  # 跟随链接
+            target_stat = sftp.stat(full)
             is_dir = stat.S_ISDIR(target_stat.st_mode or 0)
         except (OSError, paramiko.SSHException):
-            broken = True  # 断链：按普通文件展示，不可进入
+            broken = True  # Broken link: shown as a plain file, cannot be entered. 断链：按普通文件展示，不可进入。
         try:
             real = sftp.normalize(full)
             outside_home = not _is_within(home, real)
@@ -315,13 +315,13 @@ def api_sftp_list(session_id: str, path: Optional[str] = None,
     home = _get_home(entry, sftp)
     safe_path = _safe_path_or_400(home, path)
     try:
-        # 目录本身也可能是跳出 home 的符号链接，先解析复核
+        # The directory itself may be a symlink escaping home; resolve and re-check first. 目录本身也可能是跳出 home 的符号链接，先解析复核。
         _resolve_real_path(sftp, home, safe_path)
         attrs = sftp.listdir_attr(safe_path)
     except (OSError, paramiko.SSHException, PermissionError) as exc:
         raise _sftp_error(exc, "列目录")
     entries = [_entry_info(sftp, home, safe_path, attr) for attr in attrs]
-    # 目录在前、文件在后，各按名字排序
+    # Directories first, then files, each sorted by name. 目录在前、文件在后，各按名字排序。
     entries.sort(key=lambda e: (not e["is_dir"], e["name"].lower()))
     manager.touch(session_id)
     return {"path": safe_path, "home": home, "entries": entries}
@@ -336,7 +336,7 @@ def api_sftp_download(session_id: str, path: str,
     home = _get_home(entry, sftp)
     safe_path = _safe_path_or_400(home, path)
     try:
-        _resolve_real_path(sftp, home, safe_path)  # 解析符号链接再校验
+        _resolve_real_path(sftp, home, safe_path)  # Resolve symlinks, then validate. 解析符号链接再校验。
         info = sftp.stat(safe_path)
         if stat.S_ISDIR(info.st_mode or 0):
             raise HTTPException(status_code=400, detail="不能下载目录")
@@ -383,7 +383,7 @@ def api_sftp_upload(session_id: str, path: Optional[str] = None,
     if not _is_within(home, safe_path):
         raise HTTPException(status_code=400, detail="路径超出家目录范围")
     try:
-        # 目标目录本身可能是跳出 home 的符号链接，解析真实路径复核
+        # The target directory itself may be a symlink escaping home; resolve the real path and re-check. 目标目录本身可能是跳出 home 的符号链接，解析真实路径复核。
         safe_path = _resolve_parent(sftp, home, safe_path)
         remote_file = sftp.open(safe_path, "wb")
     except (OSError, paramiko.SSHException, PermissionError) as exc:
@@ -401,7 +401,7 @@ def api_sftp_upload(session_id: str, path: Optional[str] = None,
                     detail=f"文件超过上传上限（{MAX_UPLOAD_BYTES // 1024 // 1024}MB）")
             remote_file.write(chunk)
     except HTTPException:
-        # 超限：删掉已写了一半的远端文件，不留残留
+        # Over the limit: delete the half-written remote file, leaving no residue. 超限：删掉已写了一半的远端文件，不留残留。
         try:
             remote_file.close()
         except Exception:
@@ -445,7 +445,7 @@ def api_sftp_mkdir(session_id: str, body: MkdirRequest,
             raise HTTPException(status_code=400, detail="path 与 name 至少给一个")
         safe_path = _safe_path_or_400(home, body.path)
     try:
-        # 父目录可能是跳出 home 的符号链接，解析真实路径复核
+        # The parent directory may be a symlink escaping home; resolve the real path and re-check. 父目录可能是跳出 home 的符号链接，解析真实路径复核。
         safe_path = _resolve_parent(sftp, home, safe_path)
         sftp.mkdir(safe_path)
     except (OSError, paramiko.SSHException, PermissionError) as exc:
@@ -465,10 +465,10 @@ def api_sftp_delete(session_id: str, path: str,
     if safe_path == home:
         raise HTTPException(status_code=400, detail="不能删除家目录本身")
     try:
-        _resolve_real_path(sftp, home, safe_path)  # 符号链接跳出则拒
+        _resolve_real_path(sftp, home, safe_path)  # Refuse when a symlink escapes. 符号链接跳出则拒。
         info = sftp.stat(safe_path)
         if stat.S_ISDIR(info.st_mode or 0):
-            sftp.rmdir(safe_path)  # 非空目录会抛 OSError errno 39
+            sftp.rmdir(safe_path)  # A non-empty directory raises OSError errno 39. 非空目录会抛 OSError errno 39。
         else:
             sftp.remove(safe_path)
     except HTTPException:
@@ -492,7 +492,7 @@ def api_sftp_rename(session_id: str, body: RenameRequest,
         raise HTTPException(status_code=400, detail="不能重命名家目录本身")
     try:
         _resolve_real_path(sftp, home, safe_src)
-        # dst 的父目录可能是跳出 home 的符号链接，解析复核
+        # dst's parent directory may be a symlink escaping home; resolve and re-check. dst 的父目录可能是跳出 home 的符号链接，解析复核。
         safe_dst = _resolve_parent(sftp, home, safe_dst)
         sftp.rename(safe_src, safe_dst)
     except HTTPException:
@@ -528,7 +528,7 @@ def api_sftp_read_file(session_id: str, path: str,
         raise
     except (OSError, paramiko.SSHException, PermissionError) as exc:
         raise _sftp_error(exc, "读取文件")
-    if len(raw) > MAX_EDIT_BYTES:  # stat 与实际大小不一致时兜底
+    if len(raw) > MAX_EDIT_BYTES:  # Fallback when stat disagrees with the actual size. stat 与实际大小不一致时兜底。
         raise HTTPException(status_code=413, detail="文件超过在线编辑上限")
     try:
         content = raw.decode("utf-8")
@@ -556,8 +556,7 @@ def api_sftp_write_file(session_id: str, body: WriteFileRequest,
             _resolve_real_path(sftp, home, safe_path)
         except OSError as exc:
             if exc.errno == 2:
-                # 新文件：目标不存在，改查父目录真实路径
-                # （防父目录是跳出 home 的符号链接）
+                # New file: the target does not exist, so check the parent directory's real path instead (guarding against a parent that is a symlink escaping home). 新文件：目标不存在，改查父目录真实路径（防父目录是跳出 home 的符号链接）。
                 _resolve_parent(sftp, home, safe_path)
             else:
                 raise
@@ -573,7 +572,7 @@ def api_sftp_write_file(session_id: str, body: WriteFileRequest,
 
 # ================= 分块上传（带进度） =================
 
-# uploadId 格式：uuid4 hex（32 位小写十六进制），防路径穿越。
+# uploadId format: uuid4 hex (32 lowercase hex chars), prevents path traversal. uploadId 格式：uuid4 hex（32 位小写十六进制），防路径穿越。
 _UPLOAD_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 
 
@@ -767,7 +766,7 @@ def api_sftp_upload_chunk(session_id: str, uploadId: str, chunkIndex: int,
         raise HTTPException(
             status_code=400,
             detail=f"chunkIndex 超出范围（0-{total_chunks - 1}）")
-    # 该块应有的大小：最后一块按剩余字节算，其余按 CHUNK_UPLOAD_SIZE。
+    # Expected size of this chunk: the last chunk uses the remaining bytes, the rest use CHUNK_UPLOAD_SIZE. 该块应有的大小：最后一块按剩余字节算，其余按 CHUNK_UPLOAD_SIZE。
     expected = (total - chunkIndex * CHUNK_UPLOAD_SIZE
                 if chunkIndex == total_chunks - 1 else CHUNK_UPLOAD_SIZE)
     data = file.file.read(expected + 1)

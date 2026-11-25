@@ -33,23 +33,19 @@ class DeployScriptTest(unittest.TestCase):
     def test_borrowed_points_present(self):
         with open(DEPLOY_SH, encoding="utf-8") as f:
             content = f.read()
-        # systemd 自动拉起。
         self.assertIn("Restart=always", content)
         self.assertIn("RestartSec=10", content)
-        # 原子升级：同文件系统临时目录 + mv 覆盖。
+        # Atomic upgrade: a temp dir on the same filesystem + mv to overwrite. 原子升级：同文件系统临时目录 + mv 覆盖。
         self.assertIn("mktemp -d", content)
         self.assertIn("mv ", content)
-        # 升级锁。
         self.assertIn("flock", content)
-        # 端口解析优先级：参数 > 进程命令行 > 文件 > 默认。
+        # Port resolution priority: argument > process command line > file > default. 端口解析优先级：参数 > 进程命令行 > 文件 > 默认。
         self.assertIn("resolve_port", content)
         self.assertIn("--port=", content)
         self.assertIn("PORT_FILE", content)
         self.assertIn("DEFAULT_PORT=9527", content)
-        # 备份与回滚。
         self.assertIn("rollback", content)
         self.assertIn("BACKUP_DIR", content)
-        # 健康检查。
         self.assertIn("health_check", content)
 
     def test_no_real_secrets(self):

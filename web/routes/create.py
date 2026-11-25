@@ -56,7 +56,7 @@ from web.tasks import TASKS, start_grab_task
 
 router = APIRouter()
 
-# 前端镜像下拉的架构占位符后缀 -> IMAGE_IDS 的键。
+# Frontend image dropdown arch placeholder suffix -> key in IMAGE_IDS. 前端镜像下拉的架构占位符后缀 -> IMAGE_IDS 的键。
 _IMAGE_PLACEHOLDER_SUFFIX = {
     "-aarch64": "aarch64",
     "-x86": "x86_64",
@@ -114,9 +114,8 @@ class CreateBody(BaseModel):
     display_name: str
     ssh_keys_file: str = ""
     target_cpu: str = None
-    # 硬盘：None 表示用镜像默认（47GB）；显式指定最少 50GB——显式
-    # 传 47 会被 OCI 拒绝（InvalidParameter，2026-11-24 实测）。
-    # 前端表单 47 即默认，发请求时转成 null（见 create.js）。
+    # Disk: None means the image default (47 GB); an explicit size must be at least 50 GB — an explicit 47 is rejected by OCI (InvalidParameter). 硬盘：None 表示用镜像默认（47GB）；显式指定最少 50GB——显式传 47 会被 OCI 拒绝（InvalidParameter）。
+    # The frontend form treats 47 as the default and converts it to null when sending the request (see create.js). 前端表单 47 即默认，发请求时转成 null（见 create.js）。
     boot_volume_size_gbs: Optional[int] = Field(default=None, ge=50,
                                                 le=200)
     assign_public_ip: bool = True
@@ -210,10 +209,7 @@ def create_instance(body: CreateBody,
             return error_response(cap_error, status_code=400)
     try:
         cli, compartment_id = resolve_profile(body.profile, body.region)
-        # 可用域与所选区域一致性校验：部署值是主区的，别的区没配
-        # region plan 时表单可能填进主区的 AD，提交后任务里 Oracle
-        # 会报 CannotParseRequest（机器人端同类问题，见
-        # tgbot/boot_form.py 的 deploy_region_mismatch）。
+        # Availability-domain / region consistency check: the deploy values are for the home region, so without a region plan for another region the form may carry the home region's AD, and the task would then fail in Oracle with CannotParseRequest (the bot has the same problem, see tgbot/boot_form.py's deploy_region_mismatch). 可用域与所选区域一致性校验：部署值是主区的，别的区没配 region plan 时表单可能填进主区的 AD，提交后任务里 Oracle 会报 CannotParseRequest（机器人端同类问题，见 tgbot/boot_form.py 的 deploy_region_mismatch）。
         profile_name = body.profile or config.DEFAULT_PROFILE
         region = effective_region(profile_name, body.region)
         ad_region = _ad_region(body.availability_domain)
@@ -227,23 +223,21 @@ def create_instance(body: CreateBody,
         if not ok:
             return error_response(f"配额预检不通过：{reason}", status_code=400)
         image_id = resolve_image_id(body.image_id)
-        # root 密码：开启时为空则后端生成 UUID；与开机脚本拼进同一份
-        # cloud-init（脚本本身是 #cloud-config 时冲突，报 400）。
+        # Root password: when enabled and empty, the backend generates a UUID; it is combined with the boot script into the same cloud-init (a script that is itself #cloud-config conflicts and returns 400). root 密码：开启时为空则后端生成 UUID；与开机脚本拼进同一份 cloud-init（脚本本身是 #cloud-config 时冲突，报 400）。
         root_password = None
         if body.root_login:
             root_password = body.root_password.strip() or \
                 generate_root_password()
-        # 脚本原文透传（只判断是否为空白，不 strip 内容）。
+        # The script is passed through verbatim (only checked for blankness, never stripped). 脚本原文透传（只判断是否为空白，不 strip 内容）。
         script = body.user_data or None
         if script is not None and not script.strip():
             script = None
         user_data = None
         if root_password:
-            # 密码与脚本拼进同一份 cloud-init（脚本本身是 #cloud-config
-            # 时冲突，build_user_data 抛 ValueError -> 400）。
+            # The password and the script are combined into one cloud-init (a script that is itself #cloud-config conflicts, so build_user_data raises ValueError -> 400). 密码与脚本拼进同一份 cloud-init（脚本本身是 #cloud-config 时冲突，build_user_data 抛 ValueError -> 400）。
             user_data = build_user_data(root_password, script)
         else:
-            # 不设 root 密码时脚本原文直通 Grabber（旧行为，不做归一化）。
+            # Without a root password, the script goes straight through to the Grabber (old behavior, no normalization). 不设 root 密码时脚本原文直通 Grabber（旧行为，不做归一化）。
             user_data = script
         params = {
             "availability_domain": body.availability_domain,
@@ -262,7 +256,7 @@ def create_instance(body: CreateBody,
             "max_delay": body.max_delay,
             "user_data": user_data,
         }
-        # 双通道通知信息（只在内存里传给线程：密码不落盘，通知完即丢）。
+        # Dual-channel notification info (passed in memory only to the thread: the password is never written to disk and is discarded after notifying). 双通道通知信息（只在内存里传给线程：密码不落盘，通知完即丢）。
         notify = {
             "token": bot_config.TELEGRAM_BOT_TOKEN,
             "chat_id": _notify_chat_id(),
@@ -277,7 +271,7 @@ def create_instance(body: CreateBody,
         return error_response(str(exc), status_code=400)
     except OCIError as exc:
         return oci_error_response(exc)
-    # root 密码随响应返回一次（前端弹窗展示一次），之后不再可查。
+    # The root password is returned with the response once (shown once in the frontend modal) and can never be looked up again. root 密码随响应返回一次（前端弹窗展示一次），之后不再可查。
     return {"ok": True, "task_id": task_id,
             "root_password": root_password}
 

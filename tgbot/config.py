@@ -20,38 +20,32 @@ import sys
 import tempfile
 
 # ================= 配置区（改这里） =================
-# Telegram 机器人 Token：从环境变量读，不要硬编码。
-# 获取方式：Telegram 上找 @BotFather，/newbot 创建机器人后会给 Token。
+# Telegram bot Token: read from an env var, never hardcode it. Telegram 机器人 Token：从环境变量读，不要硬编码。
+# How to get one: find @BotFather on Telegram; /newbot creates a bot and returns its Token. 获取方式：Telegram 上找 @BotFather，/newbot 创建机器人后会给 Token。
 TELEGRAM_BOT_TOKEN = os.environ.get("MBOT_TELEGRAM_TOKEN", "")
 
-# 允许使用机器人的 Telegram 用户 ID（白名单），逗号分隔。
-# 查自己的 ID：Telegram 上找 @userinfobot，发任意消息即返回你的 ID。
-# 为空时不允许任何人操作（机器人启动时会拒绝启动并提示）。
+# Telegram user IDs allowed to use the bot (allowlist), comma-separated. 允许使用机器人的 Telegram 用户 ID（白名单），逗号分隔。
+# Find your own ID: find @userinfobot on Telegram; any message returns your ID. 查自己的 ID：Telegram 上找 @userinfobot，发任意消息即返回你的 ID。
+# When empty, nobody is allowed (the bot refuses to start and explains why). 为空时不允许任何人操作（机器人启动时会拒绝启动并提示）。
 ALLOWED_USER_IDS = {
     int(x) for x in os.environ.get("MBOT_ALLOWED_USERS", "").split(",")
     if x.strip().isdigit()
 }
 
-# 默认 OCI profile（OCI 配置文件里的 profile 名）。
+# Default OCI profile (a profile name in the OCI config file). 默认 OCI profile（OCI 配置文件里的 profile 名）。
 DEFAULT_PROFILE = "DEFAULT"
-# 默认区域。
+# Default region. 默认区域。
 DEFAULT_REGION = "ap-singapore-1"
-# 默认 compartment OCID（占位符；根 compartment 即 tenancy OCID）。
-# 部署时用环境变量 MBOT_COMPARTMENT_DEFAULT 填真实值。
+# Default compartment OCID (placeholder; the root compartment is the tenancy OCID). 默认 compartment OCID（占位符；根 compartment 即 tenancy OCID）。
+# At deploy time fill the real value via env var MBOT_COMPARTMENT_DEFAULT. 部署时用环境变量 MBOT_COMPARTMENT_DEFAULT 填真实值。
 DEFAULT_COMPARTMENT_ID = os.environ.get(
     "MBOT_COMPARTMENT_DEFAULT", "ocid1.tenancy.oc1..xxxxxxxx")
 
-# 多账号配置：profile 名 -> {region, compartment_id}。
-# 每个账号在 OCI 配置文件（~/oci_config）里对应一个 profile。
-# 注册方式：环境变量 MBOT_COMPARTMENT_<PROFILE>，值是该账号的
-# compartment OCID（根 compartment 即 tenancy OCID）。机器人导入
-# 新账号（/oci / /uploadapi）时会自动往 env 文件里加这一项，
-# 重启机器人后新账号就出现在切换菜单里。
-# region 从配置文件里该 profile 的 region 字段读；读不到时用下面的
-# 回退表（旧账号）或 DEFAULT_REGION（新账号）。
-# env 没配 MBOT_COMPARTMENT_* 的 profile 也会从 OCI 配置的 tenancy
-# 推导 compartment 后加入（干净安装后复制 oci_config 即可用）；
-# env 值是占位符时当成未配置，同样从 tenancy 推导。
+# Multi-account config: profile name -> {region, compartment_id}. 多账号配置：profile 名 -> {region, compartment_id}。
+# Each account maps to one profile in the OCI config file (~/oci_config). 每个账号在 OCI 配置文件（~/oci_config）里对应一个 profile。
+# Register via env var MBOT_COMPARTMENT_<PROFILE>, whose value is that account's compartment OCID (the root compartment is the tenancy OCID). When the bot imports a new account (/oci / /uploadapi) it appends this entry to the env file automatically, and the new account appears in the switch menu after a bot restart. 注册方式：环境变量 MBOT_COMPARTMENT_<PROFILE>，值是该账号的 compartment OCID（根 compartment 即 tenancy OCID）。机器人导入新账号（/oci / /uploadapi）时会自动往 env 文件里加这一项，重启机器人后新账号就出现在切换菜单里。
+# The region is read from that profile's region field in the config file; when unreadable, use the fallback table below (old accounts) or DEFAULT_REGION (new accounts). region 从配置文件里该 profile 的 region 字段读；读不到时用下面的回退表（旧账号）或 DEFAULT_REGION（新账号）。
+# Profiles with no MBOT_COMPARTMENT_* in env are still added after deriving their compartment from the OCI config's tenancy (a clean install works by just copying oci_config); an env value that is a placeholder counts as unconfigured and is likewise derived from the tenancy. env 没配 MBOT_COMPARTMENT_* 的 profile 也会从 OCI 配置的 tenancy 推导 compartment 后加入（干净安装后复制 oci_config 即可用）；env 值是占位符时当成未配置，同样从 tenancy 推导。
 LEGACY_PROFILE_REGIONS = {
     "DEFAULT": "ap-singapore-1",
     "ACCOUNT2": "us-sanjose-1",
@@ -59,8 +53,7 @@ LEGACY_PROFILE_REGIONS = {
 }
 
 
-# 占位符 compartment（install.sh 旧版写进 env 文件的无效值；当成未配置，
-# 从 OCI 配置的 tenancy 推导）。
+# Placeholder compartment (an invalid value written into the env file by an old install.sh; treated as unconfigured and derived from the OCI config's tenancy). 占位符 compartment（install.sh 旧版写进 env 文件的无效值；当成未配置，从 OCI 配置的 tenancy 推导）。
 PLACEHOLDER_COMPARTMENT_ID = "ocid1.tenancy.oc1..xxxxxxxx"
 
 
@@ -80,8 +73,7 @@ def _build_profiles():
     from oci.client import read_oci_config_profiles
     file_profiles = read_oci_config_profiles()
     profiles = {}
-    # DEFAULT 一定在：env 优先（占位符无效），否则从配置文件 tenancy
-    # 推导；都推不出来时留占位符（与旧行为一致，调用方会报配置错误）。
+    # DEFAULT is always present: env first (a placeholder is invalid), otherwise derive from the config file's tenancy; when neither works, keep the placeholder (same as the old behavior; the caller reports a config error). DEFAULT 一定在：env 优先（占位符无效），否则从配置文件 tenancy 推导；都推不出来时留占位符（与旧行为一致，调用方会报配置错误）。
     default_comp = _resolve_compartment(
         "DEFAULT", file_profiles,
         os.environ.get("MBOT_COMPARTMENT_DEFAULT", ""))
@@ -90,7 +82,7 @@ def _build_profiles():
                   or LEGACY_PROFILE_REGIONS["DEFAULT"],
         "compartment_id": default_comp or PLACEHOLDER_COMPARTMENT_ID,
     }
-    # env 显式配了 compartment 的其他账号。
+    # Other accounts with an explicitly configured compartment in env. env 显式配了 compartment 的其他账号。
     for key, value in sorted(os.environ.items()):
         if not key.startswith("MBOT_COMPARTMENT_") or not value:
             continue
@@ -105,9 +97,7 @@ def _build_profiles():
                       or LEGACY_PROFILE_REGIONS.get(name, DEFAULT_REGION),
             "compartment_id": comp,
         }
-    # 配置文件里有、但 env 没配 compartment 的账号：从 tenancy 推导补上
-    # （干净安装后复制 oci_config，多账号场景直接可用；没 tenancy 的
-    # 段（如 [cloudflare]）解析不出 compartment，跳过）。
+    # Accounts present in the config file but without a compartment in env: derive from the tenancy and add (a clean install with oci_config copied just works for multi-account; sections with no tenancy, like [cloudflare], yield no compartment and are skipped). 配置文件里有、但 env 没配 compartment 的账号：从 tenancy 推导补上（干净安装后复制 oci_config，多账号场景直接可用；没 tenancy 的段（如 [cloudflare]）解析不出 compartment，跳过）。
     for name in sorted(file_profiles):
         if name in profiles:
             continue
@@ -232,9 +222,8 @@ def remove_env_file_vars(keys, env_file=None):
     return removed
 
 
-# 区域中文名（与 web/config.py 的 REGION_LABELS 保持同步；未知区域显示原代码）。
-# 账号切换（/oracle 菜单顶行“切换账号”按钮）按主区中文名显示账号，不再显示 DEFAULT/ACCOUNT2
-# 这类 profile 名（用户反馈 2026-11-24：看着乱，分不清是哪个账号）。
+# Region display names (keep in sync with web/config.py REGION_LABELS; unknown regions show the raw code). 区域中文名（与 web/config.py 的 REGION_LABELS 保持同步；未知区域显示原代码）。
+# The account switch (the "switch account" button at the top of the /oracle menu) shows accounts by home-region display name, no longer by profile names like DEFAULT/ACCOUNT2, which users could not tell apart. 账号切换（/oracle 菜单顶行“切换账号”按钮）按主区中文名显示账号，不再显示 DEFAULT/ACCOUNT2 这类 profile 名（用户反馈：看着乱，分不清是哪个账号）。
 REGION_LABELS = {
     "ap-singapore-1": "新加坡",
     "ap-seoul-1": "首尔",
@@ -296,39 +285,32 @@ def profile_display_name_list(name, region_count=None):
         label += f"、{region_count} 个区"
     return label
 
-# 机器人日志文件（查询最新日志命令读这个文件）。
+# Bot log file (read by the show-latest-logs command). 机器人日志文件（查询最新日志命令读这个文件）。
 LOG_FILE = os.path.expanduser("~/workspace/rbot-clone/telegram-bot.log")
-# 快捷开机配置保存文件（JSON）。
+# Quick-boot config save file (JSON). 快捷开机配置保存文件（JSON）。
 PRESETS_FILE = os.path.expanduser("~/workspace/rbot-clone/tgbot/presets.json")
-# 数据目录：监控类配置（流量守护 / 停机保活 / SSL 监控）存这里
-# （traffic_guard.json / keepalive.json / ssl_watch.json 等）。
-# 部署时用 MBOT_TGBOT_DATA_DIR 指到部署路径（如 /opt/rbot-clone/tgbot/data）。
+# Data directory: monitoring configs (traffic guard / stop-keepalive / SSL watch) live here (traffic_guard.json / keepalive.json / ssl_watch.json, etc.). 数据目录：监控类配置（流量守护 / 停机保活 / SSL 监控）存这里（traffic_guard.json / keepalive.json / ssl_watch.json 等）。
+# At deploy time point MBOT_TGBOT_DATA_DIR at the deploy path (e.g. /opt/rbot-clone/tgbot/data). 部署时用 MBOT_TGBOT_DATA_DIR 指到部署路径（如 /opt/rbot-clone/tgbot/data）。
 DATA_DIR = os.path.expanduser(os.environ.get(
     "MBOT_TGBOT_DATA_DIR", "~/workspace/rbot-clone/tgbot/data"))
-# 区域开机配置（每个账号每个区域的可用域 / 子网 / 镜像 OCID）：JSON 文件，
-# 部署时填真实值，不进仓库。格式：
+# Region boot config (availability domain / subnet / image OCIDs per account per region): a JSON file; fill real values at deploy time, never commit it to the repo. Format: 区域开机配置（每个账号每个区域的可用域 / 子网 / 镜像 OCID）：JSON 文件，部署时填真实值，不进仓库。格式：
 #   {"DEFAULT": {"ap-seoul-1": {"availability_domain": "...",
 #                               "subnet_id": "...",
 #                               "image_aarch64": "...", "image_x86_64": "...",
 #                               "ol_aarch64": "...", "ol_x86_64": "..."}}}
-# 按 (profile, region) 双键查：子网/VCN 是按租户的，不同账号同区域的
-# 子网 OCID 不同，不能只按区域查。某 (profile, region) 未配时开机回退
-# 到环境变量的默认部署值（主区）。
+# Look up by the (profile, region) pair: subnets/VCNs belong to a tenancy, so different accounts in the same region have different subnet OCIDs and a region-only lookup is wrong. When a (profile, region) pair is unconfigured, booting falls back to the env default deploy values (home region). 按 (profile, region) 双键查：子网/VCN 是按租户的，不同账号同区域的子网 OCID 不同，不能只按区域查。某 (profile, region) 未配时开机回退到环境变量的默认部署值（主区）。
 REGION_PLANS_FILE = os.path.expanduser(os.environ.get(
     "MBOT_REGION_PLANS_FILE", os.path.join(DATA_DIR, "region_plans.json")))
-# 流量守护的 SSH 私钥：阻断 / 限速 / vnstat 查流量要 SSH 到实例上执行，
-# 用这把专用密钥（公钥需加到各实例的 authorized_keys）。未配置时
-# 流量守护只能“仅通知”，阻断/限速/解除按钮会提示未配置。
-# 部署示例：MBOT_GUARD_SSH_KEY=/root/.ssh/rbot_guard
+# Traffic guard SSH private key: blocking / rate-limiting / vnstat traffic queries SSH into instances to run, using this dedicated key (its public key must be added to each instance's authorized_keys). When unconfigured, the traffic guard can only "notify"; the block / rate-limit / unblock buttons report it as unconfigured. 流量守护的 SSH 私钥：阻断 / 限速 / vnstat 查流量要 SSH 到实例上执行，用这把专用密钥（公钥需加到各实例的 authorized_keys）。未配置时流量守护只能“仅通知”，阻断/限速/解除按钮会提示未配置。
+# Deploy example: MBOT_GUARD_SSH_KEY=/root/.ssh/rbot_guard. 部署示例：MBOT_GUARD_SSH_KEY=/root/.ssh/rbot_guard
 GUARD_SSH_KEY = os.path.expanduser(os.environ.get(
     "MBOT_GUARD_SSH_KEY", "")) if os.environ.get("MBOT_GUARD_SSH_KEY") else ""
-# 流量守护 SSH 端口与用户名（实例标准配置：root + 14422）。
+# Traffic guard SSH port and username (standard instance setup: root + 14422). 流量守护 SSH 端口与用户名（实例标准配置：root + 14422）。
 GUARD_SSH_PORT = 14422
 GUARD_SSH_USER = "root"
 # =====================================================
 
-# 把项目根目录加到 sys.path 开头，保证 `import oci` 解析到本项目
-# 的 oci/ 包（而不是系统里可能装的 OCI Python SDK 同名包）。
+# Prepend the project root to sys.path so `import oci` resolves to this project's oci/ package (not a same-named OCI Python SDK that may be installed system-wide). 把项目根目录加到 sys.path 开头，保证 `import oci` 解析到本项目的 oci/ 包（而不是系统里可能装的 OCI Python SDK 同名包）。
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)

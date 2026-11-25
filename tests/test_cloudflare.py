@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from clouds.cloudflare import (API_BASE_URL, CloudflareClient,
                                CloudflareError, get_client)
 
-# 占位符（测试里不出现真实值）
+# Placeholders (no real values in tests). 占位符（测试里不出现真实值）。
 FAKE_TOKEN = "fake-token-xxxxxxxx"
 FAKE_KEY = "fake-key-xxxxxxxx"
 FAKE_EMAIL = "user@example.com"
@@ -94,7 +94,7 @@ def _make_client(handler, **client_kwargs):
 
 class TestAuth(unittest.TestCase):
     def test_token_preferred_over_key(self):
-        # 同时给 Token 和 Key+Email 时优先 Token
+        # When both a Token and Key+Email are given, the Token wins. 同时给 Token 和 Key+Email 时优先 Token。
         client = CloudflareClient(api_token=FAKE_TOKEN, api_key=FAKE_KEY,
                                   email=FAKE_EMAIL)
         self.assertEqual(client.auth_mode, "token")
@@ -109,7 +109,7 @@ class TestAuth(unittest.TestCase):
                           "X-Auth-Email": FAKE_EMAIL})
 
     def test_api_key_without_email_is_config_error(self):
-        # 只有 Key 没有 Email 不算完整认证
+        # A Key without an Email is not complete auth. 只有 Key 没有 Email 不算完整认证。
         with self.assertRaises(CloudflareError) as ctx:
             CloudflareClient(api_key=FAKE_KEY)
         self.assertEqual(ctx.exception.kind, "config")
@@ -134,7 +134,7 @@ class TestAuth(unittest.TestCase):
         self.assertEqual(client.auth_mode, "api_key")
 
     def test_token_sent_on_real_request(self):
-        # 请求头里确实带上 Bearer Token
+        # The request header really carries Bearer <redacted>. 请求头里确实带上 Bearer <redacted>。
         def handler(request):
             self.assertEqual(request.headers["Authorization"],
                              f"Bearer {FAKE_TOKEN}")
@@ -364,7 +364,7 @@ class TestUpdateDeleteSetProxied(unittest.TestCase):
                                                             ttl=300)))
             self.assertEqual(request.method, "PUT")
             body = json.loads(request.content)
-            # 只有 proxied 变了，其余字段与 GET 到的现有记录一致
+            # Only proxied changed; the other fields match the existing record from GET. 只有 proxied 变了，其余字段与 GET 到的现有记录一致。
             self.assertEqual(body, {
                 "type": "A", "name": "www.example.com",
                 "content": "203.0.113.10", "proxied": True, "ttl": 300,
@@ -404,7 +404,7 @@ class TestErrorClassification(unittest.TestCase):
             "not_found")
 
     def test_error_code_7003_is_not_found(self):
-        # HTTP 200 但 error code 7003（zone/record 不存在）也判 not_found
+        # HTTP 200 with error code 7003 (zone/record does not exist) also counts as not_found. HTTP 200 但 error code 7003（zone/record 不存在）也判 not_found。
         self._expect_kind(
             httpx.Response(200, json=_fail(
                 [{"code": 7003, "message": "No route for that URI"}])),
@@ -437,7 +437,7 @@ class TestErrorClassification(unittest.TestCase):
         self.assertEqual(ctx.exception.kind, "network")
 
     def test_list_paged_rate_limit(self):
-        # 翻页路径同样要分类 429
+        # The paginated path must classify 429 the same way. 翻页路径同样要分类 429。
         client = _make_client(
             lambda r: httpx.Response(429, json=_fail(
                 [{"code": 429, "message": "Too many requests"}])))

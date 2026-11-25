@@ -38,8 +38,7 @@ class BarkWebTestCase(unittest.TestCase):
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
-        # bark.json 写临时文件（BARK_CONFIG_FILE 是 import 时绑定的，
-        # patch DATA_DIR 影响不到它，必须直接 patch 该常量）。
+        # bark.json is written to a temp file (BARK_CONFIG_FILE is bound at import time, so patching DATA_DIR does not reach it; the constant itself must be patched). bark.json 写临时文件（BARK_CONFIG_FILE 是 import 时绑定的，patch DATA_DIR 影响不到它，必须直接 patch 该常量）。
         self._cfg_patcher = patch.object(
             bark_mod, "BARK_CONFIG_FILE",
             os.path.join(self._tmp.name, "bark.json"))
@@ -77,7 +76,7 @@ class TestBarkStatusApi(BarkWebTestCase):
         body = r.json()
         self.assertTrue(body["configured"])
         self.assertTrue(body["key_set"])
-        # 地址只返回脱敏版，Key 原文绝不出现在响应里。
+        # Only the redacted address is returned; the raw Key never appears in the response. 地址只返回脱敏版，Key 原文绝不出现在响应里。
         self.assertNotEqual(body["url_masked"], FAKE_URL)
         self.assertNotIn(FAKE_KEY, r.text)
         self.assertNotIn(FAKE_URL, r.text)

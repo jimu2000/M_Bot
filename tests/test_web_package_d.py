@@ -32,7 +32,7 @@ from web.app import create_app
 from web.auth import LOGIN_GUARD, SESSIONS, hash_password, verify_password
 from web.tasks import PLANS, TASKS
 
-# 占位符（测试里不出现真实 OCID / 命名空间 / 密码）
+# Placeholders (no real OCID / namespace / password in tests). 占位符（测试里不出现真实 OCID / 命名空间 / 密码）。
 FAKE_NAMESPACE = "fake-namespace"
 FAKE_BUCKET = "test-bucket"
 FAKE_USER = "ocid1.user.oc1..testxxxx"
@@ -204,7 +204,7 @@ class TestObjectStorageApi(PackageDTestCase):
         args, kwargs = mock_upload.call_args
         self.assertEqual(args[1], FAKE_BUCKET)
         self.assertEqual(args[2], "file.txt")
-        # 临时文件路径传进去了（上传完路由会删掉它）。
+        # The temp file path was passed in (the route deletes it after upload). 临时文件路径传进去了（上传完路由会删掉它）。
         self.assertTrue(os.path.isabs(args[3]))
         self.assertEqual(kwargs["namespace"], FAKE_NAMESPACE)
 
@@ -299,7 +299,7 @@ class TestEmailApi(PackageDTestCase):
         self.assertEqual(r.status_code, 201)
         cred = r.json()["credential"]
         self.assertEqual(cred["username"], FAKE_CREDENTIAL["username"])
-        # 只断言密码字段存在且非空，不对密码值做快照比对。
+        # Only assert the password field exists and is non-empty; do not snapshot-compare the password value. 只断言密码字段存在且非空，不对密码值做快照比对。
         self.assertTrue(cred["password"])
         mock_create.assert_called_once_with(ANY, FAKE_USER,
                                             description="my-mailer")
@@ -329,10 +329,8 @@ class TestPlansApi(PackageDTestCase):
         self._login()
 
     def test_crud_flow(self):
-        # 列表初始为空。
         r = self.client.get("/api/plans")
         self.assertEqual(r.json()["plans"], [])
-        # 新增。
         r = self.client.post("/api/plans", json={
             "cron": "0 2 * * *", "shape": "VM.Standard.A1.Flex",
             "ocpus": 4, "memory_gb": 24})
@@ -340,19 +338,15 @@ class TestPlansApi(PackageDTestCase):
         plan = r.json()["plan"]
         self.assertEqual(plan["id"], "p1")
         self.assertTrue(plan["enabled"])
-        # 列表里有一条。
         r = self.client.get("/api/plans")
         self.assertEqual(len(r.json()["plans"]), 1)
-        # 停用。
         r = self.client.post(f"/api/plans/{plan['id']}/toggle",
                              json={"enabled": False})
         self.assertEqual(r.status_code, 200)
         self.assertFalse(r.json()["plan"]["enabled"])
-        # 启用。
         r = self.client.post(f"/api/plans/{plan['id']}/toggle",
                              json={"enabled": True})
         self.assertTrue(r.json()["plan"]["enabled"])
-        # 删除。
         r = self.client.delete(f"/api/plans/{plan['id']}")
         self.assertEqual(r.status_code, 200)
         r = self.client.get("/api/plans")
@@ -419,7 +413,7 @@ class TestChangePassword(PackageDTestCase):
             return f.read()
 
     def test_success_updates_env_file(self):
-        # env 文件里先有一行会话密钥，改密码后必须保留。
+        # The env file already has a session-key line; it must survive a password change. env 文件里先有一行会话密钥，改密码后必须保留。
         with open(self._env_file, "w", encoding="utf-8") as f:
             f.write("MBOT_WEB_SECRET=old-secret-value\n")
             f.write(f"MBOT_WEB_PASSWORD_HASH='{hash_password(TEST_PASSWORD)}'\n")
@@ -430,7 +424,7 @@ class TestChangePassword(PackageDTestCase):
         body = r.json()
         self.assertTrue(body["ok"])
         self.assertIn("重启 Web 面板服务后生效", body["message"])
-        # env 文件里的哈希已换成新密码的哈希，会话密钥行保留。
+        # The hash in the env file is now the new password's hash, and the session-key line is kept. env 文件里的哈希已换成新密码的哈希，会话密钥行保留。
         text = self._env_text()
         self.assertIn("MBOT_WEB_SECRET=old-secret-value", text)
         self.assertEqual(text.count("MBOT_WEB_PASSWORD_HASH="), 1)
@@ -439,7 +433,7 @@ class TestChangePassword(PackageDTestCase):
                 stored = line.split("=", 1)[1].strip("'\"")
                 self.assertTrue(verify_password(NEW_PASSWORD, stored))
                 self.assertFalse(verify_password(TEST_PASSWORD, stored))
-        # env 文件权限 600。
+        # env file mode 600. env 文件权限 600。
         self.assertEqual(oct(os.stat(self._env_file).st_mode & 0o777), "0o600")
 
     def test_success_creates_env_file_when_missing(self):
@@ -519,7 +513,7 @@ class TestNewPages(PackageDTestCase):
         text = self.client.get("/overview").text
         self.assertIn('href="/objectstorage"', text)
         self.assertIn('href="/email"', text)
-        # 改密码弹窗在 base.html 里，所有继承页都有。
+        # The change-password modal lives in base.html, so every inheriting page has it. 改密码弹窗在 base.html 里，所有继承页都有。
         self.assertIn("change-password-modal", text)
         self.assertIn("settings.js", text)
 

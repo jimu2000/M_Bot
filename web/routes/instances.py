@@ -131,21 +131,18 @@ from web.tasks import TASKS, start_bootswap_task
 router = APIRouter()
 
 # ================= 配置区（改这里） =================
-# 实例列表服务端缓存 TTL（秒）：列表接口每次要跑 1 + N 次 OCI CLI
-# （1 次 list + 每台实例 1 次 list-vnics 取公网 IP），串行约 10 秒；
-# 30 秒内重复访问直接返回缓存，手动刷新（refresh=1）绕过缓存。
+# Instance list server cache TTL (seconds): each list call runs 1 + N OCI CLI invocations (1 list + 1 list-vnics per instance for the public IP), ~10s serially; repeat visits within 30s return the cache, and a manual refresh (refresh=1) bypasses it. 实例列表服务端缓存 TTL（秒）：列表接口每次要跑 1 + N 次 OCI CLI（1 次 list + 每台实例 1 次 list-vnics 取公网 IP），串行约 10 秒；30 秒内重复访问直接返回缓存，手动刷新（refresh=1）绕过缓存。
 INSTANCE_LIST_CACHE_TTL = 30
-# 并行取公网 IP 的线程数上限。OCIClient.run 只跑独立子进程，
-# 各线程间无共享可变状态，并行安全。
+# Max threads for parallel public-IP fetching. OCIClient.run only spawns independent subprocesses with no shared mutable state between threads, so parallel is safe. 并行取公网 IP 的线程数上限。OCIClient.run 只跑独立子进程，各线程间无共享可变状态，并行安全。
 MAX_IP_WORKERS = 8
 # =====================================================
 
-# 实例列表缓存：(profile, state) -> {"expires": 单调时钟过期点, "payload": 响应体}。
-# 只放内存不写盘；面板是单管理员，无需按用户隔离。
+# Instance list cache: (profile, state) -> {"expires": monotonic-clock expiry, "payload": response body}. 实例列表缓存：(profile, state) -> {"expires": 单调时钟过期点, "payload": 响应体}。
+# Memory only, never written to disk; the panel has a single admin, so no per-user isolation is needed. 只放内存不写盘；面板是单管理员，无需按用户隔离。
 _LIST_CACHE = {}
 _LIST_CACHE_LOCK = threading.Lock()
 
-# CPU 型号后台检测的在途集合：同一台实例同时只跑一个检测线程。
+# In-flight set for background CPU-model detection: at most one detection thread per instance at a time. CPU 型号后台检测的在途集合：同一台实例同时只跑一个检测线程。
 _CPU_FETCH_IN_FLIGHT = set()
 _CPU_FETCH_LOCK = threading.Lock()
 
@@ -349,7 +346,7 @@ def format_instance(inst, public_ip, region, cpu_models=None):
         "region": region,
         "timeCreated": inst.get("time-created"),
         "cpuModel": cpu_entry.get("model"),
-        # 旧字段（过渡期双写）。
+        # Old fields (written alongside during the transition). 旧字段（过渡期双写）。
         "display-name": inst.get("display-name"),
         "lifecycle-state": state,
         "time-created": inst.get("time-created"),
@@ -393,8 +390,7 @@ def list_all(profile: str = Query(default=None),
             elif inst_state != "RUNNING":
                 continue
             filtered.append(inst)
-        # 各实例的公网 IP 并行取（每台 1 次 list-vnics；map 保序，
-        # 结果与 filtered 一一对应；_safe_public_ip 失败时返回 None）。
+        # Fetch each instance's public IP in parallel (1 list-vnics each; map preserves order, so results line up one-to-one with filtered; _safe_public_ip returns None on failure). 各实例的公网 IP 并行取（每台 1 次 list-vnics；map 保序，结果与 filtered 一一对应；_safe_public_ip 失败时返回 None）。
         if filtered:
             with ThreadPoolExecutor(max_workers=MAX_IP_WORKERS) as pool:
                 ips = list(pool.map(
@@ -442,7 +438,7 @@ def batch(body: BatchBody,
                               status_code=400)
     try:
         cli, _compartment_id = resolve_profile(profile, region)
-        # 直接调模块级导入的函数（不要预建成 dict），测试才能 patch。
+        # Call the module-level imported function directly (do not pre-build a dict), so tests can patch it. 直接调模块级导入的函数（不要预建成 dict），测试才能 patch。
         if body.action == "start":
             result = batch_start(cli, body.instance_ids)
         elif body.action == "stop":
@@ -457,7 +453,7 @@ def batch(body: BatchBody,
         return oci_error_response(exc)
     clear_instance_list_cache(profile or config.DEFAULT_PROFILE)
     if body.action == "terminate":
-        # 批量终止默认永删引导卷，启动盘列表缓存也要清。
+        # Batch terminate permanently deletes boot volumes by default, so the boot-volume list cache must be cleared too. 批量终止默认永删引导卷，启动盘列表缓存也要清。
         clear_volumes_cache(profile or config.DEFAULT_PROFILE)
         for instance_id in result["succeeded"]:
             delete_cpu_model(instance_id)
@@ -636,7 +632,7 @@ def terminate(instance_id: str,
                               status_code=400)
     try:
         cli, _compartment_id = resolve_profile(profile, region)
-        # 默认 preserve_boot_volume=False：终止时永久删除引导卷。
+        # Default preserve_boot_volume=False: terminating permanently deletes the boot volume. 默认 preserve_boot_volume=False：终止时永久删除引导卷。
         terminate_instance(cli, instance_id,
                            preserve_boot_volume=body.preserve_boot_volume)
     except ValueError as exc:
@@ -644,7 +640,7 @@ def terminate(instance_id: str,
     except OCIError as exc:
         return oci_error_response(exc)
     clear_instance_list_cache(profile or config.DEFAULT_PROFILE)
-    # 终止默认永删引导卷（保留时变孤儿盘），启动盘列表缓存也要清。
+    # Terminate permanently deletes the boot volume by default (keeping it leaves an orphan volume), so the boot-volume list cache must be cleared too. 终止默认永删引导卷（保留时变孤儿盘），启动盘列表缓存也要清。
     clear_volumes_cache(profile or config.DEFAULT_PROFILE)
     return {"ok": True, "instance_id": instance_id, "action": "terminate",
             "preserve_boot_volume": body.preserve_boot_volume}
@@ -827,10 +823,7 @@ def boot_backups(instance_id: str,
     result = {"ok": True, "boot_volume_id": boot_volume_id,
               "backups": backups}
     if not include_all and not backups:
-        # 当前盘没可用备份时，顺便数一下账号里别的盘的可用备份
-        # （比如换盘前旧盘的备份），前端在提示里说明白，免得用户
-        # 以为删盘把备份也删了（2026-11-24 用户实问）。查不到就当 0，
-        # 不影响主流程。
+        # When the current disk has no usable backup, also count usable backups of other disks in the account (e.g. backups of the old disk from before a swap), so the frontend can explain clearly in the prompt and the user does not think deleting the disk also deleted the backups. A failed lookup counts as 0 and does not affect the main flow. 当前盘没可用备份时，顺便数一下账号里别的盘的可用备份（比如换盘前旧盘的备份），前端在提示里说明白，免得用户以为删盘把备份也删了。查不到就当 0，不影响主流程。
         try:
             all_backups = list_boot_volume_backups(cli, compartment_id)
             result["other_available_count"] = sum(
@@ -877,8 +870,7 @@ def create_boot_backup(instance_id: str,
         return error_response(str(exc), status_code=400)
     except OCIError as exc:
         return oci_error_response(exc)
-    # 备份创建成功后起后台线程：等备份 AVAILABLE 后双通道通知
-    # （与机器人端创建点同款；chat_id 拿不到时静默跳过）。
+    # After a backup is created successfully, start a background thread: once the backup is AVAILABLE, notify via both channels (same as the bot-side creation point; silently skipped when chat_id is unavailable). 备份创建成功后起后台线程：等备份 AVAILABLE 后双通道通知（与机器人端创建点同款；chat_id 拿不到时静默跳过）。
     chat_id = _notify_chat_id()
     if chat_id is not None:
         try:
@@ -962,7 +954,7 @@ def restore_boot_volume(instance_id: str,
     except OCIError as exc:
         return oci_error_response(exc)
     clear_instance_list_cache(profile or config.DEFAULT_PROFILE)
-    # 换盘任务会新建一块启动盘并删旧盘（30 秒缓存自愈，启动时先清一次）。
+    # A swap task creates a new boot volume and deletes the old one (the 30s cache heals itself; clear it once at startup). 换盘任务会新建一块启动盘并删旧盘（30 秒缓存自愈，启动时先清一次）。
     clear_volumes_cache(profile or config.DEFAULT_PROFILE)
     return {"ok": True, "instance_id": instance_id, "task_id": task_id,
             "message": "引导卷恢复已开始，进度请在任务页查看"}

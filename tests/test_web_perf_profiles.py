@@ -46,7 +46,7 @@ FAKE_INSTANCE_3 = "ocid1.instance.oc1..testzzzz"
 
 TEST_PASSWORD = "perf-test-password-2026"
 
-# 3 台 RUNNING 实例（并行取 IP 的计时测试用）
+# 3 RUNNING instances (timing test for parallel IP fetch). 3 台 RUNNING 实例（并行取 IP 的计时测试用）。
 FAKE_INSTANCES_3 = [
     {"id": FAKE_INSTANCE, "display-name": "instance-1",
      "shape": "VM.Standard.A1.Flex", "lifecycle-state": "RUNNING",
@@ -59,14 +59,14 @@ FAKE_INSTANCES_3 = [
      "time-created": "2026-11-13T10:00:00.000Z"},
 ]
 
-# 每台实例对应的公网 IP（验证并行结果与实例一一对应）
+# The public IP for each instance (verifies parallel results map one-to-one onto instances). 每台实例对应的公网 IP（验证并行结果与实例一一对应）。
 FAKE_IPS = {
     FAKE_INSTANCE: "203.0.113.10",
     FAKE_INSTANCE_2: "203.0.113.11",
     FAKE_INSTANCE_3: "203.0.113.12",
 }
 
-# 3 个假账号（第 3 个区域未知，验证 regionLabel 回退原代码）
+# 3 fake accounts (the 3rd has an unknown region, verifying the regionLabel fallback to the raw code). 3 个假账号（第 3 个区域未知，验证 regionLabel 回退原代码）。
 FAKE_PROFILES = {
     "DEFAULT": {"region": "ap-singapore-1",
                 "compartment_id": "ocid1.tenancy.oc1..testxxxx"},
@@ -144,7 +144,7 @@ class TestProfilesApi(_Base):
              for p in body["profiles"]],
             [("DEFAULT", "ap-singapore-1", "新加坡", 3, "新加坡（3 个区）"),
              ("ACCOUNT2", "us-sanjose-1", "圣何塞", 1, "圣何塞"),
-             # 未列出的区域回退显示原始区域代码；查不到区数时不加后缀
+             # An unlisted region falls back to the raw region code; no suffix is added when the region count is unknown. 未列出的区域回退显示原始区域代码；查不到区数时不加后缀。
              ("ACCOUNT3", "us-ashburn-1", "us-ashburn-1", None,
               "us-ashburn-1")])
 
@@ -187,10 +187,10 @@ class TestInstancesParallelAndCache(_Base):
             resp = self.client.get("/api/instances")
             elapsed = time.monotonic() - start
         self.assertEqual(resp.status_code, 200)
-        # 并行：3 台各 0.3 秒，总耗时远小于串行的 0.9 秒
+        # Parallel: 3 instances at 0.3s each, total far below the serial 0.9s. 并行：3 台各 0.3 秒，总耗时远小于串行的 0.9 秒。
         self.assertLess(elapsed, 0.75, "耗时 %.2fs，疑似串行取 IP" % elapsed)
         self.assertEqual(mock_ip.call_count, 3)
-        # 结果与实例一一对应（保序）
+        # Results map one-to-one onto instances (order preserved). 结果与实例一一对应（保序）。
         got = {inst["id"]: inst["publicIp"]
                for inst in resp.json()["instances"]}
         self.assertEqual(got, FAKE_IPS)
@@ -202,7 +202,7 @@ class TestInstancesParallelAndCache(_Base):
                    return_value="203.0.113.10"):
             self.assertEqual(self.client.get("/api/instances").status_code, 200)
             self.assertEqual(self.client.get("/api/instances").status_code, 200)
-        # 第二次命中缓存，list_instances 只调了一次
+        # The second call hits the cache; list_instances was called only once. 第二次命中缓存，list_instances 只调了一次。
         self.assertEqual(mock_list.call_count, 1)
 
     def test_list_cache_refresh_bypass(self):
@@ -221,7 +221,6 @@ class TestInstancesParallelAndCache(_Base):
              patch("web.routes.instances.get_public_ip",
                    return_value="203.0.113.10"):
             self.client.get("/api/instances")
-            # 把缓存条目标记为已过期
             entry = instances_routes._LIST_CACHE[
                 ("DEFAULT", "ap-singapore-1", "running")]
             entry["expires"] = time.monotonic() - 1
@@ -242,7 +241,7 @@ class TestInstancesParallelAndCache(_Base):
             self.client.get("/api/instances?profile=ACCOUNT2")
             self.client.get("/api/instances?state=all")
             self.client.get("/api/instances?region=ap-seoul-1")
-        # 不同 profile / 不同 state / 不同 region 是不同缓存键，各调一次
+        # Different profile / state / region are different cache keys, each queried once. 不同 profile / 不同 state / 不同 region 是不同缓存键，各调一次。
         self.assertEqual(mock_list.call_count, 4)
 
     def test_mutation_invalidates_cache(self):
@@ -257,7 +256,7 @@ class TestInstancesParallelAndCache(_Base):
                 "/api/instances/%s/start" % FAKE_INSTANCE)
             self.assertEqual(resp.status_code, 200)
             self.client.get("/api/instances")
-        # 写操作后缓存失效，列表重新查询
+        # After a write, the cache is invalidated and the list is re-queried. 写操作后缓存失效，列表重新查询。
         self.assertEqual(mock_list.call_count, 2)
 
 
@@ -276,9 +275,9 @@ class TestCloudReportParallelAndCache(_Base):
             resp = self.client.get("/api/cloud-report/summary")
             elapsed = time.monotonic() - start
         self.assertEqual(resp.status_code, 200)
-        # 并行：3 个账号各 0.3 秒，总耗时远小于串行的 0.9 秒
+        # Parallel: 3 accounts at 0.3s each, total far below the serial 0.9s. 并行：3 个账号各 0.3 秒，总耗时远小于串行的 0.9 秒。
         self.assertLess(elapsed, 0.75, "耗时 %.2fs，疑似串行汇总" % elapsed)
-        # 顺序与 PROFILES 一致（map 保序）
+        # Order matches PROFILES (map preserves order). 顺序与 PROFILES 一致（map 保序）。
         self.assertEqual(
             [g["profile"] for g in resp.json()["groups"]],
             ["DEFAULT", "ACCOUNT2", "ACCOUNT3"])
@@ -309,7 +308,7 @@ class TestCloudReportParallelAndCache(_Base):
                 self.client.get("/api/cloud-report/summary").status_code, 200)
             self.assertEqual(
                 self.client.get("/api/cloud-report/summary").status_code, 200)
-        # 第二次命中缓存，每账号只汇总了一次
+        # The second call hits the cache; each account was summarized only once. 第二次命中缓存，每账号只汇总了一次。
         self.assertEqual(mock_sum.call_count, 3)
 
     def test_report_cache_refresh_bypass(self):
@@ -348,7 +347,6 @@ class TestProfileTemplates(_Base):
     def test_instances_page_dynamic_profile_select(self):
         html = self._page("/instances")
         self.assertIn('id="profile-select"', html)
-        # 不再有写死的 DEFAULT 选项与错误注释
         self.assertNotIn('<option value="DEFAULT"', html)
         self.assertNotIn("后端目前只暴露 DEFAULT", html)
 
@@ -357,7 +355,7 @@ class TestProfileTemplates(_Base):
         self.assertIn('id="profile-select"', self._page("/quota"))
         create_html = self._page("/create")
         self.assertIn('id="profile"', create_html)
-        # 自定义镜像 OCID（跨区域创建时填该区域的镜像）
+        # Custom image OCID (fill the target region's image for cross-region creation). 自定义镜像 OCID（跨区域创建时填该区域的镜像）。
         self.assertIn('id="image-id-custom"', create_html)
 
     def test_overview_page_has_cloud_report_refresh(self):
@@ -366,14 +364,14 @@ class TestProfileTemplates(_Base):
 
     def test_app_js_frontend_cache_module(self):
         js = self._static_js("app.js")
-        # 前端缓存：Map + 15 分钟 TTL + 按前缀清除
+        # Frontend cache: Map + 15-minute TTL + prefix-based clearing. 前端缓存：Map + 15 分钟 TTL + 按前缀清除。
         self.assertIn("new Map()", js)
         self.assertIn("15 * 60 * 1000", js)
         self.assertIn("cacheGet", js)
         self.assertIn("cacheSet", js)
         self.assertIn("cacheClear", js)
         self.assertIn("cachedApi", js)
-        # profile 切换：与面板同款 localStorage 键名
+        # Profile switching: same localStorage key name as the panel. profile 切换：与面板同款 localStorage 键名。
         self.assertIn("cloud_active_profile", js)
         self.assertIn("fillProfileSelect", js)
         self.assertIn("withProfile", js)

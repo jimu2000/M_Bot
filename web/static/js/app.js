@@ -5,8 +5,8 @@
   "use strict";
 
   /* ---------- API 封装 ---------- */
-  // api("/api/hosts") -> 解析后的 JSON；失败抛 Error（带 status 与 data）
-  // 401 默认跳登录页；传 { noRedirect: true } 可自行处理（如登录页）。
+  // api("/api/hosts") -> parsed JSON; on failure throws an Error (with status and data). api("/api/hosts") -> 解析后的 JSON；失败抛 Error（带 status 与 data）。
+  // 401 redirects to the login page by default; pass { noRedirect: true } to handle it yourself (e.g. the login page). 401 默认跳登录页；传 { noRedirect: true } 可自行处理（如登录页）。
   async function api(url, options) {
     options = options || {};
     var res = await fetch(url, {
@@ -34,11 +34,8 @@
   }
 
   /* ---------- 前端缓存（Map + TTL + 按前缀清除） ---------- */
-  // CloudCache 模型：内存 Map，默认 15 分钟 TTL，
-  // 键按资源 + profile 区分（如 "inst:DEFAULT"、"vol:list:DEFAULT"），
-  // 写操作后按前缀清缓存。页面内存里的缓存，刷新页面即失效；
-  // 服务端还有一层缓存（实例 30 秒、云报告 60 秒），两层叠加。
-  var CACHE_DEFAULT_TTL_MS = 15 * 60 * 1000; // 默认 15 分钟
+  // CloudCache model: in-memory Map, default 15-minute TTL, keys split by resource + profile (e.g. "inst:DEFAULT", "vol:list:DEFAULT"), and writes clear the cache by prefix. It lives in page memory and dies on refresh; the server has another cache layer (instances 30s, cloud report 60s), so the two stack. CloudCache 模型：内存 Map，默认 15 分钟 TTL，键按资源 + profile 区分（如 "inst:DEFAULT"、"vol:list:DEFAULT"），写操作后按前缀清缓存。页面内存里的缓存，刷新页面即失效；服务端还有一层缓存（实例 30 秒、云报告 60 秒），两层叠加。
+  var CACHE_DEFAULT_TTL_MS = 15 * 60 * 1000;
   var _cache = new Map();
 
   function cacheGet(key) {
@@ -58,7 +55,7 @@
     });
   }
 
-  // 按前缀清除（不传前缀时清全部）。写操作成功后调用，避免列表显示旧数据。
+  // Clear by prefix (clears everything when no prefix is given). Call after a successful write so lists do not show stale data. 按前缀清除（不传前缀时清全部）。写操作成功后调用，避免列表显示旧数据。
   function cacheClear(prefix) {
     if (prefix == null) {
       _cache.clear();
@@ -69,8 +66,7 @@
     });
   }
 
-  // 带缓存的 GET：命中时直接返回缓存；force=true 时跳过缓存读，
-  // 重新请求并刷新缓存（前端刷新按钮用）。
+  // Cached GET: return the cache on a hit; force=true skips the cache read, re-requests, and refreshes the cache (used by frontend refresh buttons). 带缓存的 GET：命中时直接返回缓存；force=true 时跳过缓存读，重新请求并刷新缓存（前端刷新按钮用）。
   async function cachedApi(key, url, force) {
     if (!force) {
       var hit = cacheGet(key);
@@ -82,13 +78,11 @@
   }
 
   /* ---------- 账号（profile）切换 ---------- */
-  // 一个 profile = 一个账号；多区订阅的账号还有二级区域菜单（见下
-  // 面“工作区域”一节），区域只是下拉里的显示字段。当前选择优先级：
-  // 内存 -> localStorage -> 默认 profile -> 第一个。
+  // One profile = one account; accounts with multi-region subscriptions also have a second-level region menu (see the "working region" section below); a region is only a display field in the dropdown. Current-choice priority: memory -> localStorage -> default profile -> first. 一个 profile = 一个账号；多区订阅的账号还有二级区域菜单（见下面“工作区域”一节），区域只是下拉里的显示字段。当前选择优先级：内存 -> localStorage -> 默认 profile -> 第一个。
   var PROFILE_KEY = "cloud_active_profile";
-  var _profiles = null; // 内存中的 profile 列表（GET /api/profiles）
-  var _profilesDefault = null; // 后端默认 profile
-  var _currentProfile = null; // 内存中的当前选择
+  var _profiles = null;
+  var _profilesDefault = null;
+  var _currentProfile = null;
 
   function getProfile() {
     if (_currentProfile) return _currentProfile;
@@ -113,10 +107,7 @@
     return _profiles;
   }
 
-  // 填充 profile 下拉：选项显示 displayName（主区中文名，多区账号
-  // 后缀区数，如“新加坡（3 个区）”，与机器人切换菜单一致；旧接口
-  // 没有 displayName 时回退到“名字 · 区域中文名”）；恢复保存的选择，
-  // 返回选中的名字（列表为空时返回 null，调用方按默认账号加载）。
+  // Fill the profile dropdown: options show displayName (home-region display name, with a region count suffix for multi-region accounts, e.g. "新加坡（3 个区）", matching the bot's switch menu; when the old API has no displayName, fall back to "name · region display name"); restore the saved choice and return the selected name (null when the list is empty; the caller loads with the default account). 填充 profile 下拉：选项显示 displayName（主区中文名，多区账号后缀区数，如“新加坡（3 个区）”，与机器人切换菜单一致；旧接口没有 displayName 时回退到“名字 · 区域中文名”）；恢复保存的选择，返回选中的名字（列表为空时返回 null，调用方按默认账号加载）。
   async function fillProfileSelect(selectEl) {
     var profiles = await loadProfiles();
     selectEl.innerHTML = "";
@@ -140,8 +131,8 @@
     return selected;
   }
 
-  // 给 URL 拼 ?profile= 与 ?region= 参数（已有查询串时用 & 拼接）。
-  // region 不传时只拼 profile（后端用该账号的主区）。
+  // Append ?profile= and ?region= to a URL (using & when a query string already exists). 给 URL 拼 ?profile= 与 ?region= 参数（已有查询串时用 & 拼接）。
+  // When region is not passed, only profile is appended (the backend uses that account's home region). region 不传时只拼 profile（后端用该账号的主区）。
   function withProfile(url, profile, region) {
     if (profile) {
       var sep = url.indexOf("?") === -1 ? "?" : "&";
@@ -155,11 +146,7 @@
   }
 
   /* ---------- 工作区域（region）切换 ---------- */
-  // 多区订阅的账号有二级区域菜单：区域下拉只在所选账号订阅了多个
-  // 区域时显示（单区账号不显示，与机器人端一致）。区域与账号绑定：
-  // 切账号时页面先 setRegion(null) 再调 fillRegionSelect，区域重置
-  // 为新账号的主区；保存的选择不在该账号订阅列表里时也回落到主区。
-  // 当前选择优先级：内存 -> localStorage -> 主区。
+  // Accounts with multi-region subscriptions get a second-level region menu: the region dropdown only shows when the selected account subscribes to multiple regions (single-region accounts hide it, same as the bot). Region is bound to the account: switching accounts calls setRegion(null) first, then fillRegionSelect, resetting the region to the new account's home region; a saved choice outside the account's subscription list also falls back to the home region. 多区订阅的账号有二级区域菜单：区域下拉只在所选账号订阅了多个区域时显示（单区账号不显示，与机器人端一致）。区域与账号绑定：切账号时页面先 setRegion(null) 再调 fillRegionSelect，区域重置为新账号的主区；保存的选择不在该账号订阅列表里时也回落到主区。
   var REGION_KEY = "cloud_active_region";
   var _currentRegion = null; // 内存中的当前选择（区域代码，如 ap-seoul-1）
 
@@ -179,8 +166,7 @@
     } catch (e) { /* 隐私模式下 localStorage 不可用 */ }
   }
 
-  // 某账号的订阅区域列表（[{code, label, isHome}]），来自 loadProfiles
-  // 的缓存；未加载或该账号无 regions 时返回 null。
+  // An account's subscribed region list ([{code, label, isHome}]), from loadProfiles' cache; null when not loaded or the account has no regions. 某账号的订阅区域列表（[{code, label, isHome}]），来自 loadProfiles 的缓存；未加载或该账号无 regions 时返回 null。
   function profileRegions(profile) {
     if (!_profiles) return null;
     for (var i = 0; i < _profiles.length; i++) {
@@ -189,10 +175,7 @@
     return null;
   }
 
-  // 填充区域下拉：多区账号显示下拉并恢复保存的选择（不在订阅列表
-  // 里时回落主区），单区账号隐藏下拉（select 与 #region-wrap 包裹
-  // 层一起隐藏）。返回选中的区域代码（订阅列表未知时返回 null，
-  // 调用方按主区处理）。
+  // Fill the region dropdown: multi-region accounts show the dropdown and restore the saved choice (falling back to the home region when it is outside the subscription list); single-region accounts hide the dropdown (the select and its #region-wrap wrapper hide together). Return the selected region code (null when the subscription list is unknown; the caller treats it as the home region). 填充区域下拉：多区账号显示下拉并恢复保存的选择（不在订阅列表里时回落主区），单区账号隐藏下拉（select 与 #region-wrap 包裹层一起隐藏）。返回选中的区域代码（订阅列表未知时返回 null，调用方按主区处理）。
   function fillRegionSelect(selectEl, profile) {
     var regions = profileRegions(profile);
     var wrap = selectEl.closest ? selectEl.closest("#region-wrap") : null;
@@ -235,7 +218,7 @@
     try {
       await navigator.clipboard.writeText(text);
     } catch (e) {
-      // clipboard API 不可用时（如非安全上下文）退回传统方式
+      // Fall back to the legacy method when the clipboard API is unavailable (e.g. non-secure contexts). clipboard API 不可用时（如非安全上下文）退回传统方式。
       var ta = document.createElement("textarea");
       ta.value = text;
       document.body.appendChild(ta);
@@ -257,7 +240,6 @@
   }
 
   /* ---------- 时间格式化 ---------- */
-  // ISO 时间 -> "2天前" / "3小时前" / "刚刚"；无效值返回 "—"
   function timeAgo(iso) {
     if (!iso) return "—";
     var t = new Date(iso).getTime();
@@ -274,8 +256,8 @@
     return new Date(t).toLocaleDateString("zh-CN");
   }
 
-  // 时间 -> 本地 "2026/11/23 02:30:00"
-  // 接受 ISO 字符串，也接受 Unix 时间戳（秒或毫秒，后端任务用秒级时间戳）
+  // Time -> local "2026/11/23 02:30:00". 时间 -> 本地 "2026/11/23 02:30:00"。
+  // Accepts an ISO string or a Unix timestamp (seconds or milliseconds; backend tasks use second-level timestamps). 接受 ISO 字符串，也接受 Unix 时间戳（秒或毫秒，后端任务用秒级时间戳）。
   function formatTime(value) {
     if (value == null || value === "") return "—";
     var d;
@@ -287,14 +269,12 @@
     return isNaN(d.getTime()) ? String(value) : d.toLocaleString("zh-CN");
   }
 
-  // 速率：kbps -> 可读字符串
   function formatRate(kbps) {
     if (kbps == null || isNaN(kbps)) return "--";
     if (kbps >= 1024) return (kbps / 1024).toFixed(1) + " MB/s";
     return Math.round(kbps) + " KB/s";
   }
 
-  // 速率：字节/秒 -> 可读字符串（后端 /api/system 返回字节/秒）
   function formatBytesRate(bytesPerSec) {
     if (bytesPerSec == null || isNaN(bytesPerSec)) return "--";
     if (bytesPerSec >= 1024 * 1024) return (bytesPerSec / (1024 * 1024)).toFixed(1) + " MB/s";
@@ -311,7 +291,6 @@
     var el = document.getElementById(id);
     if (el) el.hidden = true;
   }
-  // 通用确认弹窗（动态生成，返回 Promise<boolean>）
   function confirmDialog(title, bodyHtml, confirmText, danger) {
     return new Promise(function (resolve) {
       var root = document.getElementById("modal-root");
@@ -337,15 +316,12 @@
   }
 
   /* ---------- 启动卷备份（启动盘页与实例卡片弹窗共用） ---------- */
-  // 创建备份流程（核心用户要求）：
-  //   1. 先调配额接口；未满直接创建。
-  //   2. 已满则弹窗提示最早备份，点"删除最早备份并继续"时后端先删
-  //      最早备份再创建；点取消什么都不做。
-  // 成功返回备份对象，失败/取消返回 null；调用方成功后自行刷新列表。
+  // Create-backup flow (a core user requirement): 创建备份流程（核心用户要求）：
+  //   1. Check the quota API first; create directly when not full. 1. 先调配额接口；未满直接创建。
+  //   2. When full, pop a dialog showing the earliest backup; "delete earliest and continue" makes the backend delete the earliest backup first, then create; cancel does nothing. 2. 已满则弹窗提示最早备份，点“删除最早备份并继续”时后端先删最早备份再创建；点取消什么都不做。
+  // Returns the backup object on success, null on failure/cancel; the caller refreshes the list after a success. 成功返回备份对象，失败/取消返回 null；调用方成功后自行刷新列表。
   async function backupBootVolume(volumeId, profile) {
-    // 付费账号不限 5 个，直接创建；免费账号满了服务端自动删最早
-    // 备份再建（用户要求 2026-11-24：不用等确认），响应里带
-    // deleted_oldest 说明删了哪个。前端不再预查配额、不再弹窗确认。
+    // Paid accounts have no 5-backup cap: create directly; on a free account the server auto-deletes the earliest backup and creates (no confirmation wait), and the response carries deleted_oldest saying which was deleted. The frontend no longer pre-checks the quota or pops a confirm dialog. 付费账号不限 5 个，直接创建；免费账号满了服务端自动删最早备份再建（不用等确认），响应里带 deleted_oldest 说明删了哪个。前端不再预查配额、不再弹窗确认。
     var prof = profile || getProfile();
     try {
       var res = await api(withProfile("/api/boot-backups", prof), {
@@ -372,7 +348,6 @@
   function applyTheme(theme, mode) {
     var root = document.documentElement;
     root.setAttribute("data-theme", theme);
-    // 星夜固定暗色
     root.setAttribute("data-mode", theme === "starry" ? "dark" : mode);
     try {
       localStorage.setItem("mbot-theme", theme);
@@ -410,11 +385,9 @@
   async function refreshSystem() {
     try {
       var data = await api("/api/system");
-      // 兼容两种返回格式：
-      // 嵌套（后端实际）：{cpu:{percent}, memory:{percent}, disk:{percent},
-      //                   network:{rx_bytes_per_sec, tx_bytes_per_sec}}
-      // 扁平（契约草案）：{cpu_percent, mem_percent, disk_percent,
-      //                   net_down_kbps, net_up_kbps}
+      // Compatible with two response formats: 兼容两种返回格式：
+      // nested (what the backend actually returns): {cpu:{percent}, memory:{percent}, disk:{percent}, network:{rx_bytes_per_sec, tx_bytes_per_sec}} 嵌套（后端实际）：{cpu:{percent}, memory:{percent}, disk:{percent}, network:{rx_bytes_per_sec, tx_bytes_per_sec}}
+      // flat (the draft contract): {cpu_percent, mem_percent, disk_percent, net_down_kbps, net_up_kbps} 扁平（契约草案）：{cpu_percent, mem_percent, disk_percent, net_down_kbps, net_up_kbps}
       var cpu = data.cpu_percent != null ? data.cpu_percent : (data.cpu && data.cpu.percent);
       var mem = data.mem_percent != null ? data.mem_percent : (data.memory && data.memory.percent);
       var disk = data.disk_percent != null ? data.disk_percent : (data.disk && data.disk.percent);
@@ -431,15 +404,14 @@
         if (up) up.textContent = formatRate(data.net_up_kbps);
       }
     } catch (e) {
-      // 资源栏失败不打扰用户，静默等待下次轮询
+      // Resource bar failures do not bother the user; silently wait for the next poll. 资源栏失败不打扰用户，静默等待下次轮询。
     }
   }
 
-  // 侧边栏高亮兜底：服务端没传 current_page 时按当前路径高亮
   function highlightSidebar() {
     var sidebar = document.querySelector(".sidebar");
     if (!sidebar) return;
-    if (sidebar.querySelector("a.active")) return; // 服务端已高亮，不动
+    if (sidebar.querySelector("a.active")) return;
     var path = window.location.pathname.replace(/\/$/, "") || "/overview";
     var page = path.replace(/^\//, "");
     if (page === "") page = "overview";
@@ -447,7 +419,7 @@
     if (link) link.classList.add("active");
   }
 
-  // 用户名兜底：模板没传 username 时调 /api/auth/me 补填
+  // Username fallback: when the template did not pass a username, call /api/auth/me to fill it in. 用户名兜底：模板没传 username 时调 /api/auth/me 补填。
   async function fillUsername() {
     var el = document.getElementById("res-username");
     if (!el || el.textContent.trim()) return;
@@ -465,7 +437,6 @@
 
   /* ---------- 初始化 ---------- */
   document.addEventListener("DOMContentLoaded", function () {
-    // 主题下拉与本地存储同步
     var themeSel = document.getElementById("theme-select");
     if (themeSel) {
       themeSel.value = currentTheme();
@@ -487,8 +458,7 @@
     var settingsBtn = document.getElementById("settings-btn");
     if (settingsBtn) {
       settingsBtn.addEventListener("click", function () {
-        // 改密码弹窗在 base.html 里（settings.js 处理提交）；
-        // 登录页等没有该弹窗的页面保持原提示。
+        // The change-password modal lives in base.html (settings.js handles the submit); pages without that modal, like the login page, keep the original prompt. 改密码弹窗在 base.html 里（settings.js 处理提交）；登录页等没有该弹窗的页面保持原提示。
         var modal = document.getElementById("change-password-modal");
         if (modal) {
           openModal("change-password-modal");
@@ -500,8 +470,7 @@
     var logoutBtn = document.getElementById("logout-btn");
     if (logoutBtn) logoutBtn.addEventListener("click", logout);
 
-    // 手机端导航抽屉：汉堡按钮开关侧边栏，点遮罩或导航链接关闭
-    // （桌面端 .nav-toggle 是 display: none，点不到，这段不生效）。
+    // Mobile nav drawer: the hamburger button toggles the sidebar; tapping the backdrop or a nav link closes it (on desktop .nav-toggle is display: none and unreachable, so this does nothing). 手机端导航抽屉：汉堡按钮开关侧边栏，点遮罩或导航链接关闭（桌面端 .nav-toggle 是 display: none，点不到，这段不生效）。
     var navToggle = document.getElementById("nav-toggle");
     var navSidebar = document.querySelector(".sidebar");
     var navBackdrop = document.getElementById("sidebar-backdrop");
@@ -527,7 +496,6 @@
       if (e.key === "Escape") closeNavDrawer();
     });
 
-    // 弹窗关闭：data-close-modal 属性 + 点遮罩关闭
     document.querySelectorAll("[data-close-modal]").forEach(function (btn) {
       btn.addEventListener("click", function () { closeModal(btn.getAttribute("data-close-modal")); });
     });
@@ -542,11 +510,9 @@
       }
     });
 
-    // 侧边栏高亮兜底 + 用户名补填
     highlightSidebar();
     fillUsername();
 
-    // 资源栏：立即刷新一次，再每 5 秒轮询（登录页没有资源栏，跳过）
     if (document.getElementById("gauge-cpu")) {
       refreshSystem();
       setInterval(refreshSystem, 5000);

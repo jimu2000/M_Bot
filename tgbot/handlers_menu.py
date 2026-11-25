@@ -16,7 +16,8 @@ bot 启动时经 post_init 调 setMyCommands 注册（见 tgbot/bot.py）。
 tests/test_tgbot_menu.py 保证两者一致，不许出现点了没反应的命令）。
 
 不做（设计上跳过）：/bindclient /qrcode /codeflash /flash /migrate /
-getflash /qb /qs /lang（闪电付费、客服专线、多语言）。
+getflash /qb /qs（闪电付费、客服专线）。/lang 在 v2.01 启用
+（中英文切换，见 tgbot/i18n.py 与 handlers.lang_command）。
 
 安全说明：
   - 全部 handler 都加 @require_allowed，只允许白名单用户。
@@ -56,28 +57,29 @@ from web import config as web_config
 logger = logging.getLogger(__name__)
 
 # ================= 配置区（改这里） =================
-# 项目根目录（VERSION 文件所在目录）。
+# Project root dir (where the VERSION file lives). 项目根目录（VERSION 文件所在目录）。
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-# 面板版本文件。
+# Panel version file. 面板版本文件。
 VERSION_FILE = os.path.join(PROJECT_ROOT, "VERSION")
-# 面板管理员明文密码文件（/raninfo 写这里，600 权限；部署时是
-# /root/.rbot-clone-admin-password，机器人以 root 运行所以 ~ 就是 /root）。
+# Panel admin plain-text password file (/raninfo writes here, mode 600; at deploy time it is /root/.rbot-clone-admin-password, and since the bot runs as root, ~ is /root). 面板管理员明文密码文件（/raninfo 写这里，600 权限；部署时是 /root/.rbot-clone-admin-password，机器人以 root 运行所以 ~ 就是 /root）。
 ADMIN_PASSWORD_FILE = os.environ.get(
     "MBOT_WEB_ADMIN_PASSWORD_FILE",
     os.path.expanduser("~/.rbot-clone-admin-password"))
-# /raninfo 生成的新密码长度（字母+数字，满足面板密码强度要求）。
+# Length of the new password /raninfo generates (letters + digits, meeting the panel password strength requirement). /raninfo 生成的新密码长度（字母+数字，满足面板密码强度要求）。
 RANINFO_PASSWORD_LENGTH = 20
 # =====================================================
 
 # ---------------- 命令菜单 ----------------
-# (命令, 中文说明)：启动时注册到 Telegram 菜单（setMyCommands）。
-# 文案照菜单来；/me 改成"查看我的信息"，不提闪电权益。
+# (Command, Chinese description): registered to the Telegram menu at startup (setMyCommands). (命令, 中文说明)：启动时注册到 Telegram 菜单（setMyCommands）。
+# Wording follows the menu; /me reads "查看我的信息" and never mentions lightning perks. 文案照菜单来；/me 改成“查看我的信息”，不提闪电权益。
 BOT_COMMANDS = [
     ("start", "欢迎与主菜单"),
     ("help", "获取帮助"),
     ("oracle", "Oracle 云管理"),
     ("instances", "查看实例列表"),
+    ("lang", "切换语言 / Switch language"),
     ("bark", "Bark 通知设置"),
+    ("rescue", "救机（恢复/控制台）"),
     ("domain", "域名管理"),
     ("azure", "Azure 云管理"),
     ("aws", "AWS 云管理"),
@@ -96,10 +98,9 @@ BOT_COMMANDS = [
     ("admin", "管理员指令"),
 ]
 
-# 故意不进菜单的命令（闪电付费 / 客服专线 / 多语言），测试保证它们
-# 不出现在 BOT_COMMANDS 里。
+# Commands deliberately left out of the menu (paid lightning / support hotline); tests ensure they never appear in BOT_COMMANDS. /lang is enabled (Chinese/English switch). 故意不进菜单的命令（闪电付费 / 客服专线），测试保证它们不出现在 BOT_COMMANDS 里。/lang 已启用（中英文切换）。
 SKIPPED_COMMANDS = ("bindclient", "qrcode", "codeflash", "flash",
-                    "migrate", "getflash", "qb", "qs", "lang")
+                    "migrate", "getflash", "qb", "qs")
 
 
 async def _reply(update, context, text, reply_markup=None,
@@ -113,7 +114,7 @@ async def _reply(update, context, text, reply_markup=None,
 
 # ================= 其他云：/azure /aws /gcp /do /vf /solusvm =================
 
-# 各云配置说明：display 展示名、provider_cls 模块类、env_vars 必填环境变量。
+# Per-cloud config notes: display name, provider_cls module class, env_vars required env vars. 各云配置说明：display 展示名、provider_cls 模块类、env_vars 必填环境变量。
 PROVIDER_SPECS = {
     "azure": {
         "display": "Azure",
@@ -184,7 +185,7 @@ async def _handle_cloud_command(update, context, provider_name):
         for var in missing:
             lines.append(f"• {var}=...")
         if provider_name == "azure":
-            # /oci 只支持 Oracle 与 Azure 两种配置，别家不要提示这一句。
+            # /oci only supports Oracle and Azure configs; do not show this line for other providers. /oci 只支持 Oracle 与 Azure 两种配置，别家不要提示这一句。
             lines += ["", "已有账号时也可以用 /oci 上传 Azure 配置。"]
         await _reply(update, context, "\n".join(lines))
         return
@@ -246,11 +247,11 @@ async def solusvm_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ================= /oci：上传 OCI / Azure 配置 =================
 
-# Azure 配置段名与必填键（config 文件里写 [azure] 段）。
+# Azure config section name and required keys (write an [azure] section in the config file). Azure 配置段名与必填键（config 文件里写 [azure] 段）。
 AZURE_SECTION_NAME = "azure"
 AZURE_REQUIRED_KEYS = ("subscription_id", "tenant_id", "client_id",
                        "client_secret")
-# Azure 键 -> env 文件里的环境变量名。
+# Azure key -> env var name in the env file. Azure 键 -> env 文件里的环境变量名。
 AZURE_ENV_VARS = {
     "subscription_id": "AZURE_SUBSCRIPTION_ID",
     "tenant_id": "AZURE_TENANT_ID",
@@ -268,7 +269,7 @@ def _clear_oci_pending(context):
 @require_allowed
 async def oci_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """处理 /oci：提示发 config 文件或粘贴文本，进入等待状态。"""
-    # 与 /uploadapi 互斥：/oci 接管后 uploadapi 不再消费同一条消息。
+    # Mutually exclusive with /uploadapi: once /oci takes over, uploadapi no longer consumes the same message. 与 /uploadapi 互斥：/oci 接管后 uploadapi 不再消费同一条消息。
     context.user_data.pop("ua_awaiting", None)
     context.user_data.pop("ua_pending", None)
     context.user_data.pop("pending_input", None)
@@ -529,8 +530,7 @@ def reset_admin_password(env_file=None, password_file=None):
       4. 重启面板服务生效。
     调用方只把返回的明文发给白名单用户一次，不要记日志。
     """
-    # 延迟 import：web.routes.auth 依赖 fastapi 等 Web 依赖，机器人
-    # 启动时不一定需要；真正重置时再 import。
+    # Deferred import: web.routes.auth depends on FastAPI and other web deps, which the bot may not need at startup; import only when actually resetting. 延迟 import：web.routes.auth 依赖 fastapi 等 Web 依赖，机器人启动时不一定需要；真正重置时再 import。
     from web.auth import hash_password
     from web.routes.auth import update_password_hash_in_env_file
 
@@ -600,7 +600,7 @@ async def me_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     version = read_panel_version()
     version_text = "未知" if version == "未知" else f"v{version}"
-    # 账号名用主区中文名（v1.15.0 修：原来直接显示 DEFAULT 等配置键名）。
+    # Account names use the home-region display name (they used to show config key names like DEFAULT directly). 账号名用主区中文名（原来直接显示 DEFAULT 等配置键名）。
     account_labels = "、".join(
         bot_config.profile_display_name(p) for p in bot_config.PROFILES)
     lines = ["👤 我的信息", "",
@@ -708,7 +708,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "adm:confirm-bot":
-        # 先发消息再重启：重启会杀掉当前进程，之后的回复发不出去。
+        # Send the message first, then restart: the restart kills the current process, so any later reply never goes out. 先发消息再重启：重启会杀掉当前进程，之后的回复发不出去。
         await query.edit_message_text("正在重启机器人服务，几秒后恢复…")
         try:
             await run_sync(restart_service, BOT_SERVICE)
@@ -717,7 +717,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"❌ 重启机器人服务失败：{exc}",
                 reply_markup=admin_keyboard())
             return
-        # 正常情况进程已被杀掉，走不到这里；以防万一补一句。
+        # Normally the process is already killed and this line is never reached; keep it just in case. 正常情况进程已被杀掉，走不到这里；以防万一补一句。
         await query.edit_message_text("✅ 机器人服务重启命令已发出。",
                                       reply_markup=admin_keyboard())
         return

@@ -54,30 +54,30 @@ from datetime import datetime, timedelta, timezone
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from oci.grabber import TARGET_CPU
+from tgbot import i18n as bot_i18n
 from tgbot.cpu_policy import get_allowed_cpu_models
 from web.config import IMAGE_IDS
 
 BEIJING_TZ = timezone(timedelta(hours=8))
 
 # ================= 配置区（改这里） =================
-# 形状名。
+# Shape names. 形状名。
 SHAPE_A1_FLEX = "VM.Standard.A1.Flex"
 SHAPE_E2_MICRO = "VM.Standard.E2.1.Micro"
-# CPU 行预设：(callback 值, 按钮文字)。
+# CPU row presets: (callback value, button text). CPU 行预设：(callback 值, 按钮文字)。
 CPU_OPTIONS = [("arm", "ARM"), ("amd", "AMD"), ("intel", "INTEL")]
-# 系统行预设：(callback 值, 按钮文字)。CentOS 显示带 *，正文里注明
-# 已映射为 Oracle Linux。
+# OS row presets: (callback value, button text). CentOS is shown with a *, and the text notes it maps to Oracle Linux. 系统行预设：(callback 值, 按钮文字)。CentOS 显示带 *，正文里注明已映射为 Oracle Linux。
 OS_OPTIONS = [("ubuntu", "Ubuntu"), ("centos", "CentOS*")]
-# 核心 / 内存 / 硬盘 / 数量 / 延迟各行的预设值。
-OCPU_OPTIONS = [1, 2, 4]  # A1 免费额度内单台上限 4 核
-MEMORY_OPTIONS = [1, 6, 12, 24]  # A1 免费额度内单台上限 24GB
+# Preset values for the OCPU / memory / disk / count / delay rows. 核心 / 内存 / 硬盘 / 数量 / 延迟各行的预设值。
+OCPU_OPTIONS = [1, 2, 4]  # A1 free-tier per-instance cap: 4 OCPUs. A1 免费额度内单台上限 4 核。
+MEMORY_OPTIONS = [1, 6, 12, 24]  # A1 free-tier per-instance cap: 24 GB. A1 免费额度内单台上限 24GB。
 DISK_OPTIONS = [100, 150, 200]
 COUNT_OPTIONS = [1, 2, 3, 4]
 DELAY_OPTIONS = [1, 5, 10, 20, 40, 60, 100, 120, 150, 200]
-# 延迟行最多同时选几个值（1 个 = 固定间隔，2 个 = 区间随机）。
+# Max simultaneous values on the delay row (1 = fixed interval, 2 = random within a range). 延迟行最多同时选几个值（1 个 = 固定间隔，2 个 = 区间随机）。
 DELAY_MAX_SELECTED = 2
-# 自定义值校验范围（与 Web 创建表单的硬盘 47–200 一致）。
-DISK_MIN_GB = 50  # 显式指定启动盘大小时 OCI 要求至少 50GB（不指定时用镜像默认 47GB）
+# Custom-value validation range (matches the web create form's disk range 47-200). 自定义值校验范围（与 Web 创建表单的硬盘 47–200 一致）。
+DISK_MIN_GB = 50  # When a boot disk size is given explicitly, OCI requires at least 50 GB (unspecified means the image default 47 GB). 显式指定启动盘大小时 OCI 要求至少 50GB（不指定时用镜像默认 47GB）。
 DISK_MAX_GB = 200
 COUNT_MIN = 1
 COUNT_MAX = 10
@@ -87,35 +87,27 @@ MEMORY_MIN_GB = 1
 MEMORY_MAX_GB = 1024
 DELAY_MIN_SECONDS = 1
 DELAY_MAX_SECONDS = 3600
-# 开机脚本上限（字符数；粘贴文本与上传文件共用）。
+# Boot script cap (chars; shared by pasted text and uploaded files). 开机脚本上限（字符数；粘贴文本与上传文件共用）。
 SCRIPT_MAX_CHARS = 65536
-# root 默认密码：UUID4 的 32 位十六进制（去掉连字符），与 R 探长
-# 开机通知里的密码格式一致（32 位 hex）。只含 [0-9a-f]，没有冒号
-# （chpasswd 按第一个冒号切分用户和密码）、没有 YAML/shell 特殊
-# 字符，可直接放进 cloud-init 的 chpasswd 块；128 位熵，强度足够。
-# 用户要求（2026-11-24）：抢机默认生成 UUID 当 root 密码。
-# Oracle Linux 镜像 OCID（CentOS 映射目标）：按架构从环境变量读，
-# 未配置时选 CentOS 会在确认页报错并提示环境变量名。
-# 查法：oci compute image list --compartment-id <compartment OCID>
-# --operating-system "Oracle Linux" --shape <形状>。
+# Root default password: a UUID4 as 32 hex chars (hyphens stripped), matching the password format in the R-Bot boot notice (32 hex chars). It contains only [0-9a-f]: no colon (chpasswd splits user and password on the first colon) and no YAML/shell special chars, so it can go straight into cloud-init's chpasswd block; 128 bits of entropy is strong enough. root 默认密码：UUID4 的 32 位十六进制（去掉连字符），与 R 探长开机通知里的密码格式一致（32 位 hex）。只含 [0-9a-f]，没有冒号（chpasswd 按第一个冒号切分用户和密码）、没有 YAML/shell 特殊字符，可直接放进 cloud-init 的 chpasswd 块；128 位熵，强度足够。
+# Oracle Linux image OCID (the CentOS mapping target): read per architecture from env vars; choosing CentOS while unconfigured errors on the confirm page and names the env var. Oracle Linux 镜像 OCID（CentOS 映射目标）：按架构从环境变量读，未配置时选 CentOS 会在确认页报错并提示环境变量名。
+# Lookup: oci compute image list --compartment-id <compartment OCID> --operating-system "Oracle Linux" --shape <shape>. 查法：oci compute image list --compartment-id <compartment OCID> --operating-system "Oracle Linux" --shape <形状>。
 OL_IMAGE_IDS = {
     "aarch64": os.environ.get(
         "MBOT_IMAGE_OL_AARCH64", "ocid1.image.oc1..xxxxxxxx"),
     "x86_64": os.environ.get(
         "MBOT_IMAGE_OL_X86_64", "ocid1.image.oc1..xxxxxxxx"),
 }
-# 各类占位符（未配置部署值时校验报错用，与 web/tasks.py 的
-# PLAN_DEFAULTS / web/config.py 的 IMAGE_IDS 保持一致）。
+# Placeholder values (used for validation errors when deploy values are unconfigured; keep in sync with web/tasks.py PLAN_DEFAULTS and web/config.py IMAGE_IDS). 各类占位符（未配置部署值时校验报错用，与 web/tasks.py 的 PLAN_DEFAULTS / web/config.py 的 IMAGE_IDS 保持一致）。
 IMAGE_PLACEHOLDER = "ocid1.image.oc1..xxxxxxxx"
 SUBNET_PLACEHOLDER = "ocid1.subnet.oc1..xxxxxxxx"
 AD_PLACEHOLDER = "xxxx:AP-SINGAPORE-1-AD-1"
 SSH_KEYS_PLACEHOLDER = "/path/to/keys.pub"
-# 开机脚本在实例里的落盘路径（root 密码 + 脚本同时存在时，
-# 脚本经 cloud-init write_files 写到这里再执行）。
+# Where the boot script lands on the instance (when both a root password and a script exist, the script is written here via cloud-init write_files and then executed). 开机脚本在实例里的落盘路径（root 密码 + 脚本同时存在时，脚本经 cloud-init write_files 写到这里再执行）。
 STARTUP_SCRIPT_PATH = "/root/mbot-startup.sh"
 # =====================================================
 
-# callback 行名 -> 表单键名（行名是 callback_data 里的短名）。
+# Callback row name -> form key (row names are the short names in callback_data). callback 行名 -> 表单键名（行名是 callback_data 里的短名）。
 ROW_FORM_KEY = {
     "cpu": "cpu",
     "os": "os",
@@ -130,16 +122,14 @@ ROW_FORM_KEY = {
     "ipv6": "ipv6",
     "script": "script",
 }
-# 单选行（点已选值 = 取消选择）。
 _SINGLE_ROWS = ("cpu", "os", "ocpus", "mem", "disk", "count")
-# 二值切换行（点当前值 = 无变化，点另一值 = 切换）。
 _BINARY_ROWS = {
     "key": {"use": "use", "none": "none"},
     "root": {"off": False, "on": True},
     "pubip": {"yes": True, "no": False},
     "ipv6": {"no": False, "yes": True},
 }
-# 形状名校验：VM. / BM. 开头，点号分隔的段（例如 VM.Standard.A1.Flex）。
+# Shape name validation: starts with VM. / BM., dot-separated segments (e.g. VM.Standard.A1.Flex). 形状名校验：VM. / BM. 开头，点号分隔的段（例如 VM.Standard.A1.Flex）。
 _SHAPE_RE = re.compile(r"^(VM|BM)\.[A-Za-z0-9]+(\.[A-Za-z0-9_-]+)+$")
 
 
@@ -244,7 +234,7 @@ def toggle_option(form, row, raw):
         return True, None
 
     if row == "script":
-        # 脚本行只有"无"走切换（"上传"走 pending_input，不进这里）。
+        # Only "none" on the script row goes through the toggle ("upload" goes via pending_input, not here). 脚本行只有“无”走切换（“上传”走 pending_input，不进这里）。
         if raw != "none":
             return False, "无效的选项"
         if form["script"] is None:
@@ -261,14 +251,13 @@ def toggle_option(form, row, raw):
         form[key] = choices[raw]
         return True, None
 
-    # 单选行：点已选值 = 取消选择。
+    # Single-choice row: tapping the selected value deselects it. 单选行：点已选值 = 取消选择。
     if row in ("cpu", "os"):
         allowed = dict(CPU_OPTIONS if row == "cpu" else OS_OPTIONS)
         if raw not in allowed:
             return False, "无效的选项"
         value = raw
     elif row == "disk" and raw == "default":
-        # 点"默认"：已是默认时无变化，否则切回默认。
         if form[key] is None:
             return False, None
         form[key] = None
@@ -347,7 +336,7 @@ def resolve_shape(form):
         return SHAPE_E2_MICRO, None
     if cpu == "intel":
         return SHAPE_E2_MICRO, "免费层无 Intel 机型，已按 E2.1.Micro（AMD）创建"
-    return cpu, None  # 自定义形状名
+    return cpu, None
 
 
 def resolve_arch(form):
@@ -383,7 +372,7 @@ def resolve_image_id(form, deploy=None):
             return None, (f"未配置 {arch} 的 Oracle Linux 镜像"
                           f"（环境变量 {env} 或 region_plans.json）")
         return image_id, None
-    return os_value, None  # 自定义镜像 OCID
+    return os_value, None
 
 
 def resolve_delay(form):
@@ -471,14 +460,13 @@ def validate_form(form, deploy=None, region=None, profile=None):
         if image_error is not None:
             errors.append(image_error)
     if shape != SHAPE_E2_MICRO:
-        # E2 是固定规格 1 核/1GB，不用选核心/内存；CPU 未选时也先提示
-        # （多数用户选 ARM，一次把缺的都列出来）。
+        # E2 is a fixed 1 OCPU / 1 GB shape, so no OCPU/memory choice; still prompt when the CPU is unselected (most users pick ARM, so list everything missing at once). E2 是固定规格 1 核/1GB，不用选核心/内存；CPU 未选时也先提示（多数用户选 ARM，一次把缺的都列出来）。
         if form.get("ocpus") is None:
             errors.append("未选核心数")
         if form.get("memory_gb") is None:
             errors.append("未选内存")
     if shape == SHAPE_A1_FLEX:
-        # A1 免费额度内单台上限 4 核 / 24GB，超过会产生费用。
+        # A1 free-tier per-instance cap is 4 OCPUs / 24 GB; beyond that it bills. A1 免费额度内单台上限 4 核 / 24GB，超过会产生费用。
         if (form.get("ocpus") or 0) > 4:
             errors.append("A1 免费额度内单台上限 4 核")
         if (form.get("memory_gb") or 0) > 24:
@@ -555,16 +543,13 @@ def build_preset(form, deploy=None):
         "shape": shape,
         "ocpus": ocpus,
         "memory_gb": memory_gb,
-        # E2 默认筛 CPU：只留配置里的型号（cpu_policy.json，默认
-        # 7J13）。target_cpu 非空即开筛，实际列表在抢机时从
-        # 配置读，见 handlers_extra._run_grabber_thread。
+        # E2 filters by CPU by default: keep only the configured models (cpu_policy.json, default 7J13). A non-empty target_cpu enables the filter; the actual list is read from the config at grab time, see handlers_extra._run_grabber_thread. E2 默认筛 CPU：只留配置里的型号（cpu_policy.json，默认 7J13）。target_cpu 非空即开筛，实际列表在抢机时从配置读，见 handlers_extra._run_grabber_thread。
         "target_cpu": TARGET_CPU if shape == SHAPE_E2_MICRO else None,
         "display_name": generate_display_name(shape, ocpus, memory_gb),
         "image_id": image_id,
         "subnet_id": deploy["subnet_id"],
         "availability_domain": deploy["availability_domain"],
-        # 不用公钥时 ssh_keys_file 为 None，Grabber 不传
-        # --ssh-authorized-keys-file（配合 root 密码登录）。
+        # Without a public key, ssh_keys_file is None and the Grabber does not pass --ssh-authorized-keys-file (root password login is used instead). 不用公钥时 ssh_keys_file 为 None，Grabber 不传 --ssh-authorized-keys-file（配合 root 密码登录）。
         "ssh_keys_file": (None if form.get("ssh_key") == "none"
                           else deploy["ssh_keys_file"]),
         "count": form.get("count") or 1,
@@ -575,8 +560,7 @@ def build_preset(form, deploy=None):
         "root_login": bool(form.get("root_login")),
         "min_delay": min_delay,
         "max_delay": max_delay,
-        # 以下三项供确认页与快捷开机展示用（旧版保存的预设没有它们，
-        # 展示时用 .get 兜底）。
+        # The three items below are for the confirm page and quick-boot display (old saved presets lack them, so display uses .get as a fallback). 以下三项供确认页与快捷开机展示用（旧版保存的预设没有它们，展示时用 .get 兜底）。
         "cpu": form.get("cpu"),
         "os": form.get("os"),
         "note": note,
@@ -615,7 +599,7 @@ def form_from_preset(preset):
                           deploy.get("ol_x86_64")):
             os_value = "centos"
         elif image_id:
-            os_value = image_id  # 自定义镜像 OCID
+            os_value = image_id
     form["os"] = os_value
     if shape != SHAPE_E2_MICRO:
         form["ocpus"] = preset.get("ocpus")
@@ -746,7 +730,7 @@ def _cpu_label(form):
             "intel": "INTEL（→E2.1.Micro）"}.get(cpu, cpu)
 
 
-def _os_label(form):
+def _os_label(form, lang="zh"):
     """系统行的当前值展示文字（未选时返回 None）。"""
     os_value = form.get("os")
     if os_value is None:
@@ -755,56 +739,71 @@ def _os_label(form):
         return "Ubuntu 24.04"
     if os_value == "centos":
         return "CentOS（→Oracle Linux）"
-    return f"自定义镜像 …{os_value[-4:]}"
+    return bot_i18n.t(lang, "boot.summary_os_custom",
+                      tail=os_value[-4:])
 
 
-def _delay_label(form):
+def _delay_label(form, lang="zh"):
     """延迟行的当前值展示文字。"""
     delays = sorted(form.get("delays") or [])
     if not delays:
-        return "未选（默认 25±5 秒）"
+        return bot_i18n.t(lang, "boot.delay_not_selected")
     if len(delays) == 1:
-        return f"固定 {delays[0]} 秒"
-    return f"区间 {delays[0]}–{delays[-1]} 秒随机"
+        return bot_i18n.t(lang, "boot.delay_fixed", seconds=delays[0])
+    return bot_i18n.t(lang, "boot.delay_range", low=delays[0],
+                      high=delays[-1])
 
 
-def fmt_form_text(form):
+def fmt_form_text(form, lang="zh"):
     """表单消息正文：当前各行选择 + 操作提示。"""
-    cpu = _cpu_label(form) or "未选"
-    os_text = _os_label(form) or "未选"
+    cpu = _cpu_label(form) or bot_i18n.t(lang, "boot.not_selected")
+    os_text = _os_label(form, lang=lang) or bot_i18n.t(lang,
+                                                      "boot.not_selected")
     ocpus = form.get("ocpus")
     memory_gb = form.get("memory_gb")
     shape, _ = resolve_shape(form)
     if shape == SHAPE_E2_MICRO:
-        spec = "固定 1 核 / 1GB（E2.1.Micro）"
+        spec = bot_i18n.t(lang, "boot.spec_e2_fixed")
     else:
-        spec = (f"{ocpus if ocpus is not None else '未选'} 核 / "
-                f"{memory_gb if memory_gb is not None else '未选'}GB")
+        spec = bot_i18n.t(
+            lang, "boot.spec_a1",
+            ocpus=ocpus if ocpus is not None
+            else bot_i18n.t(lang, "boot.not_selected"),
+            memory=memory_gb if memory_gb is not None
+            else bot_i18n.t(lang, "boot.not_selected"))
     disk = form.get("disk_gb")
-    disk_text = "默认（47GB）" if disk is None else f"{disk}GB"
+    disk_text = (bot_i18n.t(lang, "boot.default_disk") if disk is None
+                 else f"{disk}GB")
     count = form.get("count")
-    count_text = "未选" if count is None else f"{count} 台"
+    count_text = (bot_i18n.t(lang, "boot.not_selected") if count is None
+                  else f"{count} 台" if lang == "zh" else f"{count}")
     script = form.get("script")
-    script_text = ("无" if script is None
-                   else f"已上传（{len(script.get('content') or '')} 字符）")
+    script_text = (bot_i18n.t(lang, "boot.script_none") if script is None
+                   else bot_i18n.t(lang, "boot.script_uploaded",
+                                   chars=len(script.get("content") or "")))
     lines = [
-        "🚀 开机配置（按钮矩阵）：",
+        bot_i18n.t(lang, "boot.form_title"),
         "",
-        f"CPU：{cpu}",
-        f"系统：{os_text}",
-        f"规格：{spec}",
-        f"硬盘：{disk_text}",
-        f"数量：{count_text}",
-        f"延迟：{_delay_label(form)}",
-        f"公钥：{'使用机器人公钥' if form.get('ssh_key') == 'use' else '不用公钥'}",
-        f"root登录：{'开启（密码随机）' if form.get('root_login') else '不开启'}",
-        f"公网IP：{'有' if form.get('public_ip') else '无'}",
-        f"IPv6：{'有' if form.get('ipv6') else '无'}",
-        f"开机脚本：{script_text}",
+        f"{bot_i18n.t(lang, 'boot.label_cpu')}：{cpu}",
+        f"{bot_i18n.t(lang, 'boot.label_os')}：{os_text}",
+        f"{bot_i18n.t(lang, 'boot.label_spec')}：{spec}",
+        f"{bot_i18n.t(lang, 'boot.label_disk')}：{disk_text}",
+        f"{bot_i18n.t(lang, 'boot.label_count')}：{count_text}",
+        f"{bot_i18n.t(lang, 'boot.label_delay')}："
+        f"{_delay_label(form, lang=lang)}",
+        f"{bot_i18n.t(lang, 'boot.label_ssh_key')}："
+        f"{bot_i18n.t(lang, 'boot.use_bot_key') if form.get('ssh_key') == 'use' else bot_i18n.t(lang, 'boot.no_key')}",
+        f"{bot_i18n.t(lang, 'boot.label_root')}："
+        f"{bot_i18n.t(lang, 'boot.root_on') if form.get('root_login') else bot_i18n.t(lang, 'boot.root_off')}",
+        f"{bot_i18n.t(lang, 'boot.label_pubip')}："
+        f"{bot_i18n.t(lang, 'boot.has') if form.get('public_ip') else bot_i18n.t(lang, 'boot.has_not')}",
+        f"{bot_i18n.t(lang, 'boot.label_ipv6')}："
+        f"{bot_i18n.t(lang, 'boot.has') if form.get('ipv6') else bot_i18n.t(lang, 'boot.has_not')}",
+        f"{bot_i18n.t(lang, 'boot.label_script')}：{script_text}",
         "",
-        "点选项打 ✅ 选中，再点取消；延迟选一个=固定间隔，选两个=区间随机。",
-        "公钥和 root 登录至少选一项（不用公钥时必须开 root 登录）。",
-        "CentOS 已映射为 Oracle Linux（OCI 已无 CentOS 平台镜像）。",
+        bot_i18n.t(lang, "boot.hint_toggle"),
+        bot_i18n.t(lang, "boot.hint_key_root"),
+        bot_i18n.t(lang, "boot.hint_centos"),
     ]
     return "\n".join(lines)
 
@@ -826,7 +825,7 @@ def _is_custom_selected(form, key, presets):
     return value is not None and value not in presets
 
 
-def boot_form_keyboard(form):
+def boot_form_keyboard(form, lang="zh"):
     """按钮矩阵键盘（开机表单布局：每行标签 + 预设 + 自定义）。
 
     callback_data 规范（见 tgbot/keyboards.py 模块 docstring 的 bf: 一节）：
@@ -843,69 +842,84 @@ def boot_form_keyboard(form):
     disk = form.get("disk_gb")
     count = form.get("count")
     delays = form.get("delays") or []
+    custom = bot_i18n.t(lang, "boot.custom")
     rows = [
-        [InlineKeyboardButton("🚀 一键开机（默认 AMD）",
+        [InlineKeyboardButton(bot_i18n.t(lang, "boot.oneclick"),
                               callback_data="bf:oneclick:amd")],
-        [_label("CPU▸"),
+        [_label(bot_i18n.t(lang, "boot.label_cpu") + "▸"),
          _opt("ARM", cpu == "arm", "bf:cpu:arm"),
          _opt("AMD", cpu == "amd", "bf:cpu:amd"),
          _opt("INTEL", cpu == "intel", "bf:cpu:intel"),
-         _opt("自定义", _is_custom_selected(
+         _opt(custom, _is_custom_selected(
              form, "cpu", ["arm", "amd", "intel"]), "bf:cpu:custom")],
-        [_label("系统▸"),
+        [_label(bot_i18n.t(lang, "boot.label_os") + "▸"),
          _opt("Ubuntu", os_value == "ubuntu", "bf:os:ubuntu"),
          _opt("CentOS*", os_value == "centos", "bf:os:centos"),
-         _opt("自定义", _is_custom_selected(
+         _opt(custom, _is_custom_selected(
              form, "os", ["ubuntu", "centos"]), "bf:os:custom")],
-        [_label("核心▸")] + [
+        [_label(bot_i18n.t(lang, "boot.label_ocpus") + "▸")] + [
             _opt(str(n), ocpus == n, f"bf:ocpus:{n}") for n in OCPU_OPTIONS
-        ] + [_opt("自定义", _is_custom_selected(
+        ] + [_opt(custom, _is_custom_selected(
             form, "ocpus", OCPU_OPTIONS), "bf:ocpus:custom")],
-        [_label("内存▸")] + [
+        [_label(bot_i18n.t(lang, "boot.label_memory") + "▸")] + [
             _opt(str(n), memory_gb == n, f"bf:mem:{n}") for n in MEMORY_OPTIONS
-        ] + [_opt("自定义", _is_custom_selected(
+        ] + [_opt(custom, _is_custom_selected(
             form, "memory_gb", MEMORY_OPTIONS), "bf:mem:custom")],
-        [_label("硬盘▸"),
-         _opt("默认", disk is None, "bf:disk:default")] + [
+        [_label(bot_i18n.t(lang, "boot.label_disk") + "▸"),
+         _opt(bot_i18n.t(lang, "boot.default"), disk is None,
+             "bf:disk:default")] + [
             _opt(str(n), disk == n, f"bf:disk:{n}") for n in DISK_OPTIONS
-        ] + [_opt("自定义", _is_custom_selected(
+        ] + [_opt(custom, _is_custom_selected(
             form, "disk_gb", DISK_OPTIONS + [None]), "bf:disk:custom")],
-        [_label("数量▸")] + [
+        [_label(bot_i18n.t(lang, "boot.label_count") + "▸")] + [
             _opt(str(n), count == n, f"bf:count:{n}") for n in COUNT_OPTIONS
-        ] + [_opt("自定义", _is_custom_selected(
+        ] + [_opt(custom, _is_custom_selected(
             form, "count", COUNT_OPTIONS), "bf:count:custom")],
-        [_label("延迟▸")] + [
+        [_label(bot_i18n.t(lang, "boot.label_delay") + "▸")] + [
             _opt(str(n), n in delays, f"bf:delay:{n}")
             for n in DELAY_OPTIONS[:5]
         ],
-        [_label("延迟▸")] + [
+        [_label(bot_i18n.t(lang, "boot.label_delay") + "▸")] + [
             _opt(str(n), n in delays, f"bf:delay:{n}")
             for n in DELAY_OPTIONS[5:]
-        ] + [_opt("自定义", any(d not in DELAY_OPTIONS for d in delays),
+        ] + [_opt(custom, any(d not in DELAY_OPTIONS for d in delays),
                   "bf:delay:custom")],
-        [_label("公钥▸"),
-         _opt("使用机器人公钥", form.get("ssh_key") == "use", "bf:key:use"),
-         _opt("不用公钥", form.get("ssh_key") == "none", "bf:key:none")],
-        [_label("root▸"),
-         _opt("不开启", not form.get("root_login"), "bf:root:off"),
-         _opt("开启(密码随机)", bool(form.get("root_login")), "bf:root:on")],
-        [_label("公网IP▸"),
-         _opt("有", bool(form.get("public_ip")), "bf:pubip:yes"),
-         _opt("无", not form.get("public_ip"), "bf:pubip:no")],
-        [_label("IPv6▸"),
-         _opt("无", not form.get("ipv6"), "bf:ipv6:no"),
-         _opt("有", bool(form.get("ipv6")), "bf:ipv6:yes")],
-        [_label("脚本▸"),
-         _opt("无", form.get("script") is None, "bf:script:none"),
-         _opt("上传", form.get("script") is not None, "bf:script:upload")],
-        [InlineKeyboardButton("✅ 确定开机", callback_data="bf:confirm"),
-         InlineKeyboardButton("💾 保存为快捷开机", callback_data="bf:save")],
-        [InlineKeyboardButton("◀ Oracle 菜单", callback_data="o:menu")],
+        [_label(bot_i18n.t(lang, "boot.label_ssh_key") + "▸"),
+         _opt(bot_i18n.t(lang, "boot.use_bot_key"),
+             form.get("ssh_key") == "use", "bf:key:use"),
+         _opt(bot_i18n.t(lang, "boot.no_key"),
+             form.get("ssh_key") == "none", "bf:key:none")],
+        [_label(bot_i18n.t(lang, "boot.label_root") + "▸"),
+         _opt(bot_i18n.t(lang, "boot.root_off"), not form.get("root_login"),
+             "bf:root:off"),
+         _opt(bot_i18n.t(lang, "boot.root_on"), bool(form.get("root_login")),
+             "bf:root:on")],
+        [_label(bot_i18n.t(lang, "boot.label_pubip") + "▸"),
+         _opt(bot_i18n.t(lang, "boot.has"), bool(form.get("public_ip")),
+             "bf:pubip:yes"),
+         _opt(bot_i18n.t(lang, "boot.has_not"), not form.get("public_ip"),
+             "bf:pubip:no")],
+        [_label(bot_i18n.t(lang, "boot.label_ipv6") + "▸"),
+         _opt(bot_i18n.t(lang, "boot.has_not"), not form.get("ipv6"),
+             "bf:ipv6:no"),
+         _opt(bot_i18n.t(lang, "boot.has"), bool(form.get("ipv6")),
+             "bf:ipv6:yes")],
+        [_label(bot_i18n.t(lang, "boot.label_script") + "▸"),
+         _opt(bot_i18n.t(lang, "boot.script_none"),
+             form.get("script") is None, "bf:script:none"),
+         _opt(bot_i18n.t(lang, "boot.upload"),
+             form.get("script") is not None, "bf:script:upload")],
+        [InlineKeyboardButton(bot_i18n.t(lang, "boot.confirm"),
+                              callback_data="bf:confirm"),
+         InlineKeyboardButton(bot_i18n.t(lang, "boot.save_preset"),
+                              callback_data="bf:save")],
+        [InlineKeyboardButton(bot_i18n.t(lang, "common.back_oracle"),
+                              callback_data="o:menu")],
     ]
     return InlineKeyboardMarkup(rows)
 
 
-def fmt_boot_form_summary(preset, ok, reason):
+def fmt_boot_form_summary(preset, ok, reason, lang="zh"):
     """配置摘要确认页（表单确认 / 菜单 17 一键开机共用）。
 
     preset 是 build_preset 的产物或 presets.json 里保存的旧预设
@@ -913,11 +927,12 @@ def fmt_boot_form_summary(preset, ok, reason):
     """
     shape = (preset.get("shape") or "?").replace("VM.Standard.", "")
     count = preset.get("count", 1) or 1
+    spec = bot_i18n.t(lang, "boot.spec_a1", ocpus=preset.get("ocpus"),
+                      memory=preset.get("memory_gb"))
     lines = [
-        "🚀 开机配置确认：",
+        bot_i18n.t(lang, "boot.summary_title"),
         "",
-        f"规格：{shape}（{preset.get('ocpus')} 核 / "
-        f"{preset.get('memory_gb')}GB）",
+        f"{bot_i18n.t(lang, 'boot.label_spec')}：{shape}（{spec}）",
     ]
     os_value = preset.get("os")
     if os_value == "ubuntu":
@@ -925,57 +940,73 @@ def fmt_boot_form_summary(preset, ok, reason):
     elif os_value == "centos":
         os_text = "Oracle Linux（CentOS 映射）"
     elif os_value:
-        os_text = f"自定义镜像 …{str(os_value)[-4:]}"
+        os_text = bot_i18n.t(lang, "boot.summary_os_custom",
+                             tail=str(os_value)[-4:])
     else:
-        os_text = f"镜像 …{(preset.get('image_id') or '')[-4:]}"
-    lines.append(f"系统：{os_text}")
+        os_text = bot_i18n.t(lang, "boot.summary_os_image",
+                             tail=(preset.get("image_id") or "")[-4:])
+    lines.append(f"{bot_i18n.t(lang, 'boot.label_os')}：{os_text}")
     name = preset.get("display_name", "?")
     if count == 1:
-        lines.append(f"实例名：{name}")
+        lines.append(f"{bot_i18n.t(lang, 'boot.summary_name')}：{name}")
     else:
-        lines.append(f"实例名：{name}-1 ～ {name}-{count}（共 {count} 台）")
+        lines.append(bot_i18n.t(lang, "boot.summary_names", name=name,
+                                count=count))
     disk = preset.get("boot_volume_size_gbs")
-    lines.append(f"硬盘：{'默认（47GB）' if disk is None else f'{disk}GB'}")
+    lines.append(f"{bot_i18n.t(lang, 'boot.label_disk')}："
+                 f"{bot_i18n.t(lang, 'boot.default_disk') if disk is None else f'{disk}GB'}")
     min_delay = preset.get("min_delay")
     max_delay = preset.get("max_delay")
     if min_delay and max_delay:
         if min_delay == max_delay:
-            delay_text = f"固定 {min_delay} 秒"
+            delay_text = bot_i18n.t(lang, "boot.delay_fixed",
+                                    seconds=min_delay)
         else:
-            delay_text = f"区间 {min_delay}–{max_delay} 秒随机"
+            delay_text = bot_i18n.t(lang, "boot.delay_range", low=min_delay,
+                                    high=max_delay)
     else:
-        delay_text = "默认 25±5 秒"
-    lines.append(f"延迟：{delay_text}")
-    lines.append("公钥：" + ("使用机器人公钥" if preset.get("ssh_keys_file")
-                             else "不用公钥"))
+        delay_text = bot_i18n.t(lang, "boot.delay_default")
+    lines.append(f"{bot_i18n.t(lang, 'boot.label_delay')}：{delay_text}")
+    lines.append(bot_i18n.t(lang, "boot.label_ssh_key") + "："
+                 + (bot_i18n.t(lang, "boot.use_bot_key")
+                    if preset.get("ssh_keys_file")
+                    else bot_i18n.t(lang, "boot.no_key")))
     if preset.get("root_login"):
-        lines.append("root登录：开启")
-        # 确认页就显示密码（照 R 探长格式）：密码在进确认页时生成，
-        # 存在 pending_boot 里（仅内存），点“开始抢机”后复用同一份。
+        lines.append(bot_i18n.t(lang, "boot.label_root") + "："
+                     + bot_i18n.t(lang, "common.on"))
         password = preset.get("root_password")
         if password:
-            lines.append("root密码：")
+            lines.append(bot_i18n.t(lang, "boot.summary_root_password"))
             lines.append(password)
-            lines.append("注意📢：root密码机器人不会记忆，请注意保存")
+            lines.append(bot_i18n.t(lang,
+                                    "boot.summary_root_password_note"))
     else:
-        lines.append("root登录：不开启")
-    lines.append("公网IP：" + ("有" if preset.get("assign_public_ip", True)
-                               else "无"))
-    lines.append("IPv6：" + ("有" if preset.get("assign_ipv6") else "无"))
+        lines.append(bot_i18n.t(lang, "boot.label_root") + "："
+                     + bot_i18n.t(lang, "common.off"))
+    lines.append(bot_i18n.t(lang, "boot.label_pubip") + "："
+                 + (bot_i18n.t(lang, "boot.has")
+                    if preset.get("assign_public_ip", True)
+                    else bot_i18n.t(lang, "boot.has_not")))
+    lines.append(bot_i18n.t(lang, "boot.label_ipv6") + "："
+                 + (bot_i18n.t(lang, "boot.has")
+                    if preset.get("assign_ipv6")
+                    else bot_i18n.t(lang, "boot.has_not")))
     script = preset.get("startup_script")
-    lines.append("开机脚本：" + (f"已上传（{len(script)} 字符）"
-                                 if script else "无"))
+    lines.append(bot_i18n.t(lang, "boot.label_script") + "："
+                 + (bot_i18n.t(lang, "boot.script_uploaded",
+                               chars=len(script)) if script
+                    else bot_i18n.t(lang, "boot.script_none")))
     if preset.get("shape") == SHAPE_E2_MICRO:
         if preset.get("target_cpu"):
-            lines.append("目标 CPU：只留 " +
-                         "/".join(get_allowed_cpu_models()) +
-                         "，不符就释放继续抢")
+            lines.append(bot_i18n.t(lang, "boot.summary_target_cpu_only",
+                                    models="/".join(get_allowed_cpu_models())))
         else:
-            lines.append("目标 CPU：什么 CPU 都可以，抢到就留")
+            lines.append(bot_i18n.t(lang, "boot.summary_target_cpu_any"))
     if preset.get("note"):
         lines.append(f"⚠️ {preset['note']}")
     lines.append("")
-    lines.append(f"配额预检：{'✅ ' if ok else '❌ '}{reason}")
+    lines.append(bot_i18n.t(lang, "boot.summary_quota_check",
+                            result="✅ " if ok else "❌ ", reason=reason))
     if not ok:
-        lines.append("配额不足，抢机也会停下，请先释放资源或换账号。")
+        lines.append(bot_i18n.t(lang, "boot.summary_quota_short"))
     return "\n".join(lines)

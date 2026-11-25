@@ -137,8 +137,7 @@ class BootFormHandlersTestCase(unittest.IsolatedAsyncioTestCase):
                              return_value=dict(FAKE_DEPLOY))
         self._deploy.start()
         self.addCleanup(self._deploy.stop)
-        # handlers_extra 直接 from-import 了 get_deploy_defaults，要另 patch
-        # 它自己的命名空间（_boot_form_confirm 用的是这一份）。
+        # handlers_extra from-imports get_deploy_defaults directly, so its own namespace must be patched separately (_boot_form_confirm uses that copy). handlers_extra 直接 from-import 了 get_deploy_defaults，要另 patch 它自己的命名空间（_boot_form_confirm 用的是这一份）。
         self._deploy_he = patch("tgbot.handlers_extra.get_deploy_defaults",
                                 return_value=dict(FAKE_DEPLOY))
         self._deploy_he.start()
@@ -189,7 +188,6 @@ class TestBootFormCallback(BootFormHandlersTestCase):
         args, kwargs = query.edit_message_text.await_args
         self.assertIn("ARM", args[0])
         self.assertIn("bf:cpu:arm", callbacks_of(kwargs["reply_markup"]))
-        # 点选切换不发新消息。
         update.effective_message.reply_text.assert_not_awaited()
 
     async def test_toggle_deselect(self):
@@ -282,7 +280,6 @@ class TestBootFormCallback(BootFormHandlersTestCase):
         self.assertEqual(preset["shape"], "VM.Standard.A1.Flex")
         self.assertEqual(preset["image_id"], FAKE_IMAGE_AARCH64)
         mock_pre.assert_called_once()
-        # 预检参数：shape / ocpus / mem / count / disk。
         args = mock_pre.call_args[0]
         self.assertEqual(args[2:], ("VM.Standard.A1.Flex", 1, 6, 1, None))
         text = reply_text_of(update)
@@ -291,7 +288,7 @@ class TestBootFormCallback(BootFormHandlersTestCase):
         self.assertIn("b:go", callbacks_of(reply_markup_of(update)))
 
     async def test_oneclick_amd_goes_to_confirm_page(self):
-        # 一键开机（默认 AMD）：不依赖用户正在填的表单，直接进确认页
+        # One-click boot (AMD by default): does not depend on the form the user is filling; goes straight to the confirmation page. 一键开机（默认 AMD）：不依赖用户正在填的表单，直接进确认页。
         update = make_update(callback_data="bf:oneclick:amd")
         context = make_context()
         context.user_data["boot_form"] = bf.new_form()
@@ -310,11 +307,11 @@ class TestBootFormCallback(BootFormHandlersTestCase):
         self.assertIn("E2.1.Micro", text)
         self.assertIn("✅ 可以创建", text)
         self.assertIn("b:go", callbacks_of(reply_markup_of(update)))
-        # 一键开机不覆盖用户正在填的表单
+        # One-click boot does not overwrite the form the user is filling. 一键开机不覆盖用户正在填的表单。
         self.assertIsNone(context.user_data["boot_form"]["cpu"])
 
     async def test_oneclick_amd_works_without_open_form(self):
-        # 表单已过期（user_data 里没有 boot_form）时一键开机仍能用
+        # One-click boot still works when the form has expired (no boot_form in user_data). 表单已过期（user_data 里没有 boot_form）时一键开机仍能用。
         update = make_update(callback_data="bf:oneclick:amd")
         context = make_context()
         with patch.object(he, "can_launch_batch",
@@ -331,8 +328,7 @@ class TestBootFormCallback(BootFormHandlersTestCase):
                           return_value=(False, "A1 OCPU 不足")):
             await he.boot_form_callback(update, context)
         self.assertIn("❌ A1 OCPU 不足", reply_text_of(update))
-        # 预检失败也存 pending_boot（与旧预设流程一致，Grabber 运行时
-        # 会再检一次；用户点开始抢机后会立即因配额停下）。
+        # A failed pre-check still stores pending_boot (same as the old preset flow; the Grabber re-checks at runtime, and the user is stopped by quota immediately after starting the grab). 预检失败也存 pending_boot（与旧预设流程一致，Grabber 运行时会再检一次；用户点开始抢机后会立即因配额停下）。
         self.assertIn("pending_boot", context.user_data)
 
     async def test_save_incomplete_errors(self):
@@ -380,7 +376,7 @@ class TestBootFormInput(BootFormHandlersTestCase):
         update, context = await self._send_text("boot_disk", "999")
         self.assertIn("❌", reply_text_of(update))
         self.assertIsNone(context.user_data["boot_form"]["disk_gb"])
-        # 失败时不保留 pending_input，用户重新点"自定义"再输入。
+        # On failure, pending_input is not kept; the user taps "自定义" and enters again. 失败时不保留 pending_input，用户重新点“自定义”再输入。
         self.assertNotIn("pending_input", context.user_data)
 
     async def test_custom_delay_appends(self):
@@ -606,7 +602,6 @@ class TestBootPresetLoad(BootFormHandlersTestCase):
         callbacks = callbacks_of(reply_markup_of(update))
         self.assertIn("b:delok:0", callbacks)
         self.assertIn("o:presets", callbacks)
-        # 确认前文件没动。
         with open(presets_file, encoding="utf-8") as fh:
             self.assertEqual(len(json.load(fh)), 1)
 
@@ -658,7 +653,6 @@ class TestBootPresetLoad(BootFormHandlersTestCase):
             saved = json.load(fh)
         self.assertEqual(len(saved), 1)
         self.assertEqual(saved[0]["memory_gb"], 12)
-        # 编辑是改配置不是改名。
         self.assertEqual(saved[0]["display_name"],
                          preset["display_name"])
 
@@ -696,7 +690,7 @@ class TestBootGoWithRoot(BootFormHandlersTestCase):
                 await he.boot_go_callback(update, context)
                 task_id = self.tasks.list_all()[0]["id"]
                 task = await self._wait_task(task_id, "done")
-                # 等保存文件的写盘（状态先置 done、再写文件）。
+                # Wait for the preset file write (the status is set to done first, then the file is written). 等保存文件的写盘（状态先置 done、再写文件）。
                 saved = []
                 for _ in range(50):
                     saved = he.load_presets(presets_file)
@@ -715,16 +709,15 @@ class TestBootGoWithRoot(BootFormHandlersTestCase):
         self.assertIn("抢机已启动", text)
         self.assertIn("root 登录密码", text)
         self.assertIn("只显示这一次", text)
-        # 密码在 Markdown 代码段里（UUID 32 位 hex），且不在任务详情里。
+        # The password is in a Markdown code block (UUID, 32 hex chars) and not in the task detail. 密码在 Markdown 代码段里（UUID 32 位 hex），且不在任务详情里。
         self.assertRegex(text, r"`[0-9a-f]{32}`")
         self.assertNotIn("root 登录密码", task["detail"])
-        # Grabber 收到了带 chpasswd 的 user-data（user_data 是关键字参数，
-        # ssh_keys_file 是第 8 个位置参数）。
+        # The Grabber received user-data with chpasswd (user_data is a keyword argument, ssh_keys_file is the 8th positional argument). Grabber 收到了带 chpasswd 的 user-data（user_data 是关键字参数，ssh_keys_file 是第 8 个位置参数）。
         kwargs = mock_grabber_cls.call_args.kwargs
         self.assertIn("chpasswd", kwargs["user_data"])
         self.assertIn("echo hi", kwargs["user_data"])
         self.assertIsNone(mock_grabber_cls.call_args.args[7])
-        # 保存的预设里没有 user-data / 密码。
+        # No user-data / password in the saved preset. 保存的预设里没有 user-data / 密码。
         self.assertEqual(len(saved), 1)
         self.assertNotIn("user_data", saved[0])
         self.assertNotIn("root_password", saved[0])
@@ -742,7 +735,7 @@ class TestBootGoWithRoot(BootFormHandlersTestCase):
         text = reply_text_of(update)
         escaped = preset["display_name"].replace("_", "\\_")
         self.assertIn(escaped, text)
-        # 任务列表里的名字不转义（纯文本展示）。
+        # Names in the task list are not escaped (plain-text display). 任务列表里的名字不转义（纯文本展示）。
         self.assertIn(preset["display_name"], task["label"])
 
     async def test_boot_go_region_mismatch_blocked(self):
@@ -757,7 +750,7 @@ class TestBootGoWithRoot(BootFormHandlersTestCase):
         self.assertIn("不一致", reply_text_of(update))
 
     async def test_boot_go_uniquifies_taken_display_name(self):
-        # 已有同名实例时启动前加 -2 后缀（日期名同日再开机）
+        # When an instance with the same name already exists, append a -2 suffix before starting (same-date names booted twice in one day). 已有同名实例时启动前加 -2 后缀（日期名同日再开机）。
         preset = bf.build_preset(filled_form(), FAKE_DEPLOY)
         base_name = preset["display_name"]
         with patch.object(he, "list_instances",
@@ -785,7 +778,7 @@ class TestBootGoWithRoot(BootFormHandlersTestCase):
         self.assertIsNone(kwargs["user_data"])
         self.assertEqual(mock_grabber_cls.call_args.args[7],
                          FAKE_DEPLOY["ssh_keys_file"])
-        # count=1 时保持旧版详情格式。
+        # With count=1, keep the old detail format. count=1 时保持旧版详情格式。
         self.assertIn("尝试 3 次", task["detail"])
         self.assertIn("释放 1 台", task["detail"])
         mock_grabber_cls.assert_called_once()
@@ -808,7 +801,7 @@ class TestBootGoWithRoot(BootFormHandlersTestCase):
             releases=0, elapsed_seconds=1.0)
         with patch.object(he, "Grabber", mock_grabber_cls):
             await he.boot_go_callback(update, context)
-        # 启动后立即清除（含带密码的 user-data，不留内存）。
+        # Clear immediately after starting (including the password-bearing user-data; nothing stays in memory). 启动后立即清除（含带密码的 user-data，不留内存）。
         self.assertNotIn("pending_boot", context.user_data)
 
 

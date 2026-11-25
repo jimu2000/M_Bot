@@ -21,7 +21,7 @@ from web.deps import get_current_user
 
 router = APIRouter()
 
-# 两次采样之间的间隔（秒）。
+# Interval (seconds) between the two samples. 两次采样之间的间隔（秒）。
 SAMPLE_INTERVAL = 0.1
 
 
@@ -31,7 +31,7 @@ def _read_cpu_times():
         parts = f.readline().split()
     values = [int(x) for x in parts[1:]]
     total = sum(values)
-    # 空闲 = idle + iowait（第 4、5 列）。
+    # idle = idle + iowait (columns 4 and 5). 空闲 = idle + iowait（第 4、5 列）。
     idle = values[3] + (values[4] if len(values) > 4 else 0)
     return total, idle
 
@@ -48,8 +48,8 @@ def _read_net_bytes():
             if name.strip() == "lo":
                 continue
             fields = rest.split()
-            rx_total += int(fields[0])   # 接收字节
-            tx_total += int(fields[8])   # 发送字节
+            rx_total += int(fields[0])
+            tx_total += int(fields[8])
     return rx_total, tx_total
 
 

@@ -235,7 +235,7 @@ class TestSendBark(unittest.TestCase):
         self.assertEqual(captured["url"], TEST_URL)
         self.assertIn("ciphertext=", captured["data"])
         self.assertIn("iv=", captured["data"])
-        # 密文里不能出现明文标题/正文/Key。
+        # The ciphertext must not contain the plaintext title / body / Key. 密文里不能出现明文标题/正文/Key。
         self.assertNotIn("标题", captured["data"])
         self.assertNotIn("正文", captured["data"])
         self.assertNotIn(TEST_KEY, captured["data"])
@@ -410,7 +410,7 @@ class TestBarkCallback(BarkHandlerTestCase):
         context = make_context()
         await he.bark_callback(update, context)
         self.assertIn("确定生成新的", reply_text_of(update))
-        self.assertEqual(self.cfg["key"], "")  # 只出确认页，不改配置
+        self.assertEqual(self.cfg["key"], "")  # Only shows the confirmation page; the config is unchanged. 只出确认页，不改配置。
         kwargs = update.effective_message.reply_text.await_args_list[-1][1]
         markup = kwargs.get("reply_markup")
         callbacks = [b.callback_data for row in markup.inline_keyboard
@@ -426,7 +426,7 @@ class TestBarkCallback(BarkHandlerTestCase):
         key = self.cfg["key"]
         self.assertEqual(len(key), 32)
         text = reply_text_of(update)
-        self.assertIn(key, text)  # 只显示这一次
+        self.assertIn(key, text)  # Only shown this once. 只显示这一次。
         self.assertIn("扫", text)
         context.bot.send_photo.assert_awaited_once()
         photo_kwargs = context.bot.send_photo.await_args[1]

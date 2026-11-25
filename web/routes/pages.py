@@ -25,7 +25,7 @@ _TEMPLATES_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "templates")
 templates = Jinja2Templates(directory=_TEMPLATES_DIR)
 
-# 模板缺失时的最小占位页面（前端模板到位后不再用到）。
+# A minimal placeholder page when a template is missing (no longer used once the frontend templates are in place). 模板缺失时的最小占位页面（前端模板到位后不再用到）。
 _PLACEHOLDER_HTML = """<!DOCTYPE html>
 <html lang="zh-CN">
 <head><meta charset="utf-8"><title>{title}</title></head>
@@ -192,3 +192,11 @@ def inspect_page(request: Request):
     """巡检计划页（阶段 5 工作包 E）。"""
     redirect = _require_login(request)
     return redirect or _render(request, "inspect.html", "巡检计划")
+
+
+@router.get("/rescue")
+def rescue_page(request: Request):
+    """救机页（v2.01：安全恢复 / 无盘救机 / 孤儿盘 / Netboot 向导 /
+    前置检查 / 控制台连接）。"""
+    redirect = _require_login(request)
+    return redirect or _render(request, "rescue.html", "救机")

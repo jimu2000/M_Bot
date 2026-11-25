@@ -96,7 +96,7 @@ class CfConfigFileTestCase(unittest.TestCase):
         self.assertFalse(os.path.exists(self.path))
 
     def test_clear_missing_is_noop(self):
-        cf_config.clear_cf_config(path=self.path)  # 不存在也不报错
+        cf_config.clear_cf_config(path=self.path)  # Missing it is not an error either. 不存在也不报错。
         self.assertFalse(os.path.exists(self.path))
 
 
@@ -207,7 +207,7 @@ class TestOciConfigSource(unittest.TestCase):
         self.assertEqual(source, "oci_config")
 
     def test_cf_account_key_alias(self):
-        # R-Bot 叫法是 cf_account_key，不是 cf_key。
+        # R-Bot calls it cf_account_key, not cf_key. R-Bot 叫法是 cf_account_key，不是 cf_key。
         self._write_oci("[cloudflare]\ncf_account_key = oci-key\n"
                         "cf_email = user@example.com\n")
         with patch.dict(os.environ, {}, clear=True):
@@ -324,7 +324,7 @@ class TestExtractFromHost(unittest.TestCase):
         self.assertEqual(key, FAKE_KEY)
         self.assertEqual(email, FAKE_EMAIL)
         self.assertIsNone(error)
-        # 命令里同时查两个 1.sh 路径。
+        # The command checks both 1.sh paths at once. 命令里同时查两个 1.sh 路径。
         command = runner.call_args[0][1]
         self.assertIn("/usr/local/etc/xray/1.sh", command)
         self.assertIn("/root/1.sh", command)

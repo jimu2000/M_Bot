@@ -27,7 +27,7 @@ from oci.boot_swap import (
 )
 from oci.client import OCIError
 
-# 占位符（测试里不出现真实 OCID）
+# Placeholders (no real OCID in tests). 占位符（测试里不出现真实 OCID）。
 FAKE_COMPARTMENT = "ocid1.tenancy.oc1..xxxxxxxx"
 FAKE_BV_OLD = "ocid1.bootvolume.oc1..aaaa"
 FAKE_BV_NEW = "ocid1.bootvolume.oc1..bbbb"
@@ -153,7 +153,7 @@ class TestGetAttachment(unittest.TestCase):
         att = get_boot_volume_attachment(cli, FAKE_COMPARTMENT, FAKE_INSTANCE)
         self.assertEqual(att["id"], FAKE_ATTACHMENT)
         self.assertEqual(att["boot-volume-id"], FAKE_BV_OLD)
-        # list 必须带 include_id（detach 要用挂载记录自身的 id）。
+        # list must include include_id (detach needs the attachment record's own id). list 必须带 include_id（detach 要用挂载记录自身的 id）。
         list_args = cli.run.call_args_list[1][0][0]
         self.assertEqual(list_args[:3],
                          ["compute", "boot-volume-attachment", "list"])
@@ -231,7 +231,7 @@ class TestAttachDetachCommands(unittest.TestCase):
                          ["compute", "boot-volume-attachment", "detach"])
         self.assertIn(FAKE_ATTACHMENT, args)
         self.assertIn("DETACHED", args)
-        # detach 会弹确认提示，不加 --force 非交互下直接 Abort。
+        # detach prompts for confirmation; without --force it aborts directly in non-interactive mode. detach 会弹确认提示，不加 --force 非交互下直接 Abort。
         self.assertIn("--force", args)
 
     def test_attach_command(self):
@@ -261,8 +261,7 @@ class TestReplaceCommand(unittest.TestCase):
              "update-instance-update-instance-source-via-boot-volume-details"])
         self.assertIn(FAKE_INSTANCE, args)
         self.assertIn(FAKE_BV_NEW, args)
-        # update 命令会弹确认提示，必须加 --force；实例本来就在
-        # RUNNING，加 --wait-for-state 会立即返回，不能加。
+        # The update command prompts for confirmation and must use --force; the instance is already RUNNING, so --wait-for-state would return immediately and must not be added. update 命令会弹确认提示，必须加 --force；实例本来就在 RUNNING，加 --wait-for-state 会立即返回，不能加。
         self.assertIn("--force", args)
         self.assertNotIn("--wait-for-state", args)
 
@@ -319,7 +318,7 @@ class TestSwapHappyPath(unittest.TestCase):
         self.assertTrue(steps[0].startswith("①"))
         self.assertTrue(steps[1].startswith("②"))
         self.assertTrue(steps[2].startswith("③"))
-        # 关键命令都执行了，且顺序正确：建盘 → 原生换盘 → 删旧盘。
+        # All key commands ran, in the right order: build volume -> native swap -> delete old volume. 关键命令都执行了，且顺序正确：建盘 → 原生换盘 → 删旧盘。
         heads = [tuple(c[:3]) for c in cli.calls]
         create_i = heads.index(("bv", "boot-volume", "create"))
         replace_i = heads.index(tuple(_SwapCli.REPLACE_HEAD))
@@ -330,12 +329,12 @@ class TestSwapHappyPath(unittest.TestCase):
         self.assertIn(FAKE_BV_NEW, replace_args)
         self.assertIn(FAKE_INSTANCE, replace_args)
         self.assertIn("--force", replace_args)
-        # 删的是旧盘（不是新盘），且带 --force（delete 会弹确认）。
+        # The deleted volume is the old one (not the new one), with --force (delete prompts for confirmation). 删的是旧盘（不是新盘），且带 --force（delete 会弹确认）。
         delete_args = cli.calls[delete_i]
         self.assertIn(FAKE_BV_OLD, delete_args)
         self.assertNotIn(FAKE_BV_NEW, delete_args)
         self.assertIn("--force", delete_args)
-        # 没有手动停机/拆盘/挂盘/开机命令（OCI 原生换盘内部处理）。
+        # No manual stop / detach / attach / start commands (the native OCI swap handles them internally). 没有手动停机/拆盘/挂盘/开机命令（OCI 原生换盘内部处理）。
         for call in cli.calls:
             self.assertNotEqual(call[:3], ["compute", "instance", "action"])
             self.assertNotEqual(
@@ -344,7 +343,7 @@ class TestSwapHappyPath(unittest.TestCase):
             self.assertNotEqual(
                 call[:3],
                 ["compute", "boot-volume-attachment", "attach"])
-        # 新盘与实例同一 AD，且从备份建。
+        # The new volume is in the same AD as the instance and was built from the backup. 新盘与实例同一 AD，且从备份建。
         create_args = cli.calls[create_i]
         self.assertIn(FAKE_BACKUP, create_args)
         self.assertIn(FAKE_AD, create_args)
@@ -375,7 +374,7 @@ class TestSwapHappyPath(unittest.TestCase):
         self.assertTrue(result["was_running"])
         self.assertEqual(result["new_boot_volume_id"], FAKE_BV_NEW)
         self.assertEqual(len(steps), 3)
-        # 删盘命令确实发了（只是执行失败），且删的是旧盘。
+        # The delete command was really sent (it just failed), and it targeted the old volume. 删盘命令确实发了（只是执行失败），且删的是旧盘。
         deletes = [c for c in cli.calls
                    if c[:3] == ["bv", "boot-volume", "delete"]]
         self.assertEqual(len(deletes), 1)
@@ -397,7 +396,7 @@ class TestSwapReplaceFailure(unittest.TestCase):
         self.assertEqual(err.old_boot_volume_id, FAKE_BV_OLD)
         self.assertEqual(err.new_boot_volume_id, FAKE_BV_NEW)
         self.assertIn("自动回滚", str(err))
-        # 新盘未挂上，已删掉。
+        # The new volume was never attached and has been deleted. 新盘未挂上，已删掉。
         deletes = [c for c in cli.calls
                    if c[:3] == ["bv", "boot-volume", "delete"]]
         self.assertEqual(len(deletes), 1)

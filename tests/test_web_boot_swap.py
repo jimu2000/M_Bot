@@ -27,7 +27,7 @@ from web.routes.instances import clear_instance_list_cache
 from web.routes.volumes import clear_volumes_cache
 from web.tasks import TASKS
 
-# 占位符（测试里不出现真实 OCID / IP）
+# Placeholders (no real OCID / IP in tests). 占位符（测试里不出现真实 OCID / IP）。
 FAKE_BV = "ocid1.bootvolume.oc1..testxxxx"
 FAKE_OTHER_BV = "ocid1.bootvolume.oc1..otherxxxx"
 FAKE_BACKUP = "ocid1.bootvolumebackup.oc1..testxxxx"
@@ -111,7 +111,7 @@ class TestBootBackupsApi(BootSwapWebTestCase):
         body = r.json()
         self.assertTrue(body["ok"])
         self.assertEqual(body["boot_volume_id"], FAKE_BV)
-        # 只返回 AVAILABLE 的那条（CREATING 的过滤掉）。
+        # Only the AVAILABLE entry is returned (the CREATING one is filtered out). 只返回 AVAILABLE 的那条（CREATING 的过滤掉）。
         self.assertEqual(len(body["backups"]), 1)
         self.assertEqual(body["backups"][0]["id"], FAKE_BACKUP)
         self.assertEqual(mock_list.call_args.kwargs.get("boot_volume_id"),
@@ -298,8 +298,8 @@ class TestRestoreBootVolumeApi(BootSwapWebTestCase):
         self.assertEqual(body["task_id"], "b1")
         mock_start.assert_called_once()
         args = mock_start.call_args.args
-        self.assertEqual(args[3], FAKE_INSTANCE)  # instance_id
-        self.assertEqual(args[5], FAKE_BACKUP)  # backup_id
+        self.assertEqual(args[3], FAKE_INSTANCE)
+        self.assertEqual(args[5], FAKE_BACKUP)
 
 
 class TestBootswapTaskRunner(unittest.TestCase):

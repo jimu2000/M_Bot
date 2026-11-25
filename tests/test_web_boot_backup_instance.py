@@ -28,7 +28,7 @@ from web.routes.instances import clear_instance_list_cache
 from web.routes.volumes import clear_volumes_cache
 from web.tasks import TASKS
 
-# 占位符（测试里不出现真实 OCID / IP）
+# Placeholders (no real OCID / IP in tests). 占位符（测试里不出现真实 OCID / IP）。
 FAKE_BV = "ocid1.bootvolume.oc1..testxxxx"
 FAKE_BACKUP = "ocid1.bootvolumebackup.oc1..testxxxx"
 FAKE_INSTANCE = "ocid1.instance.oc1..testxxxx"
@@ -106,7 +106,7 @@ class TestBootBackupsIncludeAll(BootBackupInstanceWebTestCase):
         self.assertEqual(r.status_code, 200)
         body = r.json()
         self.assertTrue(body["ok"])
-        # 全部未删除备份都返回（CREATING 的也含，删除列表用）。
+        # All non-deleted backups are returned (CREATING included; used by the delete list). 全部未删除备份都返回（CREATING 的也含，删除列表用）。
         self.assertEqual(len(body["backups"]), 2)
         states = {b["lifecycle-state"] for b in body["backups"]}
         self.assertEqual(states, {"AVAILABLE", "CREATING"})
@@ -154,7 +154,7 @@ class TestCreateBootBackup(BootBackupInstanceWebTestCase):
         self.assertEqual(body["limit"], 5)
         mock_create.assert_called_once()
         self.assertEqual(mock_create.call_args.args[1], FAKE_BV)
-        # 创建成功后起完成通知轮询。
+        # After a successful creation, start the completion-notice polling. 创建成功后起完成通知轮询。
         mock_watch.assert_called_once()
         self.assertEqual(mock_watch.call_args[0][1], FAKE_BACKUP)
         self.assertEqual(mock_watch.call_args[0][2], "test-inst")

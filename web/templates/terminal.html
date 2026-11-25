@@ -1,7 +1,5 @@
 {% extends "base.html" %}
-{# SSH 终端页（阶段 3，Web SSH）。
-   布局参考 docs/screenshots/terminal.jpg：顶部标签栏 + 终端区 + 右上角
-   SFTP/全屏/新建按钮，终端内右上角显示 CPU/MEM/DISK（/api/system 轮询）。#}
+{# SSH terminal page (Web SSH). Layout follows docs/screenshots/terminal.jpg: top tab bar + terminal area + SFTP / fullscreen / new-connection buttons at the top right; CPU/MEM/DISK show inside the terminal's top-right corner (polled from /api/system). SSH 终端页（Web SSH）。布局参考 docs/screenshots/terminal.jpg：顶部标签栏 + 终端区 + 右上角 SFTP/全屏/新建按钮，终端内右上角显示 CPU/MEM/DISK（/api/system 轮询）。 #}
 {% block title %}SSH 终端 · M_Bot Oracle开源管理面板{% endblock %}
 
 {% block extra_head %}
@@ -11,7 +9,6 @@
 
 {% block content %}
 <div class="terminal-page" id="terminal-page">
-  <!-- 顶部标签栏：每个会话一个标签，+ 按钮新建连接 -->
   <div class="tab-bar">
     <div class="tab-list" id="tab-list"></div>
     <button class="btn-icon" id="btn-new-tab" title="新建连接">＋</button>
@@ -24,15 +21,14 @@
     </div>
   </div>
 
-  <!-- 终端区：每个标签一个 xterm 容器（动态创建） -->
+  <!-- Terminal area: one xterm container per tab (created dynamically). 终端区：每个标签一个 xterm 容器（动态创建）。 -->
   <div class="terminal-container" id="terminal-container">
     <div class="terminal-empty" id="terminal-empty">
       <p>还没有 SSH 会话</p>
       <p class="terminal-empty-hint">点右上角 ＋ 新建连接，或从主机列表点 ▶ 连接</p>
       <button class="term-btn-primary" id="btn-empty-new">新建连接</button>
     </div>
-    <!-- 终端内右上角：CPU/MEM/DISK（调 /api/system 轮询，每 5 秒刷新；
-         注意：/api/system 返回的是面板服务器自身的资源，不是远端主机的） -->
+    <!-- Top-right inside the terminal: CPU/MEM/DISK (polls /api/system every 5s; note: /api/system returns the panel server's own resources, not the remote host's). 终端内右上角：CPU/MEM/DISK（调 /api/system 轮询，每 5 秒刷新；注意：/api/system 返回的是面板服务器自身的资源，不是远端主机的）。 -->
     <div class="sys-stats hidden" id="sys-stats" title="面板服务器资源占用">
       <span id="stat-cpu">CPU --</span>
       <span id="stat-mem">MEM --</span>
@@ -40,7 +36,7 @@
     </div>
   </div>
 
-  <!-- 收藏命令面板（阶段 5 工作包 E）：左侧滑出，默认隐藏（.open 时滑入） -->
+  <!-- Favorites panel: slides out from the left, hidden by default (slides in with .open). 收藏命令面板：左侧滑出，默认隐藏（.open 时滑入）。 -->
   <div class="fav-panel" id="fav-panel">
     <div class="sftp-header">
       <span class="sftp-title">收藏命令</span>
@@ -57,7 +53,7 @@
     </div>
   </div>
 
-  <!-- SFTP 文件面板（阶段 3b）：右侧滑出，默认隐藏（.open 时滑入） -->
+  <!-- SFTP file panel: slides out from the right, hidden by default (slides in with .open). SFTP 文件面板：右侧滑出，默认隐藏（.open 时滑入）。 -->
   <div class="sftp-panel" id="sftp-panel">
     <div class="sftp-header">
       <span class="sftp-title">SFTP 文件</span>
@@ -72,7 +68,7 @@
       <input type="file" id="sftp-file-input" multiple hidden>
     </div>
     <div class="sftp-breadcrumb" id="sftp-breadcrumb"></div>
-    <!-- 分块上传进度条（阶段 5 工作包 E）：大文件上传时显示 -->
+    <!-- Chunked upload progress bar: shown while a large file uploads. 分块上传进度条：大文件上传时显示。 -->
     <div class="sftp-upload-progress" id="sftp-upload-progress" hidden>
       <div class="sftp-upload-name" id="sftp-upload-name"></div>
       <div class="sftp-upload-bar"><div class="sftp-upload-fill" id="sftp-upload-fill"></div></div>
@@ -89,7 +85,7 @@
   </div>
 </div>
 
-<!-- SFTP 在线编辑弹窗（阶段 3b）：小文本文件双击打开 -->
+<!-- SFTP inline editor modal: double-click a small text file to open it. SFTP 在线编辑弹窗：小文本文件双击打开。 -->
 <div class="term-modal hidden" id="sftp-editor-modal">
   <div class="term-modal-box term-modal-box-wide">
     <div class="term-modal-title"><span id="sftp-editor-title">编辑文件</span>
@@ -105,7 +101,6 @@
   </div>
 </div>
 
-<!-- 新建连接表单弹窗 -->
 <div class="term-modal hidden" id="connect-modal">
   <div class="term-modal-box">
     <div class="term-modal-title">新建 SSH 连接
@@ -133,7 +128,7 @@
   </div>
 </div>
 
-<!-- 批量命令执行弹窗（阶段 5 工作包 E） -->
+<!-- Batch command execution modal. 批量命令执行弹窗。 -->
 <div class="term-modal hidden" id="batch-modal">
   <div class="term-modal-box term-modal-box-wide">
     <div class="term-modal-title">批量命令执行
@@ -155,7 +150,7 @@
   </div>
 </div>
 
-<!-- 多行粘贴保护确认弹窗 -->
+<!-- Multi-line paste protection confirmation modal. 多行粘贴保护确认弹窗。 -->
 <div class="term-modal hidden" id="paste-modal">
   <div class="term-modal-box term-modal-box-small">
     <div class="term-modal-title">粘贴确认</div>

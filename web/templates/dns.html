@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{# DNS 管理：Cloudflare Zone 与 DNS 记录，数据来自 /api/dns/* #}
+{# DNS management: Cloudflare Zones and DNS records; data comes from /api/dns/*. DNS 管理：Cloudflare Zone 与 DNS 记录，数据来自 /api/dns/* #}
 {% block title %}DNS 管理 · M_Bot Oracle开源管理面板{% endblock %}
 
 {% block content %}
@@ -92,7 +92,6 @@
   <button type="button" class="btn btn-primary" id="btn-add-record-empty">添加记录</button>
 </div>
 
-{# 添加 / 编辑记录弹窗（编辑复用同一表单） #}
 <div class="modal-overlay" id="record-modal" hidden>
   <div class="modal-box">
     <div class="modal-head">

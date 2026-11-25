@@ -42,8 +42,7 @@ from tgbot.notify import (
 from web import config
 
 try:
-    # APScheduler：抢机计划的 cron 调度（requirements.txt 里有显式依赖；
-    # 未安装时计划仍可增删改，但调度器无法启动，validate_cron 会明确报错）。
+    # APScheduler: cron scheduling for grabber plans (an explicit dependency in requirements.txt; when not installed, plans can still be added/edited/removed, but the scheduler cannot start and validate_cron reports the error explicitly). APScheduler：抢机计划的 cron 调度（requirements.txt 里有显式依赖；未安装时计划仍可增删改，但调度器无法启动，validate_cron 会明确报错）。
     from apscheduler.schedulers.background import BackgroundScheduler
     from apscheduler.triggers.cron import CronTrigger
 except ImportError:  # pragma: no cover - 依赖缺失时的降级分支
@@ -51,38 +50,32 @@ except ImportError:  # pragma: no cover - 依赖缺失时的降级分支
     CronTrigger = None
 
 # ================= 抢机计划配置区（改这里） =================
-# 抢机计划触发时 Grabber 需要的完整参数；计划本身只存 cron / shape /
-# ocpus / memory_gb / enabled（见 GrabberPlanRegistry），其余字段
-# （可用域 / 镜像 / 子网 / 实例名 / SSH 公钥文件）优先取计划里的
-# 可选字段，缺了就用下面这些默认值。
-# 部署时用环境变量填真实值（MBOT_PLAN_AD / MBOT_PLAN_IMAGE_ID /
-# MBOT_PLAN_SUBNET_ID / MBOT_PLAN_SSH_KEYS_FILE），不改代码。
+# Full parameters the Grabber needs when a grabber plan fires; the plan itself only stores cron / shape / ocpus / memory_gb / enabled (see GrabberPlanRegistry), and the remaining fields (availability domain / image / subnet / instance name / SSH public key file) prefer the plan's optional fields, falling back to the defaults below. 抢机计划触发时 Grabber 需要的完整参数；计划本身只存 cron / shape / ocpus / memory_gb / enabled（见 GrabberPlanRegistry），其余字段（可用域 / 镜像 / 子网 / 实例名 / SSH 公钥文件）优先取计划里的可选字段，缺了就用下面这些默认值。
+# At deploy time fill the real values via env vars (MBOT_PLAN_AD / MBOT_PLAN_IMAGE_ID / MBOT_PLAN_SUBNET_ID / MBOT_PLAN_SSH_KEYS_FILE); do not edit the code. 部署时用环境变量填真实值（MBOT_PLAN_AD / MBOT_PLAN_IMAGE_ID / MBOT_PLAN_SUBNET_ID / MBOT_PLAN_SSH_KEYS_FILE），不改代码。
 PLAN_DEFAULTS = {
-    # 可用域（如 "xxxx:AP-SINGAPORE-1-AD-1"，OCI 控制台实例详情里看）。
+    # Availability domain (e.g. "xxxx:AP-SINGAPORE-1-AD-1"; see the instance details in the OCI console). 可用域（如 "xxxx:AP-SINGAPORE-1-AD-1"，OCI 控制台实例详情里看）。
     "availability_domain": os.environ.get(
         "MBOT_PLAN_AD", "xxxx:AP-SINGAPORE-1-AD-1"),
-    # 系统镜像 OCID（查法见 web/config.py 的 IMAGE_IDS 注释）。
+    # System image OCID (lookup method in the IMAGE_IDS comment in web/config.py). 系统镜像 OCID（查法见 web/config.py 的 IMAGE_IDS 注释）。
     "image_id": os.environ.get(
         "MBOT_PLAN_IMAGE_ID", "ocid1.image.oc1..xxxxxxxx"),
-    # 子网 OCID（OCI 控制台 VCN 里看）。
+    # Subnet OCID (see VCN in the OCI console). 子网 OCID（OCI 控制台 VCN 里看）。
     "subnet_id": os.environ.get(
         "MBOT_PLAN_SUBNET_ID", "ocid1.subnet.oc1..xxxxxxxx"),
-    # 实例显示名（计划里没填 display_name 时用它 + 计划 id 后缀）。
+    # Instance display name (used with the plan id suffix when the plan has no display_name). 实例显示名（计划里没填 display_name 时用它 + 计划 id 后缀）。
     "display_name": "plan-grab",
-    # SSH 公钥文件路径（实例的 authorized_keys 内容来源）。
+    # SSH public key file path (source of the instance's authorized_keys content). SSH 公钥文件路径（实例的 authorized_keys 内容来源）。
     "ssh_keys_file": os.environ.get(
         "MBOT_PLAN_SSH_KEYS_FILE", "/path/to/keys.pub"),
-    # 目标 CPU（E2 抢机筛 7J13 用；A1 填 None 表示抢到就留）。
+    # Target CPU (E2 grabbing filters for 7J13; None for A1 means keep whatever is grabbed). 目标 CPU（E2 抢机筛 7J13 用；A1 填 None 表示抢到就留）。
     "target_cpu": None,
 }
-# 允许的抢机形状（计划校验用）。
+# Allowed grab shapes (used by plan validation). 允许的抢机形状（计划校验用）。
 PLAN_SHAPES = ("VM.Standard.E2.1.Micro", "VM.Standard.A1.Flex")
-# A1.Flex 免费额度上限（计划校验用：ocpus 1-4，内存 1-24GB）。
+# A1.Flex free-tier cap (used by plan validation: ocpus 1-4, memory 1-24 GB). A1.Flex 免费额度上限（计划校验用：ocpus 1-4，内存 1-24GB）。
 PLAN_MAX_OCPUS = 4
 PLAN_MAX_MEMORY_GB = 24
-# 调度器每隔这么多秒重新从文件同步一次计划（Telegram 机器人与 Web
-# 面板共用 grabber_plans.json，机器人侧改了计划后，面板调度器靠
-# 这次同步在 1 分钟内跟上，不用重启面板）。
+# The scheduler re-syncs plans from the file every this many seconds (the Telegram bot and the web panel share grabber_plans.json; after the bot changes a plan, the panel scheduler picks it up within 1 minute via this sync, no panel restart needed). 调度器每隔这么多秒重新从文件同步一次计划（Telegram 机器人与 Web 面板共用 grabber_plans.json，机器人侧改了计划后，面板调度器靠这次同步在 1 分钟内跟上，不用重启面板）。
 PLAN_SYNC_INTERVAL_SECONDS = 60
 # =====================================================
 
@@ -101,8 +94,7 @@ class TaskRegistry:
     def __init__(self, tasks_file=None):
         self._lock = threading.RLock()
         self._stop_events = {}
-        # tasks_file 为空时每次从 task_store.tasks_path() 读（跟随
-        # web.config.DATA_DIR 的变化，方便测试替换）。
+        # When tasks_file is empty, read from task_store.tasks_path() each time (follows web.config.DATA_DIR changes, so tests can swap it). tasks_file 为空时每次从 task_store.tasks_path() 读（跟随 web.config.DATA_DIR 的变化，方便测试替换）。
         self._tasks_file = tasks_file
 
     @property
@@ -214,7 +206,7 @@ class TaskRegistry:
             task_store.clear_records(self.tasks_file)
 
 
-# 全局任务注册表（任务记录与机器人共用 tasks.json）。
+# Global task registry (task records share tasks.json with the bot). 全局任务注册表（任务记录与机器人共用 tasks.json）。
 TASKS = TaskRegistry()
 
 
@@ -256,14 +248,14 @@ def _notify_grab_success(registry, task_id, cli, params, result, notify):
             root_password=notify.get("root_password"),
             region_code=notify.get("region_code"),
             ssh_key_set=bool(params.get("ssh_keys_file")),
-            cpu_unverified=notify.get("cpu_unverified", False))
+            cpu_unverified=notify.get("cpu_unverified", False),
+            cpu_model=getattr(result, "cpu_model", None))
         if outcome.get("errors"):
             registry.append_log(
                 task_id,
                 "开机成功通知部分失败：" + "; ".join(outcome["errors"]))
         else:
-            # 成功也要留一行记录：推送丢了才有据可查（2026-11-24
-            # 用户实问：网页创建后没收到 Bark，日志里却没有任何记录）。
+            # A success also leaves a record line: if a push is lost, there is still evidence to check. 成功也要留一行记录：推送丢了才有据可查。
             registry.append_log(task_id, fmt_notify_outcome(outcome))
         if shape not in FREE_SHAPES:
             paid = notify_dual(
@@ -302,7 +294,17 @@ def _run_grabber(registry, task_id, cli, compartment_id, params,
     """
     registry.set_status(task_id, "running")
 
-    # 抢机规格写盘（恢复启动时沿用传进来的那份，不重建）。
+    # E2 grabs filter by CPU by default: when the caller leaves target_cpu
+    # empty, fill it with the allowed models from cpu_policy.json (default
+    # 7J13-only), so a panel grab never keeps a wrong-CPU machine.
+    # E2 默认筛 CPU：调用方没填 target_cpu 时用 cpu_policy.json 的允许型号
+    # （默认只留 7J13）补上，面板抢机不再留错 CPU 的机器。
+    if (not params.get("target_cpu")
+            and params.get("shape") == "VM.Standard.E2.1.Micro"):
+        params = dict(params)
+        params["target_cpu"] = get_allowed_cpu_models()
+
+    # Grab spec written to disk (on recovery startup, reuse the spec passed in, do not rebuild it). 抢机规格写盘（恢复启动时沿用传进来的那份，不重建）。
     if resume_spec is not None:
         spec = resume_spec
     else:
@@ -323,12 +325,11 @@ def _run_grabber(registry, task_id, cli, compartment_id, params,
 
     def on_event(_event_type, message):
         nonlocal cpu_unverified
-        if _event_type == "cpu_check_failed":
+        if _event_type in ("cpu_check_failed", "cpu_filter_unavailable"):
             cpu_unverified = True
         registry.append_log(task_id, message)
 
-    # 跨进程取消监听：机器人端点取消时，对方把 cancel_requested 写进
-    # 共享文件，这里轮询到后置 stop_event，抢机循环随即停下。
+    # Cross-process cancel listener: when the bot side cancels, the other side writes cancel_requested into a shared file; polling here sets stop_event and the grab loop stops. 跨进程取消监听：机器人端点取消时，对方把 cancel_requested 写进共享文件，这里轮询到后置 stop_event，抢机循环随即停下。
     task_store.start_cancel_watcher(registry.tasks_file, task_id,
                                     registry.stop_event(task_id))
 
@@ -355,7 +356,7 @@ def _run_grabber(registry, task_id, cli, compartment_id, params,
                 target_cpu=target_cpus,
                 on_event=on_event,
                 stop_event=registry.stop_event(task_id),
-                # 0 表示未填（表单默认值），转 None 后 Grabber 用默认行为。
+                # 0 means unset (the form default); converted to None, the Grabber uses its default behavior. 0 表示未填（表单默认值），转 None 后 Grabber 用默认行为。
                 ocpus=params.get("ocpus") or None,
                 memory_gb=params.get("memory_gb") or None,
                 boot_volume_size_gbs=params.get("boot_volume_size_gbs"),
@@ -367,8 +368,7 @@ def _run_grabber(registry, task_id, cli, compartment_id, params,
             if hook is not None:
                 grabber.cpu_check_hook = hook
             result = grabber.run()
-            # 抢到后立即把成功写进规格：标 done 之前进程死了，
-            # 恢复时按已抢满处理，不会重复再抢一台。
+            # Write the success into the spec immediately after grabbing: if the process dies before marking done, recovery treats it as already fully grabbed and does not grab another one. 抢到后立即把成功写进规格：标 done 之前进程死了，恢复时按已抢满处理，不会重复再抢一台。
             if spec is not None and registry.tasks_file:
                 try:
                     spec["successes"] = [
@@ -391,7 +391,7 @@ def _run_grabber(registry, task_id, cli, compartment_id, params,
         registry.set_status(task_id, "failed")
         registry.append_log(task_id, f"抢机失败：{exc}")
         return
-    # run() 正常返回后也检查一次取消标志（抢到瞬间被取消时不算成功）。
+    # Check the cancel flag once more after run() returns normally (a grab cancelled at the exact moment of success does not count as success). run() 正常返回后也检查一次取消标志（抢到瞬间被取消时不算成功）。
     stop_event = registry.stop_event(task_id)
     if stop_event is not None and stop_event.is_set():
         registry.set_status(task_id, "cancelled")
@@ -560,7 +560,6 @@ def resume_interrupted_grabs(registry=None):
             _finish_resumed_grab(registry, record, spec, successes)
         else:
             relaunch.append((record, spec))
-    # 其余本来源未结束任务标为已中断（要重跑的跳过）。
     task_store.recover_interrupted(
         path, "web", keep_ids=[r["id"] for r, _ in relaunch])
     for record, spec in relaunch:
@@ -569,8 +568,7 @@ def resume_interrupted_grabs(registry=None):
 
 # ---------------- 引导卷恢复（停机换盘，原地恢复） ----------------
 
-# 正在换盘的实例 OCID 集合（同一实例同时只允许一个换盘任务；
-# 与机器人进程的锁各自独立，跨进程同时换同一台需用户自行避免）。
+# Set of instance OCIDs currently being disk-swapped (only one swap task per instance at a time; the lock is independent from the bot process's lock, so swapping the same machine from both processes at once is the user's responsibility to avoid). 正在换盘的实例 OCID 集合（同一实例同时只允许一个换盘任务；与机器人进程的锁各自独立，跨进程同时换同一台需用户自行避免）。
 _BOOTSWAP_RUNNING = set()
 _BOOTSWAP_LOCK = threading.Lock()
 
@@ -757,7 +755,7 @@ class GrabberPlanRegistry:
                 f"memory_gb 必须在 1-{PLAN_MAX_MEMORY_GB} 之间，"
                 f"收到 {memory_gb}")
         plans = self._load()
-        # id 按已有计划的最大数字后缀 +1（删过计划也不会重用 id）。
+        # id = the largest numeric suffix among existing plans + 1 (a deleted plan's id is never reused). id 按已有计划的最大数字后缀 +1（删过计划也不会重用 id）。
         max_num = 0
         for plan in plans:
             digits = "".join(ch for ch in str(plan.get("id", ""))
@@ -806,7 +804,7 @@ class GrabberPlanRegistry:
         self._save([])
 
 
-# 全局抢机计划注册表（单进程内共享；多进程靠文件同步）。
+# Global grabber-plan registry (shared within one process; multi-process sync goes through the file). 全局抢机计划注册表（单进程内共享；多进程靠文件同步）。
 PLANS = GrabberPlanRegistry()
 
 
@@ -814,9 +812,9 @@ PLANS = GrabberPlanRegistry()
 
 _scheduler = None
 _scheduler_lock = threading.Lock()
-# 计划 job 的 id 前缀（同步时只动带此前缀的 job，不动 plans-refresh）。
+# Prefix for plan job ids (sync only touches jobs with this prefix, never plans-refresh). 计划 job 的 id 前缀（同步时只动带此前缀的 job，不动 plans-refresh）。
 _PLAN_JOB_PREFIX = "plan-"
-# 定时同步 job 的 id（每分钟从文件重读计划，同步 job 列表）。
+# Id of the periodic sync job (re-reads plans from the file every minute and syncs the job list). 定时同步 job 的 id（每分钟从文件重读计划，同步 job 列表）。
 _PLANS_REFRESH_JOB_ID = "plans-refresh"
 
 
@@ -871,7 +869,7 @@ def _run_plan_job(plan_id):
         cfg = config.get_profile_config(profile)
         cli = OCIClient(profile=profile, region=cfg["region"])
         params = _plan_grab_params(plan)
-        # detail 前缀带计划 id，供上面的去重判断识别同一计划的在跑任务。
+        # The detail prefix carries the plan id, so the dedup check above can recognize a running task of the same plan. detail 前缀带计划 id，供上面的去重判断识别同一计划的在跑任务。
         start_grab_task(TASKS, cli, cfg["compartment_id"], params,
                         detail_prefix=marker)
     except Exception as exc:  # noqa: BLE001 - 调度器线程里异常不能外泄
@@ -895,7 +893,7 @@ def _sync_plan_jobs_locked():
         try:
             trigger = CronTrigger.from_crontab(plan["cron"])
         except (ValueError, TypeError, KeyError):
-            # 计划文件被手工改坏时跳过该计划，不让调度器崩掉。
+            # When the plan file is hand-edited into a broken state, skip that plan instead of crashing the scheduler. 计划文件被手工改坏时跳过该计划，不让调度器崩掉。
             print(f"抢机计划 {plan.get('id')} 的 cron 无效，已跳过："
                   f"{plan.get('cron')!r}")
             continue

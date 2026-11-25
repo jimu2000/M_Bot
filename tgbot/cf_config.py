@@ -49,19 +49,19 @@ except ImportError:  # pragma: no cover - clouds 模块缺失时降级
 
 
 # ================= 配置区（改这里） =================
-# 凭据配置文件：机器人/面板手动添加或提取后保存（0600 权限）。
+# Credential config file: saved after manual add or extraction by the bot/panel (mode 0600). 凭据配置文件：机器人/面板手动添加或提取后保存（0600 权限）。
 CF_CONFIG_FILE = os.path.join(bot_config.DATA_DIR, "cloudflare.json")
-# 提取时在目标服务器上找的证书脚本路径（按顺序，取第一个有凭据的）。
+# Cert script paths searched on the target server during extraction (in order; the first one with credentials wins). 提取时在目标服务器上找的证书脚本路径（按顺序，取第一个有凭据的）。
 SCRIPT_PATHS = ("/usr/local/etc/xray/1.sh", "/root/1.sh")
-# 环境变量名（与 clouds/cloudflare.py 一致）。
+# Environment variable names (same as clouds/cloudflare.py). 环境变量名（与 clouds/cloudflare.py 一致）。
 ENV_API_TOKEN = "CF_API_TOKEN"
 ENV_API_KEY = "CF_API_KEY"
 ENV_EMAIL = "CF_EMAIL"
-# OCI 配置文件里的 CF 凭据段名（v1.30.0；段名大小写不敏感）。
+# CF credential section name in the OCI config file (section names are case-insensitive). OCI 配置文件里的 CF 凭据段名（段名大小写不敏感）。
 CF_OCI_SECTION = "cloudflare"
 # =====================================================
 
-# 1.sh 里的凭据行：export CF_Key="..." / CF_Email='...' / 不带 export 也行。
+# Credential lines in 1.sh: export CF_Key="..." / CF_Email='...' / without export also works. 1.sh 里的凭据行：export CF_Key="..." / CF_Email='...' / 不带 export 也行。
 _CRED_LINE_RE = re.compile(
     r"^\s*(?:export\s+)?(CF_Key|CF_Email)\s*=\s*[\"']?([^\"'\s]+)[\"']?\s*$",
     re.MULTILINE)

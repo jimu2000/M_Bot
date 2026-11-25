@@ -1,56 +1,50 @@
 {% extends "base.html" %}
-{# 实例管理：M_Bot 风格卡片布局（手机端优先），每台实例一张卡片 #}
+{# Instance management: M_Bot-style card layout (mobile first), one card per instance. 实例管理：M_Bot 风格卡片布局（手机端优先），每台实例一张卡片。 #}
 {% block title %}实例管理 · M_Bot Oracle开源管理面板{% endblock %}
 
 {% block content %}
 <div class="page-head">
-  <h1>实例管理</h1>
-  <label for="profile-select" style="color: var(--text-muted);">Profile</label>
-  {# Profile 下拉：由 instances.js 从 GET /api/profiles 动态填充
-     （显示"名字 · 区域中文名"）；选择存 localStorage，切换时先清空
-     卡片列表再加载，避免一帧旧数据闪过 #}
+  <h1 data-i18n="instances.title">实例管理</h1>
+  <label for="profile-select" style="color: var(--text-muted);" data-i18n="instances.profile">Profile</label>
+  {# Profile dropdown: filled dynamically by instances.js from GET /api/profiles (shows "name · region display name"); the choice is stored in localStorage, and switching clears the card list before loading, so no frame of stale data flashes by. Profile 下拉：由 instances.js 从 GET /api/profiles 动态填充（显示“名字 · 区域中文名”）；选择存 localStorage，切换时先清空卡片列表再加载，避免一帧旧数据闪过。 #}
   <select id="profile-select" style="width: auto;" aria-label="切换账号"></select>
-  {# 二级区域下拉：多区订阅的账号才显示（单区账号隐藏），由 instances.js
-     按所选账号的订阅区域填充；切换后按新区域重新加载列表 #}
+  {# Second-level region dropdown: only shown for multi-region accounts (hidden for single-region accounts); instances.js fills it from the selected account's subscribed regions, and switching reloads the list for the new region. 二级区域下拉：多区订阅的账号才显示（单区账号隐藏），由 instances.js 按所选账号的订阅区域填充；切换后按新区域重新加载列表。 #}
   <span id="region-wrap" hidden>
-    <label for="region-select" style="color: var(--text-muted);">区域</label>
+    <label for="region-select" style="color: var(--text-muted);" data-i18n="instances.region">区域</label>
     <select id="region-select" style="width: auto;" aria-label="切换区域"></select>
   </span>
   <div class="spacer"></div>
-  <button type="button" class="btn" id="btn-refresh-instances">↻ 刷新</button>
-  <a class="btn btn-primary" href="/create">＋ 创建实例</a>
+  <button type="button" class="btn" id="btn-refresh-instances" data-i18n="instances.refresh">↻ 刷新</button>
+  <a class="btn btn-primary" href="/create" data-i18n="instances.create">＋ 创建实例</a>
 </div>
 
-{# 批量操作栏：勾选卡片后可用 #}
 <div class="card" id="batch-bar">
   <label class="batch-select-all">
-    <input type="checkbox" id="select-all" aria-label="全选"> 全选
+    <input type="checkbox" id="select-all" aria-label="全选"> <span data-i18n="instances.select_all">全选</span>
   </label>
   <span id="batch-count" style="color: var(--text-muted);">已选 0 台</span>
   <div class="spacer"></div>
-  <button type="button" class="btn btn-sm" data-batch="start" disabled>▶️ 批量开机</button>
-  <button type="button" class="btn btn-sm" data-batch="stop" disabled>⏹️ 批量关机</button>
-  <button type="button" class="btn btn-sm" data-batch="restart" disabled>🔄 批量重启</button>
-  <button type="button" class="btn btn-sm btn-danger" data-batch="terminate" disabled>🗑️ 批量删除</button>
+  <button type="button" class="btn btn-sm" data-batch="start" disabled data-i18n="instances.batch_start">▶️ 批量开机</button>
+  <button type="button" class="btn btn-sm" data-batch="stop" disabled data-i18n="instances.batch_stop">⏹️ 批量关机</button>
+  <button type="button" class="btn btn-sm" data-batch="restart" disabled data-i18n="instances.batch_restart">🔄 批量重启</button>
+  <button type="button" class="btn btn-sm btn-danger" data-batch="terminate" disabled data-i18n="instances.batch_terminate">🗑️ 批量删除</button>
 </div>
 
-{# 实例卡片网格：由 instances.js 渲染（加载中占位由 JS 填） #}
 <div class="instance-grid" id="instance-grid">
   <p class="instance-loading">加载中…</p>
 </div>
 
 <div class="empty-state" id="instance-empty" hidden>
   <div class="big">☁️</div>
-  <p>该 Profile 下没有实例</p>
-  <a class="btn btn-primary" href="/create">创建实例</a>
+  <p data-i18n="instances.empty">该 Profile 下没有实例</p>
+  <a class="btn btn-primary" href="/create" data-i18n="instances.create">创建实例</a>
 </div>
 
-{# 终止实例二次确认弹窗（删除 / 删除（保留启动盘）共用，
-   标题与警告文案由 JS 按模式切换） #}
+{# Terminate-instance confirmation modal (shared by delete / delete-keeping-boot-volume; the title and warning text switch by mode in JS). 终止实例二次确认弹窗（删除 / 删除（保留启动盘）共用，标题与警告文案由 JS 按模式切换）。 #}
 <div class="modal-overlay" id="terminate-modal" hidden>
   <div class="modal-box">
     <div class="modal-head">
-      <span id="terminate-title">终止实例</span>
+      <span id="terminate-title" data-i18n="instances.terminate">终止实例</span>
       <button type="button" class="modal-close" data-close-modal="terminate-modal" aria-label="关闭">×</button>
     </div>
     <div class="modal-body">
@@ -58,17 +52,16 @@
       <p class="danger-text" id="terminate-warning">此操作不可撤销，将永久删除引导卷，实例上的数据会全部丢失。</p>
     </div>
     <div class="modal-foot">
-      <button type="button" class="btn" data-close-modal="terminate-modal">取消</button>
-      <button type="button" class="btn btn-danger" id="btn-confirm-terminate">确认终止</button>
+      <button type="button" class="btn" data-close-modal="terminate-modal" data-i18n="common.cancel">取消</button>
+      <button type="button" class="btn btn-danger" id="btn-confirm-terminate" data-i18n="instances.confirm_terminate">确认终止</button>
     </div>
   </div>
 </div>
 
-{# 批量删除二次确认弹窗 #}
 <div class="modal-overlay" id="batch-terminate-modal" hidden>
   <div class="modal-box">
     <div class="modal-head">
-      <span>批量删除实例</span>
+      <span data-i18n="instances.batch_terminate_title">批量删除实例</span>
       <button type="button" class="modal-close" data-close-modal="batch-terminate-modal" aria-label="关闭">×</button>
     </div>
     <div class="modal-body">
@@ -83,11 +76,10 @@
   </div>
 </div>
 
-{# 改名弹窗 #}
 <div class="modal-overlay" id="rename-modal" hidden>
   <div class="modal-box">
     <div class="modal-head">
-      <span>更改实例名</span>
+      <span data-i18n="instances.rename">更改实例名</span>
       <button type="button" class="modal-close" data-close-modal="rename-modal" aria-label="关闭">×</button>
     </div>
     <form id="rename-form">
@@ -106,11 +98,11 @@
   </div>
 </div>
 
-{# 重装系统弹窗（需输入实例名确认） #}
+{# Reinstall OS modal (requires typing the instance name to confirm). 重装系统弹窗（需输入实例名确认）。 #}
 <div class="modal-overlay" id="reinstall-modal" hidden>
   <div class="modal-box">
     <div class="modal-head">
-      <span>重装系统</span>
+      <span data-i18n="instances.reinstall">重装系统</span>
       <button type="button" class="modal-close" data-close-modal="reinstall-modal" aria-label="关闭">×</button>
     </div>
     <form id="reinstall-form">
@@ -130,11 +122,10 @@
   </div>
 </div>
 
-{# 串行控制台弹窗 #}
 <div class="modal-overlay" id="console-modal" hidden>
   <div class="modal-box">
     <div class="modal-head">
-      <span>串行控制台</span>
+      <span data-i18n="instances.console">串行控制台</span>
       <button type="button" class="modal-close" data-close-modal="console-modal" aria-label="关闭">×</button>
     </div>
     <div class="modal-body">
@@ -155,7 +146,7 @@
 <div class="modal-overlay" id="change-ip-modal" hidden>
   <div class="modal-box">
     <div class="modal-head">
-      <span>换公网 IP</span>
+      <span data-i18n="instances.change_ip">换公网 IP</span>
       <button type="button" class="modal-close" data-close-modal="change-ip-modal" aria-label="关闭">×</button>
     </div>
     <div class="modal-body">
@@ -169,12 +160,11 @@
   </div>
 </div>
 
-{# IP 管理弹窗：集合换 IP / 附加 IPv6 / 删除 IPv6 三个操作，
-   三个按钮复用已有的换 IP 弹窗与 addIpv6/deleteIpv6 流程 #}
+{# IP management modal: change IP / attach IPv6 / delete IPv6 in one place; the three buttons reuse the existing change-IP modal and the addIpv6/deleteIpv6 flows. IP 管理弹窗：集合换 IP / 附加 IPv6 / 删除 IPv6 三个操作，三个按钮复用已有的换 IP 弹窗与 addIpv6/deleteIpv6 流程。 #}
 <div class="modal-overlay" id="ip-modal" hidden>
   <div class="modal-box">
     <div class="modal-head">
-      <span>IP 管理</span>
+      <span data-i18n="instances.ip_manage">IP 管理</span>
       <button type="button" class="modal-close" data-close-modal="ip-modal" aria-label="关闭">×</button>
     </div>
     <div class="modal-body">
@@ -199,13 +189,11 @@
   </div>
 </div>
 
-{# 启动盘弹窗：显示该实例启动盘详情 + 扩容输入框
-   （详情来自 GET /api/instances/{id} 的启动盘字段，扩容复用
-   POST /api/volumes/{id}/resize） #}
+{# Boot volume modal: shows the instance's boot volume details + a resize input (details come from the boot volume fields of GET /api/instances/{id}; resize reuses POST /api/volumes/{id}/resize). 启动盘弹窗：显示该实例启动盘详情 + 扩容输入框（详情来自 GET /api/instances/{id} 的启动盘字段，扩容复用 POST /api/volumes/{id}/resize）。 #}
 <div class="modal-overlay" id="boot-volume-modal" hidden>
   <div class="modal-box">
     <div class="modal-head">
-      <span>启动盘</span>
+      <span data-i18n="instances.boot_volume">启动盘</span>
       <button type="button" class="modal-close" data-close-modal="boot-volume-modal" aria-label="关闭">×</button>
     </div>
     <form id="boot-volume-form">
@@ -236,11 +224,10 @@
   </div>
 </div>
 
-{# 升/降配弹窗 #}
 <div class="modal-overlay" id="resize-modal" hidden>
   <div class="modal-box">
     <div class="modal-head">
-      <span>升 / 降配</span>
+      <span data-i18n="instances.resize">升 / 降配</span>
       <button type="button" class="modal-close" data-close-modal="resize-modal" aria-label="关闭">×</button>
     </div>
     <form id="resize-form">
@@ -264,11 +251,10 @@
   </div>
 </div>
 
-{# 尝试修复结果弹窗 #}
 <div class="modal-overlay" id="repair-modal" hidden>
   <div class="modal-box">
     <div class="modal-head">
-      <span>尝试修复</span>
+      <span data-i18n="instances.repair">尝试修复</span>
       <button type="button" class="modal-close" data-close-modal="repair-modal" aria-label="关闭">×</button>
     </div>
     <div class="modal-body">
@@ -282,11 +268,10 @@
   </div>
 </div>
 
-{# 实例详情弹窗（点实例名打开） #}
 <div class="modal-overlay" id="detail-modal" hidden>
   <div class="modal-box">
     <div class="modal-head">
-      <span>实例详情</span>
+      <span data-i18n="instances.detail">实例详情</span>
       <button type="button" class="modal-close" data-close-modal="detail-modal" aria-label="关闭">×</button>
     </div>
     <div class="modal-body">
@@ -308,6 +293,7 @@
       </table>
     </div>
     <div class="modal-foot">
+      <button type="button" class="btn" id="detail-bind-domain-btn" hidden data-i18n="instances.bind_domain">🌐 绑定域名</button>
       <button type="button" class="btn" id="detail-bootbackup-btn" hidden>💾 引导卷备份</button>
       <button type="button" class="btn" id="detail-bootswap-btn" hidden>💾 引导卷恢复</button>
       <button type="button" class="btn" id="detail-bootbackup-del-btn" hidden>🗑️ 删除历史备份</button>
@@ -318,11 +304,42 @@
   </div>
 </div>
 
-{# 引导卷恢复弹窗：选备份后确认，停机换盘，原地恢复 #}
+{# Bind-domain modal: pick the primary domain + type the subdomain to create an A record pointing at the instance's public IP (Zone list and submit logic live in static/js/bind-domain.js). 绑定域名弹窗：选主域名 + 输二级域名，建 A 记录指向实例公网 IP（Zone 列表与提交逻辑在 static/js/bind-domain.js）。 #}
+<div class="modal-overlay" id="bind-domain-modal" hidden>
+  <div class="modal-box">
+    <div class="modal-head">
+      <span data-i18n="instances.bind_domain_title">绑定域名</span>
+      <button type="button" class="modal-close" data-close-modal="bind-domain-modal" aria-label="关闭">×</button>
+    </div>
+    <form id="bind-domain-form">
+      <div class="modal-body">
+        <p>实例 <b id="bind-domain-instance"></b> · 公网 IP <b id="bind-domain-ip" class="mono"></b></p>
+        <div class="form-group">
+          <label for="bind-domain-zone" data-i18n="instances.bind_domain_zone">主域名</label>
+          <select id="bind-domain-zone" required></select>
+        </div>
+        <div class="form-group">
+          <label for="bind-domain-subdomain" data-i18n="instances.bind_domain_subdomain">二级域名</label>
+          <input type="text" id="bind-domain-subdomain" placeholder="www" required autocomplete="off">
+          <p class="hint" data-i18n="instances.bind_domain_subdomain_hint">如 www、app；@ 表示根域名</p>
+        </div>
+        <p class="danger-text" id="bind-domain-exists" hidden></p>
+        <p id="bind-domain-result" hidden></p>
+      </div>
+      <div class="modal-foot">
+        <button type="button" class="btn" data-close-modal="bind-domain-modal" data-i18n="common.cancel">取消</button>
+        <button type="button" class="btn btn-danger" id="bind-domain-overwrite-btn" hidden data-i18n="instances.bind_domain_overwrite">确认覆盖</button>
+        <button type="submit" class="btn btn-primary" id="bind-domain-submit" data-i18n="instances.bind_domain_submit">确认绑定</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+{# Restore-from-backup modal: pick a backup to confirm, then stop the instance, swap the disk, and restore in place. 引导卷恢复弹窗：选备份后确认，停机换盘，原地恢复。 #}
 <div class="modal-overlay" id="bootswap-modal" hidden>
   <div class="modal-box">
     <div class="modal-head">
-      <span>引导卷恢复</span>
+      <span data-i18n="instances.bootswap">引导卷恢复</span>
       <button type="button" class="modal-close" data-close-modal="bootswap-modal" aria-label="关闭">×</button>
     </div>
     <div class="modal-body">
@@ -337,11 +354,11 @@
   </div>
 </div>
 
-{# 删除历史备份弹窗：列本实例启动盘的备份，多选删除 #}
+{# Delete-history-backups modal: lists this instance's boot volume backups for multi-select delete. 删除历史备份弹窗：列本实例启动盘的备份，多选删除。 #}
 <div class="modal-overlay" id="bootbackup-del-modal" hidden>
   <div class="modal-box">
     <div class="modal-head">
-      <span>删除历史备份</span>
+      <span data-i18n="instances.bootbackup_del">删除历史备份</span>
       <button type="button" class="modal-close" data-close-modal="bootbackup-del-modal" aria-label="关闭">×</button>
     </div>
     <div class="modal-body">
@@ -358,4 +375,5 @@
 
 {% block extra_scripts %}
 <script src="/static/js/instances.js"></script>
+<script src="/static/js/bind-domain.js"></script>
 {% endblock %}

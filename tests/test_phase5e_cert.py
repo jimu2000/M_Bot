@@ -24,7 +24,7 @@ from web.app import create_app
 from web.auth import LOGIN_GUARD, SESSIONS, hash_password
 from web.routes.cert import RENEW_TASKS
 
-# 测试密码：运行时随机生成（不在代码里写任何固定口令）。
+# Test password: generated randomly at runtime (no fixed password is ever written in code). 测试密码：运行时随机生成（不在代码里写任何固定口令）。
 TEST_PASSWORD = secrets.token_urlsafe(16)
 TEST_DOMAIN = "example.com"
 
@@ -78,7 +78,7 @@ class CertTestCase(unittest.TestCase):
         LOGIN_GUARD.reset()
         SESSIONS.reset()
         RENEW_TASKS.reset()
-        # 临时 ACME_HOME：acme.sh 占位可执行文件 + 证书目录。
+        # Temp ACME_HOME: a placeholder acme.sh executable + a cert directory. 临时 ACME_HOME：acme.sh 占位可执行文件 + 证书目录。
         self.acme_home = os.path.join(self._tmp.name, "acme.sh")
         os.makedirs(os.path.join(self.acme_home, TEST_DOMAIN))
         self.acme_sh = os.path.join(self.acme_home, "acme.sh")
@@ -92,7 +92,7 @@ class CertTestCase(unittest.TestCase):
         self._acme_sh_patcher.start()
         self._domain_patcher = patch("web.routes.cert.CERT_DOMAIN", "")
         self._domain_patcher.start()
-        # 多来源回退的目录也指到临时空目录（与本机真实环境隔离）。
+        # The multi-source fallback directories also point at temp empty dirs (isolated from the real machine environment). 多来源回退的目录也指到临时空目录（与本机真实环境隔离）。
         self.certbot_live = os.path.join(self._tmp.name, "live")
         self.lego_dir = os.path.join(self._tmp.name, "lego")
         self.nginx_dir = os.path.join(self._tmp.name, "nginx")
@@ -179,7 +179,6 @@ class TestCertStatus(CertTestCase):
         r = self.client.get(f"/api/cert/status?domain={TEST_DOMAIN}")
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()["domain"], TEST_DOMAIN)
-        # 不存在的域名 -> none。
         r = self.client.get("/api/cert/status?domain=other.example.com")
         self.assertEqual(r.json()["status"], "none")
 
@@ -188,9 +187,7 @@ class TestCertStatus(CertTestCase):
         self.assertEqual(r.status_code, 400)
 
     def test_ecc_dir_skips_ca_cert(self):
-        # acme.sh 的 ECC 证书目录是 <domain>_ecc，里面 ca.cer 是中间证书
-        # （有效期更长），叶子证书是 <domain>.cer；状态页要显示叶子，
-        # 域名不带 _ecc 后缀；?domain= 也能找到 _ecc 目录里的证书。
+        # An acme.sh ECC cert directory is <domain>_ecc; inside, ca.cer is the intermediate cert (longer-lived) and <domain>.cer is the leaf; the status page must show the leaf, and the domain has no _ecc suffix; ?domain= also finds certs in _ecc directories. acme.sh 的 ECC 证书目录是 <domain>_ecc，里面 ca.cer 是中间证书（有效期更长），叶子证书是 <domain>.cer；状态页要显示叶子，域名不带 _ecc 后缀；?domain= 也能找到 _ecc 目录里的证书。
         ecc_dir = os.path.join(self.acme_home, f"{TEST_DOMAIN}_ecc")
         os.makedirs(ecc_dir, exist_ok=True)
         now = datetime.now(timezone.utc)
@@ -205,7 +202,7 @@ class TestCertStatus(CertTestCase):
         self.assertEqual(body["status"], "valid")
         self.assertEqual(body["source"], "acme.sh")
         self.assertEqual(body["domain"], TEST_DOMAIN)
-        # 剩余约 30 天（叶子），不是 1095 天（中间证书）。
+        # About 30 days left (the leaf), not 1095 days (the intermediate cert). 剩余约 30 天（叶子），不是 1095 天（中间证书）。
         self.assertLess(body["remainingHours"], 24 * 60)
         r = self.client.get("/api/cert/status",
                             params={"domain": TEST_DOMAIN})
@@ -257,7 +254,7 @@ class TestCertRenew(CertTestCase):
         task = self._wait_task(task_id)
         self.assertEqual(task["status"], "done")
         self.assertIn("Renew success", task["output"])
-        # acme.sh 调用参数：--renew -d <域名>（列表参数，不经过 shell）。
+        # acme.sh call arguments: --renew -d <domain> (list arguments, not through a shell). acme.sh 调用参数：--renew -d <域名>（列表参数，不经过 shell）。
         args = mock_run.call_args[0][0]
         self.assertEqual(args[:3], [self.acme_sh, "--renew", "-d"])
         self.assertEqual(args[3], TEST_DOMAIN)
@@ -356,7 +353,7 @@ class TestCertStatusSources(CertTestCase):
         self.assertEqual(data["domain"], TEST_DOMAIN)
 
     def test_nginx_fallback_domain_from_cn(self):
-        # 证书在无规律路径下，域名只能从证书 CN 读。
+        # The cert sits at an irregular path, so the domain can only be read from the cert CN. 证书在无规律路径下，域名只能从证书 CN 读。
         cert_path = os.path.join(self._tmp.name, "random-name.pem")
         _make_self_signed_cert(*self._valid_window(), cert_path)
         self._write_nginx_conf(cert_path)

@@ -45,7 +45,7 @@ class TestServiceStatus(unittest.TestCase):
 
     @patch.object(client_ops, "_run")
     def test_inactive_and_failed(self, mock_run):
-        # is-active 对非 active 服务返回非 0 退出码，这是正常情况。
+        # is-active returns a non-zero exit code for non-active services; that is normal. is-active 对非 active 服务返回非 0 退出码，这是正常情况。
         mock_run.return_value = _completed(3, "inactive\n")
         self.assertEqual(service_status(BOT_SERVICE), "inactive")
         mock_run.return_value = _completed(3, "failed\n")
@@ -130,9 +130,9 @@ class TestUpgradeClient(unittest.TestCase):
     def test_success_flow_order(self, mock_run, mock_restart):
         """成功流程：git 仓库检查 -> git pull -> pip -> 先重启面板再重启机器人。"""
         mock_run.side_effect = [
-            _completed(0, "true\n"),                       # rev-parse
-            _completed(0, "Already up to date.\n"),        # git pull
-            _completed(0, "Successfully installed x\n"),   # pip
+            _completed(0, "true\n"),
+            _completed(0, "Already up to date.\n"),
+            _completed(0, "Successfully installed x\n"),
         ]
         summary = upgrade_client("/opt/rbot-clone")
         self.assertEqual(summary, "Already up to date.")
@@ -143,7 +143,7 @@ class TestUpgradeClient(unittest.TestCase):
         self.assertEqual(commands[2][:3],
                          [sys.executable, "-m", "pip"])
         self.assertIn("/opt/rbot-clone/requirements.txt", commands[2])
-        # 重启顺序：先面板，后机器人。
+        # Restart order: panel first, then the bot. 重启顺序：先面板，后机器人。
         self.assertEqual([c[0][0] for c in mock_restart.call_args_list],
                          [WEB_SERVICE, BOT_SERVICE])
 
