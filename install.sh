@@ -246,6 +246,13 @@ prompt_config() {
     if [ -f "$ENV_FILE" ]; then
         info "检测到已有配置 $ENV_FILE，跳过提问（更新模式）。"
         FRESH_INSTALL=0
+        # 更新模式也认 MBOT_INSTALL_CERT_METHOD（否则默认走 http，
+        # 环境变量传了 cfdns 也不生效）。非法值回落 http，不中断更新。
+        CERT_METHOD="${MBOT_INSTALL_CERT_METHOD:-http}"
+        case "$CERT_METHOD" in
+            http|cfdns) : ;;
+            *) warn "MBOT_INSTALL_CERT_METHOD='$CERT_METHOD' 无效（只能是 http/cfdns），用 http。"; CERT_METHOD="http" ;;
+        esac
         return 0
     fi
     FRESH_INSTALL=1
@@ -413,13 +420,25 @@ write_env_file() {
         2>/tmp/mbot_hash_err)" \
         || { cat /tmp/mbot_hash_err >&2; die "生成密码哈希失败。"; }
     [ -n "$hash" ] || die "生成密码哈希失败（空哈希）。"
+    # compartment：从 OCI 配置的 tenancy 推导（根 compartment 即
+    # tenancy）；读不到时不写这行（绝不再写占位符），面板启动时再
+    # 从 tenancy 推导。
+    local compartment_line=""
+    local tenancy
+    tenancy="$(read_tenancy_from_oci_config 2>/dev/null || true)"
+    if [ -n "$tenancy" ]; then
+        compartment_line="MBOT_COMPARTMENT_DEFAULT=$tenancy"
+        info "从 OCI 配置读到 tenancy，已写入 MBOT_COMPARTMENT_DEFAULT。"
+    else
+        warn "未在 OCI 配置里找到 tenancy，未写 MBOT_COMPARTMENT_DEFAULT（面板会在你放好 OCI 配置后自动推导）。"
+    fi
     cat > "$ENV_FILE" <<EOF
 # M_Bot 运行配置（install.sh 生成，600 权限，不要分享此文件）
 MBOT_TELEGRAM_TOKEN=$TOKEN
 MBOT_ALLOWED_USERS=$USER_ID
 MBOT_WEB_PASSWORD_HASH=$hash
 MBOT_WEB_SECRET=$secret
-MBOT_COMPARTMENT_DEFAULT=ocid1.tenancy.oc1..xxxxxxxx
+$compartment_line
 MBOT_OCI_CLI=$VENV_DIR/bin/oci
 MBOT_TGBOT_DATA_DIR=$INSTALL_DIR/tgbot/data
 MBOT_WEB_DATA_DIR=$INSTALL_DIR/web/data
@@ -488,6 +507,10 @@ WorkingDirectory=${INSTALL_DIR}
 Environment="PATH=${VENV_DIR}/bin:/usr/local/bin:/usr/bin:/bin"
 Environment="SUPPRESS_LABEL_WARNING=True"
 EnvironmentFile=${ENV_FILE}
+# 面板与机器人读写 env 文件都走 web/config.py 的 ENV_FILE（它默认
+# 指向旧部署路径）；安装版 env 在 /root/.mbot.env，必须显式指
+# 过去，否则删账号 env_removed:false、加账号写进 stray 文件。
+Environment="MBOT_WEB_ENV_FILE=${ENV_FILE}"
 ExecStart=${VENV_DIR}/bin/uvicorn web.app:app --host 127.0.0.1 --port ${INTERNAL_PORT}
 Restart=always
 RestartSec=5
@@ -511,6 +534,8 @@ WorkingDirectory=${INSTALL_DIR}
 Environment="PATH=${VENV_DIR}/bin:/usr/local/bin:/usr/bin:/bin"
 Environment="SUPPRESS_LABEL_WARNING=True"
 EnvironmentFile=${ENV_FILE}
+# 与面板单元同理：机器人读写 env 文件也走 web/config.py 的 ENV_FILE。
+Environment="MBOT_WEB_ENV_FILE=${ENV_FILE}"
 ExecStart=${VENV_DIR}/bin/python -m tgbot.bot
 Restart=on-failure
 RestartSec=10
@@ -549,6 +574,36 @@ EOF
 
 # ---------- nginx 反代 ----------
 # 面板只绑 127.0.0.1:9527；nginx 对外反代并加 HTTPS + WebSocket 支持。
+# ---------- 面板 nginx 安全加固（用户常用 nginx.conf 的通用部分） ----------
+# 来源：用户平时用的 Cloudreve 反代配置（example.com）。
+# 只取通用加固项，不取业务专属项：Cloudreve 反代地址、xray 8443
+# 回落、client_max_body_size 0（面板上传走 100m 上限，0 是无限上传）。
+# 修 ARM 漏洞测试 L-1（安全响应头全缺）并挡扫描器爬虫。
+# NGINX_CONF 是 conf.d 下的 vhost 文件，由 nginx.conf 的 http 块
+# include，所以文件顶部的 map 指令在 http 上下文，合法。
+# 单引号定义：内容里的 $ 是 nginx 变量，保持原样写进配置文件。
+NGINX_SECURITY_HEADERS='    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "no-referrer" always;
+    add_header Permissions-Policy "geolocation=(), microphone=(), camera=()" always;'
+NGINX_HTTP_MAPS='    # map 哈希桶：正则较长，默认 64 字节桶会溢出报错。
+    map_hash_bucket_size 128;
+    map_hash_max_size 512;
+
+    # Cloudflare 后的真实 IP（未走 CF 时回落 $remote_addr）。
+    map $http_cf_connecting_ip $clientRealIp {
+        ""      $remote_addr;
+        default $http_cf_connecting_ip;
+    }
+
+    # 恶意爬虫甄别（只拦扫描器；python/libwww/java 等通用库 UA 不拦，
+    # 以免挡住用户用脚本调面板 API）。
+    map $http_user_agent $is_bad_bot {
+        default 0;
+        "~*nmap|sqlmap|nikto|zgrab|masscan|shodan|fofa|censys|nuclei|scanner" 1;
+    }'
+NGINX_BAD_BOT_GUARD='        if ($is_bad_bot) { return 403; }'
 write_nginx_selfsigned() {
     local cert_dir="$SELFSIGN_DIR"
     mkdir -p "$cert_dir"
@@ -562,6 +617,7 @@ write_nginx_selfsigned() {
     fi
     cat > "$NGINX_CONF" <<EOF
 # M_Bot 面板反代（install.sh 生成，自签证书，监听 ${PANEL_PORT}）
+${NGINX_HTTP_MAPS}
 server {
     listen ${PANEL_PORT} ssl;
     listen [::]:${PANEL_PORT} ssl;
@@ -570,16 +626,19 @@ server {
     ssl_certificate ${cert_dir}/fullchain.pem;
     ssl_certificate_key ${cert_dir}/privkey.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
+    server_tokens off;
+${NGINX_SECURITY_HEADERS}
 
     client_max_body_size 100m;
 
     location / {
+${NGINX_BAD_BOT_GUARD}
         proxy_pass http://127.0.0.1:${INTERNAL_PORT};
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "upgrade";
         proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Real-IP \$clientRealIp;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
         proxy_read_timeout 3600s;
@@ -685,6 +744,36 @@ print(email)
     CF_API_KEY="$(printf '%s' "$out" | sed -n '2p')"
     CF_EMAIL="$(printf '%s' "$out" | sed -n '3p')"
     return 0
+}
+
+# 从 OCI 配置文件（~/oci_config，旧版回退 ~/.oci/config）的 [DEFAULT]
+# 段读 tenancy OCID（根 compartment 即 tenancy）。安装时用它填
+# MBOT_COMPARTMENT_DEFAULT，不再写占位符（占位符会让面板实例列表
+# 报 502 "Invalid compartmentId"、创建备份报 404）。
+# 读不到时返回 1（调用方不写这行，面板启动时再从 tenancy 推导）。
+# 注意 configparser 默认把 [DEFAULT] 当默认段，必须换名才能读到。
+read_tenancy_from_oci_config() {
+    local cfg=""
+    for f in "$HOME/oci_config" "$HOME/.oci/config"; do
+        [ -f "$f" ] && cfg="$f" && break
+    done
+    [ -n "$cfg" ] || return 1
+    python3 -c '
+import configparser, sys
+p = configparser.ConfigParser(
+    default_section="__oci_no_defaults__", interpolation=None)
+try:
+    p.read(sys.argv[1], encoding="utf-8")
+except configparser.Error:
+    sys.exit(1)
+sec = next((s for s in p.sections() if s.lower() == "default"), None)
+if not sec:
+    sys.exit(1)
+tenancy = dict(p.items(sec)).get("tenancy", "").strip()
+if not tenancy:
+    sys.exit(1)
+print(tenancy)
+' "$cfg" 2>/dev/null
 }
 
 # 读 Cloudflare 凭据（DNS 自动绑定与 cfdns 共用）：
@@ -931,6 +1020,7 @@ write_nginx_lego_ip() {
         || { warn "lego 证书文件不存在：$crt"; return 1; }
     cat > "$NGINX_CONF" <<EOF
 # M_Bot 面板反代（install.sh 生成，Let's Encrypt IP 证书，${ip}）
+${NGINX_HTTP_MAPS}
 server {
     listen 80;
     listen [::]:80;
@@ -953,16 +1043,19 @@ server {
     ssl_certificate ${crt};
     ssl_certificate_key ${key};
     ssl_protocols TLSv1.2 TLSv1.3;
+    server_tokens off;
+${NGINX_SECURITY_HEADERS}
 
     client_max_body_size 100m;
 
     location / {
+${NGINX_BAD_BOT_GUARD}
         proxy_pass http://127.0.0.1:${INTERNAL_PORT};
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "upgrade";
         proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Real-IP \$clientRealIp;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
         proxy_read_timeout 3600s;
@@ -1008,6 +1101,7 @@ write_nginx_domain_https() {
     fi
     cat > "$NGINX_CONF" <<EOF
 # M_Bot 面板反代（install.sh 生成，Let's Encrypt，域名 ${domain}）
+${NGINX_HTTP_MAPS}
 server {
     listen ${port} ssl;
     listen [::]:${port} ssl;
@@ -1016,16 +1110,19 @@ server {
     ssl_certificate ${crt};
     ssl_certificate_key ${key};
     ssl_protocols TLSv1.2 TLSv1.3;
+    server_tokens off;
+${NGINX_SECURITY_HEADERS}
 
     client_max_body_size 100m;
 
     location / {
+${NGINX_BAD_BOT_GUARD}
         proxy_pass http://127.0.0.1:${INTERNAL_PORT};
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "upgrade";
         proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Real-IP \$clientRealIp;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
         proxy_read_timeout 3600s;
@@ -1105,9 +1202,15 @@ request_domain_cert_cfdns() {
     write_lego_env
     write_lego_deploy_hook
     info "申请 Let's Encrypt 证书（域名 $domain，Cloudflare DNS 验证）…"
-    local args="--dns cloudflare -d $domain --deploy-hook $LEGO_DIR/deploy-hook.sh"
+    # lego 的 DNS-01 传播检查默认走本机系统解析器；OCI 的解析器
+    # （169.254.169.254）对新建记录有 1800 秒负缓存，cfdns 必失败。
+    # 改走公共解析器 1.1.1.1 / 8.8.8.8（2026-11-25 ARM 实测：16 秒签下）。
+    local args="--dns cloudflare --dns.resolvers 1.1.1.1:53,8.8.8.8:53 -d $domain --deploy-hook $LEGO_DIR/deploy-hook.sh"
+    # lego 输出留一份日志（失败时定位用；以前全丢 /dev/null，报错还
+    # 误导说 Token 权限不对，实际常是传播检查超时）。
+    local lego_log="$LEGO_DIR/lego-last.log"
     if ( [ -f "$LEGO_DIR/env" ] && set -a && . "$LEGO_DIR/env" && set +a || true; \
-         "$LEGO_BIN" run --path "$LEGO_DIR" --accept-tos $args >/dev/null 2>&1 ); then
+         "$LEGO_BIN" run --path "$LEGO_DIR" --accept-tos $args >"$lego_log" 2>&1 ); then
         write_renew_script "$args"
         if write_nginx_lego_domain "$domain"; then
             CERT_OK=1
@@ -1116,7 +1219,7 @@ request_domain_cert_cfdns() {
             return 0
         fi
     fi
-    warn "Cloudflare DNS 验证失败（Token 权限不对或域名不在该账号下），回落自签证书。"
+    warn "Cloudflare DNS 验证失败（可能是 DNS 传播未完成、Token 权限不对或域名不在该账号下），详见 $lego_log，回落自签证书。"
     return 1
 }
 
@@ -1276,16 +1379,34 @@ _firewall_firewalld() {
 
 # nftables：找到 filter 表的 input 链，在链首插入放行规则
 # （insert 放最前面，避免被链尾的 drop 挡住；已有的不重复加）。
+# filter 表存在但没有 input 链时：表全是空表（无任何链/规则，如
+# Ubuntu 24.04 的 table ip/ip6 filter {}）就回落到 UFW（规则持久
+# 化）；已有规则的表不动，只警告（可能有用户自定义规则）。
 _firewall_nft() {
     local chain=""
     local table
-    for table in "inet filter" "ip filter"; do
+    for table in "inet filter" "ip filter" "ip6 filter"; do
         if nft list chain $table input >/dev/null 2>&1; then
             chain="$table input"
             break
         fi
     done
-    [ -n "$chain" ] || { warn "nft 有 filter 表但找不到 input 链，请手动放行端口。"; return 0; }
+    if [ -z "$chain" ]; then
+        local has_rules=0
+        for table in "inet filter" "ip filter" "ip6 filter"; do
+            if nft list table $table 2>/dev/null | grep -qE "^[[:space:]]*(chain|set|map|flowtable|meter|quota|limit|counter)"; then
+                has_rules=1
+                break
+            fi
+        done
+        if [ "$has_rules" = "0" ] && command_exists ufw; then
+            info "nft filter 表是空的、没有 input 链，回落到 UFW 放行端口。"
+            _firewall_ufw
+            return 0
+        fi
+        warn "nft 有 filter 表但找不到 input 链，请手动放行端口。"
+        return 0
+    fi
     local port
     for port in $(firewall_ports); do
         if ! nft list chain $chain 2>/dev/null | grep -q "tcp dport $port accept"; then

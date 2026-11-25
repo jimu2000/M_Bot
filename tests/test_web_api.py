@@ -1288,11 +1288,17 @@ class TestRegionDeps(unittest.TestCase):
     @patch("web.deps.OCIClient")
     def test_get_profile_regions_caches(self, mock_cli_cls):
         # 两次调用只查一次 OCI（缓存 1 小时）。
+        # v1.44.0 修 2：web.config.PROFILES 现含 oci_config 里全部有
+        # tenancy 的账号；不 patch 的话结果随本机配置变化。测试只测
+        # 缓存逻辑，账号集固定为 1 个。
+        profiles = {"DEFAULT": {"region": "ap-singapore-1",
+                                "compartment_id": "ocid1.tenancy.oc1..aaa"}}
         mock_cli_cls.return_value.run.return_value = {
             "data": [{"region-name": "ap-singapore-1"},
                      {"region-name": "ap-seoul-1"}]}
-        first = get_profile_regions()
-        second = get_profile_regions()
+        with patch.object(config, "PROFILES", profiles):
+            first = get_profile_regions()
+            second = get_profile_regions()
         self.assertEqual(first,
                          {"DEFAULT": ["ap-singapore-1", "ap-seoul-1"]})
         self.assertEqual(second, first)

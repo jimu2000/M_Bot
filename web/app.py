@@ -87,7 +87,10 @@ def create_app():
             "先运行 python3 -m web.auth 生成哈希，"
             "再设环境变量 MBOT_WEB_PASSWORD_HASH 后启动。")
 
+    # FastAPI 自动文档（/docs、/redoc、/openapi.json）默认未登录就能看，
+    # 会暴露全部接口与参数结构：关掉（ARM 漏洞测试 M-1）。
     app = FastAPI(title="M_Bot Web 面板", version="1.2.0",
+                  docs_url=None, redoc_url=None, openapi_url=None,
                   lifespan=_lifespan)
 
     # 统一错误信封：HTTPException / 参数校验失败也返回
@@ -100,9 +103,21 @@ def create_app():
     @app.exception_handler(RequestValidationError)
     async def validation_exception_handler(request: Request,
                                            exc: RequestValidationError):
+        # 只返回字段级错误：str(exc) 会带服务器文件路径与行号
+        # （如 web/routes/auth.py line 164），不能原样返回给客户端。
+        try:
+            details = "; ".join(
+                f"{'.'.join(str(p) for p in err.get('loc', []))}: "
+                f"{err.get('msg', '')}"
+                for err in exc.errors()
+            )
+        except Exception:
+            details = ""
+        if not details:
+            details = "请求参数错误"
         return JSONResponse(status_code=422,
                             content={"ok": False,
-                                     "error": f"请求参数错误：{exc}"})
+                                     "error": f"请求参数错误：{details}"})
 
     # 静态文件（前端子代理负责；目录不存在时跳过挂载，不报错）。
     static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),

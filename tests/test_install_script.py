@@ -79,6 +79,38 @@ class TestInstallScript(unittest.TestCase):
         self.assertIn('proxy_set_header Upgrade', self.text)
         self.assertIn("nginx -t", self.text)
 
+    def test_nginx_security_hardening(self):
+        # 用户常用 nginx.conf 的通用加固项（Cloudreve 反代配置）：
+        # 安全响应头（修 ARM 漏洞测试 L-1）、扫描器 UA 拦截、CF 真实 IP。
+        # 三个 HTTPS vhost（自签 / lego IP / 域名）共用同一份变量。
+        for header in (
+            "Strict-Transport-Security",
+            "X-Frame-Options",
+            "X-Content-Type-Options",
+            "Referrer-Policy",
+            "Permissions-Policy",
+        ):
+            self.assertIn(header, self.text)
+        self.assertIn("NGINX_SECURITY_HEADERS=", self.text)
+        self.assertIn("server_tokens off", self.text)
+        # map 须配哈希桶参数（正则长，默认 64 字节桶会溢出）。
+        self.assertIn("map_hash_bucket_size 128", self.text)
+        self.assertIn("map_hash_max_size 512", self.text)
+        # CF 真实 IP：未走 CF 时回落 $remote_addr，X-Real-IP 用它。
+        self.assertIn("map $http_cf_connecting_ip $clientRealIp", self.text)
+        self.assertIn("proxy_set_header X-Real-IP \\$clientRealIp;", self.text)
+        # 只拦扫描器 UA；python/libwww/java 等通用库 UA 不拦，以免挡住
+        # 用户用脚本调面板 API（用户原配置里有这一段，M_Bot 刻意不取）。
+        self.assertIn("map $http_user_agent $is_bad_bot", self.text)
+        self.assertIn("nmap|sqlmap|nikto|zgrab|masscan|shodan|fofa", self.text)
+        self.assertIn('if ($is_bad_bot) { return 403; }', self.text)
+        self.assertNotIn('"~*python|libwww|java"', self.text)
+        # 三个 HTTPS vhost 都要引用这三份共用变量。
+        for var in ("NGINX_HTTP_MAPS", "NGINX_SECURITY_HEADERS",
+                    "NGINX_BAD_BOT_GUARD"):
+            self.assertGreaterEqual(self.text.count("${" + var + "}"), 3,
+                                    f"{var} 未被三个 HTTPS vhost 引用")
+
     def test_selfsigned_and_certbot(self):
         self.assertIn("openssl req -x509", self.text)
         # certbot 只发证不改 nginx 配置（certonly --webroot）：--nginx
@@ -129,8 +161,10 @@ class TestInstallScript(unittest.TestCase):
         self.assertNotRegex(self.text, r"ocid1\.[a-z]+\.oc1\.\.[a-z0-9]{10,}")
         ips = re.findall(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", self.text)
         # 169.254.169.254 是云元数据链路本地地址（OCI/AWS/GCP 通用常量），
-        # 不是真实服务器 IP。
-        allowed = {"127.0.0.1", "0.0.0.0", "169.254.169.254"}
+        # 不是真实服务器 IP；1.1.1.1 / 8.8.8.8 是公共 DNS 解析器
+        # （cfdns 传播检查用），也不是真实服务器 IP。
+        allowed = {"127.0.0.1", "0.0.0.0", "169.254.169.254",
+                   "1.1.1.1", "8.8.8.8"}
         self.assertEqual(set(ips) - allowed, set(),
                          f"脚本里出现非回环 IP：{set(ips) - allowed}")
 
@@ -595,6 +629,57 @@ class TestInstallScript(unittest.TestCase):
         self.assertIn("auto-upgrade) cmd_auto_upgrade ;;", self.text)
         self.assertIn("setup-auto-upgrade) setup_auto_upgrade ;;",
                       self.text)
+
+    def test_systemd_unit_sets_mbot_web_env_file(self):
+        # v1.44.0 修 1：web/config.py 的 ENV_FILE 默认 ~/.rbot-clone.env，
+        # 安装版 env 在 /root/.mbot.env；systemd 单元必须显式传
+        # MBOT_WEB_ENV_FILE，否则删账号 env_removed:false、加账号写进
+        # stray 文件。面板与机器人两个单元都要加（bot 也走 web_config）。
+        self.assertGreaterEqual(
+            self.text.count('Environment="MBOT_WEB_ENV_FILE=${ENV_FILE}"'),
+            2, "面板与机器人 systemd 单元都要设 MBOT_WEB_ENV_FILE")
+
+    def test_compartment_derived_from_tenancy(self):
+        # v1.44.0 修 3：安装时从 OCI 配置的 tenancy 推导 compartment，
+        # 不再把占位符写进 env 文件（占位符导致实例列表 502
+        # "Invalid compartmentId"、创建备份 404）。
+        self.assertIn("read_tenancy_from_oci_config", self.text)
+        self.assertNotIn(
+            "MBOT_COMPARTMENT_DEFAULT=ocid1.tenancy.oc1..xxxxxxxx",
+            self.text, "install.sh 不应再把 compartment 占位符写进 env")
+        self.assertIn("MBOT_COMPARTMENT_DEFAULT=$tenancy", self.text)
+
+    def test_cfdns_uses_public_resolvers_and_keeps_log(self):
+        # v1.44.0 修 4：lego 的 DNS-01 传播检查走公共解析器（OCI 解析器
+        # 对新建记录负缓存 1800 秒，cfdns 必失败）；报错不再只怪 Token
+        # 权限；lego 输出留日志，不再全丢 /dev/null。
+        fn = self.text.split("request_domain_cert_cfdns() {")[1].split(
+            "\n}\n")[0]
+        self.assertIn("--dns.resolvers 1.1.1.1:53,8.8.8.8:53", fn)
+        self.assertIn("lego-last.log", fn)
+        self.assertIn("DNS 传播未完成", fn)
+        self.assertIn("详见 $lego_log", fn)
+        self.assertIn('>"$lego_log" 2>&1', fn)
+        self.assertNotIn(">/dev/null 2>&1", fn,
+                         "cfdns 的 lego 输出不应再丢进 /dev/null")
+
+    def test_update_mode_reads_cert_method_env(self):
+        # v1.44.0 修 5：更新模式下 prompt_config 被跳过，CERT_METHOD
+        # 也要从 MBOT_INSTALL_CERT_METHOD 读（否则默认走 http）。
+        # 全新安装与更新模式两处都要有这行。
+        self.assertGreaterEqual(
+            self.text.count(
+                'CERT_METHOD="${MBOT_INSTALL_CERT_METHOD:-http}"'),
+            2, "全新安装与更新模式都要从 MBOT_INSTALL_CERT_METHOD 读")
+
+    def test_nft_empty_table_falls_back_to_ufw(self):
+        # v1.44.0 修 9：Ubuntu 上 nft filter 表是空的、没有 input 链时，
+        # 只警告不加规则也不回落 UFW；空表时回落 UFW（规则持久化），
+        # 已有规则的表不动。
+        fn = self.text.split("_firewall_nft() {")[1].split("\n}\n")[0]
+        self.assertIn("_firewall_ufw", fn)
+        self.assertIn("回落到 UFW", fn)
+        self.assertIn("ip6 filter", fn)
 
 
 if __name__ == "__main__":

@@ -48,6 +48,7 @@
 后 patch。
 """
 
+import html
 import ipaddress
 import json
 import logging
@@ -5321,7 +5322,9 @@ async def batch_action_callback(update, context):
         await _reply(update, context, "选中的实例已过期，请重新打开批量操作。")
         return
     context.user_data["pending_batch_action"] = action
-    names = "\n".join(f"• {inst.get('display-name') or '?'}"
+    # 实例名是用户起的，可能含 <>&：parse_mode="HTML" 时必须转义
+    # （与单个终止确认同理，quote=False 只转义 &<>）。
+    names = "\n".join(f"• {html.escape(inst.get('display-name') or '?', quote=False)}"
                       for inst in instances)
     verb = _BATCH_ACTION_TEXT[action]
     if action == "terminate":

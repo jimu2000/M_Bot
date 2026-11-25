@@ -9,7 +9,15 @@
 
 ## [Unreleased]
 
-## [1.43.0] - 2026-11-25
+## [1.44.0] - 2026-11-25
+- 安装测试挖出的 5 个问题全修：①安装版 systemd 单元加 MBOT_WEB_ENV_FILE（面板与机器人读写 env 走安装版 /root/.mbot.env，不再写进 stray 的 ~/.rbot-clone.env，删账号 env_removed:false 修好）；②③多账号 compartment 缺口与 install.sh:422 占位符：安装时从 OCI 配置的 tenancy 推导 compartment，不再写 ocid1.tenancy.oc1..xxxxxxxx 占位符；面板/机器人侧占位符当未配置、从 tenancy 推导，干净安装+复制 oci_config 后未配 compartment 的账号也能显示；④cfdns 传播检查走公共解析器：lego 加 --dns.resolvers 1.1.1.1:53,8.8.8.8:53（不用本机 OCI 解析器 169.254.169.254 的 1800 秒负缓存），报错文案改准（不再误导说 Token 权限不对），失败时 lego 输出留一份日志；⑤更新模式 CERT_METHOD 也从 MBOT_INSTALL_CERT_METHOD 读，不再默认走 http
+- 面板漏洞测试挖出的 3 项全修：⑥M-1 FastAPI 自动文档未授权暴露：create_app() 里 docs_url/redoc_url/openapi_url 全设 None（/docs、/redoc、/openapi.json 均 404）；⑦L-2 会话 Cookie 缺 Secure：登录会话 cookie 按请求协议决定 Secure（nginx HTTPS 时 Secure，http 直连与测试时不设，否则回环登录收不到 cookie）；⑧L-4 422 校验错误泄露服务器路径：校验错误处理器只返回字段级错误，不含文件路径与行号
+- ⑨Ubuntu nft 空表不回落 UFW：install.sh 防火墙处理检测到空的 filter 表（无 input 链/规则）时回落启用 UFW，已有规则的表只警告；另补 ip6 filter
+- ⑩两处 HTML 终止确认框实例名未转义：单个终止（tgbot/handlers.py）与批量终止（tgbot/handlers_extra.py）的实例名经 html.escape 转义
+- ⑪nginx 安全加固同步进仓库（v1.43.0 已在本地改好）：安全响应头（HSTS/X-Frame-Options 等）、扫描器 UA 拦截、Cloudflare 真实 IP 三组变量进三个 HTTPS vhost 模板
+- ⑫网页版加 GitHub 项目链接（https://github.com/jimu2000/M_Bot）：登录页登录框下方脚注区加“GitHub 项目”文字链接，内页顶栏加 GitHub 图标（Feather 描边，与其他图标同风格），均新标签页打开、低调不抢眼
+
+**验证**：全量测试 2690 个全过（新增 15 个测试方法：安装脚本 5 个、compartment 配置 4 个、面板安全 3 个、HTML 转义 2 个、GitHub 链接 1 个；另有 5 个既有测试因 compartment 改动打 PROFILES 补丁，使其不依赖本机 oci_config）。本版只做本地+staging，未部署到服务器；部署后需真机验证。
 - 安装脚本的 nginx 仓库从 stable 分支换成 mainline 分支：新装机器直接装上 nginx 最新版（如 1.31.10，与现有 4 台一致），不再停在 stable 的 1.30.x；仓库密钥与 signed-by 不变（mainline 与 stable 共用同一把签名密钥），加不上仓库时仍回落发行版版本
 
 **验证**：全量测试 2672 个全过（test_install_script.py 新增 mainline 路径断言）。真机验证：一台测试机已按同一办法从 stable 1.30.8 切到 mainline 1.31.10，nginx -t 通过、面板登录页 200。

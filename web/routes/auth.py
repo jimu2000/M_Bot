@@ -134,17 +134,35 @@ def update_password_hash_in_env_file(new_hash, env_file=None):
     os.chmod(path, 0o600)
 
 
-def _set_session_cookie(response, username, remember=False):
+def _is_https_request(request):
+    """请求是否走 HTTPS：优先 X-Forwarded-Proto（nginx 反代透传），
+    否则看直连 scheme。uvicorn 只绑 127.0.0.1，头只能来自本机 nginx，
+    不可从外网伪造；即使被伪造，也只会让 Secure 更严格（不是漏洞）。"""
+    if request is None:
+        return False
+    forwarded = (request.headers.get("x-forwarded-proto") or ""
+                 ).split(",")[0].strip().lower()
+    if forwarded:
+        return forwarded == "https"
+    return request.url.scheme == "https"
+
+
+def _set_session_cookie(response, username, remember=False, request=None):
     """给响应设 HttpOnly 会话 cookie（密码登录与 Telegram 登录共用）。
 
     remember=True（登录页勾选“记住我”）时服务端会话与 cookie
-    同时延长到 REMEMBER_ME_DAYS 天，否则默认 SESSION_EXPIRE_HOURS。"""
+    同时延长到 REMEMBER_ME_DAYS 天，否则默认 SESSION_EXPIRE_HOURS。
+    Secure 只在 HTTPS 请求时设：生产面板走 nginx HTTPS，cookie 必须
+    Secure（修 L-2）；测试与直连 http 时不设，否则 TestClient 与
+    curl 回环登录收不到 cookie、会话直接断掉。
+    """
     max_age = (int(config.REMEMBER_ME_DAYS * 24 * 3600) if remember
                else int(config.SESSION_EXPIRE_HOURS * 3600))
     token = SESSIONS.create(username, expire_seconds=max_age)
     response.set_cookie(
         config.SESSION_COOKIE, token,
-        httponly=True, samesite="lax", path="/",
+        httponly=True, secure=_is_https_request(request),
+        samesite="lax", path="/",
         max_age=max_age)
     return response
 
@@ -162,7 +180,7 @@ def get_captcha():
 
 
 @router.post("/api/auth/login")
-def login(body: LoginBody):
+def login(body: LoginBody, request: Request):
     """登录：验证用户名密码，成功后设 HttpOnly 会话 cookie。
 
     图形验证码开启时先验验证码（一次性，错了直接 400，不计登录失败）。
@@ -189,7 +207,7 @@ def login(body: LoginBody):
     LOGIN_GUARD.record_success(body.username)
     return _set_session_cookie(
         JSONResponse({"ok": True, "username": body.username}),
-        body.username, remember=body.remember)
+        body.username, remember=body.remember, request=request)
 
 
 def _client_key(request):
@@ -263,7 +281,7 @@ def telegram_send_code(request: Request):
 
 
 @router.post("/api/auth/telegram/verify")
-def telegram_verify(body: TelegramVerifyBody):
+def telegram_verify(body: TelegramVerifyBody, request: Request):
     """验 Telegram 登录验证码：正确则建立登录会话（管理员账号）。
 
     验证码一次性、5 分钟过期；错了直接 401，不计密码登录失败次数。
@@ -273,11 +291,11 @@ def telegram_verify(body: TelegramVerifyBody):
                               status_code=401)
     return _set_session_cookie(
         JSONResponse({"ok": True, "username": config.ADMIN_USERNAME}),
-        config.ADMIN_USERNAME)
+        config.ADMIN_USERNAME, request=request)
 
 
 @router.post("/api/auth/telegram/magic-login")
-def telegram_magic_login(body: TelegramMagicLoginBody):
+def telegram_magic_login(body: TelegramMagicLoginBody, request: Request):
     """一键登录：消费链接里的 token，正确则建立登录会话（管理员账号）。
 
     token 一次性、5 分钟过期；错了或过期直接 401。token 值绝不写日志。
@@ -287,7 +305,7 @@ def telegram_magic_login(body: TelegramMagicLoginBody):
                               status_code=401)
     return _set_session_cookie(
         JSONResponse({"ok": True, "username": config.ADMIN_USERNAME}),
-        config.ADMIN_USERNAME)
+        config.ADMIN_USERNAME, request=request)
 
 
 @router.post("/api/auth/logout")

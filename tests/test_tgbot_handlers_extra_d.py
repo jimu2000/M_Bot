@@ -213,8 +213,12 @@ class TestDispatchD(PackageDTestCase):
 
 class TestObjectStorageHandlers(PackageDTestCase):
     async def test_handle_objectstorage_lists_buckets(self):
+        # 同 test_confirm_createsender：账号集固定，避免随本机 oci_config 变化。
+        profiles = {"DEFAULT": {"region": "ap-singapore-1",
+                                "compartment_id": "ocid1.tenancy.oc1..xxxxxxxx"}}
         with patch.object(he, "list_buckets",
-                          return_value=FAKE_BUCKETS) as mock_list:
+                          return_value=FAKE_BUCKETS) as mock_list, \
+                patch.object(bot_config, "PROFILES", profiles):
             update = make_update()
             context = make_context()
             await he.handle_objectstorage(update, context)
@@ -394,7 +398,13 @@ class TestEmailHandlers(PackageDTestCase):
         update.effective_message.reply_text.assert_not_awaited()
 
     async def test_confirm_createsender(self):
-        with patch.object(he, "create_sender") as mock_create:
+        # v1.44.0 修 2：PROFILES 现含 oci_config 里全部有 tenancy 的
+        # 账号，compartment 从真实 tenancy 推导；不 patch 的话断言
+        # 用的 DEFAULT_COMPARTMENT_ID（占位符）与实际值不一致。
+        profiles = {"DEFAULT": {"region": "ap-singapore-1",
+                                "compartment_id": "ocid1.tenancy.oc1..xxxxxxxx"}}
+        with patch.object(he, "create_sender") as mock_create, \
+                patch.object(bot_config, "PROFILES", profiles):
             update = make_update(callback_data="c:createsender:0")
             context = make_context()
             context.user_data["pending_sender"] = "noreply@example.com"

@@ -49,8 +49,9 @@ DEFAULT_COMPARTMENT_ID = os.environ.get(
 # 重启机器人后新账号就出现在切换菜单里。
 # region 从配置文件里该 profile 的 region 字段读；读不到时用下面的
 # 回退表（旧账号）或 DEFAULT_REGION（新账号）。
-# 未设 MBOT_COMPARTMENT_* 的 profile 不加入 PROFILES（例如只给
-# R-Bot 用的受限 API profile 不会出现在菜单里）。
+# env 没配 MBOT_COMPARTMENT_* 的 profile 也会从 OCI 配置的 tenancy
+# 推导 compartment 后加入（干净安装后复制 oci_config 即可用）；
+# env 值是占位符时当成未配置，同样从 tenancy 推导。
 LEGACY_PROFILE_REGIONS = {
     "DEFAULT": "ap-singapore-1",
     "ACCOUNT2": "us-sanjose-1",
@@ -58,26 +59,65 @@ LEGACY_PROFILE_REGIONS = {
 }
 
 
+# 占位符 compartment（install.sh 旧版写进 env 文件的无效值；当成未配置，
+# 从 OCI 配置的 tenancy 推导）。
+PLACEHOLDER_COMPARTMENT_ID = "ocid1.tenancy.oc1..xxxxxxxx"
+
+
+def _resolve_compartment(profile_name, file_profiles, env_value=""):
+    """解析某 profile 的 compartment OCID。
+
+    优先级：env 里 MBOT_COMPARTMENT_* 的真实值 > 该 profile 在 OCI
+    配置文件里的 tenancy（根 compartment 即 tenancy）> ""（解析不出）。
+    env 值是占位符或空时当成未配置。
+    """
+    if env_value and env_value != PLACEHOLDER_COMPARTMENT_ID:
+        return env_value
+    return (file_profiles.get(profile_name, {}) or {}).get("tenancy", "") or ""
+
+
 def _build_profiles():
     from oci.client import read_oci_config_profiles
     file_profiles = read_oci_config_profiles()
-    profiles = {
-        "DEFAULT": {
-            "region": file_profiles.get("DEFAULT", {}).get("region")
-                      or LEGACY_PROFILE_REGIONS["DEFAULT"],
-            "compartment_id": DEFAULT_COMPARTMENT_ID,
-        },
+    profiles = {}
+    # DEFAULT 一定在：env 优先（占位符无效），否则从配置文件 tenancy
+    # 推导；都推不出来时留占位符（与旧行为一致，调用方会报配置错误）。
+    default_comp = _resolve_compartment(
+        "DEFAULT", file_profiles,
+        os.environ.get("MBOT_COMPARTMENT_DEFAULT", ""))
+    profiles["DEFAULT"] = {
+        "region": file_profiles.get("DEFAULT", {}).get("region")
+                  or LEGACY_PROFILE_REGIONS["DEFAULT"],
+        "compartment_id": default_comp or PLACEHOLDER_COMPARTMENT_ID,
     }
+    # env 显式配了 compartment 的其他账号。
     for key, value in sorted(os.environ.items()):
         if not key.startswith("MBOT_COMPARTMENT_") or not value:
             continue
         name = key[len("MBOT_COMPARTMENT_"):]
         if name == "DEFAULT":
             continue
+        comp = _resolve_compartment(name, file_profiles, value)
+        if not comp:
+            continue
         profiles[name] = {
             "region": file_profiles.get(name, {}).get("region")
                       or LEGACY_PROFILE_REGIONS.get(name, DEFAULT_REGION),
-            "compartment_id": value,
+            "compartment_id": comp,
+        }
+    # 配置文件里有、但 env 没配 compartment 的账号：从 tenancy 推导补上
+    # （干净安装后复制 oci_config，多账号场景直接可用；没 tenancy 的
+    # 段（如 [cloudflare]）解析不出 compartment，跳过）。
+    for name in sorted(file_profiles):
+        if name in profiles:
+            continue
+        comp = _resolve_compartment(name, file_profiles, "")
+        if not comp:
+            continue
+        profiles[name] = {
+            "region": file_profiles.get(name, {}).get("region")
+                      or LEGACY_PROFILE_REGIONS.get(name, DEFAULT_REGION),
+            "compartment_id": comp,
         }
     return profiles
 

@@ -108,6 +108,10 @@ class TestWebPages(unittest.TestCase):
             "默认凭据请查看部署文档",
             "M_Bot Oracle开源管理面板",
             "/static/js/login.js",
+            # v1.44.0 修 12：登录页加 GitHub 项目链接（新标签页打开）
+            "https://github.com/jimu2000/M_Bot",
+            "GitHub 项目",
+            'target="_blank"',
         ])
         # 登录页不继承 base，不应有侧边栏
         self.assertNotIn('class="sidebar"', self.pages["/login"].text)
@@ -130,6 +134,9 @@ class TestWebPages(unittest.TestCase):
                 "/static/js/app.js",
                 "/static/css/base.css",
                 "/static/css/themes.css",
+                # v1.44.0 修 12：内页顶栏加 GitHub 链接（新标签页打开）
+                "https://github.com/jimu2000/M_Bot",
+                'target="_blank"',
             ])
 
     def test_sidebar_highlights_current_page(self):
@@ -327,6 +334,21 @@ class TestRealBackendIntegration(unittest.TestCase):
         self.assertIn('id="host-grid"', resp.text)
         self.assertIn("已保存会话", resp.text)
 
+    def test_github_link_on_login_and_overview(self):
+        # v1.44.0 修 12：登录页与内页都有 GitHub 项目链接，新标签页打开。
+        resp = self.client.get("/login")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("https://github.com/jimu2000/M_Bot", resp.text)
+        self.assertIn("GitHub 项目", resp.text)
+        self.assertIn('target="_blank"', resp.text)
+        resp = self.client.post("/api/auth/login", json={
+            "username": "admin", "password": "test-password-123"})
+        self.assertEqual(resp.status_code, 200)
+        resp = self.client.get("/overview")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("https://github.com/jimu2000/M_Bot", resp.text)
+        self.assertIn('target="_blank"', resp.text)
+
     def test_system_api_nested_shape(self):
         """后端 /api/system 返回嵌套格式（前端 app.js 已兼容该格式）。"""
         self.client.post("/api/auth/login", json={
@@ -345,6 +367,46 @@ class TestRealBackendIntegration(unittest.TestCase):
         resp = self.client.get("/api/tasks")
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json().get("tasks"), [])
+
+    def test_api_docs_disabled(self):
+        # v1.44.0 修 6（M-1）：FastAPI 自动文档未授权暴露，关掉后
+        # /docs、/redoc、/openapi.json 都应 404。
+        for path in ("/docs", "/redoc", "/openapi.json"):
+            resp = self.client.get(path)
+            self.assertEqual(resp.status_code, 404, f"{path} 应 404")
+
+    def test_login_cookie_secure_only_over_https(self):
+        # v1.44.0 修 7（L-2）：会话 cookie 缺 Secure 标志。
+        # Secure 只在 HTTPS 请求时设（nginx 透传 X-Forwarded-Proto）：
+        # 生产面板走 nginx HTTPS，cookie 必须 Secure；http 直连与
+        # 测试客户端不设，否则会话直接断掉。
+        # http：不带 Secure，HttpOnly 还在。
+        resp = self.client.post("/api/auth/login", json={
+            "username": "admin", "password": "test-password-123"})
+        self.assertEqual(resp.status_code, 200)
+        set_cookie = resp.headers.get("set-cookie", "")
+        self.assertIn("HttpOnly", set_cookie)
+        self.assertNotIn("Secure", set_cookie)
+        # https（X-Forwarded-Proto）：带 Secure。
+        resp = self.client.post("/api/auth/login", json={
+            "username": "admin", "password": "test-password-123"},
+            headers={"X-Forwarded-Proto": "https"})
+        self.assertEqual(resp.status_code, 200)
+        set_cookie = resp.headers.get("set-cookie", "")
+        self.assertIn("Secure", set_cookie)
+        self.assertIn("HttpOnly", set_cookie)
+
+    def test_422_error_hides_server_paths(self):
+        # v1.44.0 修 8（L-4）：422 校验错误不能泄露服务器文件路径与行号。
+        # 缺字段调登录接口，应 422，且错误里只有字段级信息。
+        resp = self.client.post("/api/auth/login", json={})
+        self.assertEqual(resp.status_code, 422)
+        body = resp.text
+        self.assertNotIn(".py", body)
+        self.assertNotIn("line ", body)
+        self.assertNotIn("/opt/", body)
+        self.assertNotIn("File ", body)
+        self.assertIn("请求参数错误", body)
 
 
 class TestMobileNav(unittest.TestCase):

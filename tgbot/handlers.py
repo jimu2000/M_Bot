@@ -20,6 +20,7 @@ tgbot.handlers_extra.dispatch_oracle_action / handle_confirm（另一位
   - 本文件不含真实 OCID / Token / IP。
 """
 
+import html
 import logging
 
 from telegram import Update
@@ -435,8 +436,11 @@ async def instance_action_callback(update: Update,
 
     verb = _ACTION_TEXT[action]
     if action == "terminate":
+        # 实例名是用户起的，可能含 <>&：parse_mode="HTML" 时必须转义，
+        # 否则 Telegram 解析失败或被注入标签（quote=False 只转义 &<>，
+        # Telegram HTML 只认这三个实体）。
         text = (
-            f"⚠️ 确认终止实例「{name}」？\n"
+            f"⚠️ 确认终止实例「{html.escape(name, quote=False)}」？\n"
             "\n"
             "<b>终止后将永久删除引导卷，数据无法恢复！</b>"
         )

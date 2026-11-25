@@ -351,7 +351,13 @@ class TestQuotaTrafficCost(HandlersExtraTestCase):
         self.cli.run.return_value = {"data": {"items": items}}
         update = make_update()
         context = make_context()
-        await he.handle_cost(update, context)
+        # v1.44.0 修 2：PROFILES 现含 oci_config 里全部有 tenancy 的
+        # 账号（本机有 6 个），不 patch 的话合计随环境变。测试只测
+        # 费用汇总逻辑，账号集固定为 1 个新加坡账号。
+        profiles = {"DEFAULT": {"region": "ap-singapore-1",
+                                "compartment_id": "ocid1.tenancy.oc1..aaa"}}
+        with patch.object(bot_config, "PROFILES", profiles):
+            await he.handle_cost(update, context)
         text = reply_text_of(update)
         # 多账号格式（v1.19.0）：逐账号列费用，最后附合计
         self.assertIn("• 新加坡：13.46 SGD", text)
@@ -372,7 +378,11 @@ class TestQuotaTrafficCost(HandlersExtraTestCase):
         self.cli.run.return_value = {"data": {"items": []}}
         update = make_update()
         context = make_context()
-        await he.handle_cost(update, context)
+        # 同 test_cost_total：账号集固定，避免随本机 oci_config 变化。
+        profiles = {"DEFAULT": {"region": "ap-singapore-1",
+                                "compartment_id": "ocid1.tenancy.oc1..aaa"}}
+        with patch.object(bot_config, "PROFILES", profiles):
+            await he.handle_cost(update, context)
         # 多账号格式（v1.19.0）：空账号显示 0.00，不再用“没有用量记录”
         text = reply_text_of(update)
         self.assertIn("• 新加坡：0.00", text)
@@ -1201,6 +1211,35 @@ class TestHandleConfirm(HandlersExtraTestCase):
         context = make_context()
         handled = await he.handle_confirm("explode", "0", update, context)
         self.assertFalse(handled)
+
+
+class TestBatchActionEscape(HandlersExtraTestCase):
+    """批量终止二次确认框的实例名 HTML 转义（v1.44.0 修 10）。"""
+
+    async def test_batch_terminate_confirm_escapes_html_in_names(self):
+        evil = [
+            {"id": "ocid1.instance.oc1..aaaa",
+             "display-name": 'test<b>&"x"',
+             "lifecycle-state": "RUNNING"},
+            {"id": "ocid1.instance.oc1..bbbb",
+             "display-name": "ok-name",
+             "lifecycle-state": "STOPPED"},
+        ]
+        context = make_context()
+        context.user_data["instances"] = evil
+        context.user_data["batch_selected"] = {"0", "1"}
+        update = make_update("ba:action:terminate")
+        await he.batch_action_callback(update, context)
+        text = reply_text_of(update)
+        self.assertIsNotNone(text)
+        self.assertIn("确认批量删除", text)
+        self.assertIn("test&lt;b&gt;&amp;", text)
+        self.assertNotIn("<b>&", text)
+        self.assertIn("ok-name", text)
+        # <b> 警告标签本身还在（只转义了实例名）。
+        self.assertIn("<b>删除后将永久删除各实例的引导卷", text)
+        _args, kwargs = update.effective_message.reply_text.await_args_list[-1]
+        self.assertEqual(kwargs.get("parse_mode"), "HTML")
 
 
 class TestChangeipPrompt(HandlersExtraTestCase):

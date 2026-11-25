@@ -17,9 +17,13 @@ from web import config as web_config
 
 
 FAKE_FILE_PROFILES = {
-    "DEFAULT": {"region": "ap-singapore-1"},
-    "ACCOUNT2": {"region": "us-sanjose-1"},
-    "SG1": {"region": "ap-singapore-1"},
+    "DEFAULT": {"region": "ap-singapore-1",
+                "tenancy": "ocid1.tenancy.oc1..fake-default"},
+    "ACCOUNT2": {"region": "us-sanjose-1",
+                 "tenancy": "ocid1.tenancy.oc1..fake2"},
+    "SG1": {"region": "ap-singapore-1",
+            "tenancy": "ocid1.tenancy.oc1..fake-sg1"},
+    # SG2 有 region 但无 tenancy：推导不出 compartment，不进菜单。
     "SG2": {"region": "ap-singapore-1"},
 }
 
@@ -39,6 +43,9 @@ class ProfilesTestMixin:
         profiles = self._build({}, FAKE_FILE_PROFILES)
         self.assertIn("DEFAULT", profiles)
         self.assertEqual(profiles["DEFAULT"]["region"], "ap-singapore-1")
+        # env 没配时从配置文件 tenancy 推导 compartment。
+        self.assertEqual(profiles["DEFAULT"]["compartment_id"],
+                         "ocid1.tenancy.oc1..fake-default")
 
     def test_legacy_accounts_from_env(self):
         profiles = self._build(
@@ -67,16 +74,46 @@ class ProfilesTestMixin:
         self.assertEqual(profiles["NEWX"]["region"], "ap-singapore-1")
 
     def test_empty_compartment_value_ignored(self):
-        profiles = self._build({"MBOT_COMPARTMENT_SG1": ""},
+        # env 值为空、配置文件里又没 tenancy 时，推导不出 compartment，
+        # 不进菜单（SG2 有 region 但无 tenancy）。
+        profiles = self._build({"MBOT_COMPARTMENT_SG2": ""},
                                FAKE_FILE_PROFILES)
-        self.assertNotIn("SG1", profiles)
-
-    def test_unregistered_profile_not_included(self):
-        """配置文件里有但没配 MBOT_COMPARTMENT_* 的 profile 不进菜单
-        （例如只给 R-Bot 用的受限 API profile）。"""
-        profiles = self._build({}, FAKE_FILE_PROFILES)
-        self.assertNotIn("SG1", profiles)
         self.assertNotIn("SG2", profiles)
+
+    def test_file_profile_without_env_included_via_tenancy(self):
+        """v1.44.0 修 2：配置文件里有、env 没配 compartment 的账号，
+        从 tenancy 推导 compartment 后也要进菜单（干净安装后复制
+        oci_config，多账号场景直接可用）。"""
+        profiles = self._build({}, FAKE_FILE_PROFILES)
+        self.assertIn("SG1", profiles)
+        self.assertEqual(profiles["SG1"]["compartment_id"],
+                         "ocid1.tenancy.oc1..fake-sg1")
+        self.assertEqual(profiles["SG1"]["region"], "ap-singapore-1")
+        # ACCOUNT2 也一样（env 没配时从 tenancy 推导）。
+        self.assertEqual(profiles["ACCOUNT2"]["compartment_id"],
+                         "ocid1.tenancy.oc1..fake2")
+
+    def test_file_profile_without_tenancy_excluded(self):
+        """配置文件里有 region 但没 tenancy、env 也没配的 profile，
+        推导不出 compartment，仍不进菜单（如 [cloudflare] 段）。"""
+        profiles = self._build({}, FAKE_FILE_PROFILES)
+        self.assertNotIn("SG2", profiles)
+
+    def test_placeholder_compartment_falls_back_to_tenancy(self):
+        """v1.44.0 修 3：env 值是占位符时当成未配置，从 tenancy 推导，
+        不再把占位符当成真实 compartment（否则实例列表 502）。"""
+        profiles = self._build(
+            {"MBOT_COMPARTMENT_SG1": "ocid1.tenancy.oc1..xxxxxxxx"},
+            FAKE_FILE_PROFILES)
+        self.assertEqual(profiles["SG1"]["compartment_id"],
+                         "ocid1.tenancy.oc1..fake-sg1")
+
+    def test_placeholder_default_falls_back_to_tenancy(self):
+        profiles = self._build(
+            {"MBOT_COMPARTMENT_DEFAULT": "ocid1.tenancy.oc1..xxxxxxxx"},
+            FAKE_FILE_PROFILES)
+        self.assertEqual(profiles["DEFAULT"]["compartment_id"],
+                         "ocid1.tenancy.oc1..fake-default")
 
 
 class TestBotProfiles(ProfilesTestMixin, unittest.TestCase):
