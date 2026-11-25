@@ -9,6 +9,11 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [1.43.0] - 2026-11-25
+- The install script's nginx repo switches from the stable branch to the mainline branch: fresh installs now get the newest nginx (e.g. 1.31.10, matching the existing four machines) instead of stopping at stable's 1.30.x; the repo key and signed-by are unchanged (mainline and stable share the same signing key), and a failed repo setup still falls back to the distro's nginx
+
+**Verified**: full suite 2672 tests pass (test_install_script.py gains a mainline-path assertion). Live verification: one machine was switched the same way from stable 1.30.8 to mainline 1.31.10, nginx -t passes and the panel login page returns 200.
+
 ## [1.42.3] - 2026-11-25
 - Corrects a false statement in the v1.42.2 changelog: iOS one-time-code autofill does not scan only SMS and email — it can pick the code up from a Bark push notification (verified live on the evening of 2026-11-24, when the keyboard showed "来自 Bark" plus the 6-digit code and tapping it filled the code in); the v1.25.0 claim that iOS picks the code up from the notification center was correct, and v1.42.2 was wrong to call it a misjudgment. A code comparison confirmed it: the login-page input, the login-page JS, and the Bark push title and body are all byte-identical between v1.25.0 and now, so the suggestion not appearing on the morning of 2026-11-25 is iOS-side flakiness (the suggestion bar sometimes does not refresh when the keyboard is already up as the code arrives), not a code regression; the same false statement in the auth.py comment is fixed too
 

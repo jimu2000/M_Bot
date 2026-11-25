@@ -32,7 +32,7 @@
 #
 # 注意：
 #   - 面板只绑 127.0.0.1:9527，不直接对外；外网访问走 nginx 反代 + HTTPS。
-#   - nginx 从 nginx.org 官方仓库装最新版（stable 分支），不是发行版
+#   - nginx 从 nginx.org 官方仓库装最新版（mainline 分支），不是发行版
 #     自带的旧版；仓库加不上时回落发行版版本，安装不中断。
 #   - 防火墙自动识别：ufw / firewalld / nftables / iptables，哪个在跑
 #     就用哪个放行 SSH + 80 + 443 + 9527；都没在跑时优先启用 ufw。
@@ -165,7 +165,7 @@ wait_for_apt() {
     done
 }
 
-# nginx.org 官方仓库（stable 分支）：发行版自带的 nginx 太旧，
+# nginx.org 官方仓库（mainline 分支）：发行版自带的 nginx 太旧，
 # 这里加官方仓库装最新版。失败返回 1，调用方回落发行版版本，
 # 安装不中断。仓库 URL 里发行版名按系统自动换（debian/ubuntu，
 # 不能写死 debian，否则 Ubuntu 上 404）。
@@ -197,14 +197,14 @@ setup_nginx_repo() {
         warn "nginx 签名密钥下载失败，nginx 用发行版自带版本。"
         return 1
     fi
-    printf 'deb [signed-by=/usr/share/keyrings/nginx-archive-keyring.gpg] https://nginx.org/packages/%s %s nginx\n' \
+    printf 'deb [signed-by=/usr/share/keyrings/nginx-archive-keyring.gpg] https://nginx.org/packages/mainline/%s %s nginx\n' \
         "$id" "$codename" > /etc/apt/sources.list.d/nginx.list
     printf 'Package: *\nPin: origin nginx.org\nPin-Priority: 900\n' \
         > /etc/apt/preferences.d/99nginx
     wait_for_apt
     apt-get update -qq >/dev/null 2>&1 \
         || { warn "nginx 仓库更新失败，nginx 用发行版自带版本。"; return 1; }
-    ok "nginx.org 官方仓库已添加（${id} ${codename}，stable 分支）。"
+    ok "nginx.org 官方仓库已添加（${id} ${codename}，mainline 分支）。"
     return 0
 }
 

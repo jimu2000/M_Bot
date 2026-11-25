@@ -273,13 +273,14 @@ class TestInstallScript(unittest.TestCase):
                       self.text)
 
     def test_nginx_official_repo(self):
-        # nginx 必须装最新版：加 nginx.org 官方仓库（stable 分支），
+        # nginx 必须装最新版：加 nginx.org 官方仓库（mainline 分支），
         # 不是发行版自带旧版；仓库 URL 里发行版名按系统换，不能
         # 写死 debian；密钥放专用 keyring + signed-by；加不上时
         # 回落发行版版本，安装不中断。
         self.assertIn("setup_nginx_repo()", self.text)
         self.assertIn("https://nginx.org/keys/nginx_signing.key", self.text)
         self.assertIn("nginx.org/packages/", self.text)
+        self.assertIn("nginx.org/packages/mainline/", self.text)
         self.assertIn("lsb_release", self.text)
         self.assertIn("apt-transport-https", self.text)
         self.assertIn("nginx-archive-keyring.gpg", self.text)
