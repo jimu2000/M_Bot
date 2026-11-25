@@ -9,6 +9,10 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [2.03] - 2026-11-25
+
+- Desensitization fix (reported by the user on 2026-11-25): comments in the public install.sh (lines 546-547) contained the user's real domain; fixed by replacing the real domain with example.com in the comments (both the English and Chinese parentheticals); the public tree now contains no trace of that domain; the panel's access domains never entered the public tree; comments only, no functional code changed
+
 ## [2.02] - 2026-11-25
 
 - Bind domain: no response after typing the subdomain (reported by the user testing on a phone on 2026-11-25). Root cause: python-telegram-bot runs only the first matching handler per group, and all three text handlers sat in the default group 0, so the rename/reinstall text handler registered first swallowed every plain-text message and the bind-domain handler never ran. Fix: text handlers are split by purpose into groups (rename/reinstall group 0, bind domain group 1, client tools group 2, /oci paste group 3), each recognizing only its own user_data state. Three extra guards were added: starting a bind flow clears a stale pending_input, and the rename/reinstall, client-tools, and /oci handlers all yield when bind_domain_pending already has a Zone selected. The same latent bug was found and fixed for /oci pasted text. After typing the subdomain there is now always an explicit response (the existing success / already-exists / conflict-confirm / invalid-format / Cloudflare-error branches are unchanged, they just finally run)
