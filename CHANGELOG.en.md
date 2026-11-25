@@ -9,9 +9,14 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [1.42.3] - 2026-11-25
+- Corrects a false statement in the v1.42.2 changelog: iOS one-time-code autofill does not scan only SMS and email — it can pick the code up from a Bark push notification (verified live on the evening of 2026-11-24, when the keyboard showed "来自 Bark" plus the 6-digit code and tapping it filled the code in); the v1.25.0 claim that iOS picks the code up from the notification center was correct, and v1.42.2 was wrong to call it a misjudgment. A code comparison confirmed it: the login-page input, the login-page JS, and the Bark push title and body are all byte-identical between v1.25.0 and now, so the suggestion not appearing on the morning of 2026-11-25 is iOS-side flakiness (the suggestion bar sometimes does not refresh when the keyboard is already up as the code arrives), not a code regression; the same false statement in the auth.py comment is fixed too
+
+**Verified**: documentation and comment changes only, no logic changes; full suite 2672 tests pass.
+
 ## [1.42.2] - 2026-11-25
 - Tapping the Bark login-code notification now logs in directly: send_bark gains a url parameter (included in the payload before encryption when passed, absent from the payload when not, so existing callers are unaffected); the login-code Bark push carries the same one-tap login link as the message body, so tapping the notification opens the panel already logged in instead of typing the 6-digit code
-- Correction: iOS one-time-code autofill only scans SMS and email, never push notifications (Bark or Telegram), so the login page's autocomplete="one-time-code" will never surface a code delivered by push; the earlier claim that "iOS picks the code up from the notification center, verified live" was a misjudgment and is superseded by this note
+- iOS one-time-code autofill can pick the code up from a Bark push notification (verified live on the evening of 2026-11-24: the keyboard showed "来自 Bark" plus the 6-digit code, and tapping it filled the code in), though it does not fire every time; tapping the notification to log in directly remains the most reliable zero-typing path (note: v1.42.2 originally misstated this as "only scans SMS and email"; corrected in v1.42.3)
 - Note: 1.42.1 was never released (it was reserved for the Markdown start-confirmation regression fix, but the audit found no leak in the code and no fix was needed, so the version was skipped)
 
 **Verified**: full suite 2672 tests pass (4 new: 2 in tests/test_bark.py — the payload contains url when passed and omits the url key when not; 2 in tests/test_phase5e_auth.py — the login-code Bark url is the magic login link, and the body and the url are the same link). Live verification: after deploy, tap a Bark login notification on the phone and confirm it opens the panel logged in.
