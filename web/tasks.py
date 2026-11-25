@@ -200,6 +200,20 @@ class TaskRegistry:
                 return True
             return task_store.request_cancel(self.tasks_file, task_id)
 
+    def delete(self, task_id):
+        """删除一条任务记录（只对已结束的任务有效；运行中的任务须先取消）。
+
+        返回 True 表示已删除；False 表示任务不存在或仍在运行中。
+        """
+        with self._lock:
+            record = task_store.get_record(self.tasks_file, task_id)
+            if record is None:
+                return False
+            if record.get("status") in ("pending", "running"):
+                return False
+            self._stop_events.pop(task_id, None)
+            return task_store.delete_record(self.tasks_file, task_id)
+
     def reset(self):
         """清空全部任务（测试用）。"""
         with self._lock:

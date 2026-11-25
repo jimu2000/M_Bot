@@ -69,6 +69,15 @@
     return shape;
   }
 
+  // CPU model display: show the detected model when available; otherwise fall back to the architecture implied by the shape (A1.Flex is ARM, E2 is AMD), so a known shape never shows "not detected". CPU 型号显示：检测到了显示具体型号；没检测到时按 Shape 推断架构（A1.Flex 是 ARM，E2 是 AMD），已知形状不再显示“未检测”。
+  function cpuModelLabel(model, shape) {
+    if (model) return model;
+    var s = shape || "";
+    if (s.indexOf("A1") !== -1) return "ARM";
+    if (s.indexOf("E2") !== -1) return "AMD";
+    return "未检测";
+  }
+
   function bootVolumeCell(inst) {
     var esc = MBot.escapeHtml;
     var vol = volumesByInstance[String(inst.id)];
@@ -174,7 +183,7 @@
           '<div class="instance-meta">' +
             '<div class="instance-meta-row"><span class="instance-meta-label">公网 IP</span><span class="instance-meta-value">' + ipCell + "</span></div>" +
             '<div class="instance-meta-row"><span class="instance-meta-label">Shape</span><span class="instance-meta-value mono">' + esc(fmtShape(inst.shape)) + "</span></div>" +
-            '<div class="instance-meta-row"><span class="instance-meta-label">CPU 型号</span><span class="instance-meta-value mono" data-cpu-model="1">' + esc(inst.cpuModel || "未检测") + "</span></div>" +
+            '<div class="instance-meta-row"><span class="instance-meta-label">CPU 型号</span><span class="instance-meta-value mono" data-cpu-model="1">' + esc(cpuModelLabel(inst.cpuModel, inst.shape)) + "</span></div>" +
             '<div class="instance-meta-row"><span class="instance-meta-label">规格</span><span class="instance-meta-value">' + esc(spec) + "</span></div>" +
             '<div class="instance-meta-row"><span class="instance-meta-label">启动盘</span><span class="instance-meta-value">' + bootVolumeCell(inst) + "</span></div>" +
             '<div class="instance-meta-row"><span class="instance-meta-label">创建时间</span><span class="instance-meta-value">' + created + "</span></div>" +
@@ -290,7 +299,7 @@
       var cfg = inst["shape-config"] || {};
       document.getElementById("detail-name").textContent = inst["display-name"] || "—";
       document.getElementById("detail-shape").textContent = fmtShape(inst.shape) || "—";
-      document.getElementById("detail-cpu-model").textContent = res.cpu_model || "未检测";
+      document.getElementById("detail-cpu-model").textContent = cpuModelLabel(res.cpu_model, inst.shape);
       document.getElementById("detail-spec").textContent =
         (cfg.ocpus != null ? cfg.ocpus + " OCPU / " + cfg["memory-in-gbs"] + " GB" : "—");
       document.getElementById("detail-state").innerHTML = stateBadge(inst["lifecycle-state"]);

@@ -503,7 +503,27 @@ class TestInstallScript(unittest.TestCase):
         auto = self.text.split("cmd_auto_upgrade() {")[1].split(
             "\n}\n")[0]
         self.assertIn('_notify_upgrade_failure "拉取远端失败"', auto)
-        self.assertIn('_notify_upgrade_failure "升级步骤失败"', auto)
+        self.assertIn('_notify_upgrade_failure "升级步骤失败（$failed）"',
+                      auto)
+
+    def test_auto_upgrade_checks_nginx(self):
+        auto = self.text.split("cmd_auto_upgrade() {")[1].split(
+            "\n}\n")[0]
+        self.assertIn("apt-get update", auto)
+        self.assertIn("nginx_update_available", auto)
+        self.assertIn("upgrade_nginx", auto)
+        self.assertIn("都已是最新版，无需升级", auto)
+        avail = self.text.split("nginx_update_available() {")[1].split(
+            "\n}\n")[0]
+        self.assertIn("apt-cache policy nginx", avail)
+        self.assertIn("Installed:", avail)
+        self.assertIn("Candidate:", avail)
+        self.assertIn("dpkg --compare-versions", avail)
+        up = self.text.split("upgrade_nginx() {")[1].split("\n}\n")[0]
+        self.assertIn("--only-upgrade nginx", up)
+        self.assertIn("--force-confold", up)
+        self.assertIn("nginx -t", up)
+        self.assertIn("systemctl reload nginx", up)
 
     def test_install_sets_up_auto_upgrade(self):
         fn = self.text.split("cmd_install() {")[1].split("\n}\n")[0]

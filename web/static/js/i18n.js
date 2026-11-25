@@ -186,6 +186,21 @@
     FAULTY: "故障"
   };
 
+  /* 任务状态中文映射（任务管理页状态徽标用，同上：英文模式显示原文）。 */
+  var TASK_STATUS_ZH = {
+    RUNNING: "运行中",
+    PENDING: "等待中",
+    IN_PROGRESS: "进行中",
+    DONE: "已完成",
+    SUCCESS: "成功",
+    COMPLETED: "已完成",
+    FAILED: "失败",
+    ERROR: "出错",
+    CANCELLED: "已取消",
+    CANCELED: "已取消",
+    UNKNOWN: "未知"
+  };
+
   var _mode = null;  // In-memory cache: the mode the user picked ("auto" / "zh-CN" / "en"). 内存缓存：用户选的模式（"auto" / "zh-CN" / "en"）。
 
   /* 跟随模式按浏览器语言取生效语言：只认中文（zh 开头，如 zh-CN、
@@ -246,6 +261,13 @@
     var s = state == null ? "" : String(state);
     if (getLang() === "en") return s;
     return VOLUME_STATE_ZH[s.toUpperCase()] || s;
+  }
+
+  /* 任务状态显示文字：中文模式查映射表，未知状态与英文模式显示原文。 */
+  function taskStatusLabel(status) {
+    var s = status == null ? "" : String(status);
+    if (getLang() === "en") return s;
+    return TASK_STATUS_ZH[s.toUpperCase()] || s;
   }
 
   /* 把一处翻译写进元素：有子元素（如侧边栏链接里的 svg 图标）时只换
@@ -333,6 +355,7 @@
     I18N: I18N,
     INSTANCE_STATE_ZH: INSTANCE_STATE_ZH,
     VOLUME_STATE_ZH: VOLUME_STATE_ZH,
+    TASK_STATUS_ZH: TASK_STATUS_ZH,
     getLang: getLang,
     getMode: getMode,
     resolveBrowserLang: resolveBrowserLang,
@@ -340,6 +363,7 @@
     t: t,
     applyI18n: applyI18n,
     instanceStateLabel: instanceStateLabel,
-    volumeStateLabel: volumeStateLabel
+    volumeStateLabel: volumeStateLabel,
+    taskStatusLabel: taskStatusLabel
   };
 })();

@@ -85,7 +85,7 @@
       tr.appendChild(nameCell);
 
       // Render content with textContent, never innerHTML, to prevent XSS. 内容用 textContent 渲染，不走 innerHTML，防 XSS。
-      tr.appendChild(el("td", rec.content || "—", "mono"));
+      tr.appendChild(el("td", rec.content || "—", "mono dns-content"));
 
       var proxiedCell = document.createElement("td");
       var proxiedBtn = document.createElement("button");

@@ -27,11 +27,12 @@
 
   function statusBadge(t) {
     var s = taskStatus(t);
-    if (isRunning(t)) return '<span class="badge badge-blue">' + MBot.escapeHtml(s) + "</span>";
-    if (s === "SUCCESS" || s === "COMPLETED" || s === "DONE") return '<span class="badge badge-green">' + MBot.escapeHtml(s) + "</span>";
-    if (s === "FAILED" || s === "ERROR") return '<span class="badge badge-red">' + MBot.escapeHtml(s) + "</span>";
-    if (s === "CANCELLED" || s === "CANCELED") return '<span class="badge badge-gray">' + MBot.escapeHtml(s) + "</span>";
-    return '<span class="badge badge-gray">' + MBot.escapeHtml(s) + "</span>";
+    var label = MBot.I18n.taskStatusLabel(s);
+    if (isRunning(t)) return '<span class="badge badge-blue">' + MBot.escapeHtml(label) + "</span>";
+    if (s === "SUCCESS" || s === "COMPLETED" || s === "DONE") return '<span class="badge badge-green">' + MBot.escapeHtml(label) + "</span>";
+    if (s === "FAILED" || s === "ERROR") return '<span class="badge badge-red">' + MBot.escapeHtml(label) + "</span>";
+    if (s === "CANCELLED" || s === "CANCELED") return '<span class="badge badge-gray">' + MBot.escapeHtml(label) + "</span>";
+    return '<span class="badge badge-gray">' + MBot.escapeHtml(label) + "</span>";
   }
 
   function render() {
@@ -49,6 +50,9 @@
       var cancelBtn = isRunning(t)
         ? '<button type="button" class="btn btn-sm btn-danger" data-act="cancel">取消</button>'
         : "";
+      var deleteBtn = isRunning(t)
+        ? ""
+        : '<button type="button" class="btn btn-sm btn-danger" data-act="delete">删除</button>';
       // Backend task fields: label (display text, e.g. "抢机：xxx" or shape + instance name) / kind (type; falls back to this when an old task has no label) / detail (description) / status (pending/running/done/failed/cancelled) / created_at (second-level timestamp). 后端任务字段：label（显示说明，如“抢机：xxx”或规格·实例名）/ kind（类型，旧任务无 label 时退回它）/ detail（说明）/ status（pending/running/done/failed/cancelled）/ created_at（秒级时间戳）。
       var sub = t.detail || t.display_name || "";
       var row =
@@ -58,7 +62,7 @@
           "<td>" + statusBadge(t) + "</td>" +
           "<td>" + esc(MBot.formatTime(t.started_at || t.created_at)) + "</td>" +
           "<td>" + esc(taskMessage(t)) + "</td>" +
-          '<td><div class="row-actions">' + cancelBtn + "</div></td>" +
+          '<td><div class="row-actions">' + cancelBtn + deleteBtn + "</div></td>" +
         "</tr>";
       if (expanded) {
         row += '<tr class="task-detail-row"><td colspan="5">' +
@@ -125,6 +129,23 @@
       await loadTasks();
     } catch (err) {
       MBot.toast("取消失败：" + err.message, "error");
+    }
+  }
+
+  async function deleteTask(id) {
+    var ok = await MBot.confirmDialog(
+      "删除任务",
+      "<p>确定要删除这个任务吗？任务记录和日志都会删掉，删了就找不回来了。</p>",
+      "确认删除", true
+    );
+    if (!ok) return;
+    try {
+      await MBot.api("/api/tasks/" + encodeURIComponent(id), { method: "DELETE" });
+      MBot.toast("任务已删除", "success");
+      if (expandedId === id) expandedId = null;
+      await loadTasks();
+    } catch (err) {
+      MBot.toast("删除失败：" + err.message, "error");
     }
   }
 
@@ -215,6 +236,13 @@
         e.stopPropagation();
         var row = cancelBtn.closest("[data-task-id]");
         cancelTask(row.getAttribute("data-task-id"));
+        return;
+      }
+      var deleteBtn = e.target.closest('[data-act="delete"]');
+      if (deleteBtn) {
+        e.stopPropagation();
+        var row = deleteBtn.closest("[data-task-id]");
+        deleteTask(row.getAttribute("data-task-id"));
         return;
       }
       var rowEl = e.target.closest(".task-row");

@@ -256,6 +256,17 @@ def clear_records(path):
         _write_records_unlocked(path, [])
 
 
+def delete_record(path, task_id):
+    """删除一条任务记录；不存在返回 False。"""
+    with _locked(path):
+        records = _read_records_unlocked(path)
+        kept = [r for r in records if r.get("id") != task_id]
+        if len(kept) == len(records):
+            return False
+        _write_records_unlocked(path, kept)
+        return True
+
+
 def build_grab_spec(profile, region, compartment_id, params, notify=None):
     """拼一条抢机规格（写进任务记录的 grab_spec，重启恢复用）。
 

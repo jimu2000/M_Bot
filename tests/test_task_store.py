@@ -119,6 +119,16 @@ class TestUpdateAndCancel(TaskStoreTestCase):
     def test_request_cancel_missing_returns_false(self):
         self.assertFalse(task_store.request_cancel(self.path, "bot-g9"))
 
+    def test_delete_record(self):
+        self.assertTrue(task_store.delete_record(self.path,
+                                                 self.record["id"]))
+        self.assertIsNone(task_store.get_record(self.path,
+                                                self.record["id"]))
+        self.assertEqual(task_store.load_records(self.path), [])
+
+    def test_delete_record_missing_returns_false(self):
+        self.assertFalse(task_store.delete_record(self.path, "bot-g9"))
+
 
 class TestRecoverInterrupted(TaskStoreTestCase):
     def test_only_own_origin_is_recovered(self):

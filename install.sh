@@ -119,7 +119,7 @@ ACME_WEBROOT="/var/www/mbot-acme"
 # Renewal script + cron (IP certs last only 160 hours, run every 2 days; lego run also renews and skips when outside the renewal window). 证书续期脚本与 cron（IP 证书只有 160 小时有效期，每 2 天跑一次；lego run 兼续期：证书没到续期窗口时直接跳过）。
 RENEW_SCRIPT="/usr/local/bin/mbot-renew-cert.sh"
 RENEW_CRON="/etc/cron.d/mbot-cert-renew"
-# Scheduled auto-upgrade (runs install.sh auto-upgrade daily at 04:00; only logs when already latest, upgrades only on a new version; Bark notification on failure). 定时自动升级（每天凌晨 4 点跑 install.sh auto-upgrade；已是最新版时只记日志不重启服务，有新版时才升级；失败时 Bark 通知）。
+# Scheduled auto-upgrade (runs install.sh auto-upgrade daily at 04:00; checks mbot and nginx for new versions, skips when both are already latest; only logs when already latest, upgrades only on a new version; Bark notification on failure). 定时自动升级（每天凌晨 4 点跑 install.sh auto-upgrade；同时检查 mbot 与 nginx 有无新版，两者都已是最新版时跳过；已是最新版时只记日志不重启服务，有新版时才升级；失败时 Bark 通知）。
 UPGRADE_CRON="/etc/cron.d/mbot-auto-upgrade"
 UPGRADE_LOG="/var/log/mbot-upgrade.log"
 AUTO_UPGRADE_SCHEDULE="0 4 * * *"
@@ -1772,42 +1772,97 @@ except Exception as exc:  # noqa: BLE001 - 通知失败不影响升级流程
 PYEOF
 }
 
+# Check whether a newer nginx is available in apt (installed vs candidate version). Returns 0 when an update is available, 1 when already latest or unavailable. 检查 apt 里有无更新的 nginx（已装版 vs 候选版）：有新版返回 0，已是最新或查不到返回 1。
+nginx_update_available() {
+    local installed candidate
+    installed=$(apt-cache policy nginx 2>/dev/null | awk '/^[[:space:]]*Installed:/ {print $2}')
+    candidate=$(apt-cache policy nginx 2>/dev/null | awk '/^[[:space:]]*Candidate:/ {print $2}')
+    [ -n "$candidate" ] && [ "$candidate" != "(none)" ] || return 1
+    [ -z "$installed" ] || [ "$installed" = "(none)" ] && return 0
+    [ "$installed" = "$candidate" ] && return 1
+    dpkg --compare-versions "$candidate" gt "$installed" 2>/dev/null
+}
+
+# Upgrade nginx to the apt candidate version (config kept: --force-confold, same as install_deps), then validate and reload. Returns 0 on success, 1 on failure. 把 nginx 升到 apt 候选版（--force-confold 保留现有配置，与 install_deps 一致），校验通过后重载；成功返回 0，失败返回 1。
+upgrade_nginx() {
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get install -y -qq -o Dpkg::Options::="--force-confdef" \
+        -o Dpkg::Options::="--force-confold" \
+        --only-upgrade nginx >/dev/null 2>&1 || return 1
+    nginx -t >/dev/null 2>&1 || return 1
+    systemctl reload nginx 2>/dev/null || systemctl restart nginx 2>/dev/null || return 1
+    return 0
+}
+
 cmd_auto_upgrade() {
-    # Scheduled auto-upgrade (invoked by cron): compare local vs remote version first; when already latest, only log and touch nothing; on a new version run the full upgrade; on failure log and send a Bark notification (when Bark is configured and enabled). 定时自动升级（cron 调用）：先比对本地与远端版本，已是最新版时只记日志、不碰服务；有新版时走完整升级流程；失败时记日志并 Bark 通知（Bark 配好且已开启时）。
+    # Scheduled auto-upgrade (invoked by cron): check mbot and nginx for new versions independently; when both are already latest, only log and touch nothing; upgrade only the ones with a new version; on failure log and send a Bark notification (when Bark is configured and enabled). 定时自动升级（cron 调用）：分别检查 mbot 与 nginx 有无新版；两者都已是最新时只记日志、不碰服务；只升有新版的那一个；失败时记日志并 Bark 通知（Bark 配好且已开启时）。
     require_root
     [ -d "$INSTALL_DIR/.git" ] || die "未安装（$INSTALL_DIR 不存在），先运行不带参数的安装。"
     cd "$INSTALL_DIR" || die "无法进入 $INSTALL_DIR。"
-    info "自动升级检查开始（当前版本 v$(installed_version)）。"
+    info "自动升级检查开始（当前版本 v$(installed_version)，nginx $(nginx -v 2>&1 | head -n 1)）。"
+    local mbot_update=0 nginx_update=0 failed=""
     if ! git fetch origin main --quiet 2>/dev/null; then
-        warn "拉取远端失败，跳过本次检查。"
+        warn "拉取远端失败，跳过本次 mbot 检查。"
         _notify_upgrade_failure "拉取远端失败"
-        return 0
-    fi
-    local local_head remote_head
-    local_head=$(git rev-parse HEAD)
-    remote_head=$(git rev-parse origin/main)
-    if [ "$local_head" = "$remote_head" ]; then
-        info "已是最新版（v$(installed_version)），无需升级。"
-        return 0
-    fi
-    info "发现新版，开始升级…"
-    # Run the upgrade steps in a subshell: if update_code fails, die exits only the subshell and the outer layer can catch the failure and send a Bark notification; do not use local inside the subshell. 升级步骤放子 shell 里跑：update_code 失败时 die 只退出子 shell，外层能捕获失败并 Bark 通知；子 shell 里不要用 local。
-    if (
-        set -e
-        update_code
-        "$VENV_DIR/bin/pip" install --quiet -r "$INSTALL_DIR/requirements.txt"
-        "$VENV_DIR/bin/pip" install --quiet oci-cli
-        to_restart=$(running_services)
-        if [ -n "$to_restart" ]; then
-            # shellcheck disable=SC2086
-            systemctl restart $to_restart
-        fi
-        health_check
-    ); then
-        ok "自动升级完成（版本 v$(installed_version)）。"
     else
-        warn "自动升级失败，服务保持原状，见日志 $UPGRADE_LOG。"
-        _notify_upgrade_failure "升级步骤失败"
+        local local_head remote_head
+        local_head=$(git rev-parse HEAD)
+        remote_head=$(git rev-parse origin/main)
+        [ "$local_head" != "$remote_head" ] && mbot_update=1
+    fi
+    # Refresh apt lists (best effort: failure only skips the nginx check, never the mbot upgrade). 刷新 apt 列表（尽力而为：失败只跳过 nginx 检查，不影响 mbot 升级）。
+    wait_for_apt
+    local attempt=0
+    until apt-get update -qq 2>/dev/null; do
+        attempt=$((attempt + 1))
+        [ "$attempt" -ge 3 ] && break
+        warn "apt-get update 失败（可能锁被占），15 秒后重试…"
+        sleep 15
+        wait_for_apt
+    done
+    if [ "$attempt" -ge 3 ]; then
+        warn "apt-get update 多次失败，跳过本次 nginx 检查。"
+    elif nginx_update_available; then
+        nginx_update=1
+    fi
+    if [ "$mbot_update" = "0" ] && [ "$nginx_update" = "0" ]; then
+        info "mbot 与 nginx 都已是最新版，无需升级。"
+        return 0
+    fi
+    if [ "$mbot_update" = "1" ]; then
+        info "发现 mbot 新版，开始升级…"
+        # Run the upgrade steps in a subshell: if update_code fails, die exits only the subshell and the outer layer can catch the failure and send a Bark notification; do not use local inside the subshell. 升级步骤放子 shell 里跑：update_code 失败时 die 只退出子 shell，外层能捕获失败并 Bark 通知；子 shell 里不要用 local。
+        if (
+            set -e
+            update_code
+            "$VENV_DIR/bin/pip" install --quiet -r "$INSTALL_DIR/requirements.txt"
+            "$VENV_DIR/bin/pip" install --quiet oci-cli
+            to_restart=$(running_services)
+            if [ -n "$to_restart" ]; then
+                # shellcheck disable=SC2086
+                systemctl restart $to_restart
+            fi
+            health_check
+        ); then
+            ok "mbot 自动升级完成（版本 v$(installed_version)）。"
+        else
+            warn "mbot 自动升级失败，服务保持原状，见日志 $UPGRADE_LOG。"
+            failed="mbot"
+        fi
+    fi
+    if [ "$nginx_update" = "1" ]; then
+        info "发现 nginx 新版，开始升级…"
+        if upgrade_nginx; then
+            ok "nginx 自动升级完成（版本 $(nginx -v 2>&1 | head -n 1)）。"
+        else
+            warn "nginx 自动升级失败，见日志 $UPGRADE_LOG。"
+            failed="${failed:+$failed + }nginx"
+        fi
+    fi
+    if [ -n "$failed" ]; then
+        _notify_upgrade_failure "升级步骤失败（$failed）"
+    else
+        ok "自动升级完成。"
     fi
 }
 

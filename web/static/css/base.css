@@ -224,6 +224,8 @@ table.data th, table.data td {
 table.data th { color: var(--text-muted); font-weight: 600; white-space: nowrap; }
 table.data tbody tr:hover { background: var(--surface-hover); }
 table.data .row-actions { white-space: nowrap; display: flex; gap: 6px; flex-wrap: wrap; }
+/* DNS records table: the content column (long values like TXT records) wraps and caps its width, so the Operations column (edit/delete) stays visible instead of being pushed off-screen. DNS 记录表：内容列（TXT 等长值）允许换行并限宽，操作列（编辑/删除）不再被挤出可视区。 */
+#dns-table .dns-content { max-width: 320px; overflow-wrap: anywhere; word-break: break-all; }
 
 .badge {
   display: inline-block;

@@ -339,3 +339,13 @@ def cancel_task(task_id: str, username: str = Depends(get_current_user)):
     if not TASKS.cancel(task_id):
         return error_response("任务已结束，无法取消", status_code=400)
     return {"ok": True, "task_id": task_id}
+
+
+@router.delete("/api/tasks/{task_id}")
+def delete_task(task_id: str, username: str = Depends(get_current_user)):
+    """删除任务（只对已结束的任务有效；运行中的任务须先取消）。"""
+    if TASKS.get(task_id) is None:
+        return error_response(f"任务不存在：{task_id}", status_code=404)
+    if not TASKS.delete(task_id):
+        return error_response("任务还在运行中，请先取消", status_code=400)
+    return {"ok": True, "task_id": task_id}

@@ -1121,6 +1121,33 @@ class TestCreateAndTasksApi(WebApiTestCase):
         self.assertEqual(r.status_code, 404)
         r = self.client.post("/api/tasks/g999/cancel")
         self.assertEqual(r.status_code, 404)
+        r = self.client.delete("/api/tasks/g999")
+        self.assertEqual(r.status_code, 404)
+
+    @patch("web.tasks.Grabber", BlockingGrabber)
+    @patch("web.routes.create.can_launch", return_value=(True, "可以创建"))
+    def test_delete_finished_task(self, mock_can):
+        """已结束的任务可以删除，删后列表里不再有它。"""
+        r = self.client.post("/api/create", json=CREATE_BODY)
+        task_id = r.json()["task_id"]
+        self.client.post(f"/api/tasks/{task_id}/cancel")
+        r = self.client.delete(f"/api/tasks/{task_id}")
+        self.assertEqual(r.status_code, 200)
+        r = self.client.get(f"/api/tasks/{task_id}")
+        self.assertEqual(r.status_code, 404)
+        r = self.client.get("/api/tasks")
+        self.assertEqual(r.json()["tasks"], [])
+
+    @patch("web.tasks.Grabber", BlockingGrabber)
+    @patch("web.routes.create.can_launch", return_value=(True, "可以创建"))
+    def test_delete_running_task_returns_400(self, mock_can):
+        """运行中的任务不能直接删除，须先取消。"""
+        r = self.client.post("/api/create", json=CREATE_BODY)
+        task_id = r.json()["task_id"]
+        self._wait_task_status(task_id, ("running",))
+        r = self.client.delete(f"/api/tasks/{task_id}")
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("运行中", r.json()["error"])
 
     @patch("web.tasks.notify_boot_success",
             return_value={"telegram": True, "bark": False, "errors": []})

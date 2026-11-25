@@ -9,6 +9,13 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [2.04] - 2026-11-25
+
+- Task management: finished tasks can now be deleted (reported by the user on 2026-11-25). The Operations column shows a "Delete" button for finished tasks, which removes the task record and logs after confirmation; running tasks have no delete button and must be cancelled first (the backend also blocks deleting a running task with a 400). Added DELETE /api/tasks/{id}, TaskRegistry.delete(), and task_store.delete_record(). Task status now follows the current language (Chinese mode: DONE → 已完成, CANCELLED → 已取消, RUNNING → 运行中, FAILED → 失败, etc.; English mode shows the English original), via the new TASK_STATUS_ZH map and taskStatusLabel() in i18n.js, following the existing localization pattern for instance and volume states
+- DNS management: no delete button visible (reported by the user on 2026-11-25). The delete button already existed in code; the "Content" column was too wide and pushed it off-screen. Fix: the content column gets a dns-content style (max-width 320px, wraps), so the Operations column (edit/delete) stays visible
+- Instance cards showed "Not detected" for the CPU model (reported by the user on 2026-11-25). When no model is detected, the architecture is now inferred from the Shape (A1.Flex → ARM, E2 → AMD), so a known shape never shows "not detected"; a detected model is still shown as-is. Added cpuModelLabel() in instances.js, shared by the card and the detail view
+- Auto-upgrade now checks nginx too (requested by the user on 2026-11-25). The nightly 04:00 auto-upgrade used to check only mbot; it now checks both mbot and nginx, and when both are already latest it only logs and skips without touching any service; only the one with a new version is upgraded. Added nginx_update_available() (apt installed vs candidate version comparison) and upgrade_nginx() (--only-upgrade, --force-confold to keep the existing config, reload after validation) in install.sh; a failed mbot check no longer returns early, the nginx check still runs
+
 ## [2.03] - 2026-11-25
 
 - Desensitization fix (reported by the user on 2026-11-25): comments in the public install.sh (lines 546-547) contained the user's real domain; fixed by replacing the real domain with example.com in the comments (both the English and Chinese parentheticals); the public tree now contains no trace of that domain; the panel's access domains never entered the public tree; comments only, no functional code changed
