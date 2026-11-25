@@ -1288,7 +1288,7 @@ class TestRegionDeps(unittest.TestCase):
     @patch("web.deps.OCIClient")
     def test_get_profile_regions_caches(self, mock_cli_cls):
         # 两次调用只查一次 OCI（缓存 1 小时）。
-        # v1.44.0 修 2：web.config.PROFILES 现含 oci_config 里全部有
+        # v1.45.0 修 2：web.config.PROFILES 现含 oci_config 里全部有
         # tenancy 的账号；不 patch 的话结果随本机配置变化。测试只测
         # 缓存逻辑，账号集固定为 1 个。
         profiles = {"DEFAULT": {"region": "ap-singapore-1",

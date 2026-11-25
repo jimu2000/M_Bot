@@ -214,6 +214,10 @@ code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monosp
 /* 表格 */
 .table-wrap { overflow-x: auto; }
 table.data { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+/* 云报告表格（v1.45.0 修 13）：每格单行不换行，表身定个最小宽，
+   手机上由 .table-wrap 横向滚动，不溢出、不挤成一团 */
+table.data.cloud-report-table { min-width: 560px; }
+table.data.cloud-report-table td { white-space: nowrap; }
 table.data th, table.data td {
   padding: 10px 12px;
   text-align: left;
@@ -617,7 +621,7 @@ tr.task-row.expanded { background: var(--surface-hover); }
 }
 .login-note { text-align: center; color: #e5e7eb; font-size: 13px; margin: 0 0 1.5rem; }
 .login-foot { text-align: center; color: #d1d5db; font-size: 0.875rem; margin: 2rem 0 0; }
-/* GitHub 项目链接（v1.44.0）：比脚注更淡，不抢眼 */
+/* GitHub 项目链接（v1.45.0）：比脚注更淡，不抢眼 */
 .login-github { text-align: center; margin: 0.5rem 0 0; font-size: 0.8125rem; }
 .login-github a { color: #9ca3af; text-decoration: none; }
 .login-github a:hover { color: #e5e7eb; text-decoration: underline; }

@@ -81,7 +81,7 @@ class ProfilesTestMixin:
         self.assertNotIn("SG2", profiles)
 
     def test_file_profile_without_env_included_via_tenancy(self):
-        """v1.44.0 修 2：配置文件里有、env 没配 compartment 的账号，
+        """v1.45.0 修 2：配置文件里有、env 没配 compartment 的账号，
         从 tenancy 推导 compartment 后也要进菜单（干净安装后复制
         oci_config，多账号场景直接可用）。"""
         profiles = self._build({}, FAKE_FILE_PROFILES)
@@ -100,7 +100,7 @@ class ProfilesTestMixin:
         self.assertNotIn("SG2", profiles)
 
     def test_placeholder_compartment_falls_back_to_tenancy(self):
-        """v1.44.0 修 3：env 值是占位符时当成未配置，从 tenancy 推导，
+        """v1.45.0 修 3：env 值是占位符时当成未配置，从 tenancy 推导，
         不再把占位符当成真实 compartment（否则实例列表 502）。"""
         profiles = self._build(
             {"MBOT_COMPARTMENT_SG1": "ocid1.tenancy.oc1..xxxxxxxx"},

@@ -631,7 +631,7 @@ class TestInstallScript(unittest.TestCase):
                       self.text)
 
     def test_systemd_unit_sets_mbot_web_env_file(self):
-        # v1.44.0 修 1：web/config.py 的 ENV_FILE 默认 ~/.rbot-clone.env，
+        # v1.45.0 修 1：web/config.py 的 ENV_FILE 默认 ~/.rbot-clone.env，
         # 安装版 env 在 /root/.mbot.env；systemd 单元必须显式传
         # MBOT_WEB_ENV_FILE，否则删账号 env_removed:false、加账号写进
         # stray 文件。面板与机器人两个单元都要加（bot 也走 web_config）。
@@ -640,7 +640,7 @@ class TestInstallScript(unittest.TestCase):
             2, "面板与机器人 systemd 单元都要设 MBOT_WEB_ENV_FILE")
 
     def test_compartment_derived_from_tenancy(self):
-        # v1.44.0 修 3：安装时从 OCI 配置的 tenancy 推导 compartment，
+        # v1.45.0 修 3：安装时从 OCI 配置的 tenancy 推导 compartment，
         # 不再把占位符写进 env 文件（占位符导致实例列表 502
         # "Invalid compartmentId"、创建备份 404）。
         self.assertIn("read_tenancy_from_oci_config", self.text)
@@ -650,7 +650,7 @@ class TestInstallScript(unittest.TestCase):
         self.assertIn("MBOT_COMPARTMENT_DEFAULT=$tenancy", self.text)
 
     def test_cfdns_uses_public_resolvers_and_keeps_log(self):
-        # v1.44.0 修 4：lego 的 DNS-01 传播检查走公共解析器（OCI 解析器
+        # v1.45.0 修 4：lego 的 DNS-01 传播检查走公共解析器（OCI 解析器
         # 对新建记录负缓存 1800 秒，cfdns 必失败）；报错不再只怪 Token
         # 权限；lego 输出留日志，不再全丢 /dev/null。
         fn = self.text.split("request_domain_cert_cfdns() {")[1].split(
@@ -664,7 +664,7 @@ class TestInstallScript(unittest.TestCase):
                          "cfdns 的 lego 输出不应再丢进 /dev/null")
 
     def test_update_mode_reads_cert_method_env(self):
-        # v1.44.0 修 5：更新模式下 prompt_config 被跳过，CERT_METHOD
+        # v1.45.0 修 5：更新模式下 prompt_config 被跳过，CERT_METHOD
         # 也要从 MBOT_INSTALL_CERT_METHOD 读（否则默认走 http）。
         # 全新安装与更新模式两处都要有这行。
         self.assertGreaterEqual(
@@ -673,7 +673,7 @@ class TestInstallScript(unittest.TestCase):
             2, "全新安装与更新模式都要从 MBOT_INSTALL_CERT_METHOD 读")
 
     def test_nft_empty_table_falls_back_to_ufw(self):
-        # v1.44.0 修 9：Ubuntu 上 nft filter 表是空的、没有 input 链时，
+        # v1.45.0 修 9：Ubuntu 上 nft filter 表是空的、没有 input 链时，
         # 只警告不加规则也不回落 UFW；空表时回落 UFW（规则持久化），
         # 已有规则的表不动。
         fn = self.text.split("_firewall_nft() {")[1].split("\n}\n")[0]

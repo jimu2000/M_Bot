@@ -398,7 +398,7 @@ class TestEmailHandlers(PackageDTestCase):
         update.effective_message.reply_text.assert_not_awaited()
 
     async def test_confirm_createsender(self):
-        # v1.44.0 修 2：PROFILES 现含 oci_config 里全部有 tenancy 的
+        # v1.45.0 修 2：PROFILES 现含 oci_config 里全部有 tenancy 的
         # 账号，compartment 从真实 tenancy 推导；不 patch 的话断言
         # 用的 DEFAULT_COMPARTMENT_ID（占位符）与实际值不一致。
         profiles = {"DEFAULT": {"region": "ap-singapore-1",

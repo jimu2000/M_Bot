@@ -508,7 +508,7 @@ class TestInstanceActionCallback(HandlersTestCase):
         self.assertIn("c:terminate:0", _all_callback_data(keyboard))
 
     async def test_terminate_confirm_escapes_html_in_name(self):
-        # v1.44.0 修 10：实例名可能含 <>&，parse_mode="HTML" 的确认框
+        # v1.45.0 修 10：实例名可能含 <>&，parse_mode="HTML" 的确认框
         # 必须转义，否则 Telegram 解析失败或被注入标签。
         evil = dict(FAKE_INSTANCES[0],
                     **{"display-name": 'test<b>&"x"'})

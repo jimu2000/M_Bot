@@ -351,7 +351,7 @@ class TestQuotaTrafficCost(HandlersExtraTestCase):
         self.cli.run.return_value = {"data": {"items": items}}
         update = make_update()
         context = make_context()
-        # v1.44.0 修 2：PROFILES 现含 oci_config 里全部有 tenancy 的
+        # v1.45.0 修 2：PROFILES 现含 oci_config 里全部有 tenancy 的
         # 账号（本机有 6 个），不 patch 的话合计随环境变。测试只测
         # 费用汇总逻辑，账号集固定为 1 个新加坡账号。
         profiles = {"DEFAULT": {"region": "ap-singapore-1",
@@ -1214,7 +1214,7 @@ class TestHandleConfirm(HandlersExtraTestCase):
 
 
 class TestBatchActionEscape(HandlersExtraTestCase):
-    """批量终止二次确认框的实例名 HTML 转义（v1.44.0 修 10）。"""
+    """批量终止二次确认框的实例名 HTML 转义（v1.45.0 修 10）。"""
 
     async def test_batch_terminate_confirm_escapes_html_in_names(self):
         evil = [

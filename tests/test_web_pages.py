@@ -108,7 +108,7 @@ class TestWebPages(unittest.TestCase):
             "默认凭据请查看部署文档",
             "M_Bot Oracle开源管理面板",
             "/static/js/login.js",
-            # v1.44.0 修 12：登录页加 GitHub 项目链接（新标签页打开）
+            # v1.45.0 修 12：登录页加 GitHub 项目链接（新标签页打开）
             "https://github.com/jimu2000/M_Bot",
             "GitHub 项目",
             'target="_blank"',
@@ -134,7 +134,7 @@ class TestWebPages(unittest.TestCase):
                 "/static/js/app.js",
                 "/static/css/base.css",
                 "/static/css/themes.css",
-                # v1.44.0 修 12：内页顶栏加 GitHub 链接（新标签页打开）
+                # v1.45.0 修 12：内页顶栏加 GitHub 链接（新标签页打开）
                 "https://github.com/jimu2000/M_Bot",
                 'target="_blank"',
             ])
@@ -335,7 +335,7 @@ class TestRealBackendIntegration(unittest.TestCase):
         self.assertIn("已保存会话", resp.text)
 
     def test_github_link_on_login_and_overview(self):
-        # v1.44.0 修 12：登录页与内页都有 GitHub 项目链接，新标签页打开。
+        # v1.45.0 修 12：登录页与内页都有 GitHub 项目链接，新标签页打开。
         resp = self.client.get("/login")
         self.assertEqual(resp.status_code, 200)
         self.assertIn("https://github.com/jimu2000/M_Bot", resp.text)
@@ -348,6 +348,46 @@ class TestRealBackendIntegration(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertIn("https://github.com/jimu2000/M_Bot", resp.text)
         self.assertIn('target="_blank"', resp.text)
+
+    def test_cloud_report_renders_table(self):
+        # v1.45.0 修 13：云报告改表格。概览页保留卡片容器、刷新按钮与
+        # “生成于”时间戳；overview.js 把每区域渲染成表格的一行，列头
+        # 覆盖全部信息；CSS 保证小屏横向滚动不溢出。
+        resp = self.client.post("/api/auth/login", json={
+            "username": "admin", "password": "test-password-123"})
+        self.assertEqual(resp.status_code, 200)
+        resp = self.client.get("/overview")
+        self.assertEqual(resp.status_code, 200)
+        for needle in ('id="cloud-report-card"', 'id="btn-refresh-cloud-report"',
+                       'id="cloud-report-body"', 'id="cloud-report-generated"',
+                       "云报告"):
+            self.assertIn(needle, resp.text, f"概览页应有云报告卡片元素 {needle}")
+        with open(os.path.join(ROOT, "web", "static", "js", "overview.js"),
+                  encoding="utf-8") as f:
+            js = f.read()
+        # 表格骨架：.table-wrap 包着 table.data，每区域一行。
+        self.assertIn('<div class="table-wrap"><table class="data cloud-report-table">', js)
+        for header in ("<th>区域</th>", "<th>实例</th>", "<th>启动盘</th>",
+                       "<th>A1</th>", "<th>E2</th>"):
+            self.assertIn(header, js, f"云报告表头应有 {header}")
+        self.assertIn("groups.map(function (g)", js, "每区域应渲染成一行")
+        self.assertIn('"<tr>"', js)
+        # 数据与后端 /api/cloud-report/summary 的形状一致。
+        for field in ("g.instances.total", "byState.RUNNING", "byState.TERMINATED",
+                      "g.volumes.count", "g.volumes.totalGB",
+                      "a1.usedOcpu", "a1.capOcpu", "a1.usedMem", "a1.capMem",
+                      "e2.count", "e2.limit", "g.profileLabel", "g.region"):
+            self.assertIn(field, js, f"表格应取后端字段 {field}")
+        # 查询失败的账号也占一行，不丢行。
+        self.assertIn('colspan="4"', js)
+        self.assertIn("查询失败", js)
+        with open(os.path.join(ROOT, "web", "static", "css", "base.css"),
+                  encoding="utf-8") as f:
+            css = f.read()
+        self.assertIn(".table-wrap { overflow-x: auto; }", css,
+                      "小屏横向滚动靠 .table-wrap")
+        self.assertIn("table.data.cloud-report-table { min-width: 560px; }", css)
+        self.assertIn("table.data.cloud-report-table td { white-space: nowrap; }", css)
 
     def test_system_api_nested_shape(self):
         """后端 /api/system 返回嵌套格式（前端 app.js 已兼容该格式）。"""
@@ -369,14 +409,14 @@ class TestRealBackendIntegration(unittest.TestCase):
         self.assertEqual(resp.json().get("tasks"), [])
 
     def test_api_docs_disabled(self):
-        # v1.44.0 修 6（M-1）：FastAPI 自动文档未授权暴露，关掉后
+        # v1.45.0 修 6（M-1）：FastAPI 自动文档未授权暴露，关掉后
         # /docs、/redoc、/openapi.json 都应 404。
         for path in ("/docs", "/redoc", "/openapi.json"):
             resp = self.client.get(path)
             self.assertEqual(resp.status_code, 404, f"{path} 应 404")
 
     def test_login_cookie_secure_only_over_https(self):
-        # v1.44.0 修 7（L-2）：会话 cookie 缺 Secure 标志。
+        # v1.45.0 修 7（L-2）：会话 cookie 缺 Secure 标志。
         # Secure 只在 HTTPS 请求时设（nginx 透传 X-Forwarded-Proto）：
         # 生产面板走 nginx HTTPS，cookie 必须 Secure；http 直连与
         # 测试客户端不设，否则会话直接断掉。
@@ -397,7 +437,7 @@ class TestRealBackendIntegration(unittest.TestCase):
         self.assertIn("HttpOnly", set_cookie)
 
     def test_422_error_hides_server_paths(self):
-        # v1.44.0 修 8（L-4）：422 校验错误不能泄露服务器文件路径与行号。
+        # v1.45.0 修 8（L-4）：422 校验错误不能泄露服务器文件路径与行号。
         # 缺字段调登录接口，应 422，且错误里只有字段级信息。
         resp = self.client.post("/api/auth/login", json={})
         self.assertEqual(resp.status_code, 422)

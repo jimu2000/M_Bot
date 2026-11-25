@@ -173,27 +173,37 @@
         return;
       }
       var esc = MBot.escapeHtml;
-      bodyEl.innerHTML = groups.map(function (g) {
-        // 显示名优先（后端 v1.15.0 起带 profileLabel），旧缓存没有时回落配置键名。
+      // 云报告改表格（v1.45.0 修 13）：每区域一行，列覆盖全部信息；
+      // .table-wrap 横向滚动，手机上不溢出、不挤成一团。
+      // 列：区域（中文名 + region 代码）/ 实例（总数，RUNNING / TERMINATED
+      // 分开）/ 启动盘（块数 / GB）/ A1（核 已用/总量、内存 已用/总量）/
+      // E2（已用/总量）。查询失败的账号占一行，错误信息横跨其余 4 列。
+      var rows = groups.map(function (g) {
         var label = g.profileLabel || g.profile;
+        var regionCell = "<b>" + esc(label) + "</b>" +
+          (g.region ? '<br><span class="mono" style="font-size: 0.85em; color: var(--text-muted);">' + esc(g.region) + "</span>" : "");
         if (g.error) {
-          return '<div style="margin: 8px 0;"><b>' + esc(label) + '</b>：' +
-            '<span style="color: var(--danger);">查询失败：' + esc(g.error) + "</span></div>";
+          return "<tr><td>" + regionCell + '</td><td colspan="4" style="color: var(--danger);">查询失败：' + esc(g.error) + "</td></tr>";
         }
         var byState = g.instances.byState || {};
-        var states = Object.keys(byState).map(function (s) {
-          return s + " " + byState[s];
-        }).join("、") || "无实例";
+        var stateText = "RUNNING " + (byState.RUNNING || 0) +
+          "、TERMINATED " + (byState.TERMINATED || 0);
+        Object.keys(byState).forEach(function (s) {
+          if (s !== "RUNNING" && s !== "TERMINATED") stateText += "、" + s + " " + byState[s];
+        });
         var a1 = (g.quota && g.quota.a1) || {};
         var e2 = (g.quota && g.quota.e2) || {};
-        return '<div style="margin: 8px 0;"><b>' + esc(label) + "</b>" +
-          (g.region ? "（" + esc(g.region) + "）" : "") + "：" +
-          "实例 " + g.instances.total + " 台（" + esc(states) + "）；" +
-          "启动盘 " + g.volumes.count + " 块 / " + g.volumes.totalGB + " GB；" +
-          "A1 " + a1.usedOcpu + "/" + a1.capOcpu + " 核、" +
-          a1.usedMem + "/" + a1.capMem + " GB；" +
-          "E2 " + e2.count + "/" + e2.limit + " 台</div>";
+        return "<tr>" +
+          "<td>" + regionCell + "</td>" +
+          '<td>' + g.instances.total + ' 台<br><span style="font-size: 0.85em; color: var(--text-muted);">' + esc(stateText) + "</span></td>" +
+          '<td>' + g.volumes.count + ' 块<br><span style="font-size: 0.85em; color: var(--text-muted);">' + g.volumes.totalGB + " GB</span></td>" +
+          '<td>' + a1.usedOcpu + "/" + a1.capOcpu + ' 核<br><span style="font-size: 0.85em; color: var(--text-muted);">' + a1.usedMem + "/" + a1.capMem + " GB</span></td>" +
+          "<td>" + e2.count + "/" + e2.limit + " 台</td>" +
+        "</tr>";
       }).join("");
+      bodyEl.innerHTML = '<div class="table-wrap"><table class="data cloud-report-table">' +
+        "<thead><tr><th>区域</th><th>实例</th><th>启动盘</th><th>A1</th><th>E2</th></tr></thead>" +
+        "<tbody>" + rows + "</tbody></table></div>";
       loadingEl.hidden = true;
       bodyEl.hidden = false;
       if (res.generatedAtEpochSec) {
