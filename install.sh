@@ -27,11 +27,11 @@
 #     MBOT_INSTALL_CERT_METHOD=cfdns MBOT_INSTALL_CF_API_TOKEN=xxx \
 #     bash install.sh
 #   cfdns 的凭据也可以不传：安装时会先看 OCI 配置文件
-#   ~/oci_config（即 /root/oci_config）里有没有 [cloudflare] 段，
+#   $INSTALL_DIR/oci_config（安装目录下）里有没有 [cloudflare] 段，
 #   有就直接用（cf_token，或 cf_key + cf_email），不用再问。
 #
 # 注意：
-#   - 面板只绑 127.0.0.1:9527，不直接对外；外网访问走 nginx 反代 + HTTPS。
+#   - 面板（uvicorn）只绑 127.0.0.1，不直接对外；外网访问走 nginx 反代 + HTTPS，优先 443 端口，被占时回落 9527。
 #   - nginx 从 nginx.org 官方仓库装最新版（mainline 分支），不是发行版
 #     自带的旧版；仓库加不上时回落发行版版本，安装不中断。
 #   - 防火墙自动识别：ufw / firewalld / nftables / iptables，哪个在跑
@@ -40,20 +40,23 @@
 #     没配 API 认证时只警告，安装不中断。
 #   - Telegram Token 可留空：留空则只装面板，不装机器人。
 #   - 域名自动绑定：有域名时发证前先校验解析，没解析到本机且有
-#     Cloudflare 凭据（环境变量或 ~/oci_config 的 [cloudflare] 段）
+#     Cloudflare 凭据（环境变量或 $INSTALL_DIR/oci_config 的 [cloudflare] 段）
 #     就自动建/改 A 记录指到本机，等解析生效再发证。
 #   - 装完自动自检：证书（颁发者/有效期/域名匹配）、登录页 200、
 #     真实登录（admin 密码 + 会话 cookie）、http→https 跳转。
 #   - 有域名：自动申请 Let's Encrypt 证书，访问 https://你的域名。
-#     验证方式二选一：http（80 端口验证，默认，certbot）或 cfdns
-#     （Cloudflare DNS 验证，lego，需 CF API Token；验证不占端口，
-#     443 被别的服务占了时面板改走 9527 端口）。
+#     验证方式自动检测，不用选：已设置 Cloudflare 凭据
+#     （CF_API_TOKEN，或 CF_API_KEY + CF_EMAIL，或 CF_Key + CF_Email）
+#     就走 cfdns（Cloudflare DNS 验证，lego；验证不占端口），没凭据就走 http
+#     （80 端口验证，certbot）。MBOT_INSTALL_CERT_METHOD 仍可
+#     显式指定 http/cfdns。
 #   - 没域名：自动用服务器公网 IP 申请 Let's Encrypt IP 证书
 #     （lego，shortlived，有效期约 6 天，cron 每 2 天自动续期），
-#     访问 https://服务器IP:9527；申请失败时回落自签证书
+#     访问 https://服务器IP（443 空闲时）或 https://服务器IP:9527（443 被占时）；
+#     申请失败时回落自签证书
 #     （浏览器会提示证书不受信任，点“继续访问”即可）。
 #   - The admin password is auto-generated when not given, shown only
-#     once, and stored in /root/.mbot-admin-password (mode 600).
+#     once, and stored in $INSTALL_DIR/.mbot-admin-password (mode 600).
 #   - UFW opens the current SSH port first, so it never locks you out.
 #
 # English summary: one-click installer for M_Bot (Debian / Ubuntu, run as
@@ -68,7 +71,7 @@
 # README section on getting OCI API keys. Non-interactive install: pass
 # MBOT_INSTALL_TOKEN / MBOT_INSTALL_USER_ID / MBOT_INSTALL_PASSWORD /
 # MBOT_INSTALL_DOMAIN / MBOT_INSTALL_CERT_METHOD / MBOT_INSTALL_CF_API_TOKEN
-# as env vars. Notes: the panel binds 127.0.0.1:9527 only and is exposed via
+# as env vars. Notes: the panel binds 127.0.0.1 only and is exposed via
 # nginx + HTTPS; nginx comes from the official nginx.org repo (mainline),
 # falling back to the distro build; the firewall (ufw / firewalld / nftables
 # / iptables) opens SSH + 80 + 443 + 9527, and OCI security lists are opened
@@ -76,9 +79,10 @@
 # with a domain, the A record is auto-created via Cloudflare when credentials
 # are available; install ends with a self-check (cert, login page, real
 # login, http-to-https redirect); a domain gets a Let's Encrypt cert
-# (http or Cloudflare DNS-01 via lego), no domain gets a Let's Encrypt IP
-# cert (shortlived, ~6 days, auto-renewed every 2 days) or falls back to a
-# self-signed cert.
+# (validation auto-detected: Cloudflare credentials present means
+# Cloudflare DNS-01 via lego, otherwise http), no domain gets a Let's
+# Encrypt IP cert (shortlived, ~6 days, auto-renewed every 2 days) or
+# falls back to a self-signed cert.
 # ============================================================================
 
 set -euo pipefail
@@ -89,16 +93,17 @@ REPO_URL="https://github.com/jimu2000/M_Bot.git"
 # Install directory (code lives here; not /tmp, it is wiped on reboot). 安装目录（代码放这里；不要用 /tmp，重启会丢）。
 INSTALL_DIR="/opt/mbot"
 # Env file (tokens, password hash, session key; mode 600, read by systemd). 环境文件（Token、密码哈希、会话密钥等，600 权限，systemd 读入）。
-ENV_FILE="/root/.mbot.env"
+ENV_FILE="$INSTALL_DIR/.mbot.env"
+# Unified txt config (OCI profiles, Cloudflare, Bark; mode 600, loaded by the code at startup). 统一配置文件（纯文本，OCI 账号、Cloudflare、Bark 三节，600 权限，启动时由代码读入）。
+CONFIG_FILE="$INSTALL_DIR/M_bot_config.conf"
 # Admin password in plain text (only written when auto-generated; mode 600, shown once, keep it safe). 管理员密码明文（自动生成时才写，600 权限，只显示一次后请妥善保存）。
-ADMIN_PASSWORD_FILE="/root/.mbot-admin-password"
+ADMIN_PASSWORD_FILE="$INSTALL_DIR/.mbot-admin-password"
 # Python virtualenv directory (created during install). Python 虚拟环境目录（install 时创建）。
 VENV_DIR="$INSTALL_DIR/venv"
 # systemd service names. systemd 服务名。
 WEB_SERVICE="mbot-web"
 BOT_SERVICE="mbot-bot"
-# Panel port (nginx listens on it for users; 443 with a domain, this port without one). 面板端口（nginx 对外监听的端口，用户访问用；有域名时是 443，没域名时是这个端口）。
-# 没域名时是这个端口）。
+# Panel fallback port (nginx prefers 443 when free, and listens on this port when 443 is occupied). 面板备用端口（443 空闲时 nginx 走 443，443 被占时走这个端口）。
 PANEL_PORT=9527
 # Internal port (uvicorn binds 127.0.0.1:INTERNAL_PORT only; nginx proxies to it). 面板内部端口（uvicorn 只绑 127.0.0.1:INTERNAL_PORT，nginx 反代到它）。
 # Must differ from PANEL_PORT: after nginx binds 0.0.0.0:9527, uvicorn binding 127.0.0.1:9527 fails with address already in use (a wildcard bind also occupies loopback). 必须和 PANEL_PORT 不同：nginx 绑 0.0.0.0:9527 后，uvicorn 再绑 127.0.0.1:9527 会报 address already in use（Linux 上通配绑定会占住该端口的所有地址，包括回环）。
@@ -314,20 +319,32 @@ prompt_config() {
         esac
     fi
     CERT_METHOD="${MBOT_INSTALL_CERT_METHOD:-http}"
-    if [ -n "$DOMAIN" ] && [ -z "${MBOT_INSTALL_CERT_METHOD+x}" ]; then
-        printf "域名证书验证方式（http=80 端口验证[默认]，cfdns=Cloudflare DNS 验证）："
-        read -r CERT_METHOD || true
-        CERT_METHOD="${CERT_METHOD:-http}"
+    # Cloudflare credentials: read up front when a domain is set (needed for DNS auto-binding, and mandatory for cfdns). Priority: env vars (incl. CF_Key/CF_Email) > [cloudflare] section of $INSTALL_DIR/oci_config > interactive input (only asked for cfdns). Cloudflare 凭据：有域名时都先读一份（DNS 自动绑定要用；cfdns 验证更是必须）。优先级：环境变量（含 CF_Key/CF_Email）> OCI 配置文件 $INSTALL_DIR/oci_config 的 [cloudflare] 段 > 交互输入（只在 cfdns 时问）。
+    if [ -n "$DOMAIN" ]; then
+        load_cf_credentials || true
+    fi
+    # Certificate method: auto-detect, no prompt.
+    # - CF credentials set (CF_API_TOKEN, or CF_API_KEY + CF_EMAIL, or CF_Key + CF_Email) and a domain is given -> cfdns (Cloudflare DNS-01), the domain cert is issued automatically.
+    # - No CF credentials but a domain is given -> http (port-80 validation), domain cert.
+    # - No domain given (empty input = skip) -> IP cert (setup_nginx handles it; CERT_METHOD is unused).
+    # MBOT_INSTALL_CERT_METHOD still overrides explicitly (http/cfdns).
+    # 证书验证方式：自动检测，不再提问。
+    # - 已设置 CF 凭据（CF_API_TOKEN，或 CF_API_KEY + CF_EMAIL，或 CF_Key + CF_Email）且填了域名 -> cfdns（Cloudflare DNS-01），自动申请域名证书。
+    # - 没 CF 凭据但填了域名 -> http（80 端口验证），申请域名证书。
+    # - 没填域名（留空即跳过）-> IP 证书（setup_nginx 里处理，CERT_METHOD 不用）。
+    # MBOT_INSTALL_CERT_METHOD 仍可显式指定（http/cfdns）。
+    if [ -z "${MBOT_INSTALL_CERT_METHOD+x}" ]; then
+        if [ -n "$DOMAIN" ] && { [ -n "$CF_API_TOKEN" ] || { [ -n "$CF_API_KEY" ] && [ -n "$CF_EMAIL" ]; }; }; then
+            CERT_METHOD="cfdns"
+            info "检测到 Cloudflare 凭据，域名证书走 Cloudflare DNS 验证（cfdns），自动申请。"
+        else
+            CERT_METHOD="http"
+        fi
     fi
     case "$CERT_METHOD" in
         http|cfdns) : ;;
         *) die "验证方式只能是 http 或 cfdns。" ;;
     esac
-    # Cloudflare credentials: read up front when a domain is set (needed for DNS auto-binding, and mandatory for cfdns). Priority: env vars > [cloudflare] section of ~/oci_config > interactive input (only asked for cfdns). Cloudflare 凭据：有域名时都先读一份（DNS 自动绑定要用；cfdns 验证更是必须）。优先级：环境变量 > OCI 配置文件 ~/oci_config 的 [cloudflare] 段 > 交互输入（只在 cfdns 时问）。
-    CF_API_TOKEN=""; CF_API_KEY=""; CF_EMAIL=""
-    if [ -n "$DOMAIN" ]; then
-        load_cf_credentials || true
-    fi
     if [ "$CERT_METHOD" = "cfdns" ]; then
         if [ -z "$CF_API_TOKEN" ] && [ -z "$CF_API_KEY" ]; then
             printf "Cloudflare API Token（Zone:DNS:Edit + Zone:Zone:Read 权限）："
@@ -342,7 +359,7 @@ prompt_config() {
 }
 
 # ---------- 代码 ----------
-# Update installed code to the latest: git pull first; on fast-forward failure use fetch + reset to force-sync (only git-tracked code files; the env file at /root/.mbot.env, runtime data and __pycache__ are not in git and are untouched). If both fail, exit instead of silently installing with stale code. 把已安装的代码更新到最新版：先 git pull，快进失败时改用 fetch + reset 强制同步（只动 git 跟踪的代码文件；环境文件在 /root/.mbot.env、运行时数据与 __pycache__ 都不在 git 里，不受影响）；两条路都失败时直接退出，绝不静默用旧代码继续装。
+# Update installed code to the latest: git pull first; on fast-forward failure use fetch + reset to force-sync (only git-tracked code files; the env file at $INSTALL_DIR/.mbot.env, runtime data and __pycache__ are not in git and are untouched). If both fail, exit instead of silently installing with stale code. 把已安装的代码更新到最新版：先 git pull，快进失败时改用 fetch + reset 强制同步（只动 git 跟踪的代码文件；环境文件在 $INSTALL_DIR/.mbot.env、运行时数据与 __pycache__ 都不在 git 里，不受影响）；两条路都失败时直接退出，绝不静默用旧代码继续装。
 update_code() {
     info "更新代码到最新版…"
     if (cd "$INSTALL_DIR" && git pull --ff-only); then
@@ -436,6 +453,77 @@ EOF
     ok "环境文件已写入。"
 }
 
+# ---------- 统一配置文件 ----------
+# Write the unified txt config (M_bot_config.conf: oci / cloudflare /
+# bark, plus the reserved sections) when it does not exist yet. OCI
+# profiles come from the OCI config file ($INSTALL_DIR/oci_config, if present;
+# old ~/oci_config and ~/.oci/config are still read as fallbacks);
+# Cloudflare credentials come from the CF_* shell vars gathered by
+# prompt_config (env vars take priority over the [cloudflare] section
+# of the OCI config); bark is left empty for the user to fill later.
+# The file layout (with bilingual comments) comes from
+# mbot_config.save_config, so the format lives in one place. Values
+# pass to Python via env vars to avoid shell quoting issues.
+# 写入统一配置文件（M_bot_config.conf：oci / cloudflare / bark 三节，
+# 另加预留节），不存在时才写。OCI profile 从 OCI 配置文件
+# （$INSTALL_DIR/oci_config，有的话；旧的 ~/oci_config 与 ~/.oci/config
+# 仍作回退）读；Cloudflare 凭据从 prompt_config 收集
+# 的 CF_* 变量来（环境变量优先于 OCI 配置里的 [cloudflare] 段）；
+# bark 留空、用户以后填。文件排版（双语注释）由 mbot_config.save_config
+# 生成，格式只在一处维护。值经环境变量传给 Python，避免 shell 引用
+# 转义问题。注意：CF_API_TOKEN 在 txt 里没有位置，不写进去（它继续
+# 留在 env 文件里经 systemd 生效）。
+write_config_txt() {
+    [ -f "$CONFIG_FILE" ] && { info "统一配置文件已存在，不覆盖。"; return 0; }
+    info "写入统一配置文件 $CONFIG_FILE（600 权限）…"
+    CF_JSON_KEY="${CF_API_KEY:-}" \
+    CF_JSON_EMAIL="${CF_EMAIL:-}" MBOT_CONFIG_PATH="$CONFIG_FILE" \
+    MBOT_INSTALL_DIR="$INSTALL_DIR" \
+    "$VENV_DIR/bin/python" - <<'PYEOF_INNER' || die "写入统一配置文件失败。"
+import configparser
+import os
+import sys
+
+sys.path.insert(0, os.environ["MBOT_INSTALL_DIR"])
+import mbot_config
+
+path = os.environ["MBOT_CONFIG_PATH"]
+cfg = mbot_config.empty_config()
+# OCI profiles from the OCI config file (first existing file wins).
+oci_cfg = ""
+for candidate in (os.path.join(os.environ["MBOT_INSTALL_DIR"],
+                               "oci_config"),
+                  os.path.expanduser("~/oci_config"),
+                  os.path.expanduser("~/.oci/config")):
+    if os.path.isfile(candidate):
+        oci_cfg = candidate
+        break
+if oci_cfg:
+    parser = configparser.ConfigParser(
+        default_section="__oci_no_defaults__", interpolation=None)
+    try:
+        parser.read(oci_cfg, encoding="utf-8")
+        for section in parser.sections():
+            items = {k: v.strip() for k, v in parser.items(section)}
+            if section.lower() == "cloudflare":
+                if items.get("cf_key") and "key" not in cfg["cloudflare"]:
+                    cfg["cloudflare"]["key"] = items["cf_key"]
+                if items.get("cf_email") and "email" not in cfg["cloudflare"]:
+                    cfg["cloudflare"]["email"] = items["cf_email"]
+                continue
+            cfg["oci"]["profiles"][section] = items
+    except configparser.Error:
+        pass
+# Cloudflare credentials from the installer (env vars win).
+if os.environ.get("CF_JSON_KEY"):
+    cfg["cloudflare"]["key"] = os.environ["CF_JSON_KEY"]
+if os.environ.get("CF_JSON_EMAIL"):
+    cfg["cloudflare"]["email"] = os.environ["CF_JSON_EMAIL"]
+mbot_config.save_config(cfg, path)
+PYEOF_INNER
+    ok "统一配置文件已写入 $CONFIG_FILE。"
+}
+
 # ---------- systemd 单元 ----------
 # Services that actually exist on this machine (panel always, bot only when installed). start/stop/restart/status/log/upgrade use this list to avoid calling systemctl on a missing bot service (which would error out). 本机上实际存在的 M_Bot 服务（面板一定有，机器人只在装了时有）。start/stop/restart/status/log/upgrade 都走它，避免对不存在的机器人服务调 systemctl（会报错退出）。
 mbot_services() {
@@ -484,8 +572,9 @@ WorkingDirectory=${INSTALL_DIR}
 Environment="PATH=${VENV_DIR}/bin:/usr/local/bin:/usr/bin:/bin"
 Environment="SUPPRESS_LABEL_WARNING=True"
 EnvironmentFile=${ENV_FILE}
-# The panel and bot both read/write the env file through web/config.py's ENV_FILE (which defaults to the old deploy path); the installer env lives at /root/.mbot.env and must be pointed at explicitly, or account add/remove writes land in a stray file. 面板与机器人读写 env 文件都走 web/config.py 的 ENV_FILE（它默认指向旧部署路径）；安装版 env 在 /root/.mbot.env，必须显式指过去，否则删账号 env_removed:false、加账号写进 stray 文件。
+# The panel and bot both read/write the env file through web/config.py's ENV_FILE (which defaults to the install dir); the installer env lives at $INSTALL_DIR/.mbot.env and must be pointed at explicitly, or account add/remove writes land in a stray file. 面板与机器人读写 env 文件都走 web/config.py 的 ENV_FILE（它默认指向安装目录）；安装版 env 在 $INSTALL_DIR/.mbot.env，必须显式指过去，否则删账号 env_removed:false、加账号写进 stray 文件。
 Environment="MBOT_WEB_ENV_FILE=${ENV_FILE}"
+Environment="MBOT_CONFIG_FILE=${CONFIG_FILE}"
 ExecStart=${VENV_DIR}/bin/uvicorn web.app:app --host 127.0.0.1 --port ${INTERNAL_PORT}
 Restart=always
 RestartSec=5
@@ -510,6 +599,7 @@ Environment="PATH=${VENV_DIR}/bin:/usr/local/bin:/usr/bin:/bin"
 Environment="SUPPRESS_LABEL_WARNING=True"
 EnvironmentFile=${ENV_FILE}
 Environment="MBOT_WEB_ENV_FILE=${ENV_FILE}"
+Environment="MBOT_CONFIG_FILE=${CONFIG_FILE}"
 ExecStart=${VENV_DIR}/bin/python -m tgbot.bot
 Restart=on-failure
 RestartSec=10
@@ -569,8 +659,30 @@ NGINX_HTTP_MAPS='    # map 哈希桶：正则较长，默认 64 字节桶会溢�
         "~*nmap|sqlmap|nikto|zgrab|masscan|shodan|fofa|censys|nuclei|scanner" 1;
     }'
 NGINX_BAD_BOT_GUARD='        if ($is_bad_bot) { return 403; }'
+# Is port 443 free for the panel (no non-nginx listener)? 443 空不空闲（有没有非 nginx 进程在监听）？
+# Returns 0 (true) when 443 is free or only nginx holds it; 1 when another service (e.g. xray) holds it, or ss is missing.
+# 443 空闲（或只有 nginx 在听）时返回 0；被别的服务（如 xray）占了、或没有 ss 命令时返回 1。
+port_443_free() {
+    if ! command_exists ss; then
+        return 1
+    fi
+    ! ss -ltnp 2>/dev/null | grep ':443 ' | grep -qv nginx
+}
+
+# Preferred panel port: 443 (standard HTTPS) when free, else PANEL_PORT (9527).
+# 面板优先端口：443 空闲时用 443（标准 HTTPS 端口），被占时回落 PANEL_PORT（9527）。
+# Echoes the port number. 输出端口号。
+pick_panel_port() {
+    if port_443_free; then
+        echo 443
+    else
+        echo "$PANEL_PORT"
+    fi
+}
+
 write_nginx_selfsigned() {
     local cert_dir="$SELFSIGN_DIR"
+    local port="${PANEL_LISTEN_PORT:-$(pick_panel_port)}"
     mkdir -p "$cert_dir"
     if [ ! -f "$cert_dir/fullchain.pem" ] || [ ! -f "$cert_dir/privkey.pem" ]; then
         info "生成自签证书（有效期 10 年，仅用于加密传输）…"
@@ -581,11 +693,11 @@ write_nginx_selfsigned() {
             || die "自签证书生成失败。"
     fi
     cat > "$NGINX_CONF" <<EOF
-# M_Bot panel reverse proxy (generated by install.sh, self-signed cert, listens on ${PANEL_PORT}). M_Bot 面板反代（install.sh 生成，自签证书，监听 ${PANEL_PORT}）。
+# M_Bot panel reverse proxy (generated by install.sh, self-signed cert, listens on ${port}). M_Bot 面板反代（install.sh 生成，自签证书，监听 ${port}）。
 ${NGINX_HTTP_MAPS}
 server {
-    listen ${PANEL_PORT} ssl;
-    listen [::]:${PANEL_PORT} ssl;
+    listen ${port} ssl;
+    listen [::]:${port} ssl;
     server_name _;
 
     ssl_certificate ${cert_dir}/fullchain.pem;
@@ -615,7 +727,7 @@ EOF
     nginx -t >/dev/null 2>&1 || die "nginx 配置校验失败，请检查 $NGINX_CONF。"
     systemctl reload nginx 2>/dev/null || systemctl restart nginx \
         || die "nginx 重载失败，请看 journalctl -u nginx。"
-    ok "nginx 反代已生效（自签证书，端口 ${PANEL_PORT}）。"
+    ok "nginx 反代已生效（自签证书，端口 ${port}）。"
 }
 
 write_nginx_domain() {
@@ -666,11 +778,11 @@ write_nginx_domain() {
 }
 
 # ---------- lego（IP 证书 / Cloudflare DNS-01） ----------
-# Read CF credentials from the [cloudflare] section of ~/oci_config (old fallback ~/.oci/config): cf_token / cf_key (cf_account_key) / cf_email. When usable, set CF_API_TOKEN / CF_API_KEY / CF_EMAIL and return 0, else return 1 (caller asks the user instead). 从 OCI 配置文件（~/oci_config，旧版回退 ~/.oci/config）的 [cloudflare] 段读 CF 凭据：cf_token / cf_key（cf_account_key）/ cf_email。读到可用的就设 CF_API_TOKEN / CF_API_KEY / CF_EMAIL 三个变量并返回 0，否则返回 1（调用方改问用户）。
+# Read CF credentials from the [cloudflare] section of $INSTALL_DIR/oci_config (old fallbacks ~/oci_config, ~/.oci/config): cf_token / cf_key (cf_account_key) / cf_email. When usable, set CF_API_TOKEN / CF_API_KEY / CF_EMAIL and return 0, else return 1 (caller asks the user instead). 从 OCI 配置文件（$INSTALL_DIR/oci_config，旧版回退 ~/oci_config 与 ~/.oci/config）的 [cloudflare] 段读 CF 凭据：cf_token / cf_key（cf_account_key）/ cf_email。读到可用的就设 CF_API_TOKEN / CF_API_KEY / CF_EMAIL 三个变量并返回 0，否则返回 1（调用方改问用户）。
 # Parsed with python3 (configparser, section names case-insensitive; install_deps already installed python3 and prompt_config runs after it). 用 python3 解析（configparser，段名大小写不敏感；install_deps 已装好 python3，prompt_config 在它之后跑）。
 read_cf_from_oci_config() {
     local cfg=""
-    for f in "$HOME/oci_config" "$HOME/.oci/config"; do
+    for f in "$INSTALL_DIR/oci_config" "$HOME/oci_config" "$HOME/.oci/config"; do
         [ -f "$f" ] && cfg="$f" && break
     done
     [ -n "$cfg" ] || return 1
@@ -701,12 +813,12 @@ print(email)
     return 0
 }
 
-# Read the tenancy OCID from the [DEFAULT] section of ~/oci_config (old fallback ~/.oci/config); the root compartment is the tenancy. Used at install time to fill MBOT_COMPARTMENT_DEFAULT instead of a placeholder (a placeholder makes the panel instance list 502 Invalid compartmentId and backup creation 404). 从 OCI 配置文件（~/oci_config，旧版回退 ~/.oci/config）的 [DEFAULT] 段读 tenancy OCID（根 compartment 即 tenancy）。安装时用它填 MBOT_COMPARTMENT_DEFAULT，不再写占位符（占位符会让面板实例列表报 502 “Invalid compartmentId”、创建备份报 404）。
+# Read the tenancy OCID from the [DEFAULT] section of $INSTALL_DIR/oci_config (old fallbacks ~/oci_config, ~/.oci/config); the root compartment is the tenancy. Used at install time to fill MBOT_COMPARTMENT_DEFAULT instead of a placeholder (a placeholder makes the panel instance list 502 Invalid compartmentId and backup creation 404). 从 OCI 配置文件（$INSTALL_DIR/oci_config，旧版回退 ~/oci_config 与 ~/.oci/config）的 [DEFAULT] 段读 tenancy OCID（根 compartment 即 tenancy）。安装时用它填 MBOT_COMPARTMENT_DEFAULT，不再写占位符（占位符会让面板实例列表报 502 “Invalid compartmentId”、创建备份报 404）。
 # Return 1 when unreadable (caller omits the line; the panel derives it from the tenancy at startup). 读不到时返回 1（调用方不写这行，面板启动时再从 tenancy 推导）。
 # Note: configparser treats [DEFAULT] as the default section, so it must be renamed to be readable. 注意 configparser 默认把 [DEFAULT] 当默认段，必须换名才能读到。
 read_tenancy_from_oci_config() {
     local cfg=""
-    for f in "$HOME/oci_config" "$HOME/.oci/config"; do
+    for f in "$INSTALL_DIR/oci_config" "$HOME/oci_config" "$HOME/.oci/config"; do
         [ -f "$f" ] && cfg="$f" && break
     done
     [ -n "$cfg" ] || return 1
@@ -730,8 +842,8 @@ print(tenancy)
 
 load_cf_credentials() {
     CF_API_TOKEN="${MBOT_INSTALL_CF_API_TOKEN:-${CF_API_TOKEN:-}}"
-    CF_API_KEY="${MBOT_INSTALL_CF_API_KEY:-${CF_API_KEY:-}}"
-    CF_EMAIL="${MBOT_INSTALL_CF_EMAIL:-${CF_EMAIL:-}}"
+    CF_API_KEY="${MBOT_INSTALL_CF_API_KEY:-${CF_API_KEY:-${CF_Key:-}}}"
+    CF_EMAIL="${MBOT_INSTALL_CF_EMAIL:-${CF_EMAIL:-${CF_Email:-}}}"
     if [ -z "$CF_API_TOKEN" ] && [ -z "$CF_API_KEY" ]; then
         if read_cf_from_oci_config; then
             info "从 OCI 配置文件 [cloudflare] 段读到 Cloudflare 凭据，直接用它。"
@@ -936,6 +1048,7 @@ EOF
 
 write_nginx_lego_ip() {
     local ip="$1"
+    local port="${PANEL_LISTEN_PORT:-$(pick_panel_port)}"
     local crt="$LEGO_CERT_DIR/${ip}.crt" key="$LEGO_CERT_DIR/${ip}.key"
     [ -f "$crt" ] && [ -f "$key" ] \
         || { warn "lego 证书文件不存在：$crt"; return 1; }
@@ -957,8 +1070,8 @@ server {
 }
 
 server {
-    listen ${PANEL_PORT} ssl;
-    listen [::]:${PANEL_PORT} ssl;
+    listen ${port} ssl;
+    listen [::]:${port} ssl;
     server_name ${ip};
 
     ssl_certificate ${crt};
@@ -988,7 +1101,7 @@ EOF
     nginx -t >/dev/null 2>&1 || die "nginx 配置校验失败，请检查 $NGINX_CONF。"
     systemctl reload nginx 2>/dev/null || systemctl restart nginx \
         || die "nginx 重载失败，请看 journalctl -u nginx。"
-    ok "nginx 反代已生效（Let's Encrypt IP 证书，端口 ${PANEL_PORT}）。"
+    ok "nginx 反代已生效（Let's Encrypt IP 证书，端口 ${port}）。"
 }
 
 # Full config after a domain cert is issued (shared by lego cfdns and certbot http): panel on 443 ssl, or ${PANEL_PORT} when 443 is held by xray or similar (the cert stays valid; just include the port in the address); port 80 redirects. 域名拿到证书后的完整配置（lego cfdns 与 certbot http 共用）：面板走 443 ssl，443 已被 xray 之类服务占了时改走 ${PANEL_PORT}（证书照样有效，地址带端口就行）；80 端口做跳转。
@@ -998,15 +1111,11 @@ write_nginx_domain_https() {
     local domain="$1" crt="$2" key="$3" acme_on_80="${4:-0}"
     [ -f "$crt" ] && [ -f "$key" ] \
         || { warn "证书文件不存在：$crt"; return 1; }
-    local port=443 redirect="https://\$host\$request_uri"
-    if command_exists ss; then
-        local holder
-        holder="$(ss -ltnp 2>/dev/null | grep ':443 ' | grep -v nginx | head -n 1 || true)"
-        if [ -n "$holder" ]; then
-            warn "443 端口已被占用，面板改走 ${PANEL_PORT} 端口。"
-            port="$PANEL_PORT"
-            redirect="https://\$host:${PANEL_PORT}\$request_uri"
-        fi
+    local port="${PANEL_LISTEN_PORT:-$(pick_panel_port)}"
+    local redirect="https://\$host\$request_uri"
+    if [ "$port" != "443" ]; then
+        warn "443 端口已被占用，面板改走 ${port} 端口。"
+        redirect="https://\$host:${port}\$request_uri"
     fi
     CERT_PORT="$port"
     local acme_location=""
@@ -1132,7 +1241,7 @@ request_domain_cert_cfdns() {
 }
 
 setup_nginx() {
-    # When 9527 is held by a non-nginx process: fine if the panel runs on 443 (domain set and 443 free), just warn; otherwise the panel needs 9527 and cannot bind, so stop the holder first. 9527 已被非 nginx 进程占用时：面板走 443 就没关系（有域名且 443 空闲），只警告；否则面板要走 9527，绑不上只能先停掉它。
+    # When 9527 is held by a non-nginx process: fine if the panel runs on 443 (443 free), just warn; otherwise the panel needs 9527 and cannot bind, so stop the holder first. 9527 已被非 nginx 进程占用时：443 空闲、面板走 443 就没关系，只警告；否则面板要走 9527，绑不上只能先停掉它。
     if command_exists ss; then
         local holder
         holder="$(ss -ltnp 2>/dev/null | grep ":${PANEL_PORT} " | head -n 1 || true)"
@@ -1140,13 +1249,8 @@ setup_nginx() {
             case "$holder" in
                 *nginx*) : ;;  # 已是我们自己的 nginx，重装时正常
                 *)
-                    local port443_free=0
-                    if [ -n "${DOMAIN:-}" ] \
-                        && ! ss -ltnp 2>/dev/null | grep ':443 ' | grep -qv nginx; then
-                        port443_free=1
-                    fi
-                    if [ "$port443_free" = "1" ]; then
-                        warn "端口 ${PANEL_PORT} 已被占用：${holder}。域名 + 443 空闲，面板走 443，不影响（证书申请失败回落自签时会绑不上 ${PANEL_PORT}，届时请先停掉它）。"
+                    if port_443_free; then
+                        warn "端口 ${PANEL_PORT} 已被占用：${holder}。443 空闲，面板走 443，不影响。"
                     else
                         die "端口 ${PANEL_PORT} 已被占用：${holder}。请先停掉它再安装。"
                     fi
@@ -1154,6 +1258,8 @@ setup_nginx() {
             esac
         fi
     fi
+    # 面板优先走 443（标准 HTTPS 端口），被占时回落 PANEL_PORT（9527）；下面所有写配置的函数都用这个端口。
+    PANEL_LISTEN_PORT="$(pick_panel_port)"
     if [ -n "${DOMAIN:-}" ]; then
         ensure_dns_points_here "$DOMAIN" || true
         if [ "${CERT_METHOD:-http}" = "cfdns" ]; then
@@ -1206,14 +1312,20 @@ detect_firewall() {
     echo "none"
 }
 
-# Ports the panel needs (excluding SSH): 80 always + 9527 + 443 (with a domain). 面板需要的端口（不含 SSH）：80 始终 + 9527 + 443（有域名时）。
-# Do not open 9527 when another service holds it: the proxy cannot bind 9527, and opening the port would expose someone else's service. 9527 被别的服务占了时不放行：反代绑不上 9527，放行只会把别人的服务暴露出去。
+# Ports the panel needs (excluding SSH): 80 always + the panel's listen port (443 when free, else 9527). 面板需要的端口（不含 SSH）：80 始终 + 面板实际监听的端口（443 空闲时走 443，被占时走 9527）。
+# Do not open 9527 when the panel uses 443: nothing listens on 9527 then, and opening it could expose someone else's service later. 面板走 443 时不放行 9527：那时 9527 上没东西，放行只会以后暴露别人的服务。
 panel_ports() {
     local ports="80"
-    if ! command_exists ss || ! ss -ltnp 2>/dev/null | grep ":${PANEL_PORT} " | grep -qv nginx; then
-        ports="$ports ${PANEL_PORT}"
+    local panel_port
+    panel_port="$(pick_panel_port)"
+    if [ "$panel_port" = "443" ]; then
+        ports="$ports 443"
+    else
+        # 443 被占，面板回落 PANEL_PORT；只有它没被别的服务占时才放行。
+        if ! command_exists ss || ! ss -ltnp 2>/dev/null | grep ":${PANEL_PORT} " | grep -qv nginx; then
+            ports="$ports ${PANEL_PORT}"
+        fi
     fi
-    [ -n "${DOMAIN:-}" ] && ports="$ports 443"
     echo "$ports"
 }
 
@@ -1324,7 +1436,7 @@ _firewall_iptables() {
 
 # ---------- 云端安全列表（OCI） ----------
 # The local firewall is not enough: the OCI instance's security list (security group) must also allow 80/443/9527, or traffic still cannot reach the panel from outside. Added automatically here via the OCI API. 本机防火墙开了还不够：OCI 实例的安全列表（安全组）那层也要放行 80/443/9527，否则外网照样进不来。这里经 OCI API 自动加规则。
-# Only on OCI (confirmed by reading instance metadata); auth prefers the existing OCI config file (~/oci_config), falling back to instance principal (needs a dynamic group + policy). 只在 OCI 上跑（读实例元数据确认）；认证优先用已有的 OCI 配置文件（~/oci_config），没有时试实例主体（需动态组 + 策略）。
+# Only on OCI (confirmed by reading instance metadata); auth prefers the existing OCI config file ($INSTALL_DIR/oci_config), falling back to instance principal (needs a dynamic group + policy). 只在 OCI 上跑（读实例元数据确认）；认证优先用已有的 OCI 配置文件（$INSTALL_DIR/oci_config），没有时试实例主体（需动态组 + 策略）。
 # Any step failing only warns and prints manual steps; install is not interrupted. 任何一步失败都只警告 + 打印手动操作步骤，安装不中断。
 open_cloud_ports() {
     local meta
@@ -1349,7 +1461,7 @@ open_cloud_ports() {
 _oci_open_ports() {
     local oci_bin="$1" ports="$2"
     local auth_args=""
-    if [ ! -f "$HOME/oci_config" ] && [ ! -f "$HOME/.oci/config" ]; then
+    if [ ! -f "$INSTALL_DIR/oci_config" ] && [ ! -f "$HOME/oci_config" ] && [ ! -f "$HOME/.oci/config" ]; then
         auth_args="--auth instance_principal"
     fi
     export SUPPRESS_LABEL_WARNING=True
@@ -1552,7 +1664,12 @@ self_test() {
             base_url="https://${DOMAIN}:${CERT_PORT}"
         fi
     else
-        base_url="https://${ip}:${PANEL_PORT}"
+        panel_port="${PANEL_LISTEN_PORT:-$PANEL_PORT}"
+        if [ "$panel_port" = "443" ]; then
+            base_url="https://${ip}"
+        else
+            base_url="https://${ip}:${panel_port}"
+        fi
     fi
     host="$(printf '%s' "$base_url" | sed -E 's|https?://([^:/]+).*|\1|')"
     port="$(printf '%s' "$base_url" | sed -E 's|.*:([0-9]+)$|\1|')"
@@ -1645,7 +1762,12 @@ print_access_info() {
         if [ -n "${DOMAIN:-}" ]; then
             echo "域名证书申请失败，已回落自签证书（域名解析到本机后可重跑安装）。"
         fi
-        echo "面板地址：https://${ip}:${PANEL_PORT}/login"
+        panel_port="${PANEL_LISTEN_PORT:-$PANEL_PORT}"
+        if [ "$panel_port" = "443" ]; then
+            echo "面板地址：https://${ip}/login"
+        else
+            echo "面板地址：https://${ip}:${panel_port}/login"
+        fi
         if [ "${CERT_KIND:-selfsigned}" = "ip" ]; then
             echo "（Let's Encrypt IP 证书，有效期约 6 天，cron 每 2 天自动续期）"
         else
@@ -1662,10 +1784,10 @@ print_access_info() {
     echo "下一步："
     if [ "${BOT_ENABLED:-1}" = "1" ]; then
         echo "  1. 在 Telegram 里找你的机器人，发 /uploadapi 上传 OCI 配置"
-        echo "     （~/oci_config + API 私钥），或手动放到服务器的 /root/ 下。"
+        echo "     （安装目录的 oci_config + API 私钥），或手动放到服务器的安装目录（oci_config）与 /root/（API 私钥）下。"
         echo "  2. 发 /oracle 打开菜单，点“切换账号/区域”确认账号已接通。"
     else
-        echo "  1. 把 OCI 配置手动放到服务器的 /root/ 下（~/oci_config + API 私钥），"
+        echo "  1. 把 OCI 配置手动放到服务器的安装目录下（oci_config + API 私钥，私钥放 /root/），"
         echo "     面板里切换账号即可用；或在 $ENV_FILE 里填 Token 后重跑安装补装机器人。"
     fi
     if [ "${CLOUD_OPENED:-0}" = "1" ]; then
@@ -1675,7 +1797,7 @@ print_access_info() {
         if [ -n "${DOMAIN:-}" ] && [ "${CERT_OK:-0}" = "1" ]; then
             echo "  ${CERT_PORT:-443} 端口（本机防火墙已放行，云上那层也要放行）。"
         else
-            echo "  ${PANEL_PORT} 端口（本机防火墙已放行，云上那层也要放行）。"
+            echo "  ${PANEL_LISTEN_PORT:-$PANEL_PORT} 端口（本机防火墙已放行，云上那层也要放行）。"
             if [ "${CERT_KIND:-selfsigned}" = "ip" ]; then
                 echo "IP 证书续期要走 80 端口验证，云上安全组也要放行 80。"
             fi
@@ -1695,6 +1817,7 @@ cmd_install() {
     install_code
     setup_venv
     write_env_file
+    write_config_txt
     write_systemd_units
     if [ "$FRESH_INSTALL" = "1" ]; then
         # Order: open both firewall layers (local + cloud) before requesting certs — http-01 needs port 80 reachable from outside, and a blocked cloud layer fails issuance. 顺序：先放行两层防火墙（本机 + 云端），再申请证书——http-01 验证要 80 端口从外网能通，云上没放行会发证失败。
@@ -1886,7 +2009,7 @@ cmd_upgrade() {
 cmd_uninstall() {
     require_root
     echo "即将卸载 M_Bot：停服务、删 systemd 单元、删 nginx 反代、删 $INSTALL_DIR。"
-    echo "环境文件 $ENV_FILE 与密码文件 $ADMIN_PASSWORD_FILE 会保留（凭据不删）。"
+    echo "环境文件 $ENV_FILE、统一配置文件 $CONFIG_FILE 与密码文件 $ADMIN_PASSWORD_FILE 会保留（凭据不删）。"
     echo "证书续期 cron 与脚本、定时自动升级 cron 与日志会删掉；/etc/lego 里的证书与 CF Token 保留（重装还能用）。"
     printf "确认卸载？输入 yes 继续："
     read -r ans || true
@@ -1901,7 +2024,7 @@ cmd_uninstall() {
     rm -f "$NGINX_CONF"
     nginx -t >/dev/null 2>&1 && systemctl reload nginx 2>/dev/null || true
     rm -rf "$INSTALL_DIR"
-    ok "已卸载。凭据仍在 $ENV_FILE（想彻底删掉请手动 rm 它）。"
+    ok "已卸载。凭据仍在 $ENV_FILE 与 $CONFIG_FILE（想彻底删掉请手动 rm 它们）。"
 }
 
 # ---------- 入口 ----------

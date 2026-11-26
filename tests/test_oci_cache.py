@@ -27,15 +27,15 @@ from web import oci_cache
 RAW_INSTANCES = [
     {"id": "ocid1.instance.a", "display-name": "ARM_2026-01-03",
      "shape": "VM.Standard.A1.Flex", "lifecycle-state": "RUNNING",
-     "time-created": "2026-11-26T00:00:00Z",
+     "time-created": "2026-01-03T00:00:00Z",
      "shape-config": {"ocpus": 1, "memory-in-gbs": 6}},
     {"id": "ocid1.instance.b", "display-name": "AMD_2026-01-03",
      "shape": "VM.Standard.E2.1.Micro", "lifecycle-state": "RUNNING",
-     "time-created": "2026-11-26T00:00:00Z",
+     "time-created": "2026-01-03T00:00:00Z",
      "shape-config": {"ocpus": 1, "memory-in-gbs": 1}},
     {"id": "ocid1.instance.c", "display-name": "OLD",
      "shape": "VM.Standard.A1.Flex", "lifecycle-state": "TERMINATED",
-     "time-created": "2026-11-25T00:00:00Z",
+     "time-created": "2026-01-02T00:00:00Z",
      "shape-config": {"ocpus": 1, "memory-in-gbs": 6}},
 ]
 
@@ -43,11 +43,11 @@ RAW_VOLUMES = [
     {"id": "ocid1.bootvolume.a", "display-name": "boot-a",
      "size-in-gbs": 50, "lifecycle-state": "AVAILABLE",
      "availability-domain": "wgwP:AP-SINGAPORE-1-AD-1",
-     "time-created": "2026-11-26T00:00:00Z"},
+     "time-created": "2026-01-03T00:00:00Z"},
     {"id": "ocid1.bootvolume.b", "display-name": "boot-b",
      "size-in-gbs": 47, "lifecycle-state": "TERMINATED",
      "availability-domain": "wgwP:AP-SINGAPORE-1-AD-1",
-     "time-created": "2026-11-25T00:00:00Z"},
+     "time-created": "2026-01-02T00:00:00Z"},
 ]
 
 

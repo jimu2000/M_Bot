@@ -61,10 +61,10 @@ logger = logging.getLogger(__name__)
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # Panel version file. 面板版本文件。
 VERSION_FILE = os.path.join(PROJECT_ROOT, "VERSION")
-# Panel admin plain-text password file (/raninfo writes here, mode 600; at deploy time it is /root/.rbot-clone-admin-password, and since the bot runs as root, ~ is /root). 面板管理员明文密码文件（/raninfo 写这里，600 权限；部署时是 /root/.rbot-clone-admin-password，机器人以 root 运行所以 ~ 就是 /root）。
+# Panel admin plain-text password file (/raninfo writes here, mode 600; at deploy time it is <install dir>/.rbot-clone-admin-password). 面板管理员明文密码文件（/raninfo 写这里，600 权限；部署时是安装目录下的 .rbot-clone-admin-password）。
 ADMIN_PASSWORD_FILE = os.environ.get(
     "MBOT_WEB_ADMIN_PASSWORD_FILE",
-    os.path.expanduser("~/.rbot-clone-admin-password"))
+    os.path.join(PROJECT_ROOT, ".rbot-clone-admin-password"))
 # Length of the new password /raninfo generates (letters + digits, meeting the panel password strength requirement). /raninfo 生成的新密码长度（字母+数字，满足面板密码强度要求）。
 RANINFO_PASSWORD_LENGTH = 20
 # =====================================================

@@ -9,7 +9,7 @@
   任务列表/详情/取消/删除、云报告、创建默认值与创建实例。
 - 写操作（启停/删除/扩容/创建/恢复等）只做假动作：把各路由会调的
   OCI 入口 patch 成抛 AssertionError，仍返回成功，证明不调 OCI。
-- 模拟数据不含真实租户名、真实 IP、真实域名等真实信息。
+- 模拟数据不含真实租户名、真实 IP、136137 等真实信息。
 - 登录页与实例页含“演示模式”提示。
 - 演示模式不用登录：未登录直接进面板（自动按 demo 用户建会话），
   /login 跳面板首页；非演示模式未登录仍跳 /login、API 仍 401。
@@ -36,18 +36,13 @@ from web.auth import LOGIN_GUARD, SESSIONS, hash_password
 
 TEST_PASSWORD = "test-admin-password"
 
-# Demo data uses only TEST-NET / example addresses; these markers must never
-# appear in demo payloads. The real canary values (actual tenant names,
-# domains, and server IP prefixes) are NOT committed to this public repo;
-# they are verified by the release-time desensitization grep instead.
-# 演示数据只用 TEST-NET / 示例地址；以下标记绝不能出现在演示响应里。
-# 真实的哨兵值（实际租户名、域名、服务器 IP 前缀）不进公开仓库，
-# 由发版时的脱敏 grep 检查。
+# Demo data uses only TEST-NET / example addresses; these must never appear
+# in demo payloads. 演示数据只用 TEST-NET / 示例地址；以下真实信息绝不
+# 能出现在演示响应里。
 FORBIDDEN = (
-    "REAL-DOMAIN-LEAK", "REAL-TENANCY-A", "REAL-TENANCY-B",
-    "REAL-TENANCY-C", "REAL-API-USER",
-    "REAL-IP-A.", "REAL-IP-B.", "REAL-IP-C.", "REAL-IP-D.",
-    "REAL-IP-E.", "REAL-IP-F.", "REAL-IP-G.", "REAL-IP-H.",
+    "136137", "nxjjdndaa", "s676931", "tiank025", "rbot-test",
+    "129.150.", "129.221.", "163.192.", "149.130.", "147.224.",
+    "167.234.", "170.9.", "168.107.",
 )
 
 SG = "DEMO_SG"

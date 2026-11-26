@@ -24,7 +24,7 @@ async handler 在 tgbot/handlers_extra.py 里（boot_form_callback 等），
   ipv6: bool（默认 False）
   script: None | {"name": str, "content": str}
 
-实例名（用户 2026-11-24 定）：E2（AMD 免费）-> AMD_YYYY-MM-DD，
+实例名（用户 2026-01-01 定）：E2（AMD 免费）-> AMD_YYYY-MM-DD，
 A1（ARM）-> ARM_YYYY-MM-DD（北京时间日期）；其他形状沿用旧格式。
 表单顶部有一键开机（默认 AMD）按钮（bf:oneclick:amd），点后进确认页。
 
@@ -428,7 +428,7 @@ def deploy_region_mismatch(deploy, region, profile=None):
 
     get_deploy_defaults 对没有 region plan 的账号+区域会回落到主区
     （新加坡）默认值；直接拿它去别的区开机，OCI 会报
-    CannotParseRequest（2026-11-24 用户在 ACCOUNT2/ACCOUNT3 上
+    CannotParseRequest（2026-01-01 用户在 ACCOUNT2/ACCOUNT3 上
     一键开机实测复现）。开机入口必须先调这个拦住。
     """
     if not region:
@@ -512,7 +512,7 @@ def validate_form(form, deploy=None, region=None, profile=None):
 
 
 def generate_display_name(shape, ocpus, memory_gb, now=None):
-    """生成实例显示名（用户 2026-11-24 定：免费实例按类型 + 北京时间日期）。
+    """生成实例显示名（用户 2026-01-01 定：免费实例按类型 + 北京时间日期）。
 
     E2（AMD 免费）-> AMD_YYYY-MM-DD；A1（ARM）-> ARM_YYYY-MM-DD；
     其他形状沿用旧格式 bot-<短名>-<核>c<内存>g-<UTC 时间戳>。
@@ -638,9 +638,9 @@ def generate_root_password():
     """生成默认 root 密码。
 
     固定密码优先：环境变量 MBOT_FIXED_ROOT_PASSWORD 非空时直接用它
-    （用户自定、所有新机共用，记一个就行；存在部署服务器的环境变量
-    文件里，面板不存、不读、不展示，面板被入侵也拿不到它）。未设置时
-    回落到 UUID4 的 32 位十六进制。
+    （用户自定、所有新机共用，记一个就行；存在安装目录的
+    .rbot-clone.env 里，600 权限，面板不存、不读、不展示，
+    面板被入侵也拿不到它）。未设置时回落到 UUID4 的 32 位十六进制。
 
     UUID 只含 [0-9a-f]，可直接放进 cloud-init 的 chpasswd 块标量里，
     不用转义；128 位熵。每次调用生成一个全新的 UUID。
@@ -681,7 +681,7 @@ def build_user_data(root_password=None, startup_script=None, dd=False):
     脚本本身已是 #cloud-config 时不能与 root 密码共存（两份
     cloud-config 无法合并），抛 ValueError。
 
-    有 root 密码时还必须加两样（2026-11-24 实测：Ubuntu 24.04 镜像
+    有 root 密码时还必须加两样（2026-01-01 实测：Ubuntu 24.04 镜像
     默认 disable_root: true，root 的 key 会被加强制命令，只能看到
     "Please login as the user ubuntu"；且 PermitRootLogin 默认
     prohibit-password，密码也登不进）：

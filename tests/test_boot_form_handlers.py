@@ -726,7 +726,7 @@ class TestBootGoWithRoot(BootFormHandlersTestCase):
     async def test_start_reply_escapes_underscore_in_name(self):
         """v1.40.1：有 root 密码时启动回复走 Markdown，实例名里的
         下划线（ARM_2026-01-01）必须转义，否则 Telegram 报
-        Can't parse entities、整条消息发不出去（2026-11-24 真实报错）。
+        Can't parse entities、整条消息发不出去（2026-01-01 真实报错）。
         """
         preset = bf.build_preset(
             filled_form(ssh_key="none", root_login=True), FAKE_DEPLOY)

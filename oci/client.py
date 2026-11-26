@@ -36,16 +36,30 @@ import subprocess
 OCI_CLI = (os.environ.get("MBOT_OCI_CLI")
            or shutil.which("oci")
            or os.path.expanduser("~/oci-venv/bin/oci"))
-# OCI config file path: M_Bot-managed OCI config lives in root's home dir (~/oci_config), matching R-Bot's placement habit — config and private keys both under /root, no ~/.oci/ subdirectory. OCI 配置文件路径：M_Bot 管理的 OCI 配置放 root 家目录（~/oci_config），与 R-Bot 的放置习惯一致——配置与私钥都在 /root，不用 ~/.oci/ 子目录。
+# Project root (this package lives one level under it). 项目根目录
+# （本包在它下一层）。
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# OCI config file path: M_Bot-managed OCI config lives in the project
+# root (oci_config next to the code); /root only keeps the user's own
+# .pem private keys (key_file can point anywhere, e.g. /root/1.pem).
+# OCI 配置文件路径：M_Bot 管理的 OCI 配置放项目根目录（代码旁边的
+# oci_config）；/root 只留用户自己放的 .pem 私钥（key_file 可以指
+# 任意路径，如 /root/1.pem）。
 # Resolution priority (resolve_oci_config_path): 解析优先级（resolve_oci_config_path）：
 #   1. Env var MBOT_OCI_CONFIG_FILE (explicit, for deploys/tests); 1. 环境变量 MBOT_OCI_CONFIG_FILE（显式指定，部署/测试用）；
 #   2. The OCI CLI's official env var OCI_CLI_CONFIG_FILE (respect existing user settings); 2. OCI CLI 官方环境变量 OCI_CLI_CONFIG_FILE（尊重用户已有设置）；
-#   3. ~/oci_config (when it exists); 3. ~/oci_config（存在时用它）；
-#   4. Fallback ~/.oci/config (compatibility path for old deploys). 4. 回退 ~/.oci/config（旧部署的兼容路径）。
-# On first config upload via the bot, the old file is auto-migrated to ~/oci_config (see tgbot/handlers_client.py append_oci_profile). 首次通过机器人上传配置时，旧文件会自动迁移到 ~/oci_config（见 tgbot/handlers_client.py 的 append_oci_profile）。
+#   3. <project root>/oci_config (when it exists); 3. 项目根目录下的 oci_config（存在时用它）；
+#   4. ~/oci_config (old deploy path, when it exists); 4. ~/oci_config（旧部署位置，存在时用它）；
+#   5. Fallback ~/.oci/config (OCI SDK default, for old deploys). 5. 回退 ~/.oci/config（OCI SDK 默认路径，旧部署兼容）。
+# On first config upload via the bot, an old file is auto-migrated to
+# <project root>/oci_config (see tgbot/handlers_client.py
+# append_oci_profile). 首次通过机器人上传配置时，旧文件会自动迁移到
+# 项目根目录的 oci_config（见 tgbot/handlers_client.py 的
+# append_oci_profile）。
 OCI_CONFIG_ENV_VAR = "MBOT_OCI_CONFIG_FILE"
-OCI_CONFIG_ROOT_PATH = os.path.expanduser("~/oci_config")
-OCI_CONFIG_LEGACY_PATH = os.path.expanduser("~/.oci/config")
+OCI_CONFIG_ROOT_PATH = os.path.join(_PROJECT_ROOT, "oci_config")
+OCI_CONFIG_LEGACY_PATH = os.path.expanduser("~/oci_config")
+OCI_CONFIG_SDK_PATH = os.path.expanduser("~/.oci/config")
 # Profile name in the OCI config file (build several profiles for multi-account, e.g. DEFAULT / ACCOUNT2). OCI 配置文件里的 profile 名（多账号时建多个 profile，如 DEFAULT / ACCOUNT2）。
 DEFAULT_PROFILE = "DEFAULT"
 # Default region (e.g. ap-singapore-1 / us-sanjose-1 / us-chicago-1). 默认区域（如 ap-singapore-1 / us-sanjose-1 / us-chicago-1）。
@@ -70,8 +84,9 @@ def resolve_oci_config_path():
     """返回当前生效的 OCI 配置文件路径（只读解析，绝不写盘）。
 
     优先级：MBOT_OCI_CONFIG_FILE > OCI_CLI_CONFIG_FILE >
-    ~/oci_config（存在时）> ~/.oci/config（存在时）> ~/oci_config
-    （两边都不存在时返回新路径，写入方负责创建）。
+    项目根目录 oci_config（存在时）> ~/oci_config（旧部署位置，存在时）
+    > ~/.oci/config（OCI SDK 默认，存在时）> 项目根目录 oci_config
+    （都不存在时返回新路径，写入方负责创建）。
     """
     explicit = (os.environ.get(OCI_CONFIG_ENV_VAR) or "").strip()
     if explicit:
@@ -83,6 +98,8 @@ def resolve_oci_config_path():
         return OCI_CONFIG_ROOT_PATH
     if os.path.exists(OCI_CONFIG_LEGACY_PATH):
         return OCI_CONFIG_LEGACY_PATH
+    if os.path.exists(OCI_CONFIG_SDK_PATH):
+        return OCI_CONFIG_SDK_PATH
     return OCI_CONFIG_ROOT_PATH
 
 

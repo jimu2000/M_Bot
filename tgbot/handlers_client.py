@@ -56,7 +56,12 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from oci.client import OCI_CONFIG_LEGACY_PATH, OCI_CONFIG_ROOT_PATH
+from oci.client import (OCI_CONFIG_LEGACY_PATH, OCI_CONFIG_ROOT_PATH,
+                        OCI_CONFIG_SDK_PATH)
+
+# Project root (this module lives one level under it). 项目根目录
+# （本模块在它下一层）。
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 from oci.instance import list_instances
 from oci.network import get_public_ip
 from tgbot import menu_tracker
@@ -88,10 +93,9 @@ SSH_KEYS_FILE = os.path.join(DATA_DIR, "ssh_keys.json")
 PROXY_FILE = os.path.join(DATA_DIR, "proxy.json")
 MEM_HOG_FILE = os.path.join(DATA_DIR, "mem_hog.json")
 KNOWN_HOSTS_FILE = os.path.join(DATA_DIR, "known_hosts")
-# OCI config file path (the write target of /uploadapi and /oci): M_Bot-managed OCI config lives in root's home dir (~/oci_config), matching R-Bot's placement habit. OCI config 文件路径（/uploadapi 与 /oci 的写入目标）：M_Bot 管理的 OCI 配置放 root 家目录（~/oci_config），与 R-Bot 的放置习惯一致。
-# OCI 配置放 root 家目录（~/oci_config），与 R-Bot 的放置习惯一致。
+# OCI config file path (the write target of /uploadapi and /oci): M_Bot-managed OCI config lives in the project root (oci_config next to the code); /root only keeps the user's own .pem private keys. OCI config 文件路径（/uploadapi 与 /oci 的写入目标）：M_Bot 管理的 OCI 配置放项目根目录（代码旁边的 oci_config）；/root 只留用户自己放的 .pem 私钥。
 # Env var MBOT_OCI_CONFIG_FILE can specify it explicitly (for tests/deploys). 环境变量 MBOT_OCI_CONFIG_FILE 可显式指定（测试/部署用）。
-# The old deploy path ~/.oci/config is auto-migrated on first write (contents copied over verbatim; the old file is kept as a backup); reads check both files. 旧部署的 ~/.oci/config 在首次写入时自动迁移（内容原样复制过去，旧文件保留作备份）；读的时候新旧两个文件都会查。
+# Old files (~/oci_config, ~/.oci/config) are auto-migrated on first write (contents copied over verbatim; the old file is kept as a backup); reads check all three locations. 旧文件（~/oci_config、~/.oci/config）在首次写入时自动迁移（内容原样复制过去，旧文件保留作备份）；读的时候三个位置都会查。
 OCI_CONFIG_PATH = (os.environ.get("MBOT_OCI_CONFIG_FILE")
                    or OCI_CONFIG_ROOT_PATH)
 
@@ -917,12 +921,14 @@ def parse_oci_config_text(text):
 def profile_exists_in_config(profile, path=None):
     """OCI 配置文件里是否已有同名 profile。
 
-    path 未指定时新文件（~/oci_config）与旧文件（~/.oci/config）都查；
-    指定 path 时只查该文件。注意 [DEFAULT] 段要用换名的
-    default_section 才能被 has_section 认出来。
+    path 未指定时新文件（项目根目录的 oci_config）、旧文件
+    （~/oci_config）与 OCI SDK 默认（~/.oci/config）都查；指定 path
+    时只查该文件。注意 [DEFAULT] 段要用换名的 default_section 才能
+    被 has_section 认出来。
     """
     candidates = [path] if path else [OCI_CONFIG_PATH,
-                                      OCI_CONFIG_LEGACY_PATH]
+                                      OCI_CONFIG_LEGACY_PATH,
+                                      OCI_CONFIG_SDK_PATH]
     for candidate in candidates:
         if not candidate or not os.path.exists(candidate):
             continue
@@ -937,12 +943,35 @@ def profile_exists_in_config(profile, path=None):
     return False
 
 
+def _is_default_oci_config_target():
+    """这次写的是不是 bootstrap 管理的默认 INI（只有这种情况下才同步 txt 配置）。
+
+    生产上默认 INI 在项目根目录的 oci_config（或 MBOT_OCI_CONFIG_FILE /
+    OCI_CLI_CONFIG_FILE 指的位置），bootstrap 启动时从 conf 重生成它，
+    所以往里加/删账号必须同步 conf。注意这里比的是 INI 的写入目标
+    （mbot_config._oci_ini_write_path），不是读解析的结果：全新安装时
+    项目根目录的 oci_config 还不存在，读解析会回退到旧的 ~/.oci/config，
+    用读结果比会误判为“不是默认 INI”而跳过同步，下次启动就从 conf
+    重生成 INI、把刚加的账号丢掉。
+    测试把 OCI_CONFIG_PATH 指到临时文件时不同步，避免测试数据写进
+    真实家目录或项目根目录的 M_bot_config.conf（2026-01-03 全量测试
+    曾因此把 ~/.oci/config 与 ~/M_bot_config.txt 写成假数据）。
+    """
+    try:
+        import mbot_config
+
+        managed = mbot_config._oci_ini_write_path()
+    except Exception:  # noqa: BLE001 - 解析失败时宁可不同步
+        return False
+    return os.path.abspath(OCI_CONFIG_PATH) == os.path.abspath(managed)
+
+
 def remove_oci_profile(profile, path=None):
     """从 OCI 配置文件里删掉一个 [PROFILE] 段（文本级删除）。
 
     其余内容逐字节保留，包括注释与 [cloudflare] 段。path 未指定时
-    只删新文件（~/oci_config），不碰旧文件备份。删掉了返回 True，
-    段不存在返回 False。
+    只删新文件（项目根目录的 oci_config），不碰旧文件备份。删掉了
+    返回 True，段不存在返回 False。
     """
     target = path or OCI_CONFIG_PATH
     if not target or not os.path.exists(target):
@@ -972,6 +1001,21 @@ def remove_oci_profile(profile, path=None):
         os.chmod(target, 0o600)
     except OSError:
         pass
+    # Keep the unified txt config in sync (same gating as
+    # append_oci_profile: only when deleting from the real default
+    # INI). 同步删掉统一配置文件里的 profile（与 append_oci_profile
+    # 同样的 gating：只在删默认 INI 时）。
+    if path is None and _is_default_oci_config_target():
+        try:
+            import mbot_config
+
+            cfg = mbot_config.load_config()
+            profiles = cfg.get("oci", {}).get("profiles", {})
+            if profile in profiles:
+                del profiles[profile]
+                mbot_config.save_config(cfg)
+        except OSError:
+            pass
     return True
 
 
@@ -995,23 +1039,30 @@ def _has_section_ci(path, name):
 def _append_config_block(block, path=None):
     """把一段 config 文本追加到 OCI 配置文件（迁移 + 分隔 + 600 权限）。
 
-    目标默认 ~/oci_config；目标不存在但旧文件 ~/.oci/config 存在时，
-    先把旧文件内容原样迁移过去（旧文件保留作备份），再追加。
-    返回写入的文件路径。
+    目标默认项目根目录的 oci_config；目标不存在但旧文件（~/oci_config，
+    再没有就 ~/.oci/config）存在时，先把旧文件内容原样迁移过去（旧文
+    件保留作备份），再追加。返回写入的文件路径。
     """
     target = path or OCI_CONFIG_PATH
     try:
         same_as_legacy = (os.path.abspath(target)
-                          == os.path.abspath(OCI_CONFIG_LEGACY_PATH))
+                          == os.path.abspath(OCI_CONFIG_LEGACY_PATH)
+                          or os.path.abspath(target)
+                          == os.path.abspath(OCI_CONFIG_SDK_PATH))
     except (OSError, ValueError):
         same_as_legacy = False
     parent = os.path.dirname(target)
     if parent:
         os.makedirs(parent, exist_ok=True)
+    legacy_source = None
+    if os.path.exists(OCI_CONFIG_LEGACY_PATH):
+        legacy_source = OCI_CONFIG_LEGACY_PATH
+    elif os.path.exists(OCI_CONFIG_SDK_PATH):
+        legacy_source = OCI_CONFIG_SDK_PATH
     if (path is None and not same_as_legacy
             and not os.path.exists(target)
-            and os.path.exists(OCI_CONFIG_LEGACY_PATH)):
-        shutil.copyfile(OCI_CONFIG_LEGACY_PATH, target)
+            and legacy_source is not None):
+        shutil.copyfile(legacy_source, target)
     existing = ""
     if os.path.exists(target):
         with open(target, encoding="utf-8") as f:
@@ -1044,7 +1095,8 @@ def commit_cf_section(cloudflare, path=None):
     if _has_section_ci(target, "cloudflare"):
         return "exists"
     if (path is None and not os.path.exists(target)
-            and _has_section_ci(OCI_CONFIG_LEGACY_PATH, "cloudflare")):
+            and (_has_section_ci(OCI_CONFIG_LEGACY_PATH, "cloudflare")
+                 or _has_section_ci(OCI_CONFIG_SDK_PATH, "cloudflare"))):
         # When the target does not exist, writing auto-migrates the old file (which already has the section), so appending again would create a duplicate section; and parsing already falls back to reading the old file, so the credentials are already in effect. 目标不存在时写入会自动迁移旧文件（里面已有该段），再追加会造成重复段；且解析本就会回退读旧文件，凭据已生效。
         return "exists"
     lines = ["[cloudflare]"]
@@ -1061,8 +1113,9 @@ def commit_cf_section(cloudflare, path=None):
 def append_oci_profile(profile, fields, path=None):
     """把新 profile 追加到 OCI 配置文件（已有内容原样不动）。
 
-    目标默认是 ~/oci_config；目标不存在但旧文件 ~/.oci/config 存在时，
-    先把旧文件内容原样迁移过去（旧文件保留作备份），再追加。
+    目标默认是项目根目录的 oci_config；目标不存在但旧文件
+    （~/oci_config 或 ~/.oci/config）存在时，先把旧文件内容原样迁移
+    过去（旧文件保留作备份），再追加。
     同名 profile 已存在时抛 ValueError，不覆盖。
     写入后文件权限设 600。返回写入的文件路径。
     """
@@ -1078,7 +1131,30 @@ def append_oci_profile(profile, fields, path=None):
     for key, value in fields.items():
         if key not in REQUIRED_OCI_KEYS:
             lines.append(f"{key} = {value}")
-    return _append_config_block("\n".join(lines) + "\n", path)
+    written = _append_config_block("\n".join(lines) + "\n", path)
+    # Keep the unified txt config (single source of truth) in sync,
+    # but only when writing to the real default INI: an explicit path
+    # is a test/override target and must not touch the txt config,
+    # and a patched OCI_CONFIG_PATH (tests) must not either. The
+    # profile must also live in M_bot_config.conf, otherwise the next
+    # startup regenerates the INI from the conf and drops it.
+    # 同步写进统一配置文件（单一真实来源），但只在写默认 INI 时：
+    # 显式传了 path 的是测试/覆盖目标，不能动 conf 配置；测试里把
+    # OCI_CONFIG_PATH 指到临时文件时也不能动。否则下次启动从 conf
+    # 重生成 INI 时会丢掉这个 profile。
+    if path is None and _is_default_oci_config_target():
+        try:
+            import mbot_config
+
+            cfg = mbot_config.load_config()
+            profiles = cfg.setdefault("oci", {}).setdefault("profiles", {})
+            if profile not in profiles:
+                profiles[profile] = {k: v for k, v in fields.items()
+                                     if v is not None and str(v) != ""}
+                mbot_config.save_config(cfg)
+        except OSError:
+            pass
+    return written
 
 
 def normalize_oci_key_file(profile, fields):
@@ -1189,7 +1265,7 @@ def add_profile_compartments(profiles):
             from web import config as web_config
             env_path = web_config.ENV_FILE
         except Exception:  # noqa: BLE001 - web.config 不可用时用默认路径
-            env_path = os.path.expanduser("~/.rbot-clone.env")
+            env_path = os.path.join(_PROJECT_ROOT, ".rbot-clone.env")
         if env_path and os.path.exists(env_path):
             with open(env_path, encoding="utf-8") as f:
                 existing = f.read()

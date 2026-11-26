@@ -9,7 +9,8 @@
 
 安全说明：
   - 本模块不读取、不打印、不外传 OCI API 私钥。认证全部由 OCI CLI
-    自己读配置文件（~/oci_config，旧部署回退 ~/.oci/config）与
+    自己读配置文件（安装目录下的 oci_config，旧部署回退 ~/oci_config
+    与 ~/.oci/config）与
     key_file 完成。
   - 白名单是硬规则：不在 ALLOWED_USER_IDS 里的用户发任何命令都直接拒绝。
 """
@@ -42,7 +43,7 @@ DEFAULT_COMPARTMENT_ID = os.environ.get(
     "MBOT_COMPARTMENT_DEFAULT", "ocid1.tenancy.oc1..xxxxxxxx")
 
 # Multi-account config: profile name -> {region, compartment_id}. 多账号配置：profile 名 -> {region, compartment_id}。
-# Each account maps to one profile in the OCI config file (~/oci_config). 每个账号在 OCI 配置文件（~/oci_config）里对应一个 profile。
+# Each account maps to one profile in the OCI config file (oci_config in the install dir). 每个账号在 OCI 配置文件（安装目录下的 oci_config）里对应一个 profile。
 # Register via env var MBOT_COMPARTMENT_<PROFILE>, whose value is that account's compartment OCID (the root compartment is the tenancy OCID). When the bot imports a new account (/oci / /uploadapi) it appends this entry to the env file automatically, and the new account appears in the switch menu after a bot restart. 注册方式：环境变量 MBOT_COMPARTMENT_<PROFILE>，值是该账号的 compartment OCID（根 compartment 即 tenancy OCID）。机器人导入新账号（/oci / /uploadapi）时会自动往 env 文件里加这一项，重启机器人后新账号就出现在切换菜单里。
 # The region is read from that profile's region field in the config file; when unreadable, use the fallback table below (old accounts) or DEFAULT_REGION (new accounts). region 从配置文件里该 profile 的 region 字段读；读不到时用下面的回退表（旧账号）或 DEFAULT_REGION（新账号）。
 # Profiles with no MBOT_COMPARTMENT_* in env are still added after deriving their compartment from the OCI config's tenancy (a clean install works by just copying oci_config); an env value that is a placeholder counts as unconfigured and is likewise derived from the tenancy. env 没配 MBOT_COMPARTMENT_* 的 profile 也会从 OCI 配置的 tenancy 推导 compartment 后加入（干净安装后复制 oci_config 即可用）；env 值是占位符时当成未配置，同样从 tenancy 推导。
@@ -138,7 +139,7 @@ def update_env_file_vars(updates, env_file=None):
             from web import config as web_config
             env_file = web_config.ENV_FILE
         except Exception:  # noqa: BLE001 - web.config 不可用时回退默认路径
-            env_file = os.path.expanduser("~/.rbot-clone.env")
+            env_file = os.path.join(_PROJECT_ROOT, ".rbot-clone.env")
     path = env_file
     lines = []
     if os.path.exists(path):
@@ -185,7 +186,7 @@ def remove_env_file_vars(keys, env_file=None):
             from web import config as web_config
             env_file = web_config.ENV_FILE
         except Exception:  # noqa: BLE001 - web.config 不可用时回退默认路径
-            env_file = os.path.expanduser("~/.rbot-clone.env")
+            env_file = os.path.join(_PROJECT_ROOT, ".rbot-clone.env")
     path = env_file
     if not os.path.exists(path):
         return []

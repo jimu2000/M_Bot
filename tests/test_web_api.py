@@ -293,7 +293,7 @@ class TestInstancesApi(WebApiTestCase):
                           "instance-id": FAKE_INSTANCE,
                           "lifecycle-state": "ATTACHED"}])
     @patch("web.routes.instances.list_ipv6_for_vnic",
-           return_value=[{"ip-address": "2001:db8::1"}])
+           return_value=[{"ip-address": "2603:c024:c021:1d01::1"}])
     @patch("web.routes.instances.list_vnics",
            return_value=[{"id": "ocid1.vnic.oc1..testxxxx",
                           "public-ip": FAKE_IP,
@@ -314,7 +314,7 @@ class TestInstancesApi(WebApiTestCase):
         self.assertEqual(body["public_ip"], FAKE_IP)
         self.assertEqual(body["private_ip"], "10.0.0.5")
         self.assertEqual(body["ipv6_addresses"],
-                         ["2001:db8::1"])
+                         ["2603:c024:c021:1d01::1"])
         self.assertEqual(body["boot_volume_size_gbs"], 47)
         self.assertEqual(body["boot_volume_id"], FAKE_VOLUME)
         self.assertEqual(body["boot_volume_vpus_per_gb"], 10)
@@ -530,7 +530,7 @@ class TestCpuModelApi(WebApiTestCase):
     @patch("web.routes.instances._refresh_cpu_models_background")
     @patch("web.routes.instances.load_cpu_models",
            return_value={FAKE_INSTANCE: {"model": "AMD EPYC 7J13",
-                                         "checked_at": "2026-11-24T00:00:00+00:00"}})
+                                         "checked_at": "2026-01-01T00:00:00+00:00"}})
     @patch("web.routes.instances.attach_public_ips_bulk", return_value=[FAKE_IP])
     @patch("web.routes.instances.cached_raw_instances", return_value=FAKE_INSTANCES)
     def test_list_includes_cpu_model(self, mock_list, mock_ip,

@@ -748,8 +748,10 @@ class TestPrepareAndCommitProfiles(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.target = os.path.join(self._tmp.name, "oci_config")
         self.legacy = os.path.join(self._tmp.name, "legacy_config")
+        self.sdk = os.path.join(self._tmp.name, "sdk_config")
         for attr, path in (("OCI_CONFIG_PATH", self.target),
-                           ("OCI_CONFIG_LEGACY_PATH", self.legacy)):
+                           ("OCI_CONFIG_LEGACY_PATH", self.legacy),
+                           ("OCI_CONFIG_SDK_PATH", self.sdk)):
             p = patch.object(hc, attr, path)
             p.start()
             self.addCleanup(p.stop)
@@ -818,6 +820,16 @@ class TestPrepareAndCommitProfiles(unittest.TestCase):
         self.assertEqual(results[0]["key_ready"], True)
         self.assertTrue(os.path.exists(new_key))
         self.assertTrue(hc.profile_exists_in_config("ZZ1", self.target))
+
+    def test_append_skips_txt_sync_when_ini_target_is_temp(self):
+        """回归（2026-01-03）：INI 目标是临时文件时，append 不得同步
+        写统一配置文件（门控只在写默认 INI 时才同步）。"""
+        tmp_conf = os.path.join(self._tmp.name, "M_bot_config.conf")
+        with patch.dict(os.environ, {"HOME": self._tmp.name,
+                                     "MBOT_CONFIG_FILE": tmp_conf}):
+            parsed = hc.parse_oci_config_text(FAKE_CONFIG_TEXT)
+            hc.append_oci_profile("NEWACC", parsed["fields"])
+        self.assertFalse(os.path.exists(tmp_conf))
 
     def test_commit_key_missing_reports_not_ready(self):
         profiles = [{"profile": "ZZ2",

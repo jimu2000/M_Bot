@@ -724,7 +724,7 @@ def _usage_currency(items, fallback=""):
     """从用量 items 里取第一个非空币种。
 
     OCI 有时在 0 元项里返回单个空格当币种（" " 是真值，直接用会
-    覆盖掉真正的 SGD，2026-11-24 真实数据实测 ACCOUNT2 的 0 元项
+    覆盖掉真正的 SGD，2026-01-01 真实数据实测 ACCOUNT2 的 0 元项
     带 " "）——必须 strip 后再判断。
     """
     for item in items:
@@ -776,7 +776,7 @@ def fmt_usage_totals(entries, months=USAGE_MONTHS, lang="zh"):
 
     显示名是账号的主区中文名（多区账号后缀区数），与订阅信息页一致；
     查失败的账号（items 为 None）显示“查询失败”，不影响其他账号；
-    最后附全部账号合计（用户要求 2026-11-24：默认一次查全部账号）。
+    最后附全部账号合计（用户要求 2026-01-01：默认一次查全部账号）。
     """
     if not entries:
         return bot_i18n.t(lang, "cost.no_accounts")
@@ -828,7 +828,7 @@ def fmt_tenancies(entries, lang="zh"):
 
     显示名是账号的主区中文名（多区账号后缀区数），与切换菜单一致；
     查失败的账号（data 为 None）显示“查询失败”，不影响其他账号。
-    有几个账号就显示几个（用户要求 2026-11-24）。
+    有几个账号就显示几个（用户要求 2026-01-01）。
     """
     if not entries:
         return bot_i18n.t(lang, "subscription.no_accounts")
@@ -861,7 +861,7 @@ def fmt_user_list(users):
     """用户列表标题（只剩标题 + 数量；逐个用户信息在按钮里，详情页看邮箱）。
 
     与实例列表同款：按钮是唯一的列表，文字不再逐条重复（用户反馈
-    2026-11-24：原来文字列表和按钮列表同时出现，邮箱换行看着乱）。
+    2026-01-01：原来文字列表和按钮列表同时出现，邮箱换行看着乱）。
     """
     if not users:
         return "该租户下没有 IAM 用户。"
@@ -1064,7 +1064,7 @@ def fmt_volume_list(volumes, orphans, total_gb):
 
     每块盘的名字与容量都在按钮上（见 volume_list_keyboard），
     文字不再逐块重复，否则文字列表和按钮列表会同时出现两份
-    （2026-11-24 用户截图反馈）。total_gb 只统计未删除的盘
+    （2026-01-01 用户截图反馈）。total_gb 只统计未删除的盘
     （见 oci.volume.total_boot_volume_gb），所以容量标在可用组
     后面，不跟总数混在一起。空组不显示。
     """
@@ -1999,7 +1999,7 @@ def _notify_boot_success(cli, preset, successes, notify, task_id=None):
 
     每台等公网 IP（刚开出来 VNIC 可能还没 IP，最长等 60 秒）；
     60 秒还没 IP 就先发通知写"获取中"，再起跟进线程后台继续等，
-    IP 一出来补发一条 Telegram 消息（2026-11-24 用户实问：只等
+    IP 一出来补发一条 Telegram 消息（2026-01-01 用户实问：只等
     9 秒经常拿不到 IP，之后再也不补发）。
     通知函数本身不抛异常；这里再包一层，绝不让通知拖垮线程。
     无论成败都留一行结果：记 logger（进 journal）+ 写任务日志
@@ -3284,7 +3284,7 @@ async def resize_preset_callback(update, context):
 async def handle_volumes(update, context):
     """菜单 7：启动盘列表 + 孤儿盘 + 总容量。
 
-    已删除 / 删除中的盘一律不显示（用户要求 2026-11-24：已删除的
+    已删除 / 删除中的盘一律不显示（用户要求 2026-01-01：已删除的
     都不显示，屏蔽掉）；过滤放在这里（存列表之前），文字、按钮与
     回调下标都按过滤后的列表来，不会错位。
     """
@@ -3471,7 +3471,7 @@ async def volume_backup_callback(update, context):
 
     付费账号：不限 5 个，直接创建。
     免费账号：未满直接创建；满了自动删除最早备份再创建（用户要求
-    2026-11-24：不用等确认），结果消息里说明删了哪个。
+    2026-01-01：不用等确认），结果消息里说明删了哪个。
     """
     idx = _callback_data(update).split(":")[-1]
     vol = resolve_volume(context, idx)
@@ -3586,7 +3586,7 @@ async def instance_boot_backup_callback(update, context):
 
     由 handlers.py 的 "i:bootbackup:<idx>" 回调转发（pending_idx 已写入）。
     付费账号直接创建；免费账号满 5 个时不自动删，提示先删除再创建，
-    并给“删除历史备份”按钮（用户要求 2026-11-24）；未满直接创建。
+    并给“删除历史备份”按钮（用户要求 2026-01-01）；未满直接创建。
     """
     idx = context.user_data.get("pending_idx")
     inst = resolve_instance(context, idx)
@@ -5848,7 +5848,7 @@ async def handle_confirm(action, idx, update, context):
     """执行二次确认后的危险操作（包装）。
 
     操作完成后删除确认消息本身（只留结果消息；用户要求
-    2026-11-24：改完了只留这一条信息）。确认消息是回调消息，
+    2026-01-01：改完了只留这一条信息）。确认消息是回调消息，
     结果消息是 _reply 新发的，两条是独立消息，删确认不影响结果。
     重启类操作（restartsvc/restartbot/upgrade）执行时进程可能被杀，
     清理跑不到，确认消息会残留——可接受的小例外。

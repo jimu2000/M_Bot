@@ -53,7 +53,7 @@ FAKE_IPV6_2 = "ocid1.ipv6.oc1..test2222"
 FAKE_VOLUME = "ocid1.bootvolume.oc1..testxxxx"
 FAKE_OLD_IP = "203.0.113.10"
 FAKE_NEW_IP = "203.0.113.99"
-FAKE_IPV6_ADDR = "2001:db8::1"
+FAKE_IPV6_ADDR = "2603:c024:c021:1d01::1"
 
 TEST_PASSWORD = "test-admin-password"
 
@@ -214,7 +214,7 @@ class TestIpv6Api(InstanceOpsTestCase):
     @patch("web.routes.instances.list_ipv6_for_vnic",
            return_value=[{"id": FAKE_IPV6_1, "ip-address": FAKE_IPV6_ADDR},
                          {"id": FAKE_IPV6_2,
-                          "ip-address": "2001:db8::2"}])
+                          "ip-address": "2603:c024:c021:1d01::2"}])
     @patch("web.routes.instances.get_primary_vnic",
            return_value={"id": FAKE_VNIC, "is-primary": True})
     def test_delete_ipv6_all(self, mock_vnic, mock_list, mock_delete):

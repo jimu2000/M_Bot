@@ -211,13 +211,13 @@ class GfwCycleTests(unittest.TestCase):
     def setUp(self):
         self.notes = []
         self.instance = {"id": "i1", "display-name": "web",
-                         "public-ip": "203.0.113.1"}
+                         "public-ip": "1.1.1.1"}
 
     def _notify(self, title, body):
         self.notes.append((title, body))
 
     def _blocked_then_healthy(self, key, ip):
-        if ip == "203.0.113.1":
+        if ip == "1.1.1.1":
             return {"blocked": True, "detail": "国内 5 个探针 0 个能 ping 通"}
         return {"blocked": False, "detail": "国内 5 个探针 5 个能 ping 通"}
 
@@ -231,26 +231,26 @@ class GfwCycleTests(unittest.TestCase):
         self.assertEqual(self.notes, [])
 
     def test_blocked_then_recovered_one_change_one_note(self):
-        changer = MagicMock(return_value="203.0.113.2")
+        changer = MagicMock(return_value="2.2.2.2")
         out = gfw.run_instance_cycle(
             MagicMock(), "comp", self.instance, "KEY", self._notify,
             checker=self._blocked_then_healthy, changer=changer)
         self.assertEqual(out["status"], "recovered")
         self.assertEqual(out["changes"], 1)
-        self.assertEqual(out["ip"], "203.0.113.2")
+        self.assertEqual(out["ip"], "2.2.2.2")
         changer.assert_called_once()
         self.assertEqual(len(self.notes), 1)
         title, body = self.notes[0]
         self.assertIn("换 IP", title)
-        self.assertIn("203.0.113.1", body)
-        self.assertIn("203.0.113.2", body)
+        self.assertIn("1.1.1.1", body)
+        self.assertIn("2.2.2.2", body)
 
     def test_still_blocked_loops_and_notifies_each_time(self):
-        ips = iter(["203.0.113.2", "203.0.113.3"])
+        ips = iter(["2.2.2.2", "3.3.3.3"])
         changer = MagicMock(side_effect=lambda *a: next(ips))
 
         def checker(key, ip):
-            if ip in ("203.0.113.1", "203.0.113.2"):
+            if ip in ("1.1.1.1", "2.2.2.2"):
                 return {"blocked": True,
                         "detail": f"{ip} 国内 5 个探针 0 个能 ping 通"}
             return {"blocked": False, "detail": "国内 5 个探针 5 个能 ping 通"}
@@ -264,10 +264,10 @@ class GfwCycleTests(unittest.TestCase):
         # After the first change it is still walled: one notice; after the second change it recovers: one notice. 第一次换完仍被墙一条通知，第二次换完恢复一条通知。
         self.assertEqual(len(self.notes), 2)
         self.assertIn("仍被墙", self.notes[0][0])
-        self.assertIn("203.0.113.3", self.notes[1][1])
+        self.assertIn("3.3.3.3", self.notes[1][1])
 
     def test_exhausted_after_max_changes(self):
-        changer = MagicMock(side_effect=["203.0.113.2", "203.0.113.3", "203.0.113.4"])
+        changer = MagicMock(side_effect=["2.2.2.2", "3.3.3.3", "4.4.4.4"])
         out = gfw.run_instance_cycle(
             MagicMock(), "comp", self.instance, "KEY", self._notify,
             checker=lambda k, ip: {"blocked": True,
@@ -293,13 +293,13 @@ class GfwCycleTests(unittest.TestCase):
 
         def checker(key, ip):
             calls.append(ip)
-            if ip == "203.0.113.1":
+            if ip == "1.1.1.1":
                 return {"blocked": True, "detail": "国内 0/5"}
             return {"blocked": None, "detail": "上报太少"}
 
         out = gfw.run_instance_cycle(
             MagicMock(), "comp", self.instance, "KEY", self._notify,
-            checker=checker, changer=MagicMock(return_value="203.0.113.2"))
+            checker=checker, changer=MagicMock(return_value="2.2.2.2"))
         self.assertEqual(out["status"], "unknown")
         self.assertEqual(out["changes"], 1)
         self.assertEqual(len(self.notes), 1)
@@ -356,7 +356,7 @@ class GfwMonitorCycleTests(unittest.TestCase):
             return ([{"instance_id": "i1", "profile": "DEFAULT",
                       "region": "ap-singapore-1",
                       "instance": {"id": "i1", "display-name": "web",
-                                   "public-ip": "203.0.113.1"},
+                                   "public-ip": "1.1.1.1"},
                       "cli": MagicMock(), "compartment_id": "c"}],
                     {"i2": "实例未运行（STOPPED）"})
 

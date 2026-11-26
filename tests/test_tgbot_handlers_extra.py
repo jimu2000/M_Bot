@@ -417,16 +417,16 @@ class TestInstanceTraffic(HandlersExtraTestCase):
             {"display-name": "web", "lifecycle-state": "RUNNING",
              "public-ip": "203.0.113.4"},
             {"display-name": "dead", "lifecycle-state": "RUNNING",
-             "public-ip": "203.0.113.8"},
+             "public-ip": "5.6.7.8"},
             {"display-name": "stopped", "lifecycle-state": "STOPPED",
-             "public-ip": "203.0.113.9"},
+             "public-ip": "9.9.9.9"},
         ]
         # The fixture has only one month of data (2026-11); the parser defaults to it (falling back to the last entry when there is no current month), so this test is stable whenever it runs. 示例只有 2026-11 一条月份数据，解析器默认取该条（无当月时取最后一条，所以任何时间跑这个测试都稳定）。
         context = make_context()
         with patch.object(bot_config, "GUARD_SSH_KEY", "/root/.ssh/rbot_guard"), \
                 patch.object(he, "fetch_city_for_ip",
                              side_effect=lambda ip: {"203.0.113.4": "新加坡",
-                                                     "203.0.113.8": "圣何塞"}.get(ip, "未知地区")), \
+                                                     "5.6.7.8": "圣何塞"}.get(ip, "未知地区")), \
                 patch.object(he, "run_remote_command") as mock_cmd:
             def _cmd(host, command):
                 if host["host"] == "203.0.113.4":
@@ -527,7 +527,7 @@ class TestInstanceTraffic(HandlersExtraTestCase):
              "rx_gb": 1.0, "tx_gb": 2.0, "error": None,
              "guard": {"installed": True, "auto": True, "enabled": True,
                        "mode": 0, "tripped": False, "limited": False}},
-            {"name": "b", "public_ip": "203.0.113.8", "city": "圣何塞",
+            {"name": "b", "public_ip": "5.6.7.8", "city": "圣何塞",
              "rx_gb": 0.5, "tx_gb": 1.0, "error": None,
              "guard": {"installed": False, "auto": False, "enabled": False,
                        "mode": None, "tripped": False, "limited": False}},
@@ -540,7 +540,7 @@ class TestInstanceTraffic(HandlersExtraTestCase):
         entries = [
             {"name": "web", "public_ip": "203.0.113.4",
              "guard": {"installed": True, "enabled": True}},
-            {"name": "e2", "public_ip": "203.0.113.8",
+            {"name": "e2", "public_ip": "5.6.7.8",
              "guard": {"installed": False, "enabled": False}},
             {"name": "noip", "public_ip": None, "guard": None},
         ]
@@ -1470,7 +1470,7 @@ class TestIpIpv6ResumeResizeVolumes(HandlersExtraTestCase):
                   "public-ip": "203.0.113.139", "private-ip": "10.0.0.5",
                   "is-primary": True}]
         self.cli.sdk_list_ipv6s.return_value = [
-            {"ip-address": "2001:db8::1",
+            {"ip-address": "2603:c024:c021:1d01::1",
              "lifecycle-state": "ASSIGNED"}]
         with patch.object(he, "list_instances",
                           return_value=FAKE_INSTANCES), \
@@ -1479,16 +1479,16 @@ class TestIpIpv6ResumeResizeVolumes(HandlersExtraTestCase):
             context = make_context()
             await he.handle_ipv6(update, context)
         text = reply_text_of(update)
-        self.assertIn("2001:db8::1", text)
+        self.assertIn("2603:c024:c021:1d01::1", text)
         self.cli.sdk_list_ipv6s.assert_called_once_with(
             "ocid1.vnic.oc1..v1")
 
     def test_ipv6_create_delete_helpers(self):
         """create_ipv6 / delete_ipv6 只调 cli.run（mock，不发真实请求）。"""
         cli = MagicMock()
-        cli.run.return_value = {"data": {"ip-address": "2001:db8::2"}}
+        cli.run.return_value = {"data": {"ip-address": "2603::2"}}
         result = he.create_ipv6(cli, "ocid1.vnic.oc1..v1")
-        self.assertEqual(result["ip-address"], "2001:db8::2")
+        self.assertEqual(result["ip-address"], "2603::2")
         called_args = cli.run.call_args[0][0]
         self.assertEqual(called_args[:3], ["network", "ipv6", "create"])
         self.assertIn("ocid1.vnic.oc1..v1", called_args)
@@ -2602,16 +2602,16 @@ class TestDisplayNames(HandlersExtraTestCase):
         """多账号订阅信息：有几个账号显示几个，失败的账号单列。"""
         text = he.fmt_tenancies([
             ("新加坡（3 个区）",
-             {"name": "example-tenancy-sg", "home-region-key": "SIN",
-              "description": "example-tenancy-sg"}),
-            ("圣何塞", {"name": "example-tenancy-sj", "home-region-key": "SJC"}),
+             {"name": "nxjjdndaa", "home-region-key": "SIN",
+              "description": "nxjjdndaa"}),
+            ("圣何塞", {"name": "s676931", "home-region-key": "SJC"}),
             ("芝加哥", None),
         ])
         self.assertIn("订阅信息（3 个账号）", text)
         self.assertIn("新加坡（3 个区）", text)
-        self.assertIn("example-tenancy-sg", text)
+        self.assertIn("nxjjdndaa", text)
         self.assertIn("圣何塞", text)
-        self.assertIn("example-tenancy-sj", text)
+        self.assertIn("s676931", text)
         self.assertIn("芝加哥", text)
         self.assertIn("查询失败", text)
         self.assertEqual(he.fmt_tenancies([]), "没有配置任何账号。")

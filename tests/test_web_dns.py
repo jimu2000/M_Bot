@@ -304,10 +304,10 @@ class TestDnsRecordsBound(DnsApiTestCase):
     FAKE_INSTANCES = [
         {"id": "ocid1.instance.oc1..fake0001",
          "display-name": "ARM_2026-01-02", "shape": "VM.Standard.A1.Flex",
-         "lifecycle-state": "RUNNING", "time-created": "2026-11-25T00:00:00Z"},
+         "lifecycle-state": "RUNNING", "time-created": "2026-01-02T00:00:00Z"},
         {"id": "ocid1.instance.oc1..fake0002",
          "display-name": "AMD_2026-01-01", "shape": "VM.Standard.E2.1.Micro",
-         "lifecycle-state": "RUNNING", "time-created": "2026-11-24T00:00:00Z"},
+         "lifecycle-state": "RUNNING", "time-created": "2026-01-01T00:00:00Z"},
     ]
     FAKE_INSTANCE_IPS = {
         "ocid1.instance.oc1..fake0001": "203.0.113.10",

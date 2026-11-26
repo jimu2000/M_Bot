@@ -149,15 +149,17 @@ class TestOCIClient(unittest.TestCase):
 
 
 class TestResolveOciConfigPath(unittest.TestCase):
-    """v1.28.0：配置文件路径解析（~/oci_config 优先，旧路径回退）。"""
+    """配置文件路径解析（项目根目录 oci_config 优先，旧路径回退）。"""
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.root = os.path.join(self._tmp.name, "oci_config")
         self.legacy = os.path.join(self._tmp.name, "legacy", "config")
+        self.sdk = os.path.join(self._tmp.name, "sdk", "config")
         for attr, path in (("OCI_CONFIG_ROOT_PATH", self.root),
-                           ("OCI_CONFIG_LEGACY_PATH", self.legacy)):
+                           ("OCI_CONFIG_LEGACY_PATH", self.legacy),
+                           ("OCI_CONFIG_SDK_PATH", self.sdk)):
             p = patch.object(oci_client_mod, attr, path)
             p.start()
             self.addCleanup(p.stop)
@@ -191,6 +193,12 @@ class TestResolveOciConfigPath(unittest.TestCase):
         with open(self.legacy, "w") as f:
             f.write("[DEFAULT]\n")
         self.assertEqual(resolve_oci_config_path(), self.legacy)
+
+    def test_sdk_fallback_when_root_and_legacy_missing(self):
+        os.makedirs(os.path.dirname(self.sdk), exist_ok=True)
+        with open(self.sdk, "w") as f:
+            f.write("[DEFAULT]\n")
+        self.assertEqual(resolve_oci_config_path(), self.sdk)
 
     def test_neither_exists_returns_root_path(self):
         self.assertEqual(resolve_oci_config_path(), self.root)

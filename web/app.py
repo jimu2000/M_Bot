@@ -77,6 +77,17 @@ async def _lifespan(app):
     # Demo mode has no real tasks (the task list is simulated), so skip the recovery entirely. 演示模式没有真实任务（任务列表是模拟的），跳过启动恢复。
     from web.tasks import TASKS, resume_interrupted_grabs
 
+    # Unified JSON config: (re)load it at startup so a config change
+    # made while the panel was down is picked up, and regenerate the
+    # OCI INI from JSON (the CLI and OCIClient still read the INI).
+    # Idempotent; web/config.py already bootstrapped once at import.
+    # 统一 JSON 配置：启动时再加载一次（面板停机期间改的配置能生效），
+    # 并从 JSON 重生成 OCI INI（CLI 与 OCIClient 仍读 INI）。幂等；
+    # web/config.py 在 import 时已引导过一次。
+    import mbot_config
+
+    mbot_config.bootstrap()
+
     if not config.DEMO_MODE:
         resume_interrupted_grabs(TASKS)
         # 第 6 轮 CPU 优化：启动 OCI 数据缓存预热线程。只保暖、不点火——

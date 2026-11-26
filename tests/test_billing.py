@@ -224,7 +224,7 @@ class TestBillingState(unittest.TestCase):
             path = os.path.join(tmp, "billing_state.json")
             self.assertEqual(bill.load_billing_state(path), {})
             state = {"DEFAULT": {"mtd_cost": 13.46,
-                                 "checked_at": "2026-11-24T00:00:00Z"}}
+                                 "checked_at": "2026-01-01T00:00:00Z"}}
             bill.save_billing_state(state, path)
             self.assertEqual(bill.load_billing_state(path), state)
             with open(path, "w", encoding="utf-8") as f:

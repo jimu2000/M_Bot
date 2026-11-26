@@ -9,6 +9,12 @@
 
 ## [Unreleased]
 
+## [2.06] - 2026-11-26
+
+- 统一配置文件 M_bot_config.conf：纯文本 .conf 格式（仿 R-Bot client_config.txt 样式，中英双语 `#` 注释），手动维护的三节 oci（多 profile，每项 user/fingerprint/key_file/tenancy/region）/cloudflare/bark 在前，44 个 `#` 分隔线后是暂时不用的预留节（username/password、local_address/model、azure、ssh、solusvm）；mbot 生成的文件全部搬到安装目录（.env、管理员密码、oci_config、M_bot_config.conf），/root 只留用户自己放的 .pem 私钥（key_file 写什么路径就读什么路径）；oci_config 启动时从 .conf 自动生成，不再手改；MBOT_* 那些 bot 自动写改的值继续留 env 文件。新增 mbot_config.py（解析、保存、迁移、生成 oci_config），附 M_bot_config.example.conf 样板
+- 安装时证书方式自动检测：有域名 + Cloudflare 凭据（CF_Key/CF_Email 或 CF_API_TOKEN）走 cfdns 自动申请；有域名没凭据走 http；域名留空走 IP 证书；MBOT_INSTALL_CERT_METHOD 显式指定仍优先；更新模式也认该变量（以前更新时不读它，默认走 http）
+- 安装面板端口 443 优选：装面板时先看 443 空不空闲，空闲就走 443（标准 HTTPS 端口），被 xray 之类占了就回落 9527；自签证书、IP 证书、域名证书三条路统一走优先端口；防火墙只放行面板实际用的端口；自检与最后打印的面板地址按实际端口显示
+
 ## [2.05] - 2026-11-26
 
 - 新机支持“DD 重装 + 初始化”两阶段流程：建机表单加“DD重装”开关，开启后创建时先用 InstallNET.sh 重装 Debian 13（SSH 端口 14422、swap 1024MB），DD 完成后机器人后台经 SSH 上传初始化脚本并执行（系统更新、BBR、SSH 加固到 14422 密钥登录、UFW、Xray、Fail2Ban、CrowdSec、流量看门狗等），完成或失败都双通道推送；每台新机生成 UUID root 密码随开机信息推送。新增 oci/dd_init.py（DD 脚本生成、等 DD 完成、传脚本执行、超时与事件回调），Bot 开机表单与 Web 创建接口同步支持 dd 参数
@@ -112,7 +118,7 @@
 **验证**：全量测试 2650 个全过（新增 74 个：tests/test_cpu_policy.py 24 个、tests/test_task_store.py 27 个、tests/test_web_grab_cpu.py 4 个，其余在 test_grabber.py、test_notify.py、test_v1220_cpu_tasks.py、test_tgbot_instance_list.py、test_web_api.py、test_phase5e_shapes.py；另修 3 处测试抢跑：POST 后立即读 Grabber call_args 的测试加等待、Grabber patch 提前退出的测试把等待留在 patch 里）。真机验证：.160 上 /api/instances 与 /api/volumes 各接口耗时实测后定方案；部署后复测冷加载耗时。
 
 ## [1.40.1] - 2026-11-24
-- 修复点了"开始抢机"后收不到"抢机已启动"确认的问题：有 root 密码时启动回复整条走 Markdown 解析，实例名里的下划线（AMD_2026-01-02）被当成斜体标记、Telegram 拒绝发送（Can't parse entities）；动态的实例名现在先经 escape_markdown 转义再拼进消息，任务列表里的名字保持原样不转义
+- 修复点了"开始抢机"后收不到"抢机已启动"确认的问题：有 root 密码时启动回复整条走 Markdown 解析，实例名里的下划线（AMD_2026-11-25）被当成斜体标记、Telegram 拒绝发送（Can't parse entities）；动态的实例名现在先经 escape_markdown 转义再拼进消息，任务列表里的名字保持原样不转义
 
 **验证**：全量测试 2576 个全过（新增 1 个回归测试 tests/test_boot_form_handlers.py 的 test_start_reply_escapes_underscore_in_name）。
 

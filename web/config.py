@@ -11,7 +11,8 @@
 
 安全说明：
   - 本模块不读取、不打印、不外传 OCI API 私钥。认证全部由 OCI CLI
-    自己读配置文件（~/oci_config，旧部署回退 ~/.oci/config）与 key_file 完成。
+    自己读配置文件（安装目录下的 oci_config，旧部署回退 ~/oci_config
+    与 ~/.oci/config）与 key_file 完成。
   - 面板默认只监听 127.0.0.1（本机访问）；要从外网访问请自行在前面
     加反向代理 + HTTPS，不要直接把 9527 暴露到公网。
 """
@@ -20,6 +21,23 @@ import os
 import secrets
 import sys
 import warnings
+
+# 统一配置文件（安装目录下的 M_bot_config.conf，纯文本）：启动时先
+# 加载它（旧部署自动从 env/oci_config 迁移），把值写进 os.environ，
+# 再从解析结果生成 OCI INI。必须在下面读 os.environ 之前做，否则
+# conf 里的值读不到。加载失败也不炸掉面板启动（降级为空配置，继续
+# 用环境变量）。
+# Load the unified txt config (M_bot_config.conf in the install dir)
+# before reading os.environ below: old deploys self-migrate from the
+# env/OCI files, values land in os.environ, and the OCI INI is
+# regenerated from it.
+try:
+    import mbot_config
+
+    mbot_config.bootstrap()
+except Exception:  # noqa: BLE001 - 配置加载失败时面板仍可用环境变量启动
+    mbot_config = None
+    warnings.warn("统一配置 M_bot_config.conf 加载失败，继续用环境变量。")
 
 # ================= 配置区（改这里） =================
 # Panel listen address and port (default 9527). 面板监听地址与端口（默认 9527）。
@@ -90,9 +108,25 @@ SESSION_COOKIE = "mbot_session"
 DATA_DIR = os.path.expanduser(os.environ.get(
     "MBOT_WEB_DATA_DIR", "~/workspace/rbot-clone/web/data"))
 
-# Env file: a password change writes the new hash here (systemd reads it via EnvironmentFile; takes effect after a service restart). The deploy path is /root/.rbot-clone.env (when running as root, ~ is /root); in development MBOT_WEB_ENV_FILE can point elsewhere. 环境变量文件：改密码时把新哈希写到这里（systemd 经 EnvironmentFile 读入，重启服务后生效）。部署路径是 /root/.rbot-clone.env（root 运行时 ~ 就是 /root）；开发时可用 MBOT_WEB_ENV_FILE 指到别处。
+# Project root (this package lives one level under it). 项目根目录
+# （本包在它下一层）。
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Env file: all MBOT_* values live here (read by systemd via
+# EnvironmentFile; a password change writes the new hash here, and it
+# takes effect after a service restart). The deploy path is
+# <install dir>/.rbot-clone.env; in development MBOT_WEB_ENV_FILE can
+# point elsewhere. The unified txt config (M_bot_config.conf in the
+# install dir) holds only the user-managed sections (oci / cloudflare /
+# bark); it is loaded by mbot_config.bootstrap() above and does not
+# replace this file.
+# 环境变量文件：所有 MBOT_* 值都在这里（systemd 经 EnvironmentFile
+# 读入；改密码时把新哈希写到这里，重启服务后生效）。部署路径是安装
+# 目录下的 .rbot-clone.env；开发时可用 MBOT_WEB_ENV_FILE 指到别处。
+# 统一配置文件（安装目录下的 M_bot_config.conf）只放用户手动管的三节
+# （oci / cloudflare / bark），由上面 mbot_config.bootstrap() 加载，
+# 不取代这个文件。
 ENV_FILE = os.environ.get(
-    "MBOT_WEB_ENV_FILE", os.path.expanduser("~/.rbot-clone.env"))
+    "MBOT_WEB_ENV_FILE", os.path.join(PROJECT_ROOT, ".rbot-clone.env"))
 
 # Grabber-plan scheduler switch: set MBOT_ENABLE_PLAN_SCHEDULER=1 to start APScheduler when the panel starts (runs grabber plans from grabber_plans.json on schedule). 抢机计划调度器开关：设 MBOT_ENABLE_PLAN_SCHEDULER=1 才在面板启动时启动 APScheduler（按 grabber_plans.json 里的计划定时抢机）。
 # Off by default (tests and deploys without scheduled grabbing are unaffected). 默认关闭（测试与不需要定时抢机的部署不受影响）。
@@ -259,7 +293,7 @@ def profile_display_name(name, region_count=None):
     """账号（profile）的显示名：主区中文名；订阅了多个区域时后缀（N 个区）。
 
     与 tgbot/config.py 的同名函数保持一致（机器人切换菜单与面板
-    下拉用同一套显示名；用户要求 2026-11-24：bot 改完的网页版也要
+    下拉用同一套显示名；用户要求 2026-01-01：bot 改完的网页版也要
     相应调整）。region_count 为 None 或 <=1 时不加后缀。
     同主区有多个账号时，非第一个加“·profile”后缀区分（如“新加坡·sg1”）。
     """

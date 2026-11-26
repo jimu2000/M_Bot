@@ -54,9 +54,10 @@ class TestInstallScript(unittest.TestCase):
         self.assertIn('INSTALL_DIR="/opt/mbot"', self.text)
         self.assertIn('WEB_SERVICE="mbot-web"', self.text)
         self.assertIn('BOT_SERVICE="mbot-bot"', self.text)
-        self.assertIn('ENV_FILE="/root/.mbot.env"', self.text)
-        self.assertIn('ADMIN_PASSWORD_FILE="/root/.mbot-admin-password"',
-                      self.text)
+        self.assertIn('ENV_FILE="$INSTALL_DIR/.mbot.env"', self.text)
+        self.assertIn(
+            'ADMIN_PASSWORD_FILE="$INSTALL_DIR/.mbot-admin-password"',
+            self.text)
         self.assertNotIn("rbot-clone", self.text,
                          "新安装脚本不应引用旧部署路径 rbot-clone")
 
@@ -168,20 +169,20 @@ class TestInstallScript(unittest.TestCase):
         self.assertIn('[ "${CERT_OK:-0}" = "1" ]', self.text)
 
     def test_firewall_always_allows_panel_port(self):
+        # 防火墙放行面板实际监听的端口：443 空闲时走 443，被占时走 9527。
+        # The firewall opens the panel's actual listen port: 443 when free,
+        # else 9527.
         ports_fn = self.text.split("panel_ports()")[1].split(
             "firewall_ports()")[0]
+        self.assertIn("pick_panel_port", ports_fn)
+        self.assertIn('"443"', ports_fn)
         self.assertIn("${PANEL_PORT}", ports_fn)
-        panel_pos = ports_fn.find("${PANEL_PORT}")
-        domain_pos = ports_fn.find('[ -n "${DOMAIN:-}" ]')
-        self.assertLess(panel_pos, domain_pos)
+        self.assertIn('ports="$(panel_ports)"', self.text)
 
     def test_firewall_always_allows_port_80(self):
         ports_fn = self.text.split("panel_ports()")[1].split(
             "firewall_ports()")[0]
-        self.assertIn('"80"', ports_fn)
-        port80_pos = ports_fn.find('"80"')
-        domain_pos = ports_fn.find('[ -n "${DOMAIN:-}" ]')
-        self.assertLess(port80_pos, domain_pos)
+        self.assertIn('local ports="80"', ports_fn)
 
     def test_panel_port_skipped_when_occupied(self):
         self.assertIn("panel_ports()", self.text)
@@ -192,8 +193,30 @@ class TestInstallScript(unittest.TestCase):
         self.assertIn('ports="$(panel_ports)"', self.text)
         nginx_fn = self.text.split("setup_nginx()")[1].split(
             "detect_ssh_port()")[0]
-        self.assertIn("port443_free", nginx_fn)
+        self.assertIn("port_443_free", nginx_fn)
         self.assertIn("面板走 443，不影响", nginx_fn)
+
+    def test_panel_prefers_443_when_free(self):
+        # 面板优先走 443（标准 HTTPS 端口），被占时回落 9527：三个写配置的
+        # 路径（自签、IP 证书、域名证书）都用同一个优先端口，防火墙与
+        # 自检/访问信息也跟着走。
+        # The panel prefers 443 (standard HTTPS) when free, else 9527: all
+        # three config writers (self-signed, IP cert, domain cert) use the
+        # same preferred port, and the firewall, self-test and access info
+        # follow it.
+        self.assertIn("port_443_free() {", self.text)
+        self.assertIn("pick_panel_port() {", self.text)
+        self.assertIn("echo 443", self.text)
+        self.assertIn('PANEL_LISTEN_PORT="$(pick_panel_port)"', self.text)
+        for fn in ("write_nginx_selfsigned() {",
+                   "write_nginx_lego_ip() {",
+                   "write_nginx_domain_https() {"):
+            body = self.text.split(fn)[1].split("\n}\n")[0]
+            self.assertIn("pick_panel_port", body,
+                          "%s should use pick_panel_port" % fn)
+        self.assertIn('"${PANEL_LISTEN_PORT:-$PANEL_PORT}"', self.text)
+        # 自签与 IP 证书路径不再写死 9527。
+        self.assertNotIn("listen ${PANEL_PORT} ssl;", self.text)
 
     def test_readme_quickstart(self):
         with open(README, encoding="utf-8") as f:
@@ -226,6 +249,32 @@ class TestInstallScript(unittest.TestCase):
         self.assertIn("--dns cloudflare", self.text)
         self.assertIn("read -r -s CF_API_TOKEN", self.text)
         self.assertIn('chmod 600 "$LEGO_DIR/env"', self.text)
+
+    def test_cert_method_auto_detect(self):
+        # 证书验证方式自动检测，不再交互提问：有 CF 凭据 + 域名 -> cfdns
+        # 自动申请；没凭据但有域名 -> http；没域名 -> IP 证书。
+        # The cert method is auto-detected, no interactive prompt: CF
+        # credentials + domain -> cfdns; domain without creds -> http;
+        # no domain -> IP cert.
+        self.assertNotIn('printf "域名证书验证方式', self.text,
+                         "证书验证方式不应再交互提问，应自动检测")
+        self.assertIn("Certificate method: auto-detect", self.text)
+        self.assertIn('CERT_METHOD="cfdns"', self.text)
+        self.assertIn("检测到 Cloudflare 凭据", self.text)
+        # MBOT_INSTALL_CERT_METHOD 仍可显式指定（全新安装与更新模式）。
+        self.assertGreaterEqual(
+            self.text.count(
+                'CERT_METHOD="${MBOT_INSTALL_CERT_METHOD:-http}"'),
+            2, "全新安装与更新模式都要从 MBOT_INSTALL_CERT_METHOD 读")
+
+    def test_cf_key_email_env_aliases(self):
+        # acme.sh 风格的 CF_Key / CF_Email 环境变量也要认（等同于
+        # CF_API_KEY / CF_EMAIL），否则 export 了 CF_Key/CF_Email 的
+        # 用户还会被当成没凭据。
+        fn = self.text.split("load_cf_credentials() {")[1].split(
+            "\n}\n")[0]
+        self.assertIn("${CF_Key:-}", fn)
+        self.assertIn("${CF_Email:-}", fn)
 
     def test_cert_renewal_automation(self):
         self.assertIn("write_renew_script()", self.text)
@@ -548,6 +597,20 @@ class TestInstallScript(unittest.TestCase):
         self.assertGreaterEqual(
             self.text.count('Environment="MBOT_WEB_ENV_FILE=${ENV_FILE}"'),
             2, "面板与机器人 systemd 单元都要设 MBOT_WEB_ENV_FILE")
+
+    def test_unified_config_is_txt(self):
+        """统一配置文件是纯文本 M_bot_config.conf，不再是 JSON。"""
+        self.assertIn('CONFIG_FILE="$INSTALL_DIR/M_bot_config.conf"',
+                      self.text)
+        self.assertNotIn("M_bot_config.json", self.text)
+        self.assertIn("write_config_txt() {", self.text)
+        self.assertNotIn("write_config_json", self.text)
+        self.assertIn("mbot_config.save_config", self.text)
+
+    def test_systemd_unit_sets_mbot_config_file(self):
+        self.assertGreaterEqual(
+            self.text.count('Environment="MBOT_CONFIG_FILE=${CONFIG_FILE}"'),
+            2, "面板与机器人 systemd 单元都要设 MBOT_CONFIG_FILE")
 
     def test_compartment_derived_from_tenancy(self):
         self.assertIn("read_tenancy_from_oci_config", self.text)

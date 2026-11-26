@@ -28,6 +28,16 @@ from telegram.ext import (
 # Prepend the project root to sys.path so `import oci` resolves to this project's oci/ package (not a same-named OCI Python SDK that may be installed system-wide). 把项目根目录加到 sys.path 开头（保证 `import oci` 解析到本项目的 oci/ 包，而不是系统里可能装的 OCI Python SDK 同名包）。
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# Unified JSON config: load it before importing tgbot.config (which
+# reads os.environ at import time for the Token/allowlist), apply it to
+# os.environ, and regenerate the OCI INI from JSON. Idempotent.
+# 统一 JSON 配置：在 import tgbot.config 之前加载（它在 import 时就从
+# os.environ 读 Token 与白名单），写进 os.environ，并从 JSON 生成
+# OCI INI。幂等。
+import mbot_config  # noqa: E402
+
+mbot_config.bootstrap()
+
 from tgbot import bind_domain  # noqa: E402
 from tgbot import config as bot_config  # noqa: E402
 from tgbot import handlers, handlers_client, handlers_extra  # noqa: E402
@@ -373,6 +383,12 @@ def main():
     """启动机器人（polling）。"""
     _setup_logging()
     logger = logging.getLogger(__name__)
+    # Unified JSON config: (re)load it at startup so a config change
+    # made while the bot was down is picked up, and regenerate the OCI
+    # INI from JSON. Idempotent; already bootstrapped once at import.
+    # 统一 JSON 配置：启动时再加载一次（停机期间改的配置能生效），
+    # 并从 JSON 重生成 OCI INI。幂等；import 时已引导过一次。
+    mbot_config.bootstrap()
     application = build_application()
     # Startup recovery: grab tasks from this source that are still running resume from their grab_spec; other unfinished tasks are marked interrupted (web-side tasks are untouched). 启动恢复：本来源还在跑的抢机任务按 grab_spec 恢复重跑，其余未结束任务标为已中断（网页端的任务不动）。
     handlers_extra.resume_interrupted_grabs()

@@ -18,7 +18,11 @@
 #
 # 注意：
 #   - 本脚本是模板，不含真实 IP / 密码 / Token；真实值一律放
-#     /root/.rbot-clone.env（600 权限），由 systemd 经 EnvironmentFile 读入。
+#     env 文件 $INSTALL_DIR/.rbot-clone.env（MBOT_*，600 权限，systemd
+#     经 EnvironmentFile 读入）与统一配置文件
+#     $INSTALL_DIR/M_bot_config.conf（纯文本，oci / cloudflare / bark 三节，
+#     600 权限，启动时由代码读进环境变量，systemd 传 MBOT_CONFIG_FILE
+#     指过去）。
 #   - 面板默认只监听 127.0.0.1（见 web/config.py），不要直接把 9527
 #     暴露到公网；外网访问请在前面加反向代理 + HTTPS。
 #   - 升级前会自动备份当前版本到 $INSTALL_DIR/.backup/，回滚用 rollback。
@@ -37,7 +41,11 @@
 # rollback, start|stop|restart|status, health (process-level check, since
 # /api/system/health needs a login session). Notes: this script is a
 # template with no real IPs / passwords / tokens; real values go in
-# /root/.rbot-clone.env (mode 600), read by systemd via EnvironmentFile.
+# the env file $INSTALL_DIR/.rbot-clone.env (MBOT_*, mode 600, read by systemd
+# via EnvironmentFile) and the unified txt config
+# $INSTALL_DIR/M_bot_config.conf (plain text, oci / cloudflare / bark, mode 600,
+# loaded into the environment by the code at startup; systemd passes
+# MBOT_CONFIG_FILE pointing at it).
 # The panel listens on 127.0.0.1 only (see web/config.py); do not expose
 # 9527 directly to the internet, put a reverse proxy + HTTPS in front.
 
@@ -53,7 +61,9 @@ SERVICE_USER="root"
 # systemd service names. systemd 服务名。
 SERVICE_NAME="rbot-clone-web"
 # Env file (admin password hash, session key, etc.; mode 600, read by systemd). 环境文件（管理员密码哈希、会话密钥等，600 权限，systemd 读入）。
-ENV_FILE="/root/.rbot-clone.env"
+ENV_FILE="$INSTALL_DIR/.rbot-clone.env"
+# Unified txt config file (OCI profiles, Cloudflare, Bark; mode 600, loaded by the code at startup). 统一配置文件（纯文本，OCI 账号、Cloudflare、Bark 三节，600 权限，启动时由代码读入）。
+CONFIG_FILE="$INSTALL_DIR/M_bot_config.conf"
 # Python virtualenv directory (created during install). Python 虚拟环境目录（install 时创建）。
 VENV_DIR="$INSTALL_DIR/venv"
 # Port file (priority level 3 of port resolution; the default port is used when the file does not exist). 端口文件（端口解析优先级第 3 级；文件不存在时用默认端口）。
@@ -102,6 +112,7 @@ Type=simple
 User=${SERVICE_USER}
 WorkingDirectory=${INSTALL_DIR}
 EnvironmentFile=${ENV_FILE}
+Environment="MBOT_CONFIG_FILE=${CONFIG_FILE}"
 ExecStart=${VENV_DIR}/bin/uvicorn web.app:app --host 127.0.0.1 --port ${port}
 Restart=always
 RestartSec=10
@@ -148,6 +159,16 @@ cmd_install() {
         exit 1
     fi
     chmod 600 "$ENV_FILE"
+    if [ ! -f "$CONFIG_FILE" ]; then
+        echo "统一配置文件 $CONFIG_FILE 不存在，新建空骨架（600 权限，带双语注释）…"
+        # The skeleton (full layout with bilingual comments) comes from
+        # mbot_config.save_config so the format lives in one place.
+        # 空骨架（完整排版 + 双语注释）由 mbot_config.save_config 生成，
+        # 格式只在一处维护。
+        PYTHONPATH="$INSTALL_DIR" python3 -c \
+            "import mbot_config; mbot_config.save_config(mbot_config.empty_config(), '$CONFIG_FILE')" \
+            || { echo "错误：统一配置文件骨架生成失败。"; exit 1; }
+    fi
     echo "$port" > "$PORT_FILE"
     write_systemd_unit "$port"
     systemctl enable --now "$SERVICE_NAME"

@@ -111,6 +111,8 @@ class WebOciProfilesTestCase(unittest.TestCase):
             patch.dict(os.environ, {"HOME": self._home}),
             patch.object(hc, "OCI_CONFIG_PATH", self._config_path),
             patch.object(hc, "OCI_CONFIG_LEGACY_PATH", self._legacy_path),
+            patch.object(hc, "OCI_CONFIG_SDK_PATH",
+                         os.path.join(self._tmp.name, "sdk_config")),
             patch.object(web_config, "ENV_FILE", self._env_path),
             patch("web.config.DATA_DIR", self._tmp.name),
         ]
