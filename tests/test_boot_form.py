@@ -511,6 +511,21 @@ class TestRootPassword(unittest.TestCase):
         self.assertNotEqual(bf.generate_root_password(),
                             bf.generate_root_password())
 
+    def test_fixed_password_from_env(self):
+        # MBOT_FIXED_ROOT_PASSWORD 设置时，所有新机都用它，不再生成 UUID。
+        with patch.dict(os.environ,
+                        {"MBOT_FIXED_ROOT_PASSWORD": "MyFixedPass1!"}):
+            self.assertEqual(bf.generate_root_password(), "MyFixedPass1!")
+            self.assertEqual(bf.generate_root_password(), "MyFixedPass1!")
+
+    def test_fixed_password_blank_falls_back_to_uuid(self):
+        # 只含空白时视同未设置，回落到 UUID。
+        with patch.dict(os.environ,
+                        {"MBOT_FIXED_ROOT_PASSWORD": "   "}):
+            password = bf.generate_root_password()
+            self.assertEqual(len(password), 32)
+            self.assertRegex(password, r"^[0-9a-f]{32}$")
+
 
 class TestBuildUserData(unittest.TestCase):
     def test_none_when_empty(self):
@@ -656,13 +671,15 @@ class TestFmtAndKeyboard(unittest.TestCase):
         form = _filled_form()
         kb = bf.boot_form_keyboard(form)
         rows = kb.inline_keyboard
-        self.assertEqual(len(rows), 16)
+        self.assertEqual(len(rows), 17)
         self.assertEqual(rows[0][0].callback_data, "bf:oneclick:amd")
         callbacks = [b.callback_data for row in rows for b in row]
         self.assertIn("bf:oneclick:amd", callbacks)
         self.assertIn("bf:cpu:arm", callbacks)
         self.assertIn("bf:os:ubuntu", callbacks)
         self.assertIn("bf:delay:200", callbacks)
+        self.assertIn("bf:dd:off", callbacks)
+        self.assertIn("bf:dd:on", callbacks)
         self.assertIn("bf:confirm", callbacks)
         self.assertIn("bf:save", callbacks)
         self.assertIn("o:menu", callbacks)

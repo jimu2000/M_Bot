@@ -29,6 +29,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from web import config
+from web import demo_data
 from web.auth import (
     LOGIN_GUARD,
     MAGIC_LOGIN_TOKENS,
@@ -201,12 +202,20 @@ def login(body: LoginBody, request: Request):
     ok = (body.username == config.ADMIN_USERNAME
           and config.ADMIN_PASSWORD_HASH
           and verify_password(body.password, config.ADMIN_PASSWORD_HASH))
+    if not ok and demo_data.is_demo():
+        # Demo login: demo/demo works in demo mode without depending on the
+        # real admin password hash; the real admin login still works too.
+        # 演示登录：演示模式下 demo/demo 可登录，不依赖真实管理员密码哈希；
+        # 真实管理员登录在演示模式下仍可用。
+        ok = (body.username == demo_data.DEMO_USERNAME
+              and body.password == demo_data.DEMO_PASSWORD)
     if not ok:
         LOGIN_GUARD.record_failure(body.username)
         return error_response("用户名或密码错误", status_code=401)
     LOGIN_GUARD.record_success(body.username)
     return _set_session_cookie(
-        JSONResponse({"ok": True, "username": body.username}),
+        JSONResponse({"ok": True, "username": body.username,
+                      "demoMode": config.DEMO_MODE}),
         body.username, remember=body.remember, request=request)
 
 
@@ -320,7 +329,8 @@ def logout(request: Request):
 @router.get("/api/auth/me")
 def me(username: str = Depends(get_current_user)):
     """返回当前登录用户。"""
-    return {"ok": True, "username": username}
+    return {"ok": True, "username": username,
+            "demoMode": config.DEMO_MODE}
 
 
 @router.post("/api/auth/change-password")

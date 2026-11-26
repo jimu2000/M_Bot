@@ -3,6 +3,8 @@
 
 原创实现，参考 OCI CLI 公开命令（oci bv ...）编写。
 所有函数都接受一个 oci.client.OCIClient 对象作为第一个参数。
+读操作（列表/详情/挂载关系）走 OCI Python SDK 直调，不起 CLI 子进程；
+写操作（扩容/改 VPU/删除）仍走官方 OCI CLI。
 
 安全说明（重要）：
   - 本模块不读取、不打印、不外传 API 私钥。认证全部由 OCI CLI 自己读
@@ -78,42 +80,38 @@ def _simplify_volume(item):
     }
 
 
-def list_boot_volumes(cli, compartment_id):
-    """列出指定 compartment 下的所有启动盘。
+def simplify_boot_volumes(items):
+    """把启动盘原始列表精简为常用字段（纯函数，不调 OCI）。
 
-    对应命令：oci bv boot-volume list --compartment-id <OCID>
+    供 Web 层共享缓存用：缓存存原始列表，各端点按需精简，避免重复调 SDK。
+    """
+    return [_simplify_boot_volume(item) for item in items]
+
+
+def list_boot_volumes(cli, compartment_id):
+    """列出指定 compartment 下的所有启动盘（SDK 直调）。
 
     返回精简列表，每项含 id、display-name、size-in-gbs、lifecycle-state、
     availability-domain，以及 instance-id（仅当 API 返回该字段时才有）。
     """
-    result = cli.run(["bv", "boot-volume", "list",
-                      "--compartment-id", compartment_id])
-    items = _extract_data(result) or []
-    return [_simplify_boot_volume(item) for item in items]
+    items = cli.sdk_list_boot_volumes(compartment_id) or []
+    return simplify_boot_volumes(items)
 
 
 def get_boot_volume(cli, boot_volume_id):
-    """查单个启动盘的详情。
-
-    对应命令：oci bv boot-volume get --boot-volume-id <OCID>
+    """查单个启动盘的详情（SDK 直调）。
 
     返回启动盘的完整详情字典。OCID 不存在时抛 NotFoundError。
     """
-    result = cli.run(["bv", "boot-volume", "get",
-                      "--boot-volume-id", boot_volume_id])
-    return _extract_data(result)
+    return cli.sdk_get_boot_volume(boot_volume_id)
 
 
 def list_volumes(cli, compartment_id):
-    """列出指定 compartment 下的所有块存储卷。
-
-    对应命令：oci bv volume list --compartment-id <OCID>
+    """列出指定 compartment 下的所有块存储卷（SDK 直调）。
 
     返回精简列表，每项含 id、display-name、size-in-gbs、lifecycle-state。
     """
-    result = cli.run(["bv", "volume", "list",
-                      "--compartment-id", compartment_id])
-    items = _extract_data(result) or []
+    items = cli.sdk_list_volumes(compartment_id) or []
     return [_simplify_volume(item) for item in items]
 
 
@@ -191,12 +189,9 @@ def delete_boot_volume(cli, boot_volume_id):
 
 def list_boot_volume_attachments(cli, compartment_id, availability_domain,
                                  include_id=False):
-    """列出指定 compartment + 可用域下的启动盘挂载关系。
+    """列出指定 compartment + 可用域下的启动盘挂载关系（SDK 直调）。
 
-    对应命令：oci compute boot-volume-attachment list
-              --compartment-id <OCID> --availability-domain <AD>
-
-    注意：该命令在 compute 组下（bv 组没有这个子命令），且
+    注意：该查询在 compute 服务下（bv 组没有这个操作），且
     --availability-domain 是必填参数。
 
     返回精简列表，每项含 boot-volume-id、instance-id、lifecycle-state
@@ -204,10 +199,8 @@ def list_boot_volume_attachments(cli, compartment_id, availability_domain,
     include_id=True 时每项额外含挂载记录自身的 id（attachmentId，
     Web 磁盘列表用；默认不带，保持原有精简形状不变）。
     """
-    result = cli.run(["compute", "boot-volume-attachment", "list",
-                      "--compartment-id", compartment_id,
-                      "--availability-domain", availability_domain])
-    items = _extract_data(result) or []
+    items = cli.sdk_list_boot_volume_attachments(
+        compartment_id, availability_domain) or []
     simplified = []
     for item in items:
         entry = {

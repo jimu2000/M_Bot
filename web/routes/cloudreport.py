@@ -25,6 +25,7 @@ from oci.instance import list_instances
 from oci.quota import get_a1_usage, get_e2_usage
 from oci.volume import list_boot_volumes
 from web import config
+from web import demo_data
 from web.deps import get_current_user
 
 router = APIRouter()
@@ -123,6 +124,10 @@ def cloud_report_summary(refresh: bool = Query(default=False),
 
     refresh=true：绕过服务端缓存，强制重新汇总（前端刷新按钮用）。
     """
+    if demo_data.is_demo():
+        # Demo mode: simulated cloud report, no OCI calls, no cache.
+        # 演示模式：模拟云报告，不调 OCI，不走缓存。
+        return {"ok": True, **demo_data.demo_cloud_report()}
     if not refresh:
         with _REPORT_CACHE_LOCK:
             entry = _REPORT_CACHE.get("summary")

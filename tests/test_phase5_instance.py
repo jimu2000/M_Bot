@@ -166,17 +166,14 @@ class TestReinstallInstance(unittest.TestCase):
     def test_without_image_reuses_current(self):
         """不传 image_id 时先 get 查当前镜像，再用它重装。"""
         cli = MagicMock()
-
-        def _run(args, **kwargs):
-            if args[:3] == ["compute", "instance", "get"]:
-                return {"data": {"id": FAKE_INSTANCE_1,
-                                 "source-details": {"image-id": FAKE_IMAGE}}}
-            return {"data": {"id": FAKE_INSTANCE_1}}
-
-        cli.run.side_effect = _run
+        cli.sdk_get_instance.return_value = {
+            "id": FAKE_INSTANCE_1,
+            "source-details": {"image-id": FAKE_IMAGE}}
+        cli.run.return_value = {"data": {"id": FAKE_INSTANCE_1}}
         reinstall_instance(cli, FAKE_INSTANCE_1)
-        self.assertEqual(cli.run.call_count, 2)
-        update_args = cli.run.call_args_list[1][0][0]
+        # get 走 SDK 直调，run 只调一次 update。
+        cli.run.assert_called_once()
+        update_args = cli.run.call_args[0][0]
         details = json.loads(
             update_args[update_args.index("--source-details") + 1])
         self.assertEqual(details["imageId"], FAKE_IMAGE)
@@ -184,13 +181,12 @@ class TestReinstallInstance(unittest.TestCase):
     def test_without_image_and_no_source_details_raises(self):
         """get 不到当前镜像时抛 ValueError，且不调 update。"""
         cli = MagicMock()
-        cli.run.return_value = {"data": {"id": FAKE_INSTANCE_1}}
+        cli.sdk_get_instance.return_value = {"id": FAKE_INSTANCE_1}
         with self.assertRaises(ValueError):
             reinstall_instance(cli, FAKE_INSTANCE_1)
-        # Only get was called; update was not. 只调了 get，没调 update。
-        cli.run.assert_called_once()
-        args = cli.run.call_args[0][0]
-        self.assertEqual(args[:3], ["compute", "instance", "get"])
+        # Only get was called (SDK); update was not. 只调了 get（SDK），没调 update。
+        cli.run.assert_not_called()
+        cli.sdk_get_instance.assert_called_once_with(FAKE_INSTANCE_1)
 
     def test_returns_updated_detail(self):
         cli = _mock_cli({"data": {"id": FAKE_INSTANCE_1,
@@ -204,24 +200,18 @@ class TestGetSerialConsole(unittest.TestCase):
     @patch("oci.instance.os.path.isfile", return_value=True)
     def test_create_then_get(self, _mock_isfile):
         cli = MagicMock()
-
-        def _run(args, **kwargs):
-            if args[1] == "instance-console-connection" and args[2] == "create":
-                return {"data": {
-                    "id": FAKE_CONNECTION,
-                    "connection-string":
-                        "ssh -i key " + FAKE_CONNECTION + "@instance-console",
-                    "fingerprint": "aa:bb:cc",
-                    "lifecycle-state": "CREATING"}}
-            if args[1] == "instance-console-connection" and args[2] == "get":
-                return {"data": {"id": FAKE_CONNECTION,
-                                 "lifecycle-state": "ACTIVE"}}
-            raise AssertionError(f"unexpected command: {args}")
-
-        cli.run.side_effect = _run
+        cli.run.return_value = {"data": {
+            "id": FAKE_CONNECTION,
+            "connection-string":
+                "ssh -i key " + FAKE_CONNECTION + "@instance-console",
+            "fingerprint": "aa:bb:cc",
+            "lifecycle-state": "CREATING"}}
+        cli.sdk_get_instance_console_connection.return_value = {
+            "id": FAKE_CONNECTION, "lifecycle-state": "ACTIVE"}
         result = get_serial_console(cli, FAKE_INSTANCE_1,
                                     ssh_public_key_file="/tmp/fake-key.pub")
-        self.assertEqual(cli.run.call_count, 2)
+        # create 走 CLI（写操作），跟进的 get 走 SDK 直调。
+        self.assertEqual(cli.run.call_count, 1)
         create_args = cli.run.call_args_list[0][0][0]
         self.assertEqual(create_args[:3],
                          ["compute", "instance-console-connection", "create"])
@@ -229,10 +219,8 @@ class TestGetSerialConsole(unittest.TestCase):
         # The OCI CLI's required --ssh-public-key-file parameter (a bug found by real verification). OCI CLI 必填参数 --ssh-public-key-file（真实验证挖出的 bug）。
         self.assertIn("--ssh-public-key-file", create_args)
         self.assertIn("/tmp/fake-key.pub", create_args)
-        get_args = cli.run.call_args_list[1][0][0]
-        self.assertEqual(get_args[:3],
-                         ["compute", "instance-console-connection", "get"])
-        self.assertIn(FAKE_CONNECTION, get_args)
+        cli.sdk_get_instance_console_connection.assert_called_once_with(
+            FAKE_CONNECTION)
         # create's connection string is kept; get's latest state overwrites the old state. create 的连接串保留，get 的最新状态覆盖旧状态。
         self.assertIn("ssh -i key", result["connection-string"])
         self.assertEqual(result["fingerprint"], "aa:bb:cc")

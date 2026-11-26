@@ -57,13 +57,14 @@ class TestIsValidEmail(unittest.TestCase):
 
 class TestListSenders(unittest.TestCase):
     def test_returns_simplified_list(self):
-        cli = _mock_cli({"data": [{
+        cli = _mock_cli(None)
+        cli.sdk_list_senders.return_value = [{
             "id": FAKE_SENDER,
             "email-address": "noreply@example.com",
             "lifecycle-state": "ACTIVE",
             "time-created": "2026-11-20T00:00:00Z",
             "compartment-id": FAKE_COMPARTMENT,
-        }]})
+        }]
         result = list_senders(cli, FAKE_COMPARTMENT)
         self.assertEqual(result, [{
             "id": FAKE_SENDER,
@@ -71,19 +72,12 @@ class TestListSenders(unittest.TestCase):
             "lifecycle-state": "ACTIVE",
             "time-created": "2026-11-20T00:00:00Z",
         }])
-        cli.run.assert_called_once_with(
-            ["email", "sender", "list",
-             "--compartment-id", FAKE_COMPARTMENT])
+        cli.sdk_list_senders.assert_called_once_with(FAKE_COMPARTMENT)
+        cli.run.assert_not_called()
 
     def test_empty(self):
-        cli = _mock_cli({"data": []})
-        self.assertEqual(list_senders(cli, FAKE_COMPARTMENT), [])
-
-    def test_empty_no_data_field(self):
-        """空列表时 OCI CLI 只返回 {"opc-total-items": "0"}，没有
-        data 字段——必须返回 []，不能对 dict 迭代取 key（2026-11-24
-        实测因此触发 /api/email/senders 500）。"""
-        cli = _mock_cli({"opc-total-items": "0"})
+        cli = _mock_cli(None)
+        cli.sdk_list_senders.return_value = []
         self.assertEqual(list_senders(cli, FAKE_COMPARTMENT), [])
 
 
@@ -125,13 +119,14 @@ class TestDeleteSender(unittest.TestCase):
 
 class TestListIamUsers(unittest.TestCase):
     def test_returns_simplified_list(self):
-        cli = _mock_cli({"data": [{
+        cli = _mock_cli(None)
+        cli.sdk_list_users.return_value = [{
             "id": FAKE_USER,
             "name": "admin-user",
             "email": "admin@example.com",
             "lifecycle-state": "ACTIVE",
             "description": "x",
-        }]})
+        }]
         result = list_iam_users(cli, FAKE_COMPARTMENT)
         self.assertEqual(result, [{
             "id": FAKE_USER,
@@ -139,12 +134,12 @@ class TestListIamUsers(unittest.TestCase):
             "email": "admin@example.com",
             "lifecycle-state": "ACTIVE",
         }])
-        cli.run.assert_called_once_with(
-            ["iam", "user", "list",
-             "--compartment-id", FAKE_COMPARTMENT])
+        cli.sdk_list_users.assert_called_once_with(FAKE_COMPARTMENT)
+        cli.run.assert_not_called()
 
     def test_empty(self):
-        cli = _mock_cli({"data": []})
+        cli = _mock_cli(None)
+        cli.sdk_list_users.return_value = []
         self.assertEqual(list_iam_users(cli, FAKE_COMPARTMENT), [])
 
 

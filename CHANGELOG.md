@@ -9,6 +9,16 @@
 
 ## [Unreleased]
 
+## [2.05] - 2026-11-26
+
+- 新机支持“DD 重装 + 初始化”两阶段流程：建机表单加“DD重装”开关，开启后创建时先用 InstallNET.sh 重装 Debian 13（SSH 端口 14422、swap 1024MB），DD 完成后机器人后台经 SSH 上传初始化脚本并执行（系统更新、BBR、SSH 加固到 14422 密钥登录、UFW、Xray、Fail2Ban、CrowdSec、流量看门狗等），完成或失败都双通道推送；每台新机生成 UUID root 密码随开机信息推送。新增 oci/dd_init.py（DD 脚本生成、等 DD 完成、传脚本执行、超时与事件回调），Bot 开机表单与 Web 创建接口同步支持 dd 参数
+- CPU 优化第 4–6 轮：实例列表页取公网 IP 从逐台查改成批量查（1+2N 次 SDK 调用降到 2+N 次）；Web 层新增共享 OCI 数据缓存（web/oci_cache.py，实例/启动盘原始列表按账号+区域+compartment 缓存 30 秒，实例、配额、磁盘三个端点共用，配额汇总内部实例列表只取一次）；后台缓存预热线程（每 10 秒把快过期的缓存条目提前刷一遍，只保暖不点火，面板闲置时不产生后台调用）。冷请求系统 CPU 从 42% 降到约 13%，闲置 35 秒后点面板配额接口 0.0 秒返回
+- 演示模式：设 MBOT_DEMO_MODE=1 后面板返回模拟数据，demo/demo 可免登录直进，写操作只返回假成功，不调 OCI、不改真实状态
+- 访问统计从 Clarity 换成自建 Matomo（MBOT_MATOMO_URL / MBOT_MATOMO_SITE_ID，两项都配了才加载统计代码）
+- Web 前端 JS 修复（实例列表、配额、磁盘等页面的显示与交互问题）
+- 开机成功通知带 CPU 型号（拿不到时按 Shape 推断 AMD/ARM）
+- 新机 root 密码支持固定密码：环境变量 MBOT_FIXED_ROOT_PASSWORD 非空时所有新机都用它（只记一个就行），未设置时回落到每台生成 UUID；密码只存在部署服务器的环境变量文件里，面板不存、不读、不展示
+
 ## [2.04] - 2026-11-25
 
 - 任务管理可以删除任务（用户 2026-11-25 反馈）：已结束的任务操作列加“删除”按钮，确认后删掉任务记录和日志；运行中的任务没有删除按钮，须先取消（后端也拦：删运行中的任务报 400）。新增 DELETE /api/tasks/{id}、TaskRegistry.delete()、task_store.delete_record()；状态按当前语言显示（中文模式 DONE→已完成、CANCELLED→已取消、RUNNING→运行中、FAILED→失败等，英文模式显示英文原文），新增 i18n 的 TASK_STATUS_ZH 与 taskStatusLabel()，与实例/启动盘状态的既有本地化模式一致
@@ -102,7 +112,7 @@
 **验证**：全量测试 2650 个全过（新增 74 个：tests/test_cpu_policy.py 24 个、tests/test_task_store.py 27 个、tests/test_web_grab_cpu.py 4 个，其余在 test_grabber.py、test_notify.py、test_v1220_cpu_tasks.py、test_tgbot_instance_list.py、test_web_api.py、test_phase5e_shapes.py；另修 3 处测试抢跑：POST 后立即读 Grabber call_args 的测试加等待、Grabber patch 提前退出的测试把等待留在 patch 里）。真机验证：.160 上 /api/instances 与 /api/volumes 各接口耗时实测后定方案；部署后复测冷加载耗时。
 
 ## [1.40.1] - 2026-11-24
-- 修复点了"开始抢机"后收不到"抢机已启动"确认的问题：有 root 密码时启动回复整条走 Markdown 解析，实例名里的下划线（AMD_2026-11-25）被当成斜体标记、Telegram 拒绝发送（Can't parse entities）；动态的实例名现在先经 escape_markdown 转义再拼进消息，任务列表里的名字保持原样不转义
+- 修复点了"开始抢机"后收不到"抢机已启动"确认的问题：有 root 密码时启动回复整条走 Markdown 解析，实例名里的下划线（AMD_2026-01-02）被当成斜体标记、Telegram 拒绝发送（Can't parse entities）；动态的实例名现在先经 escape_markdown 转义再拼进消息，任务列表里的名字保持原样不转义
 
 **验证**：全量测试 2576 个全过（新增 1 个回归测试 tests/test_boot_form_handlers.py 的 test_start_reply_escapes_underscore_in_name）。
 

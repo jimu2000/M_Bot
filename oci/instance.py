@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """实例管理：列出、查询、创建、启停、重启、终止 OCI 计算实例。
 
-全部函数接受一个 oci.client.OCIClient 对象作为第一个参数，命令通过它走
-官方 OCI CLI 执行（认证由 OCI CLI 自己处理，本模块不读私钥）。
+全部函数接受一个 oci.client.OCIClient 对象作为第一个参数。读操作
+（列表/详情/镜像架构）走 OCI Python SDK 直调，不起 CLI 子进程；
+写操作（创建/启停/终止/改名/升降配/重装/串行控制台）仍走官方
+OCI CLI（认证由 OCI CLI 自己处理，本模块不读私钥）。
 
 安全说明（重要）：
   - terminate_instance 默认永久删除引导卷（--preserve-boot-volume false），
@@ -49,6 +51,20 @@ def _unwrap(data):
     return data
 
 
+def slim_instances(items, include_shape_config=False):
+    """把实例原始列表精简为面板用的字段（纯函数，不调 OCI）。
+
+    每项只保留 id / display-name / shape / lifecycle-state /
+    time-created；include_shape_config=True 时额外保留 shape-config
+    （{ocpus, memory-in-gbs}）。供 Web 层共享缓存用：缓存存原始
+    列表，各端点按需精简，避免重复调 SDK。
+    """
+    fields = (_LIST_FIELDS + ("shape-config",) if include_shape_config
+              else _LIST_FIELDS)
+    return [{field: item.get(field) for field in fields}
+            for item in items]
+
+
 def list_instances(cli, compartment_id, include_shape_config=False):
     """列出 compartment 下的实例，返回精简列表。
 
@@ -56,20 +72,16 @@ def list_instances(cli, compartment_id, include_shape_config=False):
     include_shape_config=True 时每项额外保留 shape-config
     （{ocpus, memory-in-gbs}，Web 实例列表的 OCPU/内存列用；默认不带，
     保持原有精简形状不变）。
+
+    读接口走 SDK 直调（cli.sdk_list_instances），不再起 OCI CLI 子进程。
     """
-    result = cli.run(["compute", "instance", "list",
-                      "--compartment-id", compartment_id])
-    items = _unwrap(result) or []
-    fields = (_LIST_FIELDS + ("shape-config",) if include_shape_config
-              else _LIST_FIELDS)
-    return [{field: item.get(field) for field in fields}
-            for item in items]
+    items = cli.sdk_list_instances(compartment_id) or []
+    return slim_instances(items, include_shape_config)
 
 
 def get_instance(cli, instance_id):
-    """查单个实例详情，返回 OCI CLI 返回的完整 JSON。"""
-    return cli.run(["compute", "instance", "get",
-                    "--instance-id", instance_id])
+    """查单个实例详情，返回完整字典（SDK 直调，字段与 CLI JSON 一致）。"""
+    return cli.sdk_get_instance(instance_id)
 
 
 def get_instance_state(cli, instance_id):
@@ -99,15 +111,14 @@ def image_arch_from_name(display_name):
 
 
 def get_image_arch(cli, image_id):
-    """查镜像的架构（image get 的 display-name 推断）。
+    """查镜像的架构（image get 的 display-name 推断，SDK 直调）。
 
     查不到、镜像不存在或推断不出时返回 None——调用方跳过校验
     不阻塞创建（抢机失败时 OCI 自己报错）。
     """
     try:
-        image = cli.run(["compute", "image", "get",
-                         "--image-id", image_id])
-        return image_arch_from_name((image or {}).get("display-name"))
+        image = cli.sdk_get_image(image_id) or {}
+        return image_arch_from_name(image.get("display-name"))
     except Exception:  # noqa: BLE001 - 查不到就跳过校验
         return None
 
@@ -317,9 +328,8 @@ def get_serial_console(cli, instance_id, ssh_public_key_file=None):
          "--ssh-public-key-file", key_file])) or {}
     connection_id = created.get("id")
     if connection_id:
-        detail = _unwrap(cli.run(
-            ["compute", "instance-console-connection", "get",
-             "--instance-console-connection-id", connection_id])) or {}
+        # 跟进查详情走 SDK 直调（读接口，不起子进程）。
+        detail = cli.sdk_get_instance_console_connection(connection_id) or {}
         for key, value in detail.items():
             if value is not None:
                 created[key] = value

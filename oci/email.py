@@ -77,16 +77,12 @@ def is_valid_email(email_address):
 
 
 def list_senders(cli, compartment_id):
-    """列出指定 compartment 下的已批准发件人。
-
-    对应命令：oci email sender list --compartment-id <OCID>
+    """列出指定 compartment 下的已批准发件人（SDK 直调）。
 
     返回精简列表，每项含 id、email-address、lifecycle-state、
     time-created。
     """
-    result = cli.run(["email", "sender", "list",
-                      "--compartment-id", compartment_id])
-    items = _extract_list(result)
+    items = cli.sdk_list_senders(compartment_id) or []
     return [{
         "id": item.get("id"),
         "email-address": item.get("email-address"),
@@ -128,15 +124,11 @@ def delete_sender(cli, sender_id):
 
 
 def list_iam_users(cli, compartment_id):
-    """列出租户下的 IAM 用户（给 SMTP 凭据选所属用户用）。
-
-    对应命令：oci iam user list --compartment-id <OCID>
+    """列出租户下的 IAM 用户（给 SMTP 凭据选所属用户用，SDK 直调）。
 
     返回精简列表，每项含 id、name、email、lifecycle-state。
     """
-    result = cli.run(["iam", "user", "list",
-                      "--compartment-id", compartment_id])
-    items = _extract_list(result)
+    items = cli.sdk_list_users(compartment_id) or []
     return [{
         "id": item.get("id"),
         "name": item.get("name"),

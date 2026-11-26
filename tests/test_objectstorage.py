@@ -32,9 +32,17 @@ FAKE_BUCKET = "test-bucket"
 
 
 def _mock_cli(return_value):
-    """造一个 cli.run 返回固定值的 mock OCIClient。"""
+    """造一个 mock OCIClient：cli.run 返回原值（写操作用），SDK 读方法
+    返回解包后的数据（不包 {"data": ...}）。"""
     cli = MagicMock()
     cli.run.return_value = return_value
+    unwrapped = (return_value.get("data", return_value)
+                 if isinstance(return_value, dict) else return_value)
+    if isinstance(unwrapped, list):
+        cli.sdk_list_buckets.return_value = unwrapped
+        cli.sdk_list_objects.return_value = unwrapped
+    else:
+        cli.sdk_get_namespace.return_value = unwrapped
     return cli
 
 
@@ -42,7 +50,8 @@ class TestGetNamespace(unittest.TestCase):
     def test_returns_namespace_string(self):
         cli = _mock_cli({"data": FAKE_NAMESPACE})
         self.assertEqual(get_namespace(cli), FAKE_NAMESPACE)
-        cli.run.assert_called_once_with(["os", "ns", "get"])
+        cli.sdk_get_namespace.assert_called_once_with()
+        cli.run.assert_not_called()
 
     def test_bad_response_raises(self):
         for bad in ({"data": []}, {"data": ""}, {"data": None}, {}):
@@ -67,26 +76,20 @@ class TestListBuckets(unittest.TestCase):
             "public-access-type": "NoPublicAccess",
             "storage-tier": "Standard",
         }])
-        cli.run.assert_called_once_with(
-            ["os", "bucket", "list",
-             "--compartment-id", FAKE_COMPARTMENT,
-             "--namespace-name", FAKE_NAMESPACE])
+        cli.sdk_list_buckets.assert_called_once_with(
+            FAKE_COMPARTMENT, FAKE_NAMESPACE)
+        cli.run.assert_not_called()
 
     def test_namespace_auto_resolved(self):
-        """不传 namespace 时先查一次 oci os ns get。"""
+        """不传 namespace 时先查一次命名空间（SDK）。"""
         cli = MagicMock()
-        cli.run.side_effect = [
-            {"data": FAKE_NAMESPACE},
-            {"data": []},
-        ]
+        cli.sdk_get_namespace.return_value = FAKE_NAMESPACE
+        cli.sdk_list_buckets.return_value = []
         self.assertEqual(list_buckets(cli, FAKE_COMPARTMENT), [])
-        self.assertEqual(cli.run.call_count, 2)
-        self.assertEqual(cli.run.call_args_list[0][0][0],
-                         ["os", "ns", "get"])
-        self.assertEqual(cli.run.call_args_list[1][0][0],
-                         ["os", "bucket", "list",
-                          "--compartment-id", FAKE_COMPARTMENT,
-                          "--namespace-name", FAKE_NAMESPACE])
+        cli.sdk_get_namespace.assert_called_once_with()
+        cli.sdk_list_buckets.assert_called_once_with(
+            FAKE_COMPARTMENT, FAKE_NAMESPACE)
+        cli.run.assert_not_called()
 
     def test_empty(self):
         cli = _mock_cli({"data": []})
@@ -165,10 +168,9 @@ class TestListObjects(unittest.TestCase):
             "size": 1024,
             "time-created": "2026-11-20T00:00:00Z",
         }])
-        cli.run.assert_called_once_with(
-            ["os", "object", "list",
-             "--bucket-name", FAKE_BUCKET,
-             "--namespace-name", FAKE_NAMESPACE])
+        cli.sdk_list_objects.assert_called_once_with(
+            FAKE_NAMESPACE, FAKE_BUCKET)
+        cli.run.assert_not_called()
 
     def test_empty(self):
         cli = _mock_cli({"data": []})

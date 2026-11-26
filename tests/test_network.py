@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from oci.client import NotFoundError, OCIClient, OCIError
 from oci.network import (assign_public_ip, attach_public_ips,
-                         change_public_ip,
+                         attach_public_ips_bulk, change_public_ip,
                          create_reserved_ip, delete_public_ip, get_public_ip,
                          get_vnic, list_private_ips, list_public_ips,
                          list_vnics, wait_for_public_ip)
@@ -41,7 +41,7 @@ class TestListVnics(unittest.TestCase):
         self.cli = _mock_cli()
 
     def test_returns_simplified_list(self):
-        self.cli.run.return_value = {"data": [
+        self.cli.sdk_list_vnics.return_value = [
             {"id": FAKE_VNIC, "display-name": "vnic-1",
              "public-ip": FAKE_IP, "private-ip": "10.0.0.5",
              "is-primary": True, "lifecycle-state": "AVAILABLE",
@@ -49,7 +49,7 @@ class TestListVnics(unittest.TestCase):
             {"id": FAKE_VNIC_2, "display-name": "vnic-2",
              "public-ip": None, "private-ip": "10.0.0.6",
              "is-primary": False},
-        ]}
+        ]
         result = list_vnics(self.cli, FAKE_INSTANCE)
         self.assertEqual(len(result), 2)
         # Only the slim fields are kept; extra fields (e.g. mac-address) are dropped. 只保留精简字段，多余字段（如 mac-address）被去掉。
@@ -58,13 +58,14 @@ class TestListVnics(unittest.TestCase):
             "public-ip": FAKE_IP, "private-ip": "10.0.0.5",
             "is-primary": True})
         self.assertIsNone(result[1]["public-ip"])
-        self.cli.run.assert_called_once_with(
-            ["compute", "instance", "list-vnics",
-             "--instance-id", FAKE_INSTANCE])
+        self.cli.sdk_list_vnics.assert_called_once_with(
+            FAKE_INSTANCE, compartment_id=None)
+        self.cli.run.assert_not_called()
 
     def test_empty_instance_returns_empty_list(self):
-        self.cli.run.return_value = {"data": []}
+        self.cli.sdk_list_vnics.return_value = []
         self.assertEqual(list_vnics(self.cli, FAKE_INSTANCE), [])
+        self.cli.run.assert_not_called()
 
 
 class TestGetPublicIp(unittest.TestCase):
@@ -72,21 +73,21 @@ class TestGetPublicIp(unittest.TestCase):
         self.cli = _mock_cli()
 
     def test_returns_primary_vnic_public_ip(self):
-        self.cli.run.return_value = {"data": [
+        self.cli.sdk_list_vnics.return_value = [
             {"id": FAKE_VNIC_2, "public-ip": "203.0.113.99",
              "is-primary": False},
             {"id": FAKE_VNIC, "public-ip": FAKE_IP, "is-primary": True},
-        ]}
+        ]
         self.assertEqual(get_public_ip(self.cli, FAKE_INSTANCE), FAKE_IP)
 
     def test_no_public_ip_returns_none(self):
-        self.cli.run.return_value = {"data": [
+        self.cli.sdk_list_vnics.return_value = [
             {"id": FAKE_VNIC, "public-ip": None, "is-primary": True},
-        ]}
+        ]
         self.assertIsNone(get_public_ip(self.cli, FAKE_INSTANCE))
 
     def test_no_vnics_returns_none(self):
-        self.cli.run.return_value = {"data": []}
+        self.cli.sdk_list_vnics.return_value = []
         self.assertIsNone(get_public_ip(self.cli, FAKE_INSTANCE))
 
 
@@ -98,13 +99,14 @@ class TestGetVnic(unittest.TestCase):
         detail = {"id": FAKE_VNIC, "display-name": "vnic-1",
                   "public-ip": FAKE_IP, "private-ip": "10.0.0.5",
                   "is-primary": True, "lifecycle-state": "AVAILABLE"}
-        self.cli.run.return_value = {"data": detail}
+        self.cli.sdk_get_vnic.return_value = detail
         self.assertEqual(get_vnic(self.cli, FAKE_VNIC), detail)
-        self.cli.run.assert_called_once_with(
-            ["network", "vnic", "get", "--vnic-id", FAKE_VNIC])
+        self.cli.sdk_get_vnic.assert_called_once_with(FAKE_VNIC)
+        self.cli.run.assert_not_called()
 
     def test_not_found_raises(self):
-        self.cli.run.side_effect = NotFoundError("NotAuthorizedOrNotFound")
+        self.cli.sdk_get_vnic.side_effect = NotFoundError(
+            "NotAuthorizedOrNotFound")
         with self.assertRaises(NotFoundError):
             get_vnic(self.cli, "ocid1.vnic.oc1..doesnotexist")
 
@@ -114,7 +116,7 @@ class TestListPublicIps(unittest.TestCase):
         self.cli = _mock_cli()
 
     def test_returns_simplified_list(self):
-        self.cli.run.return_value = {"data": [
+        self.cli.sdk_list_public_ips.return_value = [
             {"id": FAKE_PUBLIC_IP, "ip-address": FAKE_IP,
              "lifetime": "RESERVED", "lifecycle-state": "ASSIGNED",
              "assigned-entity-id": FAKE_PRIVATE_IP,
@@ -122,7 +124,7 @@ class TestListPublicIps(unittest.TestCase):
             {"id": "ocid1.publicip.oc1..yyyyyyyy", "ip-address": "203.0.113.20",
              "lifetime": "EPHEMERAL", "lifecycle-state": "ASSIGNED",
              "assigned-entity-id": None},
-        ]}
+        ]
         result = list_public_ips(self.cli, FAKE_COMPARTMENT)
         self.assertEqual(len(result), 2)
         self.assertEqual(result[0], {
@@ -130,14 +132,14 @@ class TestListPublicIps(unittest.TestCase):
             "lifetime": "RESERVED", "lifecycle-state": "ASSIGNED",
             "assigned-entity": FAKE_PRIVATE_IP})
         self.assertEqual(result[1]["lifetime"], "EPHEMERAL")
-        self.cli.run.assert_called_once_with(
-            ["network", "public-ip", "list",
-             "--compartment-id", FAKE_COMPARTMENT,
-             "--scope", "REGION"])
+        self.cli.sdk_list_public_ips.assert_called_once_with(
+            FAKE_COMPARTMENT, availability_domain=None)
+        self.cli.run.assert_not_called()
 
     def test_empty_returns_empty_list(self):
-        self.cli.run.return_value = {"data": []}
+        self.cli.sdk_list_public_ips.return_value = []
         self.assertEqual(list_public_ips(self.cli, FAKE_COMPARTMENT), [])
+        self.cli.run.assert_not_called()
 
 
 class TestCreateReservedIp(unittest.TestCase):
@@ -193,50 +195,56 @@ class TestListPrivateIps(unittest.TestCase):
         self.cli = _mock_cli()
 
     def test_returns_simplified_list(self):
-        self.cli.run.return_value = {"data": [
+        self.cli.sdk_list_private_ips.return_value = [
             {"id": FAKE_PRIVATE_IP, "ip-address": "10.0.0.5",
              "is-primary": True, "display-name": "primary",
              "hostname-label": "host1"},
             {"id": "ocid1.privateip.oc1..yyyyyyyy", "ip-address": "10.0.0.6",
              "is-primary": False, "display-name": None},
-        ]}
+        ]
         result = list_private_ips(self.cli, FAKE_VNIC)
         self.assertEqual(len(result), 2)
         self.assertEqual(result[0], {
             "id": FAKE_PRIVATE_IP, "ip-address": "10.0.0.5",
             "is-primary": True, "display-name": "primary"})
-        self.cli.run.assert_called_once_with(
-            ["network", "private-ip", "list", "--vnic-id", FAKE_VNIC])
+        self.cli.sdk_list_private_ips.assert_called_once_with(FAKE_VNIC)
+        self.cli.run.assert_not_called()
 
 
 class TestChangePublicIp(unittest.TestCase):
     def setUp(self):
         self.cli = _mock_cli()
 
-    def _full_flow_responses(self, old_ip_present=True):
-        """换 IP 全流程 cli.run 调用的返回值（按顺序）。
+    def _setup_reads(self, old_ip_present=True):
+        """换 IP 全流程的读接口返回值（SDK 直调）。
 
         新流程（2026-11-23 真实验证后修正）：先删旧临时 IP 再绑新 IP，
         因为 OCI 拒绝给已绑公网 IP 的内网 IP 再绑一个（409 Conflict）。
+        读接口走 SDK，写接口（删/建/绑）仍走 cli.run。
         """
-        responses = [
-            # 1. list-vnics: the primary VNIC. 1. list-vnics：主 VNIC。
-            {"data": [{"id": FAKE_VNIC, "display-name": "vnic-1",
-                       "public-ip": "203.0.113.1", "private-ip": "10.0.0.5",
-                       "is-primary": True}]},
-            # 2. list private-ip: the primary private IP. 2. list private-ip：主内网 IP。
-            {"data": [{"id": FAKE_PRIVATE_IP, "ip-address": "10.0.0.5",
-                       "is-primary": True, "display-name": "primary"}]},
-            # 3. instance get: fetch the AD. 3. instance get：取 AD。
-            {"data": {"id": FAKE_INSTANCE,
-                      "availability-domain": "AD-1"}},
-            # 4. list public-ip (AD-scoped): the old ephemeral IP already attached. 4. list public-ip（AD 作用域）：已绑的旧临时 IP。
-            {"data": [{"id": "ocid1.publicip.oc1..oldip",
-                       "ip-address": "203.0.113.1", "lifetime": "EPHEMERAL",
-                       "lifecycle-state": "ASSIGNED",
-                       "assigned-entity-id": FAKE_PRIVATE_IP}]
-             if old_ip_present else []},
-        ]
+        # 1. list-vnics: the primary VNIC. 1. list-vnics：主 VNIC。
+        self.cli.sdk_list_vnics.return_value = [
+            {"id": FAKE_VNIC, "display-name": "vnic-1",
+             "public-ip": "203.0.113.1", "private-ip": "10.0.0.5",
+             "is-primary": True}]
+        # 2. list private-ip: the primary private IP. 2. list private-ip：主内网 IP。
+        self.cli.sdk_list_private_ips.return_value = [
+            {"id": FAKE_PRIVATE_IP, "ip-address": "10.0.0.5",
+             "is-primary": True, "display-name": "primary"}]
+        # 3. instance get: fetch the AD. 3. instance get：取 AD。
+        self.cli.sdk_get_instance.return_value = {
+            "id": FAKE_INSTANCE, "availability-domain": "AD-1"}
+        # 4. list public-ip (AD-scoped): the old ephemeral IP already attached. 4. list public-ip（AD 作用域）：已绑的旧临时 IP。
+        self.cli.sdk_list_public_ips.return_value = [
+            {"id": "ocid1.publicip.oc1..oldip",
+             "ip-address": "203.0.113.1", "lifetime": "EPHEMERAL",
+             "lifecycle-state": "ASSIGNED",
+             "assigned-entity-id": FAKE_PRIVATE_IP}
+        ] if old_ip_present else []
+
+    def _setup_writes(self, old_ip_present=True):
+        """换 IP 全流程的写接口返回值（cli.run，按顺序）。"""
+        responses = []
         if old_ip_present:
             # 5. delete the old ephemeral IP. 5. delete 旧临时 IP。
             responses.append(None)
@@ -248,23 +256,15 @@ class TestChangePublicIp(unittest.TestCase):
             {"data": {"id": FAKE_PUBLIC_IP, "ip-address": FAKE_IP,
                       "lifecycle-state": "ASSIGNED"}},
         ]
-        return responses
+        self.cli.run.side_effect = responses
 
     def test_full_flow_returns_new_ip_and_calls_in_order(self):
-        self.cli.run.side_effect = self._full_flow_responses()
+        self._setup_reads()
+        self._setup_writes()
         result = change_public_ip(self.cli, FAKE_COMPARTMENT, FAKE_INSTANCE)
         self.assertEqual(result, FAKE_IP)
-        # Assert the call order and arguments (delete the old IP before attaching the new one). 断言调用顺序与参数（先删旧 IP 再绑新 IP）。
+        # 写接口的调用顺序与参数（先删旧 IP 再绑新 IP）。
         self.assertEqual(self.cli.run.call_args_list, [
-            call(["compute", "instance", "list-vnics",
-                  "--instance-id", FAKE_INSTANCE]),
-            call(["network", "private-ip", "list", "--vnic-id", FAKE_VNIC]),
-            call(["compute", "instance", "get",
-                  "--instance-id", FAKE_INSTANCE]),
-            call(["network", "public-ip", "list",
-                  "--compartment-id", FAKE_COMPARTMENT,
-                  "--scope", "AVAILABILITY_DOMAIN",
-                  "--availability-domain", "AD-1"]),
             call(["network", "public-ip", "delete",
                   "--public-ip-id", "ocid1.publicip.oc1..oldip",
                   "--force"]),
@@ -276,42 +276,52 @@ class TestChangePublicIp(unittest.TestCase):
                   "--public-ip-id", FAKE_PUBLIC_IP,
                   "--private-ip-id", FAKE_PRIVATE_IP]),
         ])
+        # 读接口走了 SDK，没起子进程。
+        self.cli.sdk_list_vnics.assert_called_once_with(
+            FAKE_INSTANCE, compartment_id=FAKE_COMPARTMENT)
+        self.cli.sdk_list_private_ips.assert_called_once_with(FAKE_VNIC)
+        self.cli.sdk_get_instance.assert_called_once_with(FAKE_INSTANCE)
+        self.cli.sdk_list_public_ips.assert_called_once_with(
+            FAKE_COMPARTMENT, availability_domain="AD-1")
 
     def test_no_old_ip_skips_delete(self):
         """内网 IP 上没有已绑公网 IP 时，不调 delete，直接建新 IP。"""
-        self.cli.run.side_effect = self._full_flow_responses(
-            old_ip_present=False)
+        self._setup_reads(old_ip_present=False)
+        self._setup_writes(old_ip_present=False)
         result = change_public_ip(self.cli, FAKE_COMPARTMENT, FAKE_INSTANCE)
         self.assertEqual(result, FAKE_IP)
         delete_calls = [c for c in self.cli.run.call_args_list
                         if c[0][0][:3] == ["network", "public-ip", "delete"]]
         self.assertEqual(delete_calls, [])
-        self.assertEqual(self.cli.run.call_count, 6)
+        self.assertEqual(self.cli.run.call_count, 2)
 
     def test_custom_display_name(self):
-        self.cli.run.side_effect = self._full_flow_responses()
+        self._setup_reads()
+        self._setup_writes()
         change_public_ip(self.cli, FAKE_COMPARTMENT, FAKE_INSTANCE,
                          display_name="my-new-ip")
-        create_call = self.cli.run.call_args_list[5]
+        create_call = self.cli.run.call_args_list[1]
         self.assertIn("my-new-ip", create_call[0][0])
 
     def test_no_primary_vnic_raises_before_creating_ip(self):
-        self.cli.run.return_value = {"data": [
-            {"id": FAKE_VNIC, "is-primary": False}]}
+        self.cli.sdk_list_vnics.return_value = [
+            {"id": FAKE_VNIC, "is-primary": False}]
         with self.assertRaises(ValueError):
             change_public_ip(self.cli, FAKE_COMPARTMENT, FAKE_INSTANCE)
-        # Stopped after only checking the VNIC; no IP was created. 只查了 VNIC 就停下，没有创建任何 IP。
-        self.assertEqual(self.cli.run.call_count, 1)
+        # 只查了 VNIC 就停下，没有创建任何 IP，也没调写接口。
+        self.cli.sdk_list_private_ips.assert_not_called()
+        self.cli.run.assert_not_called()
 
     def test_no_primary_private_ip_raises_before_creating_ip(self):
-        self.cli.run.side_effect = [
-            {"data": [{"id": FAKE_VNIC, "is-primary": True}]},
-            {"data": [{"id": FAKE_PRIVATE_IP, "is-primary": False}]},
-        ]
+        self.cli.sdk_list_vnics.return_value = [
+            {"id": FAKE_VNIC, "is-primary": True}]
+        self.cli.sdk_list_private_ips.return_value = [
+            {"id": FAKE_PRIVATE_IP, "is-primary": False}]
         with self.assertRaises(ValueError):
             change_public_ip(self.cli, FAKE_COMPARTMENT, FAKE_INSTANCE)
-        # Stopped after only checking the VNIC + private IP; no IP was created. 只查了 VNIC + 内网 IP 就停下，没有创建任何 IP。
-        self.assertEqual(self.cli.run.call_count, 2)
+        # 只查了 VNIC + 内网 IP 就停下，没有创建任何 IP。
+        self.cli.sdk_get_instance.assert_not_called()
+        self.cli.run.assert_not_called()
 
 
 class TestAttachPublicIps(unittest.TestCase):
@@ -371,6 +381,122 @@ class TestAttachPublicIps(unittest.TestCase):
         with patch("oci.network.get_public_ip") as mock_get:
             self.assertEqual(attach_public_ips(self.cli, []), [])
         mock_get.assert_not_called()
+
+
+class TestAttachPublicIpsBulk(unittest.TestCase):
+    """attach_public_ips_bulk：一次挂载列表 + 每台一次 get-vnic。"""
+
+    def setUp(self):
+        self.cli = _mock_cli()
+
+    def _inst(self, inst_id, state):
+        return {"id": inst_id, "display-name": inst_id[-4:],
+                "shape": "VM.Standard.A1.Flex", "lifecycle-state": state,
+                "time-created": "2026-11-20T00:00:00Z"}
+
+    def _att(self, inst_id, vnic_id):
+        return {"instance-id": inst_id, "vnic-id": vnic_id}
+
+    def _vnic(self, vnic_id, ip, primary=True):
+        return {"id": vnic_id, "public-ip": ip, "is-primary": primary}
+
+    def test_one_attachment_list_for_all_instances(self):
+        instances = [self._inst("ocid1.instance.oc1..aaaa", "RUNNING"),
+                     self._inst("ocid1.instance.oc1..bbbb", "RUNNING")]
+        self.cli.sdk_list_vnic_attachments.return_value = [
+            self._att("ocid1.instance.oc1..aaaa", "ocid1.vnic.oc1..1111"),
+            self._att("ocid1.instance.oc1..bbbb", "ocid1.vnic.oc1..2222")]
+        self.cli.sdk_get_vnic.side_effect = [
+            self._vnic("ocid1.vnic.oc1..1111", "203.0.113.10"),
+            self._vnic("ocid1.vnic.oc1..2222", "203.0.113.11")]
+        result = attach_public_ips_bulk(self.cli, instances,
+                                        FAKE_COMPARTMENT)
+        self.assertEqual(result, ["203.0.113.10", "203.0.113.11"])
+        # 挂载列表只调一次且不带 instance_id（compartment 级）；每台一次 get-vnic。
+        self.cli.sdk_list_vnic_attachments.assert_called_once_with(
+            FAKE_COMPARTMENT)
+        self.assertEqual(self.cli.sdk_get_vnic.call_count, 2)
+
+    def test_skips_terminated_and_missing_id(self):
+        instances = [self._inst("ocid1.instance.oc1..aaaa", "RUNNING"),
+                     self._inst("ocid1.instance.oc1..bbbb", "TERMINATED"),
+                     {"display-name": "no-id", "lifecycle-state": "RUNNING"}]
+        self.cli.sdk_list_vnic_attachments.return_value = [
+            self._att("ocid1.instance.oc1..aaaa", "ocid1.vnic.oc1..1111"),
+            self._att("ocid1.instance.oc1..bbbb", "ocid1.vnic.oc1..2222")]
+        self.cli.sdk_get_vnic.return_value = self._vnic(
+            "ocid1.vnic.oc1..1111", FAKE_IP)
+        result = attach_public_ips_bulk(self.cli, instances,
+                                        FAKE_COMPARTMENT)
+        self.assertEqual(result, [FAKE_IP, None, None])
+        # 已终止与无 id 的实例不查 get-vnic。
+        self.cli.sdk_get_vnic.assert_called_once_with("ocid1.vnic.oc1..1111")
+
+    def test_single_get_vnic_failure_becomes_none(self):
+        instances = [self._inst("ocid1.instance.oc1..aaaa", "RUNNING"),
+                     self._inst("ocid1.instance.oc1..bbbb", "RUNNING")]
+        self.cli.sdk_list_vnic_attachments.return_value = [
+            self._att("ocid1.instance.oc1..aaaa", "ocid1.vnic.oc1..1111"),
+            self._att("ocid1.instance.oc1..bbbb", "ocid1.vnic.oc1..2222")]
+        self.cli.sdk_get_vnic.side_effect = [
+            NotFoundError("oci network vnic get 失败：404"),
+            self._vnic("ocid1.vnic.oc1..2222", FAKE_IP)]
+        result = attach_public_ips_bulk(self.cli, instances,
+                                        FAKE_COMPARTMENT)
+        self.assertEqual(result, [None, FAKE_IP])
+
+    def test_bulk_list_failure_falls_back_to_per_instance(self):
+        instances = [self._inst("ocid1.instance.oc1..aaaa", "RUNNING"),
+                     self._inst("ocid1.instance.oc1..bbbb", "RUNNING")]
+        self.cli.sdk_list_vnic_attachments.side_effect = OCIError("boom")
+        with patch("oci.network.get_public_ip",
+                   side_effect=[FAKE_IP, None]) as mock_get:
+            result = attach_public_ips_bulk(self.cli, instances,
+                                            FAKE_COMPARTMENT)
+        self.assertEqual(result, [FAKE_IP, None])
+        self.assertEqual(mock_get.call_count, 2)
+
+    def test_multi_vnic_picks_primary(self):
+        instances = [self._inst("ocid1.instance.oc1..aaaa", "RUNNING")]
+        self.cli.sdk_list_vnic_attachments.return_value = [
+            self._att("ocid1.instance.oc1..aaaa", "ocid1.vnic.oc1..1111"),
+            self._att("ocid1.instance.oc1..aaaa", "ocid1.vnic.oc1..2222")]
+        self.cli.sdk_get_vnic.side_effect = [
+            self._vnic("ocid1.vnic.oc1..1111", None, primary=False),
+            self._vnic("ocid1.vnic.oc1..2222", FAKE_IP, primary=True)]
+        result = attach_public_ips_bulk(self.cli, instances,
+                                        FAKE_COMPARTMENT)
+        self.assertEqual(result, [FAKE_IP])
+
+    def test_empty_list_no_sdk_calls(self):
+        result = attach_public_ips_bulk(self.cli, [], FAKE_COMPARTMENT)
+        self.assertEqual(result, [])
+        self.cli.sdk_list_vnic_attachments.assert_not_called()
+        self.cli.sdk_get_vnic.assert_not_called()
+
+    def test_get_vnic_calls_run_in_parallel(self):
+        """3 台各睡 0.3 秒的 get-vnic 并行跑，总耗时远小于串行 0.9 秒。"""
+        import time as _time
+
+        instances = [self._inst("ocid1.instance.oc1..aaaa", "RUNNING"),
+                     self._inst("ocid1.instance.oc1..bbbb", "RUNNING"),
+                     self._inst("ocid1.instance.oc1..cccc", "RUNNING")]
+        self.cli.sdk_list_vnic_attachments.return_value = [
+            self._att("ocid1.instance.oc1..aaaa", "ocid1.vnic.oc1..1111"),
+            self._att("ocid1.instance.oc1..bbbb", "ocid1.vnic.oc1..2222"),
+            self._att("ocid1.instance.oc1..cccc", "ocid1.vnic.oc1..3333")]
+
+        def _slow_get_vnic(vnic_id):
+            _time.sleep(0.3)
+            return self._vnic(vnic_id, "203.0.113.10")
+
+        self.cli.sdk_get_vnic.side_effect = _slow_get_vnic
+        start = _time.monotonic()
+        result = attach_public_ips_bulk(self.cli, instances,
+                                        FAKE_COMPARTMENT)
+        elapsed = _time.monotonic() - start
+        self.assertEqual(result, ["203.0.113.10"] * 3)
+        self.assertLess(elapsed, 0.75, "耗时 %.2fs，疑似串行取 VNIC" % elapsed)
 
 
 class TestWaitForPublicIp(unittest.TestCase):

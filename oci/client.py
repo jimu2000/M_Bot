@@ -184,6 +184,7 @@ class NotFoundError(OCIError):
 # Note: for a missing resource OCI returns "NotAuthorizedOrNotFound" (404), an anti-enumeration design (it does not reveal whether the resource exists). It must sort before "NotAuthorized", or it is misread as an auth failure. 注意：OCI 对不存在的资源返回 "NotAuthorizedOrNotFound"（404），这是防枚举的设计（不透露资源是否存在）。它必须排在 "NotAuthorized" 之前，否则会被误判为认证失败。
 _ERROR_PATTERNS = [
     ("Out of host capacity", OutOfCapacityError),
+    ("OutOfCapacity", OutOfCapacityError),
     ("TooManyRequests", RateLimitError),
     ("429", RateLimitError),
     ("LimitExceeded", QuotaExceededError),
@@ -205,6 +206,116 @@ def classify_error(text):
     return OCIError
 
 
+# ================= OCI Python SDK 直调层 =================
+# The hot read paths (instance list, quota, boot volumes, object storage,
+# backups, cloud report) call the OCI Python SDK directly instead of
+# spawning an OCI CLI subprocess per call. A subprocess costs a fresh
+# Python interpreter + CLI startup (~3-5 s per call); parallel menu clicks
+# used to push the panel's CPU to 80-100%. SDK calls are in-process HTTP
+# requests and stay near idle.
+#
+# Shadowing problem: this repo has a local top-level package named `oci`
+# (this directory), which shadows the real OCI SDK's `oci` package on
+# sys.path. _load_sdk() works around it by temporarily swapping
+# sys.modules['oci'] out, importing the real SDK from site-packages, then
+# restoring the local package. The returned SDK module object is cached
+# and used directly (attribute access, no further imports), so the swap
+# only happens once per process. Do NOT rename the local oci/ directory.
+# =====================================================
+
+import threading
+
+_SDK = None
+_SDK_LOCK = threading.Lock()
+_SDK_LOAD_ERROR = None
+
+
+def _import_real_sdk():
+    """Import the real OCI Python SDK from site-packages.
+
+    Temporarily removes the local `oci` package (and its submodules)
+    from sys.modules and the repo root from sys.path, imports the real
+    SDK, then restores everything. Returns the real SDK's top-level
+    module. Raises ImportError when the SDK is not installed.
+    """
+    import sys
+
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    saved_path = list(sys.path)
+    saved_modules = {k: v for k, v in list(sys.modules.items())
+                     if k == "oci" or k.startswith("oci.")}
+    for key in saved_modules:
+        sys.modules.pop(key, None)
+    sys.path = [p for p in sys.path
+                if os.path.abspath(p or ".") != os.path.abspath(repo_root)]
+    try:
+        import oci as real_sdk  # noqa: F811 - intentional re-import
+        # Import every SDK submodule we use while sys.modules['oci'] is
+        # still the real SDK, so their internal `from oci import ...`
+        # resolves against the SDK, not the local package.
+        import oci.config  # noqa: F401
+        import oci.core  # noqa: F401
+        import oci.email  # noqa: F401
+        import oci.exceptions  # noqa: F401
+        import oci.identity  # noqa: F401
+        import oci.object_storage  # noqa: F401
+        import oci.pagination  # noqa: F401
+        import oci.util  # noqa: F401
+        return real_sdk
+    finally:
+        sys.path = saved_path
+        sys.modules.update(saved_modules)
+
+
+def _load_sdk():
+    """Return the real OCI Python SDK module (cached, thread-safe).
+
+    Raises ImportError with a clear message when the SDK is not
+    installed (pip install oci, or see requirements.txt).
+    """
+    global _SDK, _SDK_LOAD_ERROR
+    if _SDK is not None:
+        return _SDK
+    if _SDK_LOAD_ERROR is not None:
+        raise _SDK_LOAD_ERROR
+    with _SDK_LOCK:
+        if _SDK is not None:
+            return _SDK
+        if _SDK_LOAD_ERROR is not None:
+            raise _SDK_LOAD_ERROR
+        try:
+            _SDK = _import_real_sdk()
+        except ImportError as exc:
+            _SDK_LOAD_ERROR = ImportError(
+                "OCI Python SDK 未安装，读接口需要它（pip install oci）。"
+                f"原始错误：{exc}")
+            raise _SDK_LOAD_ERROR
+        return _SDK
+
+
+def _snake_to_kebab(obj):
+    """Recursively convert dict keys from snake_case to kebab-case.
+
+    The SDK's to_dict() returns snake_case keys; the OCI CLI JSON the
+    rest of the code expects uses kebab-case (display-name,
+    lifecycle-state, shape-config, memory-in-gbs, ...). Values
+    (datetimes are already ISO strings from to_dict) pass through
+    unchanged.
+    """
+    if isinstance(obj, dict):
+        return {k.replace("_", "-"): _snake_to_kebab(v)
+                for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_snake_to_kebab(v) for v in obj]
+    return obj
+
+
+def _model_to_dict(model):
+    """Convert one SDK model object to a CLI-compatible kebab-case dict."""
+    sdk = _load_sdk()
+    return _snake_to_kebab(sdk.util.to_dict(model))
+
+
 class OCIClient:
     """OCI CLI 的薄封装。每次调用都带 --profile 与 --region。"""
 
@@ -216,6 +327,12 @@ class OCIClient:
         self.timeout = timeout
         # proxy: an explicitly passed proxy address; None means resolve on every call (env var MBOT_OCI_PROXY or oci_proxy.json) and take effect immediately after being set. proxy：显式传入的代理地址；None 表示每次调用时自动解析（环境变量 MBOT_OCI_PROXY 或 oci_proxy.json），设置后立即生效。
         self.proxy = proxy
+        # SDK service clients cache, keyed by (service, region). SDK 服务
+        # 客户端缓存，按（服务，区域）键保存。
+        self._sdk_clients = {}
+        # Cached Object Storage namespace (per client instance). 对象存储
+        # 命名空间缓存（每个客户端实例一份）。
+        self._sdk_namespace = None
 
     def run_raw(self, args, profile=None, region=None, timeout=None):
         """直接跑一条 OCI CLI 命令，返回 subprocess.CompletedProcess。
@@ -271,3 +388,384 @@ class OCIClient:
             raise exc_class(f"oci {' '.join(args[:3])}... 失败：{err_text[:500]}",
                             raw_output=err_text)
         return r.stdout.strip()
+
+    # ---- OCI Python SDK 直调（热路径读接口） ----
+    # These read methods call the OCI Python SDK directly (in-process
+    # HTTP) instead of spawning an OCI CLI subprocess. Return values are
+    # CLI-compatible kebab-case dicts/lists (same shape as cli.run()
+    # returns after JSON parsing, minus the {"data": ...} wrapper), so
+    # callers only swap cli.run([...]) for cli.sdk_*() and keep the rest
+    # of their logic. Write operations still go through run() (CLI).
+    # 这些读方法直接调 OCI Python SDK（进程内 HTTP），不再为每次调用
+    # 起 OCI CLI 子进程。返回值是与 CLI 兼容的 kebab-case dict/list
+    # （与 cli.run() 解析 JSON 后的形状一致，只是不包 {"data": ...}
+    # 那层），调用方只需把 cli.run([...]) 换成 cli.sdk_*()，其余逻辑
+    # 不动。写操作仍走 run()（CLI）。
+
+    def _sdk_config_dict(self, region=None):
+        """Build an SDK config dict from the same config file + profile.
+
+        Uses resolve_oci_config_path() (the same file the CLI subprocess
+        reads) and overrides region with the caller's region, matching
+        the --region the CLI path passes.
+        """
+        sdk = _load_sdk()
+        cfg = sdk.config.from_file(
+            file_location=resolve_oci_config_path(),
+            profile_name=self.profile)
+        cfg["region"] = region or self.region
+        return cfg
+
+    def _sdk_service_client(self, service, region=None):
+        """Return a cached SDK service client.
+
+        service: 'compute' / 'blockstorage' / 'object_storage' /
+        'virtual_network' / 'identity' / 'email'.
+        The client is built once per (service, region); the private key
+        is read by the SDK signer at construction, so caching avoids
+        re-reading it on every call. The proxy (explicit self.proxy, else
+        MBOT_OCI_PROXY / oci_proxy.json) is re-applied on every use so a
+        changed proxy takes effect without a restart; with no proxy
+        configured the session's proxies are cleared, letting requests
+        fall back to environment proxies (same as the CLI subprocess
+        inheriting os.environ).
+        """
+        sdk = _load_sdk()
+        key = (service, region or self.region)
+        client = self._sdk_clients.get(key)
+        if client is None:
+            cfg = self._sdk_config_dict(region)
+            if service == "compute":
+                client = sdk.core.ComputeClient(cfg)
+            elif service == "blockstorage":
+                client = sdk.core.BlockstorageClient(cfg)
+            elif service == "object_storage":
+                client = sdk.object_storage.ObjectStorageClient(cfg)
+            elif service == "virtual_network":
+                client = sdk.core.VirtualNetworkClient(cfg)
+            elif service == "identity":
+                client = sdk.identity.IdentityClient(cfg)
+            elif service == "email":
+                client = sdk.email.EmailClient(cfg)
+            else:
+                raise ValueError(f"未知的 SDK 服务：{service}")
+            self._sdk_clients[key] = client
+        proxy = self.proxy if self.proxy is not None else get_oci_proxy()
+        if proxy:
+            client.base_client.session.proxies = {"http": proxy,
+                                                  "https": proxy}
+        else:
+            client.base_client.session.proxies = {}
+        return client
+
+    def _sdk_wrap(self, operation, thunk):
+        """Run an SDK call, mapping SDK exceptions to our classes.
+
+        ServiceError -> classify_error on "code message status" text
+        (same mapping as the CLI path, so callers see the same
+        OutOfCapacityError / RateLimitError / QuotaExceededError /
+        AuthError / NotFoundError); config errors -> AuthError;
+        network errors -> OCIError.
+        """
+        sdk = _load_sdk()
+        try:
+            return thunk()
+        except sdk.exceptions.ServiceError as exc:
+            code = exc.code or ""
+            msg = exc.message or ""
+            status = str(exc.status) if exc.status is not None else ""
+            text = " ".join(p for p in (code, msg, status) if p)
+            exc_class = classify_error(text)
+            raise exc_class(f"oci {operation} 失败：{text[:500]}",
+                            raw_output=text)
+        except (sdk.exceptions.InvalidConfig,
+                sdk.exceptions.ProfileNotFound,
+                sdk.exceptions.ConfigFileNotFound,
+                sdk.exceptions.InvalidPrivateKey,
+                sdk.exceptions.InvalidKeyFilePath) as exc:
+            raise AuthError(f"oci {operation} 失败：OCI 配置错误：{exc}",
+                            raw_output=str(exc))
+        except (sdk.exceptions.RequestException,
+                sdk.exceptions.ConnectTimeout) as exc:
+            raise OCIError(f"oci {operation} 失败：网络错误：{exc}",
+                           raw_output=str(exc))
+
+    def _sdk_paginate(self, operation, list_fn, *args, **kwargs):
+        """List-all-pages helper (matches CLI list-all behavior).
+
+        Returns the aggregated list of SDK model objects.
+        """
+        sdk = _load_sdk()
+        return self._sdk_wrap(
+            operation,
+            lambda: sdk.pagination.list_call_get_all_results(
+                list_fn, *args, **kwargs).data)
+
+    def sdk_list_instances(self, compartment_id, region=None,
+                           display_name=None):
+        """列出 compartment 下的实例（SDK 直调）。
+
+        返回 CLI 兼容的 dict 列表（kebab-case，不包 {"data": ...}）。
+        display_name 传了则按显示名服务端过滤（抢机防重复建用）。
+        """
+        client = self._sdk_service_client("compute", region)
+        kwargs = {}
+        if display_name:
+            kwargs["display_name"] = display_name
+        items = self._sdk_paginate("compute instance list",
+                                   client.list_instances, compartment_id,
+                                   **kwargs)
+        return [_model_to_dict(item) for item in items]
+
+    def sdk_get_instance(self, instance_id, region=None):
+        """查单个实例详情（SDK 直调），返回 CLI 兼容的 dict。"""
+        client = self._sdk_service_client("compute", region)
+        resp = self._sdk_wrap("compute instance get",
+                              lambda: client.get_instance(instance_id))
+        return _model_to_dict(resp.data)
+
+    def sdk_get_image(self, image_id, region=None):
+        """查单个镜像详情（SDK 直调），返回 CLI 兼容的 dict。"""
+        client = self._sdk_service_client("compute", region)
+        resp = self._sdk_wrap("compute image get",
+                              lambda: client.get_image(image_id))
+        return _model_to_dict(resp.data)
+
+    def sdk_list_boot_volumes(self, compartment_id, region=None):
+        """列出 compartment 下的启动盘（SDK 直调）。"""
+        client = self._sdk_service_client("blockstorage", region)
+        # 注意：BlockstorageClient.list_boot_volumes 只有 **kwargs 签名，
+        # compartment_id 必须用关键字传，位置传会报 takes 1 positional argument。
+        items = self._sdk_paginate("bv boot-volume list",
+                                   client.list_boot_volumes,
+                                   compartment_id=compartment_id)
+        return [_model_to_dict(item) for item in items]
+
+    def sdk_get_boot_volume(self, boot_volume_id, region=None):
+        """查单个启动盘详情（SDK 直调），返回 CLI 兼容的 dict。"""
+        client = self._sdk_service_client("blockstorage", region)
+        resp = self._sdk_wrap("bv boot-volume get",
+                              lambda: client.get_boot_volume(
+                                  boot_volume_id))
+        return _model_to_dict(resp.data)
+
+    def sdk_list_volumes(self, compartment_id, region=None):
+        """列出 compartment 下的块存储卷（SDK 直调）。"""
+        client = self._sdk_service_client("blockstorage", region)
+        # 同 list_boot_volumes：BlockstorageClient.list_volumes 只有 **kwargs 签名。
+        items = self._sdk_paginate("bv volume list",
+                                   client.list_volumes,
+                                   compartment_id=compartment_id)
+        return [_model_to_dict(item) for item in items]
+
+    def sdk_list_boot_volume_attachments(self, compartment_id,
+                                         availability_domain, region=None):
+        """列出启动盘挂载关系（SDK 直调）。
+
+        注意：SDK 方法的真实签名是
+        list_boot_volume_attachments(availability_domain,
+        compartment_id)，可用域在前、compartment 在后，与本方法的
+        参数顺序相反——这里用关键字传参，绝不能按本方法顺序位置传
+        （第 2 轮曾按 (compartment_id, availability_domain) 位置传，
+        导致可用域拿到租户 OCID、线上孤儿盘查询报 400，mock 测试拦不住）。
+        """
+        client = self._sdk_service_client("compute", region)
+        items = self._sdk_paginate(
+            "compute boot-volume-attachment list",
+            client.list_boot_volume_attachments,
+            availability_domain=availability_domain,
+            compartment_id=compartment_id)
+        return [_model_to_dict(item) for item in items]
+
+    def sdk_list_boot_volume_backups(self, compartment_id,
+                                     boot_volume_id=None, region=None):
+        """列出启动卷备份（SDK 直调），按创建时间升序。"""
+        client = self._sdk_service_client("blockstorage", region)
+        kwargs = {"sort_by": "TIMECREATED", "sort_order": "ASC"}
+        if boot_volume_id:
+            kwargs["boot_volume_id"] = boot_volume_id
+        items = self._sdk_paginate("bv boot-volume-backup list",
+                                   client.list_boot_volume_backups,
+                                   compartment_id, **kwargs)
+        return [_model_to_dict(item) for item in items]
+
+    def sdk_get_boot_volume_backup(self, backup_id, region=None):
+        """查单个启动卷备份详情（SDK 直调），返回 CLI 兼容的 dict。"""
+        client = self._sdk_service_client("blockstorage", region)
+        resp = self._sdk_wrap(
+            "bv boot-volume-backup get",
+            lambda: client.get_boot_volume_backup(backup_id))
+        return _model_to_dict(resp.data)
+
+    def sdk_get_namespace(self, region=None):
+        """查当前租户的对象存储命名空间（SDK 直调），返回字符串。"""
+        if self._sdk_namespace is not None:
+            return self._sdk_namespace
+        client = self._sdk_service_client("object_storage", region)
+        resp = self._sdk_wrap("os ns get",
+                              lambda: client.get_namespace())
+        self._sdk_namespace = resp.data
+        return self._sdk_namespace
+
+    def sdk_list_buckets(self, compartment_id, namespace, region=None):
+        """列出 compartment 下的 Bucket（SDK 直调）。"""
+        client = self._sdk_service_client("object_storage", region)
+        items = self._sdk_paginate("os bucket list",
+                                   client.list_buckets, namespace,
+                                   compartment_id)
+        return [_model_to_dict(item) for item in items]
+
+    def sdk_list_objects(self, namespace, bucket_name, region=None):
+        """列出某 Bucket 下的对象（SDK 直调）。
+
+        注意：分页助手的 list_objects 返回是 ListObjects 模型，
+        对象列表在 .data.objects 里。
+        """
+        client = self._sdk_service_client("object_storage", region)
+        sdk = _load_sdk()
+        resp = self._sdk_wrap(
+            "os object list",
+            lambda: sdk.pagination.list_call_get_all_results(
+                client.list_objects, namespace, bucket_name))
+        return [_model_to_dict(item) for item in resp.data.objects]
+
+    # ---- 第 3 轮：网络 / 控制台 / IAM / 邮件读接口（SDK 直调） ----
+    # The SDK has no list_vnics method (the CLI's `compute instance
+    # list-vnics` is a composite: list vnic attachments, then get each
+    # vnic). sdk_list_vnics reproduces that composite in-process.
+    # SDK 里没有 list_vnics 方法（CLI 的 compute instance list-vnics
+    # 是组合操作：先列 VNIC 挂载关系，再逐个查 VNIC 详情）。
+    # sdk_list_vnics 在进程内复现这个组合。
+
+    def sdk_list_vnic_attachments(self, compartment_id, instance_id=None,
+                                  region=None):
+        """列出 VNIC 挂载关系（SDK 直调），可按实例过滤。"""
+        client = self._sdk_service_client("compute", region)
+        kwargs = {}
+        if instance_id:
+            kwargs["instance_id"] = instance_id
+        items = self._sdk_paginate("compute vnic-attachment list",
+                                   client.list_vnic_attachments,
+                                   compartment_id, **kwargs)
+        return [_model_to_dict(item) for item in items]
+
+    def sdk_get_vnic(self, vnic_id, region=None):
+        """查单个 VNIC 详情（SDK 直调），返回 CLI 兼容的 dict。"""
+        client = self._sdk_service_client("virtual_network", region)
+        resp = self._sdk_wrap("network vnic get",
+                              lambda: client.get_vnic(vnic_id))
+        return _model_to_dict(resp.data)
+
+    def sdk_list_vnics(self, instance_id, compartment_id=None,
+                       region=None):
+        """列出实例的 VNIC（SDK 直调，复现 CLI list-vnics 的组合）。
+
+        返回 CLI 兼容的 VNIC dict 列表（kebab-case，不包 {"data": ...}）。
+        compartment_id 不传时先查实例详情取它的 compartment-id
+        （挂载关系列表必须带 compartment）。
+        """
+        if compartment_id is None:
+            instance = self.sdk_get_instance(instance_id, region=region)
+            compartment_id = instance.get("compartment-id")
+        attachments = self.sdk_list_vnic_attachments(
+            compartment_id, instance_id=instance_id, region=region)
+        vnics = []
+        for att in attachments:
+            vnic_id = att.get("vnic-id")
+            if vnic_id:
+                vnics.append(self.sdk_get_vnic(vnic_id, region=region))
+        return vnics
+
+    def sdk_list_public_ips(self, compartment_id, availability_domain=None,
+                            region=None):
+        """列公网 IP（SDK 直调）。
+
+        注意：SDK 方法的真实签名是
+        list_public_ips(scope, compartment_id, ...)，scope 在前且是
+        必填位置参数；可用域是关键字参数。可用域不传时用 REGION 作用域
+        （只返回区域级保留 IP）；传了用 AVAILABILITY_DOMAIN 作用域
+        （含该可用域的临时 IP），与 CLI --scope 的行为一致。
+        """
+        client = self._sdk_service_client("virtual_network", region)
+        if availability_domain:
+            scope = "AVAILABILITY_DOMAIN"
+            kwargs = {"availability_domain": availability_domain}
+        else:
+            scope = "REGION"
+            kwargs = {}
+        items = self._sdk_paginate("network public-ip list",
+                                   client.list_public_ips,
+                                   scope, compartment_id, **kwargs)
+        return [_model_to_dict(item) for item in items]
+
+    def sdk_list_ipv6s(self, vnic_id, region=None):
+        """列出某 VNIC 上的 IPv6（SDK 直调）。
+
+        注意：VirtualNetworkClient.list_ipv6s 只有 **kwargs 签名，
+        vnic_id 必须用关键字传。
+        """
+        client = self._sdk_service_client("virtual_network", region)
+        items = self._sdk_paginate("network ipv6 list",
+                                   client.list_ipv6s, vnic_id=vnic_id)
+        return [_model_to_dict(item) for item in items]
+
+    def sdk_list_private_ips(self, vnic_id, region=None):
+        """列出某 VNIC 的内网 IP（SDK 直调）。
+
+        注意：同 list_ipv6s，list_private_ips 只有 **kwargs 签名，
+        vnic_id 必须用关键字传。
+        """
+        client = self._sdk_service_client("virtual_network", region)
+        items = self._sdk_paginate("network private-ip list",
+                                   client.list_private_ips, vnic_id=vnic_id)
+        return [_model_to_dict(item) for item in items]
+
+    def sdk_list_instance_console_connections(
+            self, compartment_id, instance_id=None, region=None):
+        """列出串行控制台连接（SDK 直调），可按实例过滤。"""
+        client = self._sdk_service_client("compute", region)
+        kwargs = {}
+        if instance_id:
+            kwargs["instance_id"] = instance_id
+        items = self._sdk_paginate(
+            "compute instance-console-connection list",
+            client.list_instance_console_connections,
+            compartment_id, **kwargs)
+        return [_model_to_dict(item) for item in items]
+
+    def sdk_get_instance_console_connection(self, connection_id,
+                                            region=None):
+        """查单个串行控制台连接详情（SDK 直调），返回 CLI 兼容的 dict。"""
+        client = self._sdk_service_client("compute", region)
+        resp = self._sdk_wrap(
+            "compute instance-console-connection get",
+            lambda: client.get_instance_console_connection(connection_id))
+        return _model_to_dict(resp.data)
+
+    def sdk_list_groups(self, compartment_id, region=None):
+        """列出 compartment 下的 IAM 组（SDK 直调）。"""
+        client = self._sdk_service_client("identity", region)
+        items = self._sdk_paginate("iam group list",
+                                   client.list_groups, compartment_id)
+        return [_model_to_dict(item) for item in items]
+
+    def sdk_list_api_keys(self, user_id, region=None):
+        """列出某用户的 API 密钥（SDK 直调）。"""
+        client = self._sdk_service_client("identity", region)
+        items = self._sdk_paginate("iam user api-key list",
+                                   client.list_api_keys, user_id)
+        return [_model_to_dict(item) for item in items]
+
+    def sdk_list_users(self, compartment_id, region=None):
+        """列出租户下的 IAM 用户（SDK 直调）。"""
+        client = self._sdk_service_client("identity", region)
+        items = self._sdk_paginate("iam user list",
+                                   client.list_users, compartment_id)
+        return [_model_to_dict(item) for item in items]
+
+    def sdk_list_senders(self, compartment_id, region=None):
+        """列出 Email Delivery 已批准发件人（SDK 直调）。"""
+        client = self._sdk_service_client("email", region)
+        items = self._sdk_paginate("email sender list",
+                                   client.list_senders, compartment_id)
+        return [_model_to_dict(item) for item in items]

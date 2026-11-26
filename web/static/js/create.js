@@ -80,7 +80,7 @@
     var isE2 = shape === SHAPE_E2;
     var name = $("display-name").value.trim();
     if (!name) {
-      // When the instance name is left empty, it is auto-generated: free instances use type + date (same rule as the bot, e.g. AMD_2026-11-24 / ARM_2026-11-24); other shapes keep the timestamp format. 实例名留空时自动生成：免费实例按类型 + 日期（与机器人同规则，如 AMD_2026-11-24 / ARM_2026-11-24）；其他形状沿用时间戳格式。
+      // When the instance name is left empty, it is auto-generated: free instances use type + date (same rule as the bot, e.g. AMD_2026-01-01 / ARM_2026-01-01); other shapes keep the timestamp format. 实例名留空时自动生成：免费实例按类型 + 日期（与机器人同规则，如 AMD_2026-01-01 / ARM_2026-01-01）；其他形状沿用时间戳格式。
       var d = new Date();
       if (shape === SHAPE_E2 || shape === SHAPE_A1) {
         var prefix = shape === SHAPE_E2 ? "AMD" : "ARM";

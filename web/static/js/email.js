@@ -7,10 +7,11 @@
 
   function stateBadge(state) {
     var s = (state || "").toUpperCase();
-    if (s === "ACTIVE") return '<span class="badge badge-green">ACTIVE</span>';
-    if (s === "CREATING") return '<span class="badge badge-amber">CREATING</span>';
-    if (s === "INACTIVE" || s === "DELETED") return '<span class="badge badge-red">' + MBot.escapeHtml(state) + "</span>";
-    return '<span class="badge badge-gray">' + MBot.escapeHtml(state || "—") + "</span>";
+    var label = window.MBotI18n ? window.MBotI18n.volumeStateLabel(state) : (state || "—");
+    if (s === "ACTIVE") return '<span class="badge badge-green">' + MBot.escapeHtml(label) + "</span>";
+    if (s === "CREATING") return '<span class="badge badge-amber">' + MBot.escapeHtml(label) + "</span>";
+    if (s === "INACTIVE" || s === "DELETED") return '<span class="badge badge-red">' + MBot.escapeHtml(label) + "</span>";
+    return '<span class="badge badge-gray">' + MBot.escapeHtml(label) + "</span>";
   }
 
   function renderSenders() {

@@ -79,9 +79,18 @@ def _terminating_boot_volume():
 
 
 def _mock_cli(return_value):
-    """造一个 cli.run 返回固定值的 mock OCIClient。"""
+    """造一个 mock OCIClient：cli.run 返回原值（写操作用），SDK 读方法
+    返回解包后的数据（不包 {"data": ...}）。"""
     cli = MagicMock()
     cli.run.return_value = return_value
+    unwrapped = (return_value.get("data", return_value)
+                 if isinstance(return_value, dict) else return_value)
+    if isinstance(unwrapped, list):
+        cli.sdk_list_boot_volumes.return_value = unwrapped
+        cli.sdk_list_volumes.return_value = unwrapped
+        cli.sdk_list_boot_volume_attachments.return_value = unwrapped
+    elif isinstance(unwrapped, dict):
+        cli.sdk_get_boot_volume.return_value = unwrapped
     return cli
 
 
@@ -112,9 +121,8 @@ class TestListBootVolumes(unittest.TestCase):
     def test_command_args(self):
         cli = _mock_cli({"data": []})
         list_boot_volumes(cli, FAKE_COMPARTMENT)
-        cli.run.assert_called_once_with(
-            ["bv", "boot-volume", "list",
-             "--compartment-id", FAKE_COMPARTMENT])
+        cli.sdk_list_boot_volumes.assert_called_once_with(FAKE_COMPARTMENT)
+        cli.run.assert_not_called()
 
     def test_empty_compartment(self):
         cli = _mock_cli({"data": []})
@@ -127,13 +135,12 @@ class TestGetBootVolume(unittest.TestCase):
         cli = _mock_cli({"data": detail})
         result = get_boot_volume(cli, FAKE_BV_ATTACHED)
         self.assertEqual(result, detail)
-        cli.run.assert_called_once_with(
-            ["bv", "boot-volume", "get",
-             "--boot-volume-id", FAKE_BV_ATTACHED])
+        cli.sdk_get_boot_volume.assert_called_once_with(FAKE_BV_ATTACHED)
+        cli.run.assert_not_called()
 
     def test_not_found_propagates(self):
         cli = MagicMock()
-        cli.run.side_effect = NotFoundError("not found")
+        cli.sdk_get_boot_volume.side_effect = NotFoundError("not found")
         with self.assertRaises(NotFoundError):
             get_boot_volume(cli, "ocid1.bootvolume.oc1..nonexistent")
 
@@ -154,9 +161,8 @@ class TestListVolumes(unittest.TestCase):
             "size-in-gbs": 50,
             "lifecycle-state": "AVAILABLE",
         }])
-        cli.run.assert_called_once_with(
-            ["bv", "volume", "list",
-             "--compartment-id", FAKE_COMPARTMENT])
+        cli.sdk_list_volumes.assert_called_once_with(FAKE_COMPARTMENT)
+        cli.run.assert_not_called()
 
 
 class TestResizeBootVolume(unittest.TestCase):
@@ -191,17 +197,10 @@ class TestDeleteBootVolume(unittest.TestCase):
 
 
 def _mock_cli_with_attachments(boot_volumes, attachments):
-    """mock 两路调用：boot-volume list 返回磁盘，attachment list 返回挂载关系。"""
+    """mock 两路 SDK 读调用：启动盘列表与挂载关系列表。"""
     cli = MagicMock()
-
-    def _run(args):
-        if args[:2] == ["bv", "boot-volume"]:
-            return {"data": boot_volumes}
-        if args[:2] == ["compute", "boot-volume-attachment"]:
-            return {"data": attachments}
-        raise AssertionError(f"unexpected args: {args}")
-
-    cli.run.side_effect = _run
+    cli.sdk_list_boot_volumes.return_value = list(boot_volumes)
+    cli.sdk_list_boot_volume_attachments.return_value = list(attachments)
     return cli
 
 
@@ -220,10 +219,9 @@ class TestListBootVolumeAttachments(unittest.TestCase):
             "instance-id": FAKE_INSTANCE,
             "lifecycle-state": "ATTACHED",
         }])
-        cli.run.assert_called_once_with(
-            ["compute", "boot-volume-attachment", "list",
-             "--compartment-id", FAKE_COMPARTMENT,
-             "--availability-domain", "FAKE-AD-1"])
+        cli.sdk_list_boot_volume_attachments.assert_called_once_with(
+            FAKE_COMPARTMENT, "FAKE-AD-1")
+        cli.run.assert_not_called()
 
 
 class TestListOrphanBootVolumes(unittest.TestCase):

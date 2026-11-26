@@ -106,6 +106,32 @@ class _RescueCli:
         self.calls = []
         self.deleted = []
 
+    # --- SDK 读方法（返回解包后的数据） ---
+    def sdk_get_instance(self, instance_id, region=None):
+        return _instance(self.instance_state)["data"]
+
+    def sdk_list_boot_volume_attachments(self, compartment_id,
+                                         availability_domain, region=None):
+        if self.attachments is not None:
+            return list(self.attachments)
+        if self.attached_volume is None:
+            return []
+        return [_attachment(self.attached_volume, self.attachment_state)]
+
+    def sdk_list_boot_volumes(self, compartment_id, region=None):
+        return list(self.volumes)
+
+    def sdk_get_boot_volume(self, boot_volume_id, region=None):
+        return self.volume_details.get(
+            boot_volume_id, {"id": boot_volume_id, "source-details": {}})
+
+    def sdk_list_boot_volume_backups(self, compartment_id,
+                                     boot_volume_id=None, region=None):
+        return list(self.backups)
+
+    def sdk_get_boot_volume_backup(self, backup_id, region=None):
+        return _backup()
+
     def run(self, args):
         self.calls.append(list(args))
         head = args[:3]
@@ -479,6 +505,11 @@ class TestConsoleConnections(unittest.TestCase):
                         "lifecycle-state": "CREATING"}}
                 return {"data": {"lifecycle-state": "ACTIVE"}}
 
+            def sdk_get_instance_console_connection(self, connection_id):
+                # 跟进查详情走 SDK 直调。
+                return {"id": connection_id,
+                        "lifecycle-state": "ACTIVE"}
+
         cli = _ConsoleCli()
         result = create_console_connection(cli, FAKE_INSTANCE,
                                            ssh_public_key_file=key_path)
@@ -496,6 +527,9 @@ class TestConsoleConnections(unittest.TestCase):
             def run(self, args):
                 raise AssertionError("ed25519 密钥不应发出任何 OCI 调用")
 
+            def sdk_get_instance_console_connection(self, connection_id):
+                raise AssertionError("ed25519 密钥不应发出任何 OCI 调用")
+
         with self.assertRaises(ValueError):
             create_console_connection(_NeverCalledCli(), FAKE_INSTANCE,
                                       ssh_public_key_file=key_path)
@@ -503,6 +537,9 @@ class TestConsoleConnections(unittest.TestCase):
     def test_create_missing_key_file(self):
         class _NeverCalledCli:
             def run(self, args):
+                raise AssertionError("缺密钥文件不应发出任何 OCI 调用")
+
+            def sdk_get_instance_console_connection(self, connection_id):
                 raise AssertionError("缺密钥文件不应发出任何 OCI 调用")
 
         with self.assertRaises(ValueError):
@@ -517,14 +554,16 @@ class TestConsoleConnections(unittest.TestCase):
 
             def run(self, args):
                 self.calls.append(list(args))
-                if args[2] == "list":
-                    return {"data": [{
-                        "id": "ocid1.instanceconsoleconnection.oc1..xxxx",
-                        "instance-id": FAKE_INSTANCE,
-                        "connection-string": "ssh ...",
-                        "lifecycle-state": "ACTIVE",
-                        "time-created": "2026-11-25T00:00:00+00:00"}]}
                 return None
+
+            def sdk_list_instance_console_connections(
+                    self, compartment_id, instance_id=None):
+                return [{
+                    "id": "ocid1.instanceconsoleconnection.oc1..xxxx",
+                    "instance-id": FAKE_INSTANCE,
+                    "connection-string": "ssh ...",
+                    "lifecycle-state": "ACTIVE",
+                    "time-created": "2026-11-25T00:00:00+00:00"}]
 
         cli = _Cli()
         connections = list_console_connections(cli, FAKE_COMPARTMENT,

@@ -1,6 +1,6 @@
 # M_Bot Oracle开源管理面板
 
-> **当前版本：v2.04** · 更新记录见 [CHANGELOG.md](CHANGELOG.md)（[英文版 / English](CHANGELOG.en.md)）
+> **当前版本：v2.05** · 更新记录见 [CHANGELOG.md](CHANGELOG.md)（[英文版 / English](CHANGELOG.en.md)）
 
 [中文](#中文) | [English](#english)
 
@@ -14,6 +14,14 @@ M_Bot 是一个开源的 Oracle Cloud 管理面板：Telegram 机器人 + Web �
 > ⚠️ 免责：本项目是独立开发的开源项目，与任何同类闭源工具无任何关联，
 > 不共享代码。
 
+**核心亮点：**
+
+- **安全与独立**：纯自研代码、3025 个单元测试；OCI 私钥只在本地做请求签名，不外传；免费功能全开，无付费墙。
+- **多端协同**：Telegram 机器人 + FastAPI Web 面板 + MCP 协议接入，配置与通知（Telegram + Bark 加密推送）打通。
+- **省心运维**：终止实例默认连带删引导卷防扣费；RIPE Atlas 探针自动换被墙 IP；Let's Encrypt 域名与 IP 证书自动签发/续期。
+
+适用场景：一台 Oracle Cloud 免费套餐服务器，用机器人或网页管实例、抢机、换 IP、做 DNS，不用再开控制台。
+
 ### 快速开始
 
 准备工作（缺一不可）：
@@ -21,6 +29,30 @@ M_Bot 是一个开源的 Oracle Cloud 管理面板：Telegram 机器人 + Web �
 2. Telegram 机器人 Token：见下面「拿到 Telegram 机器人 Token（详细步骤）」。
 3. 你的 Telegram 用户 ID：找 @userinfobot 发 `/start` 拿到（纯数字）。
 4. OCI API 密钥：见下面「拿到 OCI API 密钥（详细步骤）」。
+
+### 🚀 一条命令安装
+
+准备工作就绪后，一条命令装好（root 运行；首次运行是安装，再次运行是更新并重启）：
+
+```bash
+wget -O install.sh https://raw.githubusercontent.com/jimu2000/M_Bot/main/install.sh && chmod +x install.sh && bash install.sh
+```
+
+安装时会问你 Token、用户 ID、面板密码（留空自动生成 16 位随机密码，只显示一次）、域名（留空则自动申请 IP 证书）。装完后：
+
+- 有域名：打开 `https://你的域名/login`（Let's Encrypt 证书，自动申请）。
+  安装时选验证方式：`http`（80 端口验证，默认）或 `cfdns`（Cloudflare
+  DNS 验证，需 CF API Token，要有 Zone:DNS:Edit + Zone:Zone:Read 权限；
+  验证不占端口，443 被别的服务占了时面板改走 9527 端口）。
+- 没域名：自动用服务器公网 IP 申请 Let's Encrypt IP 证书（shortlived，
+  有效期约 6 天，cron 每 2 天自动续期），打开 `https://服务器IP:9527/login`
+  （正规证书，浏览器不报警；申请失败时回落自签证书，浏览器提示不受信任
+  时点"继续访问"；IP 证书验证要走 80 端口，云上安全组要放行 80）。
+- 用户名 `admin`，密码是你输入的或自动生成的（存在 `/root/.mbot-admin-password`）。
+
+管理命令：`bash install.sh start|stop|restart|status|log|upgrade|uninstall`。
+
+下面是 Token 与 OCI 密钥的详细获取步骤，装好后按提示导入即可。
 
 ### 拿到 Telegram 机器人 Token（详细步骤）
 
@@ -132,27 +164,16 @@ key_file 如果已经在 `/root` 下，机器人保留原路径；否则自动�
 
 **第 6 步：验证：**
 
-机器人里发 `/oracle`，能列出账号和实例就是通了。
+机器人里发 `/oracle`，能列出账号和实例就是通了。安装命令见上面「🚀 一条命令安装」。
 
-一条命令安装（root 运行，首次运行是安装，再次运行是更新并重启）：
+### 界面预览
 
-```bash
-wget -O install.sh https://raw.githubusercontent.com/jimu2000/M_Bot/main/install.sh && chmod +x install.sh && bash install.sh
-```
+在线演示（免登录，模拟数据）：https://demo.youu.eu.org
 
-安装时会问你 Token、用户 ID、面板密码（留空自动生成 16 位随机密码，只显示一次）、域名（留空则自动申请 IP 证书）。装完后：
-
-- 有域名：打开 `https://你的域名/login`（Let's Encrypt 证书，自动申请）。
-  安装时选验证方式：`http`（80 端口验证，默认）或 `cfdns`（Cloudflare
-  DNS 验证，需 CF API Token，要有 Zone:DNS:Edit + Zone:Zone:Read 权限；
-  验证不占端口，443 被别的服务占了时面板改走 9527 端口）。
-- 没域名：自动用服务器公网 IP 申请 Let's Encrypt IP 证书（shortlived，
-  有效期约 6 天，cron 每 2 天自动续期），打开 `https://服务器IP:9527/login`
-  （正规证书，浏览器不报警；申请失败时回落自签证书，浏览器提示不受信任
-  时点"继续访问"；IP 证书验证要走 80 端口，云上安全组要放行 80）。
-- 用户名 `admin`，密码是你输入的或自动生成的（存在 `/root/.mbot-admin-password`）。
-
-管理命令：`bash install.sh start|stop|restart|status|log|upgrade|uninstall`。
+![总览 / 云报告](docs/screenshots/overview.png)
+![实例列表](docs/screenshots/instances.png)
+![Web SSH 终端](docs/screenshots/terminal.png)
+![任务管理与抢机计划](docs/screenshots/tasks.png)
 
 ### 功能
 
@@ -327,10 +348,10 @@ python3 mcp_server.py
 
 ```bash
 python3 -m unittest discover -s tests -t .
-# Ran 1318 tests ... OK
+# Ran 3025 tests ... OK
 ```
 
-1318 个单元测试（mock 为主，写操作零次碰生产）。真实 API 验证记录见
+3025 个单元测试（mock 为主，写操作零次碰生产）。真实 API 验证记录见
 `docs/verification*.md`：只读操作对真实 OCI / Cloudflare API 实测通过；
 写操作（创建 / 换 IP / 升降配 / 扩容 / 释放等）在测试实例上真实跑通过。
 
@@ -344,7 +365,7 @@ M_Bot/
   clouds/       Cloudflare 客户端 + 其他云抽象接口与 stub
   mcp_server.py MCP 服务器（JSON-RPC over stdio）
   scripts/      部署脚本（原子升级）
-  tests/        单元测试（1318 个）
+  tests/        单元测试（3025 个）
   docs/         设计与验证文档
 ```
 
@@ -367,6 +388,14 @@ server. All code here is independently written, fully visible and auditable.
 > affiliated with any similar closed-source tool in any way, with no
 > shared code.
 
+**Highlights:**
+
+- **Secure and independent**: independently written code, 3025 unit tests; the OCI private key only signs requests locally and is never sent out; every free feature is open, no paywall.
+- **Multi-client**: Telegram bot + FastAPI web panel + MCP server, with shared config and notifications (Telegram + encrypted Bark push).
+- **Low-maintenance**: terminating an instance deletes its boot volume by default (no surprise charges); RIPE Atlas probes auto-swap a firewalled IP; Let's Encrypt domain and IP certificates are issued and renewed automatically.
+
+Use case: run one Oracle Cloud Always Free server and manage instances, grab capacity, swap IPs and do DNS from a bot or a web page, without opening the console.
+
 ### Quick start
 
 Prerequisites (all required):
@@ -374,6 +403,37 @@ Prerequisites (all required):
 2. A Telegram bot token: see "Getting your Telegram bot token (step by step)" below.
 3. Your Telegram user ID: send `/start` to @userinfobot (digits only).
 4. An OCI API key: see "Getting your OCI API key (step by step)" below.
+
+### 🚀 One-command install
+
+Once the prerequisites are ready, install with one command (run as root; first run installs, later runs update and restart):
+
+```bash
+wget -O install.sh https://raw.githubusercontent.com/jimu2000/M_Bot/main/install.sh && chmod +x install.sh && bash install.sh
+```
+
+The installer asks for your token, user ID, panel password (leave empty to
+auto-generate a 16-character random password, shown once), and domain
+(leave empty to get an IP certificate automatically). After installing:
+
+- With a domain: open `https://your-domain/login` (Let's Encrypt
+  certificate, requested automatically). Pick a validation method during
+  install: `http` (port-80 validation, default) or `cfdns` (Cloudflare DNS
+  validation; needs a CF API token with Zone:DNS:Edit + Zone:Zone:Read;
+  validation uses no ports, and the panel moves to port 9527 if 443 is
+  already taken by another service).
+- Without a domain: a Let's Encrypt IP certificate is requested for the
+  server's public IP automatically (shortlived, ~6 days validity, renewed
+  by cron every 2 days); open `https://server-IP:9527/login` (a real
+  certificate, no browser warning; falls back to self-signed if issuance
+  fails — click through the browser warning then; IP validation needs
+  port 80 open in the cloud security list).
+- Username `admin`; the password is the one you entered or the generated one
+  (also saved in `/root/.mbot-admin-password`).
+
+Manage it with: `bash install.sh start|stop|restart|status|log|upgrade|uninstall`.
+
+The detailed steps for the token and the OCI key follow below; import them after installing.
 
 ### Getting your Telegram bot token (step by step)
 
@@ -497,35 +557,16 @@ rewrites it to `/root/<PROFILE>.pem` — put the file where it tells you.
 
 **Step 6: Verify:**
 
-Send `/oracle` to the bot; if it lists your accounts and instances, it works.
+Send `/oracle` to the bot; if it lists your accounts and instances, it works. The install command is in "🚀 One-command install" above.
 
-One command to install (run as root; first run installs, later runs update
-and restart):
+### Screenshots
 
-```bash
-wget -O install.sh https://raw.githubusercontent.com/jimu2000/M_Bot/main/install.sh && chmod +x install.sh && bash install.sh
-```
+Live demo (no login, simulated data): https://demo.youu.eu.org
 
-The installer asks for your token, user ID, panel password (leave empty to
-auto-generate a 16-character random password, shown once), and domain
-(leave empty to get an IP certificate automatically). After installing:
-
-- With a domain: open `https://your-domain/login` (Let's Encrypt
-  certificate, requested automatically). Pick a validation method during
-  install: `http` (port-80 validation, default) or `cfdns` (Cloudflare DNS
-  validation; needs a CF API token with Zone:DNS:Edit + Zone:Zone:Read;
-  validation uses no ports, and the panel moves to port 9527 if 443 is
-  already taken by another service).
-- Without a domain: a Let's Encrypt IP certificate is requested for the
-  server's public IP automatically (shortlived, ~6 days validity, renewed
-  by cron every 2 days); open `https://server-IP:9527/login` (a real
-  certificate, no browser warning; falls back to self-signed if issuance
-  fails — click through the browser warning then; IP validation needs
-  port 80 open in the cloud security list).
-- Username `admin`; the password is the one you entered or the generated one
-  (also saved in `/root/.mbot-admin-password`).
-
-Manage it with: `bash install.sh start|stop|restart|status|log|upgrade|uninstall`.
+![Overview / cloud report](docs/screenshots/overview.png)
+![Instance list](docs/screenshots/instances.png)
+![Web SSH terminal](docs/screenshots/terminal.png)
+![Task management and grabber plans](docs/screenshots/tasks.png)
 
 ### Features
 
@@ -731,10 +772,10 @@ For production, run both services under systemd — see `docs/deployment.md`
 
 ```bash
 python3 -m unittest discover -s tests -t .
-# Ran 1318 tests ... OK
+# Ran 3025 tests ... OK
 ```
 
-1318 unit tests (mostly mocked; write operations never touch production).
+3025 unit tests (mostly mocked; write operations never touch production).
 Real-API verification notes live in `docs/verification*.md`: read-only calls
 verified against the real OCI / Cloudflare APIs; write operations (create /
 change IP / resize / extend / terminate) verified for real on test instances.

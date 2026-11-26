@@ -75,13 +75,8 @@ def create_user(cli, compartment_id, name, email, description=None):
 
 
 def get_group_id_by_name(cli, compartment_id, group_name):
-    """按名字找 IAM 组，返回组 OCID（找不到返回 None）。
-
-    对应命令：oci iam group list --compartment-id <租户 OCID>。
-    """
-    result = cli.run(["iam", "group", "list",
-                      "--compartment-id", compartment_id])
-    for group in _extract_list(result):
+    """按名字找 IAM 组，返回组 OCID（找不到返回 None，SDK 直调）。"""
+    for group in cli.sdk_list_groups(compartment_id) or []:
         if group.get("name") == group_name:
             return group.get("id")
     return None
@@ -139,18 +134,14 @@ def delete_user(cli, user_id):
 
 
 def list_api_keys(cli, user_id):
-    """列出某用户的 API 密钥。
-
-    对应命令：oci iam user api-key list --user-id <OCID>
+    """列出某用户的 API 密钥（SDK 直调）。
 
     返回精简列表，每项含 fingerprint、lifecycle-state、time-created。
     公钥内容（key-value）不返回——展示不需要，少传敏感数据。
     """
     if not user_id or not isinstance(user_id, str):
         raise ValueError("user_id 不能为空")
-    result = cli.run(["iam", "user", "api-key", "list",
-                      "--user-id", user_id])
-    items = _extract_list(result)
+    items = cli.sdk_list_api_keys(user_id) or []
     return [{
         "fingerprint": item.get("fingerprint"),
         "lifecycle-state": item.get("lifecycle-state"),

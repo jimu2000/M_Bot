@@ -121,6 +121,7 @@ ROW_FORM_KEY = {
     "pubip": "public_ip",
     "ipv6": "ipv6",
     "script": "script",
+    "dd": "dd",
 }
 _SINGLE_ROWS = ("cpu", "os", "ocpus", "mem", "disk", "count")
 _BINARY_ROWS = {
@@ -128,6 +129,7 @@ _BINARY_ROWS = {
     "root": {"off": False, "on": True},
     "pubip": {"yes": True, "no": False},
     "ipv6": {"no": False, "yes": True},
+    "dd": {"off": False, "on": True},
 }
 # Shape name validation: starts with VM. / BM., dot-separated segments (e.g. VM.Standard.A1.Flex). 形状名校验：VM. / BM. 开头，点号分隔的段（例如 VM.Standard.A1.Flex）。
 _SHAPE_RE = re.compile(r"^(VM|BM)\.[A-Za-z0-9]+(\.[A-Za-z0-9_-]+)+$")
@@ -184,6 +186,7 @@ def new_form():
         "public_ip": True,
         "ipv6": False,
         "script": None,
+        "dd": False,
     }
 
 
@@ -491,6 +494,9 @@ def validate_form(form, deploy=None, region=None, profile=None):
             and form.get("root_login"):
         errors.append("开机脚本已是 #cloud-config 格式时不能同时开 root "
                       "密码登录，请二选一。")
+    if form.get("dd") and not form.get("root_login"):
+        errors.append("开 DD 重装时必须开 root 登录（DD 后的 SSH 靠 "
+                      "root 密码进）。")
     if deploy.get("availability_domain") in (None, "", AD_PLACEHOLDER):
         errors.append("未配置可用域（环境变量 MBOT_PLAN_AD）")
     if deploy.get("subnet_id") in (None, "", SUBNET_PLACEHOLDER):
@@ -558,6 +564,7 @@ def build_preset(form, deploy=None):
         "assign_ipv6": bool(form.get("ipv6")),
         "startup_script": script.get("content"),
         "root_login": bool(form.get("root_login")),
+        "dd": bool(form.get("dd")),
         "min_delay": min_delay,
         "max_delay": max_delay,
         # The three items below are for the confirm page and quick-boot display (old saved presets lack them, so display uses .get as a fallback). 以下三项供确认页与快捷开机展示用（旧版保存的预设没有它们，展示时用 .get 兜底）。
@@ -618,6 +625,7 @@ def form_from_preset(preset):
     form["root_login"] = bool(preset.get("root_login"))
     form["public_ip"] = bool(preset.get("assign_public_ip", True))
     form["ipv6"] = bool(preset.get("assign_ipv6"))
+    form["dd"] = bool(preset.get("dd"))
     script = preset.get("startup_script")
     form["script"] = ({"name": "开机脚本", "content": script}
                       if script else None)
@@ -627,11 +635,19 @@ def form_from_preset(preset):
 # ---------------- root 密码与 user-data ----------------
 
 def generate_root_password():
-    """生成默认 root 密码：UUID4 的 32 位十六进制（去掉连字符）。
+    """生成默认 root 密码。
 
-    只含 [0-9a-f]，可直接放进 cloud-init 的 chpasswd 块标量里，
+    固定密码优先：环境变量 MBOT_FIXED_ROOT_PASSWORD 非空时直接用它
+    （用户自定、所有新机共用，记一个就行；存在部署服务器的环境变量
+    文件里，面板不存、不读、不展示，面板被入侵也拿不到它）。未设置时
+    回落到 UUID4 的 32 位十六进制。
+
+    UUID 只含 [0-9a-f]，可直接放进 cloud-init 的 chpasswd 块标量里，
     不用转义；128 位熵。每次调用生成一个全新的 UUID。
     """
+    fixed = os.environ.get("MBOT_FIXED_ROOT_PASSWORD", "").strip()
+    if fixed:
+        return fixed
     return uuid.uuid4().hex
 
 
@@ -647,9 +663,16 @@ def _normalize_script(script):
     return "#!/bin/bash\n" + text
 
 
-def build_user_data(root_password=None, startup_script=None):
+def build_user_data(root_password=None, startup_script=None, dd=False):
     """生成传给 Grabber 的 user-data（cloud-init 内容）。
 
+    dd=True（DD 重装开）时：user-data 就是 DD 命令脚本（InstallNET.sh
+    重装 Debian 13，见 oci/dd_init.build_dd_script），开机脚本不拼进
+    user-data——DD 后的新系统不会再跑 cloud-init，脚本改由 DD 完成
+    后经 SSH 执行（见 oci/dd_init.run_dd_init）。此时 root 密码必填
+    （DD 后的 SSH 靠它登录），否则抛 ValueError。
+
+    dd=False 时沿用旧逻辑：
     - 只有 root 密码：#cloud-config，chpasswd 设 root 密码 + ssh_pwauth。
     - 只有脚本：原样返回（自动补 #!/bin/bash 头）。
     - 两者都有：#cloud-config，chpasswd + write_files 写脚本到
@@ -669,6 +692,15 @@ def build_user_data(root_password=None, startup_script=None):
       （ssh 服务名 Ubuntu 是 ssh、Oracle Linux 是 sshd，两边都试）。
     """
     script = _normalize_script(startup_script)
+    if dd:
+        # DD 重装：user-data 就是 DD 命令脚本；开机脚本不拼进来，
+        # DD 完成后再由 oci/dd_init 经 SSH 执行。root 密码必填
+        # （DD 后的 SSH 靠它登录）。
+        if not root_password:
+            raise ValueError("开 DD 重装时必须开 root 登录（DD 后的 SSH "
+                             "靠 root 密码进）。")
+        from oci.dd_init import build_dd_script  # noqa: PLC0415 - 避免循环导入
+        return build_dd_script(root_password)
     if root_password and script.startswith("#cloud-config"):
         raise ValueError("开机脚本已是 #cloud-config 格式时不能同时开 "
                          "root 密码登录，请二选一。")
@@ -909,6 +941,11 @@ def boot_form_keyboard(form, lang="zh"):
              form.get("script") is None, "bf:script:none"),
          _opt(bot_i18n.t(lang, "boot.upload"),
              form.get("script") is not None, "bf:script:upload")],
+        [_label(bot_i18n.t(lang, "boot.label_dd") + "▸"),
+         _opt(bot_i18n.t(lang, "boot.dd_off"), not form.get("dd"),
+             "bf:dd:off"),
+         _opt(bot_i18n.t(lang, "boot.dd_on"), bool(form.get("dd")),
+             "bf:dd:on")],
         [InlineKeyboardButton(bot_i18n.t(lang, "boot.confirm"),
                               callback_data="bf:confirm"),
          InlineKeyboardButton(bot_i18n.t(lang, "boot.save_preset"),
@@ -996,6 +1033,8 @@ def fmt_boot_form_summary(preset, ok, reason, lang="zh"):
                  + (bot_i18n.t(lang, "boot.script_uploaded",
                                chars=len(script)) if script
                     else bot_i18n.t(lang, "boot.script_none")))
+    if preset.get("dd"):
+        lines.append(bot_i18n.t(lang, "boot.dd_summary"))
     if preset.get("shape") == SHAPE_E2_MICRO:
         if preset.get("target_cpu"):
             lines.append(bot_i18n.t(lang, "boot.summary_target_cpu_only",

@@ -66,7 +66,7 @@ class TestFmtBootSuccess(unittest.TestCase):
     def test_single_instance_with_password(self):
         text = notify_mod.fmt_boot_success(
             "新加坡", "首尔", "VM.Standard.A1.Flex", 1, 6, 47,
-            [{"name": "ARM_2026-11-24", "public_ip": "203.0.113.10",
+            [{"name": "ARM_2026-01-01", "public_ip": "203.0.113.10",
               "attempts": 1, "elapsed_seconds": 3.9}],
             root_password="pw123", region_code="ap-seoul-1",
             ssh_key_set=True)
@@ -79,7 +79,7 @@ class TestFmtBootSuccess(unittest.TestCase):
         self.assertIn("root密码：pw123", text)
         self.assertIn("公钥：已设置", text)
         self.assertIn("开机数量：第 1/1 个", text)
-        self.assertIn("实例：ARM_2026-11-24", text)
+        self.assertIn("实例：ARM_2026-01-01", text)
         self.assertIn("抢机次数：1 次", text)
         self.assertIn("花费时间：4 秒", text)
         self.assertIn("开机地区：ap-seoul-1（首尔）", text)
@@ -89,7 +89,7 @@ class TestFmtBootSuccess(unittest.TestCase):
     def test_no_password_no_line(self):
         text = notify_mod.fmt_boot_success(
             "新加坡", "新加坡", "VM.Standard.E2.1.Micro", 1, 1, 47,
-            [{"name": "AMD_2026-11-24", "public_ip": None,
+            [{"name": "AMD_2026-01-01", "public_ip": None,
               "attempts": 3, "elapsed_seconds": 120.5}],
             root_password=None)
         self.assertIn("cpu类型：AMD", text)
@@ -102,7 +102,7 @@ class TestFmtBootSuccess(unittest.TestCase):
         # An unspecified disk shows "默认"; without a region code, only the display name is shown. 硬盘不指定显示“默认”；没有区域代码时只显示中文名。
         text = notify_mod.fmt_boot_success(
             "新加坡", "新加坡", "VM.Standard.A1.Flex", 1, 6, None,
-            [{"name": "ARM_2026-11-24", "public_ip": "203.0.113.10",
+            [{"name": "ARM_2026-01-01", "public_ip": "203.0.113.10",
               "attempts": 1, "elapsed_seconds": 6.2}])
         self.assertIn("硬盘选择：默认", text)
         self.assertIn("开机地区：新加坡", text)
@@ -110,21 +110,21 @@ class TestFmtBootSuccess(unittest.TestCase):
     def test_batch_lists_each(self):
         text = notify_mod.fmt_boot_success(
             "新加坡", "新加坡", "VM.Standard.A1.Flex", 1, 6, 47,
-            [{"name": "ARM_2026-11-24-1", "public_ip": "1.2.3.4",
+            [{"name": "ARM_2026-01-01-1", "public_ip": "203.0.113.4",
               "attempts": 1, "elapsed_seconds": 5.0},
-             {"name": "ARM_2026-11-24-2", "public_ip": "1.2.3.5",
+             {"name": "ARM_2026-01-01-2", "public_ip": "203.0.113.5",
               "attempts": 2, "elapsed_seconds": 40.0}],
             region_code="ap-singapore-1")
-        self.assertIn("第 1/2 个：ARM_2026-11-24-1", text)
-        self.assertIn("第 2/2 个：ARM_2026-11-24-2", text)
-        self.assertIn("ip：1.2.3.4", text)
-        self.assertIn("ip：1.2.3.5", text)
+        self.assertIn("第 1/2 个：ARM_2026-01-01-1", text)
+        self.assertIn("第 2/2 个：ARM_2026-01-01-2", text)
+        self.assertIn("ip：203.0.113.4", text)
+        self.assertIn("ip：203.0.113.5", text)
         self.assertIn("开机地区：ap-singapore-1（新加坡）", text)
 
     def test_cpu_unverified_adds_warning(self):
         text = notify_mod.fmt_boot_success(
             "圣何塞", "圣何塞", "VM.Standard.E2.1.Micro", 1, 1, 47,
-            [{"name": "AMD_2026-11-25", "public_ip": "203.0.113.10",
+            [{"name": "AMD_2026-01-02", "public_ip": "203.0.113.10",
               "attempts": 1, "elapsed_seconds": 3.0}],
             cpu_unverified=True)
         self.assertIn("⚠️ CPU 未验明，请人工核对", text)
@@ -132,7 +132,7 @@ class TestFmtBootSuccess(unittest.TestCase):
     def test_cpu_verified_no_warning(self):
         text = notify_mod.fmt_boot_success(
             "圣何塞", "圣何塞", "VM.Standard.E2.1.Micro", 1, 1, 47,
-            [{"name": "AMD_2026-11-25", "public_ip": "203.0.113.10",
+            [{"name": "AMD_2026-01-02", "public_ip": "203.0.113.10",
               "attempts": 1, "elapsed_seconds": 3.0}])
         self.assertNotIn("CPU 未验明", text)
 
@@ -140,13 +140,13 @@ class TestFmtBootSuccess(unittest.TestCase):
         # 拿到实测型号时 cpu 类型行显示具体型号，不只是 AMD/ARM。
         text = notify_mod.fmt_boot_success(
             "新加坡", "新加坡", "VM.Standard.E2.1.Micro", 1, 1, 47,
-            [{"name": "AMD_2026-11-25", "public_ip": "203.0.113.10",
+            [{"name": "AMD_2026-01-02", "public_ip": "203.0.113.10",
               "attempts": 379, "elapsed_seconds": 120.0}],
             cpu_model="AMD EPYC 7J13")
         self.assertIn("cpu类型：AMD EPYC 7J13", text)
         text = notify_mod.fmt_boot_success(
             "新加坡", "新加坡", "VM.Standard.A1.Flex", 1, 6, 47,
-            [{"name": "ARM_2026-11-25", "public_ip": "203.0.113.10",
+            [{"name": "ARM_2026-01-02", "public_ip": "203.0.113.10",
               "attempts": 1, "elapsed_seconds": 3.0}],
             cpu_model="Ampere Altra")
         self.assertIn("cpu类型：Ampere Altra", text)
@@ -155,7 +155,7 @@ class TestFmtBootSuccess(unittest.TestCase):
         # 没拿到型号时回落到形状的 AMD/ARM。
         text = notify_mod.fmt_boot_success(
             "新加坡", "新加坡", "VM.Standard.E2.1.Micro", 1, 1, 47,
-            [{"name": "AMD_2026-11-25", "public_ip": "203.0.113.10",
+            [{"name": "AMD_2026-01-02", "public_ip": "203.0.113.10",
               "attempts": 1, "elapsed_seconds": 3.0}],
             cpu_model=None)
         self.assertIn("cpu类型：AMD", text)
@@ -171,7 +171,7 @@ class TestNotifyBootSuccess(unittest.TestCase):
             result = notify_mod.notify_boot_success(
                 "T", 1, "新加坡", "新加坡", "VM.Standard.E2.1.Micro",
                 1, 1, 47,
-                [{"name": "AMD_2026-11-24", "public_ip": "1.2.3.4",
+                [{"name": "AMD_2026-01-01", "public_ip": "203.0.113.4",
                   "attempts": 1, "elapsed_seconds": 3.0}])
         self.assertTrue(result["telegram"])
         self.assertTrue(result["bark"])
@@ -188,7 +188,7 @@ class TestNotifyBootSuccess(unittest.TestCase):
             result = notify_mod.notify_boot_success(
                 "T", 1, "新加坡", "新加坡", "VM.Standard.E2.1.Micro",
                 1, 1, 47,
-                [{"name": "AMD_2026-11-25", "public_ip": "1.2.3.4",
+                [{"name": "AMD_2026-01-02", "public_ip": "203.0.113.4",
                   "attempts": 379, "elapsed_seconds": 120.0}],
                 cpu_model="AMD EPYC 7J13")
         self.assertTrue(result["telegram"])
@@ -205,7 +205,7 @@ class TestNotifyBootSuccess(unittest.TestCase):
             result = notify_mod.notify_boot_success(
                 "T", 1, "新加坡", "新加坡", "VM.Standard.E2.1.Micro",
                 1, 1, 47,
-                [{"name": "AMD_2026-11-24", "public_ip": None,
+                [{"name": "AMD_2026-01-01", "public_ip": None,
                   "attempts": 1, "elapsed_seconds": 3.0}])
         self.assertTrue(result["telegram"])
         self.assertFalse(result["bark"])
@@ -219,7 +219,7 @@ class TestNotifyBootSuccess(unittest.TestCase):
             result = notify_mod.notify_boot_success(
                 "T", 1, "新加坡", "新加坡", "VM.Standard.E2.1.Micro",
                 1, 1, 47,
-                [{"name": "AMD_2026-11-24", "public_ip": None,
+                [{"name": "AMD_2026-01-01", "public_ip": None,
                   "attempts": 1, "elapsed_seconds": 3.0}])
         self.assertFalse(result["telegram"])
         self.assertFalse(result["bark"])
@@ -235,7 +235,7 @@ class TestGrabberThreadNotify(unittest.TestCase):
         self._tasks.start()
         self.addCleanup(self._tasks.stop)
         self.preset = {
-            "display_name": "ARM_2026-11-24", "shape": "VM.Standard.A1.Flex",
+            "display_name": "ARM_2026-01-01", "shape": "VM.Standard.A1.Flex",
             "availability_domain": "AD-1", "image_id": "img",
             "subnet_id": "subnet", "ocpus": 1, "memory_gb": 6,
             "count": 1,
@@ -274,7 +274,7 @@ class TestGrabberThreadNotify(unittest.TestCase):
         self.assertEqual(args[0][4], "VM.Standard.A1.Flex")
         self.assertEqual(args[0][7], 47)
         instances = args[0][8]
-        self.assertEqual(instances[0]["name"], "ARM_2026-11-24")
+        self.assertEqual(instances[0]["name"], "ARM_2026-01-01")
         self.assertEqual(instances[0]["public_ip"], "203.0.113.10")
         self.assertEqual(instances[0]["attempts"], 2)
         self.assertEqual(args[1]["root_password"], "pw123")
@@ -318,7 +318,7 @@ class TestGrabberThreadNotify(unittest.TestCase):
         self.assertIsNone(instances[0]["public_ip"])
         followup.assert_called_once()
         args = followup.call_args[0]
-        self.assertEqual(args[1], "ARM_2026-11-24")
+        self.assertEqual(args[1], "ARM_2026-01-01")
         self.assertEqual(args[2], "T")
         self.assertEqual(args[3], 654321)
         # The callback passed to the follow-up thread must bind the right instance id. 传给跟进线程的回调要绑对实例 id。
@@ -339,7 +339,7 @@ class TestGrabberThreadCpuFilter(unittest.TestCase):
         self._tasks.start()
         self.addCleanup(self._tasks.stop)
         self.preset = {
-            "display_name": "AMD_2026-11-25",
+            "display_name": "AMD_2026-01-02",
             "shape": "VM.Standard.E2.1.Micro",
             "availability_domain": "AD-1", "image_id": "img",
             "subnet_id": "subnet", "ocpus": 1, "memory_gb": 1,
@@ -673,7 +673,7 @@ class TestIpFollowup(unittest.TestCase):
         with patch.object(notify_mod, "send_telegram_message",
                           return_value=(True, "")) as send:
             thread = notify_mod.start_ip_followup(
-                get_ip, "AMD_2026-11-25", "T", 654321,
+                get_ip, "AMD_2026-01-02", "T", 654321,
                 timeout_seconds=5, interval_seconds=0.01)
             self.assertIsNotNone(thread)
             thread.join(timeout=5)
@@ -682,14 +682,14 @@ class TestIpFollowup(unittest.TestCase):
         args = send.call_args[0]
         self.assertEqual(args[0], "T")
         self.assertEqual(args[1], 654321)
-        self.assertIn("AMD_2026-11-25", args[2])
+        self.assertIn("AMD_2026-01-02", args[2])
         self.assertIn("203.0.113.10", args[2])
 
     def test_timeout_sends_nothing(self):
         get_ip = MagicMock(return_value=None)
         with patch.object(notify_mod, "send_telegram_message") as send:
             thread = notify_mod.start_ip_followup(
-                get_ip, "AMD_2026-11-25", "T", 654321,
+                get_ip, "AMD_2026-01-02", "T", 654321,
                 timeout_seconds=0.05, interval_seconds=0.01)
             self.assertIsNotNone(thread)
             thread.join(timeout=5)

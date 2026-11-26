@@ -400,12 +400,12 @@ class TestInstanceTraffic(HandlersExtraTestCase):
     def test_fmt_instance_traffic_pure(self):
         self.assertIn("没有运行中的实例", he.fmt_instance_traffic([]))
         text = he.fmt_instance_traffic([
-            {"name": "a", "public_ip": "1.2.3.4", "city": "新加坡",
+            {"name": "a", "public_ip": "203.0.113.4", "city": "新加坡",
              "rx_gb": 1.0, "tx_gb": 2.0, "error": None},
             {"name": "b", "public_ip": None, "city": "未知地区",
              "rx_gb": None, "tx_gb": None, "error": "无公网 IP"},
         ])
-        self.assertIn("IP: 1.2.3.4（新加坡）", text)
+        self.assertIn("IP: 203.0.113.4（新加坡）", text)
         self.assertIn("当月入站: 1.00 GiB / 当月出站: 2.00 GiB", text)
         self.assertIn("IP: 无公网 IP（未知地区）", text)
         self.assertIn("查不到（无公网 IP）", text)
@@ -415,21 +415,21 @@ class TestInstanceTraffic(HandlersExtraTestCase):
         """每台查城市 + SSH vnstat，失败的台单独标 error。"""
         instances = [
             {"display-name": "web", "lifecycle-state": "RUNNING",
-             "public-ip": "1.2.3.4"},
+             "public-ip": "203.0.113.4"},
             {"display-name": "dead", "lifecycle-state": "RUNNING",
-             "public-ip": "5.6.7.8"},
+             "public-ip": "203.0.113.8"},
             {"display-name": "stopped", "lifecycle-state": "STOPPED",
-             "public-ip": "9.9.9.9"},
+             "public-ip": "203.0.113.9"},
         ]
         # The fixture has only one month of data (2026-11); the parser defaults to it (falling back to the last entry when there is no current month), so this test is stable whenever it runs. 示例只有 2026-11 一条月份数据，解析器默认取该条（无当月时取最后一条，所以任何时间跑这个测试都稳定）。
         context = make_context()
         with patch.object(bot_config, "GUARD_SSH_KEY", "/root/.ssh/rbot_guard"), \
                 patch.object(he, "fetch_city_for_ip",
-                             side_effect=lambda ip: {"1.2.3.4": "新加坡",
-                                                     "5.6.7.8": "圣何塞"}.get(ip, "未知地区")), \
+                             side_effect=lambda ip: {"203.0.113.4": "新加坡",
+                                                     "203.0.113.8": "圣何塞"}.get(ip, "未知地区")), \
                 patch.object(he, "run_remote_command") as mock_cmd:
             def _cmd(host, command):
-                if host["host"] == "1.2.3.4":
+                if host["host"] == "203.0.113.4":
                     return (0, self.VNSTAT_SAMPLE, "")
                 raise RuntimeError("ssh refused")
             mock_cmd.side_effect = _cmd
@@ -446,7 +446,7 @@ class TestInstanceTraffic(HandlersExtraTestCase):
     async def test_fetch_instance_traffic_no_key(self):
         """未配 SSH 密钥时每台都标“未配置 SSH 密钥”，不尝试 SSH。"""
         instances = [{"display-name": "web", "lifecycle-state": "RUNNING",
-                      "public-ip": "1.2.3.4"}]
+                      "public-ip": "203.0.113.4"}]
         context = make_context()
         with patch.object(bot_config, "GUARD_SSH_KEY", ""), \
                 patch.object(he, "fetch_city_for_ip",
@@ -459,7 +459,7 @@ class TestInstanceTraffic(HandlersExtraTestCase):
     async def test_fetch_traffic_auto_installs_vnstat(self):
         """v1.16.0：vnstat 没装时自动安装后重试，成功后标 installed。"""
         instances = [{"display-name": "new", "lifecycle-state": "RUNNING",
-                      "public-ip": "1.2.3.4"}]
+                      "public-ip": "203.0.113.4"}]
         context = make_context()
         calls = []
         with patch.object(bot_config, "GUARD_SSH_KEY",
@@ -488,7 +488,7 @@ class TestInstanceTraffic(HandlersExtraTestCase):
     async def test_fetch_traffic_install_failure(self):
         """v1.16.0：自动安装失败时标明原因，不再重试查询。"""
         instances = [{"display-name": "new", "lifecycle-state": "RUNNING",
-                      "public-ip": "1.2.3.4"}]
+                      "public-ip": "203.0.113.4"}]
         context = make_context()
         with patch.object(bot_config, "GUARD_SSH_KEY",
                           "/root/.ssh/rbot_guard"), \
@@ -508,7 +508,7 @@ class TestInstanceTraffic(HandlersExtraTestCase):
     async def test_fetch_traffic_other_failure_no_install(self):
         """v1.16.0：非“没装”原因的查询失败不触发自动安装。"""
         instances = [{"display-name": "web", "lifecycle-state": "RUNNING",
-                      "public-ip": "1.2.3.4"}]
+                      "public-ip": "203.0.113.4"}]
         context = make_context()
         with patch.object(bot_config, "GUARD_SSH_KEY",
                           "/root/.ssh/rbot_guard"), \
@@ -523,11 +523,11 @@ class TestInstanceTraffic(HandlersExtraTestCase):
     def test_fmt_instance_traffic_guard_line(self):
         """v1.21.0：每台流量下面带看门狗状态行。"""
         text = he.fmt_instance_traffic([
-            {"name": "a", "public_ip": "1.2.3.4", "city": "新加坡",
+            {"name": "a", "public_ip": "203.0.113.4", "city": "新加坡",
              "rx_gb": 1.0, "tx_gb": 2.0, "error": None,
              "guard": {"installed": True, "auto": True, "enabled": True,
                        "mode": 0, "tripped": False, "limited": False}},
-            {"name": "b", "public_ip": "5.6.7.8", "city": "圣何塞",
+            {"name": "b", "public_ip": "203.0.113.8", "city": "圣何塞",
              "rx_gb": 0.5, "tx_gb": 1.0, "error": None,
              "guard": {"installed": False, "auto": False, "enabled": False,
                        "mode": None, "tripped": False, "limited": False}},
@@ -538,9 +538,9 @@ class TestInstanceTraffic(HandlersExtraTestCase):
     def test_traffic_keyboard_toggle_labels(self):
         """v1.21.0：开关按钮按当前状态反着显示动作。"""
         entries = [
-            {"name": "web", "public_ip": "1.2.3.4",
+            {"name": "web", "public_ip": "203.0.113.4",
              "guard": {"installed": True, "enabled": True}},
-            {"name": "e2", "public_ip": "5.6.7.8",
+            {"name": "e2", "public_ip": "203.0.113.8",
              "guard": {"installed": False, "enabled": False}},
             {"name": "noip", "public_ip": None, "guard": None},
         ]
@@ -557,7 +557,7 @@ class TestInstanceTraffic(HandlersExtraTestCase):
 
     def test_traffic_keyboard_no_key(self):
         """未配 SSH 密钥时不给开关按钮（装不了），只剩返回按钮。"""
-        entries = [{"name": "web", "public_ip": "1.2.3.4",
+        entries = [{"name": "web", "public_ip": "203.0.113.4",
                     "guard": {"installed": False, "enabled": False}}]
         with patch.object(bot_config, "GUARD_SSH_KEY", ""):
             keyboard = he.traffic_keyboard(entries)
@@ -935,34 +935,34 @@ class TestUniquifyDisplayName(unittest.TestCase):
 
     def test_no_conflict_unchanged(self):
         self.assertEqual(
-            he.uniquify_display_name("AMD_2026-11-24", 1, set()),
-            "AMD_2026-11-24")
+            he.uniquify_display_name("AMD_2026-01-01", 1, set()),
+            "AMD_2026-01-01")
 
     def test_single_conflict_gets_suffix(self):
         self.assertEqual(
-            he.uniquify_display_name("AMD_2026-11-24", 1,
-                                     {"AMD_2026-11-24"}),
-            "AMD_2026-11-24-2")
+            he.uniquify_display_name("AMD_2026-01-01", 1,
+                                     {"AMD_2026-01-01"}),
+            "AMD_2026-01-01-2")
 
     def test_double_conflict_gets_next_suffix(self):
         self.assertEqual(
-            he.uniquify_display_name("AMD_2026-11-24", 1,
-                                     {"AMD_2026-11-24",
-                                      "AMD_2026-11-24-2"}),
-            "AMD_2026-11-24-3")
+            he.uniquify_display_name("AMD_2026-01-01", 1,
+                                     {"AMD_2026-01-01",
+                                      "AMD_2026-01-01-2"}),
+            "AMD_2026-01-01-3")
 
     def test_batch_checks_all_suffixed_names(self):
         self.assertEqual(
-            he.uniquify_display_name("ARM_2026-11-24", 2,
-                                     {"ARM_2026-11-24-1"}),
-            "ARM_2026-11-24-2")
+            he.uniquify_display_name("ARM_2026-01-01", 2,
+                                     {"ARM_2026-01-01-1"}),
+            "ARM_2026-01-01-2")
 
     def test_batch_skips_taken_second_group(self):
         self.assertEqual(
-            he.uniquify_display_name("ARM_2026-11-24", 2,
-                                     {"ARM_2026-11-24-1",
-                                      "ARM_2026-11-24-2-2"}),
-            "ARM_2026-11-24-3")
+            he.uniquify_display_name("ARM_2026-01-01", 2,
+                                     {"ARM_2026-01-01-1",
+                                      "ARM_2026-01-01-2-2"}),
+            "ARM_2026-01-01-3")
 
 
 class TestBoot(HandlersExtraTestCase):
@@ -1469,9 +1469,9 @@ class TestIpIpv6ResumeResizeVolumes(HandlersExtraTestCase):
         vnics = [{"id": "ocid1.vnic.oc1..v1", "display-name": "vnic",
                   "public-ip": "203.0.113.139", "private-ip": "10.0.0.5",
                   "is-primary": True}]
-        self.cli.run.return_value = {"data": [
-            {"ip-address": "2603:c024:c021:1d01::1",
-             "lifecycle-state": "ASSIGNED"}]}
+        self.cli.sdk_list_ipv6s.return_value = [
+            {"ip-address": "2001:db8::1",
+             "lifecycle-state": "ASSIGNED"}]
         with patch.object(he, "list_instances",
                           return_value=FAKE_INSTANCES), \
              patch.object(he, "list_vnics", return_value=vnics):
@@ -1479,17 +1479,16 @@ class TestIpIpv6ResumeResizeVolumes(HandlersExtraTestCase):
             context = make_context()
             await he.handle_ipv6(update, context)
         text = reply_text_of(update)
-        self.assertIn("2603:c024:c021:1d01::1", text)
-        called_args = self.cli.run.call_args[0][0]
-        self.assertEqual(called_args[:3], ["network", "ipv6", "list"])
-        self.assertIn("ocid1.vnic.oc1..v1", called_args)
+        self.assertIn("2001:db8::1", text)
+        self.cli.sdk_list_ipv6s.assert_called_once_with(
+            "ocid1.vnic.oc1..v1")
 
     def test_ipv6_create_delete_helpers(self):
         """create_ipv6 / delete_ipv6 只调 cli.run（mock，不发真实请求）。"""
         cli = MagicMock()
-        cli.run.return_value = {"data": {"ip-address": "2603::2"}}
+        cli.run.return_value = {"data": {"ip-address": "2001:db8::2"}}
         result = he.create_ipv6(cli, "ocid1.vnic.oc1..v1")
-        self.assertEqual(result["ip-address"], "2603::2")
+        self.assertEqual(result["ip-address"], "2001:db8::2")
         called_args = cli.run.call_args[0][0]
         self.assertEqual(called_args[:3], ["network", "ipv6", "create"])
         self.assertIn("ocid1.vnic.oc1..v1", called_args)
@@ -2603,16 +2602,16 @@ class TestDisplayNames(HandlersExtraTestCase):
         """多账号订阅信息：有几个账号显示几个，失败的账号单列。"""
         text = he.fmt_tenancies([
             ("新加坡（3 个区）",
-             {"name": "tenant-singapore", "home-region-key": "SIN",
-              "description": "tenant-singapore"}),
-            ("圣何塞", {"name": "tenant-sanjose", "home-region-key": "SJC"}),
+             {"name": "example-tenancy-sg", "home-region-key": "SIN",
+              "description": "example-tenancy-sg"}),
+            ("圣何塞", {"name": "example-tenancy-sj", "home-region-key": "SJC"}),
             ("芝加哥", None),
         ])
         self.assertIn("订阅信息（3 个账号）", text)
         self.assertIn("新加坡（3 个区）", text)
-        self.assertIn("tenant-singapore", text)
+        self.assertIn("example-tenancy-sg", text)
         self.assertIn("圣何塞", text)
-        self.assertIn("tenant-sanjose", text)
+        self.assertIn("example-tenancy-sj", text)
         self.assertIn("芝加哥", text)
         self.assertIn("查询失败", text)
         self.assertEqual(he.fmt_tenancies([]), "没有配置任何账号。")

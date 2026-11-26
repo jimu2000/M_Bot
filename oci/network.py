@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """网络模块：VNIC、公网 IP、内网 IP 管理（“换 IP”等功能）。
 
-全部函数接受一个 OCIClient 对象作为第一个参数，命令通过 client.run()
-发给官方 OCI CLI。args 里不带 --profile / --region（client 自动追加）。
+全部函数接受一个 OCIClient 对象作为第一个参数。
+读接口走 OCI Python SDK 直调（cli.sdk_*，进程内 HTTP，不起 CLI 子进程）；
+写操作（create / assign / delete / change）仍走 client.run()（OCI CLI）。
 
 安全说明（重要）：
   - 本模块不读取、不打印、不外传 API 私钥。认证全部由 OCI CLI 自己读
@@ -45,15 +46,14 @@ def _data(result):
     return result
 
 
-def list_vnics(cli, instance_id):
-    """列实例的 VNIC（oci compute instance list-vnics）。
+def list_vnics(cli, instance_id, compartment_id=None):
+    """列实例的 VNIC（SDK 直调，复现 CLI list-vnics 的组合）。
 
     返回精简列表，每项含：vnic id、display-name、public-ip、private-ip、
-    is-primary。
+    is-primary。compartment_id 传了可省一次查实例详情的调用。
     """
-    result = cli.run(["compute", "instance", "list-vnics",
-                      "--instance-id", instance_id])
-    vnics = _data(result) or []
+    vnics = cli.sdk_list_vnics(instance_id,
+                               compartment_id=compartment_id) or []
     return [{
         "id": v.get("id"),
         "display-name": v.get("display-name"),
@@ -63,9 +63,10 @@ def list_vnics(cli, instance_id):
     } for v in vnics]
 
 
-def get_public_ip(cli, instance_id):
+def get_public_ip(cli, instance_id, compartment_id=None):
     """返回实例主 VNIC 的公网 IPv4，没有则返回 None。"""
-    for vnic in list_vnics(cli, instance_id):
+    for vnic in list_vnics(cli, instance_id,
+                           compartment_id=compartment_id):
         if vnic.get("is-primary"):
             return vnic.get("public-ip")
     return None
@@ -129,37 +130,95 @@ def attach_public_ips(cli, instances, max_workers=5):
     return instances
 
 
+def attach_public_ips_bulk(cli, instances, compartment_id, max_workers=5):
+    """批量给实例精简列表补 public-ip（返回与输入等长的 IP 列表）。
+
+    与 attach_public_ips 的逐台查法不同：先一次 compartment 级
+    list-vnic-attachments（不按实例过滤）拿到全部挂载关系，再按
+    实例分发、每台只查自己 VNIC 的详情（get-vnic）。实例列表页
+    从 1 + 2N 次 SDK 调用降到 2 + N 次（N 为实例数），冷缓存时
+    少一次 TLS 握手 + 签名 + 解析；实例越多省得越多。
+
+    语义与 get_public_ip 一致：返回主 VNIC（is-primary）的公网
+    IPv4，没有主 VNIC 时返回 None。TERMINATED / TERMINATING 的
+    实例不查（直接记 None）；单台查询失败（异常、VNIC 已删 404
+    等）该台记 None，不拖垮整个列表。批量挂载列表本身失败时回
+    退到逐台 get_public_ip（与旧路径完全一致的结果），绝不因
+    优化本身让列表页报错。
+    max_workers 控制并行度（默认 5）。
+    """
+    todo = []
+    results = [None] * len(instances)
+    for idx, inst in enumerate(instances):
+        state = (inst.get("lifecycle-state") or "").upper()
+        if state in ("TERMINATED", "TERMINATING") or not inst.get("id"):
+            results[idx] = None
+        else:
+            todo.append(idx)
+    if not todo:
+        return results
+
+    def _fetch_one(idx):
+        try:
+            return get_public_ip(cli, instances[idx]["id"], compartment_id)
+        except Exception:  # noqa: BLE001 - 单台失败记 None，不拖垮列表
+            return None
+
+    try:
+        attachments = cli.sdk_list_vnic_attachments(compartment_id) or []
+    except Exception:  # noqa: BLE001 - 批量列表失败，回退逐台查
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            ips = list(pool.map(_fetch_one, todo))
+        for idx, ip in zip(todo, ips):
+            results[idx] = ip
+        return results
+
+    by_instance = {}
+    for att in attachments:
+        iid = att.get("instance-id")
+        vnic_id = att.get("vnic-id")
+        if iid and vnic_id:
+            by_instance.setdefault(iid, []).append(vnic_id)
+
+    def _fetch_bulk(idx):
+        try:
+            vnic_ids = by_instance.get(instances[idx]["id"]) or []
+            for vnic_id in vnic_ids:
+                vnic = cli.sdk_get_vnic(vnic_id) or {}
+                if vnic.get("is-primary"):
+                    return vnic.get("public-ip")
+            return None
+        except Exception:  # noqa: BLE001 - 单台失败记 None，不拖垮列表
+            return None
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        ips = list(pool.map(_fetch_bulk, todo))
+    for idx, ip in zip(todo, ips):
+        results[idx] = ip
+    return results
+
+
 def get_vnic(cli, vnic_id):
-    """查 VNIC 详情（oci network vnic get）。
+    """查 VNIC 详情（SDK 直调）。
 
     返回完整的 VNIC 详情字典。VNIC 不存在时抛 NotFoundError
     （OCI 返回 NotAuthorizedOrNotFound，client 已分类）。
     """
-    result = cli.run(["network", "vnic", "get", "--vnic-id", vnic_id])
-    return _data(result)
+    return cli.sdk_get_vnic(vnic_id)
 
 
 def list_public_ips(cli, compartment_id, availability_domain=None):
-    """列公网 IP（oci network public-ip list）。
+    """列公网 IP（SDK 直调）。
 
     返回精简列表，每项含：id、ip-address、lifetime、lifecycle-state、
     assigned-entity（绑定的 VNIC / 私有 IP 的 OCID，没有则为 None）。
 
-    注意：list 命令必须带 --scope；不传 availability_domain 时用 REGION
-    作用域，返回区域级公网 IP（保留 IP）。实例的临时公网 IP 是可用区
-    级的，不会出现在 REGION 结果里；要列临时 IP 需传 availability_domain，
-    此时用 --scope AVAILABILITY_DOMAIN。
-    实测：不带 --scope 会报错 "Missing option(s) --scope"（2026-11-23）。
+    注意：不传 availability_domain 时用 REGION 作用域，返回区域级公网 IP
+    （保留 IP）。实例的临时公网 IP 是可用区级的，不会出现在 REGION 结果里；
+    要列临时 IP 需传 availability_domain，此时用 AVAILABILITY_DOMAIN 作用域。
     """
-    args = ["network", "public-ip", "list",
-            "--compartment-id", compartment_id]
-    if availability_domain:
-        args += ["--scope", "AVAILABILITY_DOMAIN",
-                 "--availability-domain", availability_domain]
-    else:
-        args += ["--scope", "REGION"]
-    result = cli.run(args)
-    ips = _data(result) or []
+    ips = cli.sdk_list_public_ips(
+        compartment_id, availability_domain=availability_domain) or []
     return [{
         "id": ip.get("id"),
         "ip-address": ip.get("ip-address"),
@@ -206,9 +265,9 @@ def delete_public_ip(cli, public_ip_id):
                     "--public-ip-id", public_ip_id, "--force"])
 
 
-def get_primary_vnic(cli, instance_id):
+def get_primary_vnic(cli, instance_id, compartment_id=None):
     """返回实例的主 VNIC 字典，没有主 VNIC 时抛 ValueError。"""
-    vnics = list_vnics(cli, instance_id)
+    vnics = list_vnics(cli, instance_id, compartment_id=compartment_id)
     primary = next((v for v in vnics if v.get("is-primary")), None)
     if primary is None:
         raise ValueError(f"实例 {instance_id} 没有主 VNIC")
@@ -225,9 +284,8 @@ def get_primary_private_ip(cli, vnic_id):
 
 
 def list_ipv6_for_vnic(cli, vnic_id):
-    """查某 VNIC 上的 IPv6 列表（network ipv6 list --vnic-id）。"""
-    result = cli.run(["network", "ipv6", "list", "--vnic-id", vnic_id])
-    return _data(result) or []
+    """查某 VNIC 上的 IPv6 列表（SDK 直调）。"""
+    return cli.sdk_list_ipv6s(vnic_id) or []
 
 
 def create_ipv6(cli, vnic_id, ip_address=None):
@@ -280,14 +338,13 @@ def repair_instance_ip(cli, compartment_id, instance_id):
     {instance_id, state, public_ip, repaired, new_ip, checks}，
     checks 是 [{name, status, detail}]，status 为 ok / fixed。
     """
-    inst = _data(cli.run(["compute", "instance", "get",
-                          "--instance-id", instance_id])) or {}
+    inst = cli.sdk_get_instance(instance_id) or {}
     state = inst.get("lifecycle-state") or ""
     if state == "TERMINATED":
         raise ValueError(f"实例 {instance_id} 已终止，无法修复")
     checks = [{"name": "实例状态", "status": "ok",
                "detail": state or "未知"}]
-    vnic = get_primary_vnic(cli, instance_id)
+    vnic = get_primary_vnic(cli, instance_id, compartment_id=compartment_id)
     checks.append({"name": "主 VNIC", "status": "ok",
                    "detail": vnic.get("display-name") or vnic["id"]})
     current_ip = vnic.get("public-ip")
@@ -309,13 +366,11 @@ def repair_instance_ip(cli, compartment_id, instance_id):
 
 
 def list_private_ips(cli, vnic_id):
-    """列 VNIC 的内网 IP（oci network private-ip list --vnic-id）。
+    """列 VNIC 的内网 IP（SDK 直调）。
 
     返回精简列表，每项含：id、ip-address、is-primary、display-name。
     """
-    result = cli.run(["network", "private-ip", "list",
-                      "--vnic-id", vnic_id])
-    ips = _data(result) or []
+    ips = cli.sdk_list_private_ips(vnic_id) or []
     return [{
         "id": ip.get("id"),
         "ip-address": ip.get("ip-address"),
@@ -343,7 +398,7 @@ def change_public_ip(cli, compartment_id, instance_id,
       - 换 IP 瞬间会断开所有基于旧 IP 的连接（SSH、代理、网站访问）。
       - 保留 IP 本身是计费资源；若之后不再需要，应及时删除。
     """
-    vnics = list_vnics(cli, instance_id)
+    vnics = list_vnics(cli, instance_id, compartment_id=compartment_id)
     primary_vnic = next((v for v in vnics if v.get("is-primary")), None)
     if primary_vnic is None:
         raise ValueError(f"实例 {instance_id} 没有主 VNIC，无法换 IP")
@@ -355,8 +410,7 @@ def change_public_ip(cli, compartment_id, instance_id,
         raise ValueError(f"VNIC {primary_vnic['id']} 没有主内网 IP，无法换 IP")
 
     # Delete the old public IP first (an ephemeral IP is availability-domain-scoped and must be listed with the AD scope). 先删已绑的旧公网 IP（临时 IP 是可用区级的，需用 AD 作用域列出）。
-    inst = _data(cli.run(["compute", "instance", "get",
-                          "--instance-id", instance_id])) or {}
+    inst = cli.sdk_get_instance(instance_id) or {}
     ad = inst.get("availability-domain")
     if ad:
         for pub in list_public_ips(cli, compartment_id,

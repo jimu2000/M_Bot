@@ -52,9 +52,27 @@ LOCKOUT_MAX_MINUTES = 30
 # To enable: set env var MBOT_CAPTCHA_ENABLED=1; the login page shows a captcha, and POST /api/auth/login needs captchaId + captchaAnswer. 开启：设环境变量 MBOT_CAPTCHA_ENABLED=1，登录页显示图形验证码，POST /api/auth/login 需带 captchaId + captchaAnswer。
 CAPTCHA_ENABLED = os.environ.get("MBOT_CAPTCHA_ENABLED", "") == "1"
 
+# Demo mode: set env var MBOT_DEMO_MODE=1 to serve simulated data. 演示模式开关：设环境变量 MBOT_DEMO_MODE=1 后面板返回模拟数据。
+# In demo mode: demo/demo logs in (the real admin login still works), all
+# data endpoints return demo tenants/instances/volumes/quota/backups/tasks,
+# and write operations return a fake success without calling OCI or changing
+# any real state. Non-demo behavior is unchanged. 演示模式下：demo/demo 可登录
+# （真实管理员登录仍可用），全部数据接口返回演示租户/实例/启动盘/配额/
+# 备份/任务，写操作只返回假成功，不调 OCI、不改真实状态。非演示模式不受影响。
+DEMO_MODE = os.environ.get("MBOT_DEMO_MODE", "") == "1"
+
 # Microsoft Clarity project ID, for login-page analytics. Empty string = do not load Clarity. Microsoft Clarity 项目 ID：登录页统计用。空字符串 = 不加载 Clarity。
 # Create a project at clarity.microsoft.com, then put its ID in env var MBOT_CLARITY_ID; never hardcode any project ID in the public repo. 在 clarity.microsoft.com 建项目后把 ID 填进环境变量 MBOT_CLARITY_ID；公开仓库里不硬编码任何项目 ID。
 CLARITY_ID = os.environ.get("MBOT_CLARITY_ID", "")
+
+# Matomo (self-hosted analytics) tracker base URL and site ID. Both must be
+# set for the Matomo snippet to load; empty = do not load Matomo.
+# Matomo（自建统计）追踪地址与站点 ID，两项都配了才加载统计代码；为空 = 不加载。
+# Example: MBOT_MATOMO_URL=https://matomo.example.com/ MBOT_MATOMO_SITE_ID=1
+# Never hardcode a tracker URL or site ID in the public repo. 公开仓库里不硬编码追踪地址与站点 ID。
+_MATOMO_URL = os.environ.get("MBOT_MATOMO_URL", "").rstrip("/")
+MATOMO_URL = (_MATOMO_URL + "/") if _MATOMO_URL else ""
+MATOMO_SITE_ID = os.environ.get("MBOT_MATOMO_SITE_ID", "")
 
 # Panel public URL (e.g. https://panel.example.com): used to build the Telegram one-click login link. 面板公网地址（如 https://panel.example.com）：Telegram 一键登录链接用它拼地址。
 # When empty, build from the request's own Host (the reverse proxy must forward Host and X-Forwarded-Proto correctly, or the link may come out http or an internal address). 为空时用请求自身的 Host 拼（反代需正确透传 Host 与 X-Forwarded-Proto，否则链接可能是 http 或内网地址）。

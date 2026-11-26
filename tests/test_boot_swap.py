@@ -81,8 +81,8 @@ def _boot_volumes(total_gb=141):
 
 
 class _SwapCli:
-    """按命令路由的假 CLI：instance get 按状态序列返回，原生换盘成功后
-    挂载关系切换成新盘（模拟 OCI 换盘生效）。"""
+    """按调用路由的假 CLI：读操作走 SDK 方法（返回解包后的数据），
+    写操作走 run（命令记在 self.calls 里供断言）。"""
 
     REPLACE_HEAD = ["compute", "instance",
                     "update-instance-update-instance-source-via-boot-volume-details"]
@@ -106,24 +106,30 @@ class _SwapCli:
         self.fail_delete = fail_delete
         self._replace_called = False
 
+    # --- SDK 读方法 ---
+    def sdk_get_instance(self, instance_id, region=None):
+        state = self.get_states[min(self.get_calls,
+                                    len(self.get_states) - 1)]
+        self.get_calls += 1
+        return _instance_detail(state)["data"]
+
+    def sdk_list_boot_volume_attachments(self, compartment_id,
+                                         availability_domain, region=None):
+        if not self.attachment_present:
+            return []
+        if self._replace_called and not self.never_attach_new:
+            return _attachment("ATTACHED", FAKE_BV_NEW)["data"]
+        return _attachment(self.attachment_state)["data"]
+
+    def sdk_list_boot_volumes(self, compartment_id, region=None):
+        return _boot_volumes(self.used_gb)["data"]
+
+    def sdk_get_boot_volume_backup(self, backup_id, region=None):
+        return _backup(self.backup_state, self.backup_size)["data"]
+
     def run(self, args):
         self.calls.append(list(args))
         head = args[:3]
-        if head == ["bv", "boot-volume-backup", "get"]:
-            return _backup(self.backup_state, self.backup_size)
-        if head == ["compute", "instance", "get"]:
-            state = self.get_states[min(self.get_calls,
-                                        len(self.get_states) - 1)]
-            self.get_calls += 1
-            return _instance_detail(state)
-        if head == ["compute", "boot-volume-attachment", "list"]:
-            if not self.attachment_present:
-                return {"data": []}
-            if self._replace_called and not self.never_attach_new:
-                return _attachment("ATTACHED", FAKE_BV_NEW)
-            return _attachment(self.attachment_state)
-        if head == ["bv", "boot-volume", "list"]:
-            return _boot_volumes(self.used_gb)
         if head == ["bv", "boot-volume", "create"]:
             return {"data": {"id": FAKE_BV_NEW}}
         if head == ["bv", "boot-volume", "delete"]:
@@ -146,34 +152,30 @@ class TestGetAttachment(unittest.TestCase):
 
     def test_finds_attached(self):
         cli = MagicMock()
-        cli.run.side_effect = [
-            _instance_detail("RUNNING"),
-            _attachment("ATTACHED"),
-        ]
+        cli.sdk_get_instance.return_value = _instance_detail("RUNNING")["data"]
+        cli.sdk_list_boot_volume_attachments.return_value = \
+            _attachment("ATTACHED")["data"]
         att = get_boot_volume_attachment(cli, FAKE_COMPARTMENT, FAKE_INSTANCE)
         self.assertEqual(att["id"], FAKE_ATTACHMENT)
         self.assertEqual(att["boot-volume-id"], FAKE_BV_OLD)
         # list must include include_id (detach needs the attachment record's own id). list 必须带 include_id（detach 要用挂载记录自身的 id）。
-        list_args = cli.run.call_args_list[1][0][0]
-        self.assertEqual(list_args[:3],
-                         ["compute", "boot-volume-attachment", "list"])
-        self.assertIn(FAKE_AD, list_args)
+        cli.sdk_list_boot_volume_attachments.assert_called_once_with(
+            FAKE_COMPARTMENT, FAKE_AD)
 
     def test_none_when_no_match(self):
         cli = MagicMock()
-        cli.run.side_effect = [
-            _instance_detail("RUNNING"),
-            {"data": [{"id": "ocid1.bootvolumeattachment.oc1..xxxx",
-                       "boot-volume-id": FAKE_BV_OLD,
-                       "instance-id": "ocid1.instance.oc1..other",
-                       "lifecycle-state": "ATTACHED"}]},
-        ]
+        cli.sdk_get_instance.return_value = _instance_detail("RUNNING")["data"]
+        cli.sdk_list_boot_volume_attachments.return_value = [{
+            "id": "ocid1.bootvolumeattachment.oc1..xxxx",
+            "boot-volume-id": FAKE_BV_OLD,
+            "instance-id": "ocid1.instance.oc1..other",
+            "lifecycle-state": "ATTACHED"}]
         self.assertIsNone(
             get_boot_volume_attachment(cli, FAKE_COMPARTMENT, FAKE_INSTANCE))
 
     def test_none_when_no_ad(self):
         cli = MagicMock()
-        cli.run.return_value = {"data": {"id": FAKE_INSTANCE}}
+        cli.sdk_get_instance.return_value = {"id": FAKE_INSTANCE}
         self.assertIsNone(
             get_boot_volume_attachment(cli, FAKE_COMPARTMENT, FAKE_INSTANCE))
 
@@ -183,9 +185,9 @@ class TestWaitForState(unittest.TestCase):
 
     def test_reaches_target(self):
         cli = MagicMock()
-        cli.run.side_effect = [
-            _instance_detail("STOPPING"),
-            _instance_detail("STOPPED"),
+        cli.sdk_get_instance.side_effect = [
+            _instance_detail("STOPPING")["data"],
+            _instance_detail("STOPPED")["data"],
         ]
         with patch("oci.boot_swap.time.sleep"):
             state = wait_for_instance_state(cli, FAKE_INSTANCE, "STOPPED",
@@ -194,7 +196,7 @@ class TestWaitForState(unittest.TestCase):
 
     def test_timeout(self):
         cli = MagicMock()
-        cli.run.return_value = _instance_detail("STOPPING")
+        cli.sdk_get_instance.return_value = _instance_detail("STOPPING")["data"]
         with patch("oci.boot_swap.time.sleep"), \
                 patch("oci.boot_swap.time.time",
                       side_effect=[0, 1000, 1000]):
@@ -274,14 +276,12 @@ class TestWaitForAttachment(unittest.TestCase):
         cli = MagicMock()
         queue = list(attachments)
 
-        def _run(args):
-            if args[:3] == ["compute", "instance", "get"]:
-                return _instance_detail("RUNNING")
-            if args[:3] == ["compute", "boot-volume-attachment", "list"]:
-                return queue.pop(0) if queue else attachments[-1]
-            return {}
+        def _list(compartment_id, availability_domain, region=None):
+            item = queue.pop(0) if queue else attachments[-1]
+            return item["data"]
 
-        cli.run.side_effect = _run
+        cli.sdk_get_instance.return_value = _instance_detail("RUNNING")["data"]
+        cli.sdk_list_boot_volume_attachments.side_effect = _list
         return cli
 
     def test_returns_when_new_volume_attached(self):

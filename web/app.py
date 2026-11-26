@@ -22,8 +22,11 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.datastructures import MutableHeaders
 
 from web import config
+from web import demo_data
+from web.auth import SESSIONS
 from web.routes import auth as auth_routes
 from web.routes import batch as batch_routes
 from web.routes import boot_backups as boot_backups_routes
@@ -71,9 +74,16 @@ async def _lifespan(app):
     环境变量 MBOT_ENABLE_INSPECT_SCHEDULER=1），测试不受影响。
     """
     # Startup recovery: grab tasks from this source that are still running resume from their grab_spec; other unfinished tasks are marked interrupted (bot-side tasks are untouched). 启动恢复：本来源还在跑的抢机任务按 grab_spec 恢复重跑，其余未结束任务标为已中断（机器人端的任务不动）。
+    # Demo mode has no real tasks (the task list is simulated), so skip the recovery entirely. 演示模式没有真实任务（任务列表是模拟的），跳过启动恢复。
     from web.tasks import TASKS, resume_interrupted_grabs
 
-    resume_interrupted_grabs(TASKS)
+    if not config.DEMO_MODE:
+        resume_interrupted_grabs(TASKS)
+        # 第 6 轮 CPU 优化：启动 OCI 数据缓存预热线程。只保暖、不点火——
+        # 缓存里没有的条目不预热，面板闲置时不产生后台 OCI 调用。
+        from web.oci_cache import start_cache_prewarm
+
+        start_cache_prewarm()
     if config.ENABLE_PLAN_SCHEDULER:
         from web.tasks import start_plan_scheduler
 
@@ -85,15 +95,34 @@ async def _lifespan(app):
 
     stop_plan_scheduler()
     inspect_routes.stop_inspect_scheduler()
+    if not config.DEMO_MODE:
+        from web.oci_cache import stop_cache_prewarm
+
+        stop_cache_prewarm()
+
+
+def _response_sets_session_cookie(response):
+    """响应是否已设置会话 cookie。
+
+    登录接口自己设了 cookie 时，演示自动登录中间件不再覆盖它
+    （登录成功时服务端会话与 cookie 都以登录接口建的为准）。
+    """
+    name = (config.SESSION_COOKIE + "=").encode("ascii")
+    for raw_name, raw_value in response.raw_headers:
+        if raw_name.lower() == b"set-cookie" and name in raw_value:
+            return True
+    return False
 
 
 def create_app():
     """FastAPI 应用工厂。
 
     ADMIN_PASSWORD_HASH 未设置时抛 RuntimeError 拒绝启动
-    （测试时可通过环境变量 MBOT_WEB_PASSWORD_HASH 设一个测试哈希绕过）。
+    （测试时可通过环境变量 MBOT_WEB_PASSWORD_HASH 设一个测试哈希绕过）；
+    演示模式（config.DEMO_MODE）除外：demo/demo 可直接登录，不依赖
+    真实管理员密码哈希。
     """
-    if not config.ADMIN_PASSWORD_HASH:
+    if not config.ADMIN_PASSWORD_HASH and not config.DEMO_MODE:
         raise RuntimeError(
             "未设置管理员密码哈希，拒绝启动。"
             "先运行 python3 -m web.auth 生成哈希，"
@@ -136,6 +165,47 @@ def create_app():
                   name="static")
     else:
         print(f"警告：静态文件目录不存在，跳过 /static 挂载：{static_dir}")
+
+    # Demo mode: no login required — visitors enter the panel directly.
+    # Requests without a valid session get a demo session auto-created
+    # (same SessionStore / cookie mechanism as a normal demo/demo login),
+    # so page routes and API routes keep working unchanged; the demo
+    # login page itself redirects to /overview (see pages.login_page).
+    # Static files are skipped (they need no session).
+    # 演示模式：不用登录直接进面板——无有效会话的请求自动按 demo 用户
+    # 建会话（与正常 demo/demo 登录同一套 SessionStore / cookie 机制），
+    # 页面路由与 API 路由无需改动；静态文件跳过（不需要会话）。
+    # 非演示模式完全不受影响。
+    @app.middleware("http")
+    async def _demo_auto_login_middleware(request, call_next):
+        auto_token = None
+        if (config.DEMO_MODE
+                and not request.url.path.startswith("/static")):
+            token = request.cookies.get(config.SESSION_COOKIE)
+            if not SESSIONS.get(token):
+                auto_token = SESSIONS.create(demo_data.DEMO_USERNAME)
+                # Make the new session visible to this same request:
+                # rewrite the Cookie header so get_current_user /
+                # _require_login see the demo token right away
+                # (otherwise the first request would still 401 and only
+                # the second one would work). 让本次请求立刻看到新会
+                # 话：改写 Cookie 头，否则第一次请求仍会 401、第二次
+                # 才生效。
+                headers = MutableHeaders(scope=request.scope)
+                cookies = dict(request.cookies)
+                cookies[config.SESSION_COOKIE] = auto_token
+                headers["cookie"] = "; ".join(
+                    f"{name}={value}" for name, value in cookies.items())
+        response = await call_next(request)
+        if (auto_token is not None
+                and not _response_sets_session_cookie(response)):
+            response.set_cookie(
+                config.SESSION_COOKIE, auto_token,
+                httponly=True,
+                secure=auth_routes._is_https_request(request),
+                samesite="lax", path="/",
+                max_age=int(config.SESSION_EXPIRE_HOURS * 3600))
+        return response
 
     app.include_router(auth_routes.router)
     app.include_router(system_routes.router)
@@ -183,7 +253,8 @@ def create_app():
 
 # Module-level app instance, for `uvicorn web.app:app`. 模块级 app 实例，供 `uvicorn web.app:app` 使用。
 # Not created when the password hash is unset (create_app raises RuntimeError; set MBOT_WEB_PASSWORD_HASH first per the module docstring, then start). Tests importing this module have no hash set, so no creation is triggered and tests are unaffected. 密码哈希未设置时不创建（create_app 会抛 RuntimeError；此时按模块 docstring 先设 MBOT_WEB_PASSWORD_HASH 再启动）。测试 import 本模块时哈希未设置，不会触发创建，不影响测试。
-if config.ADMIN_PASSWORD_HASH:
+# Demo mode is the exception: it starts without a hash (demo/demo logs in). 演示模式例外：无哈希也可启动（demo/demo 可登录）。
+if config.ADMIN_PASSWORD_HASH or config.DEMO_MODE:
     app = create_app()
 
 

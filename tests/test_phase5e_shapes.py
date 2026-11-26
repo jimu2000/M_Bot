@@ -32,6 +32,9 @@ from web.auth import LOGIN_GUARD, SESSIONS, hash_password
 from web.routes.cloudreport import clear_cloud_report_cache
 from web.routes.instances import clear_instance_list_cache
 from web.routes.volumes import clear_volumes_cache
+from web.routes.boot_backups import clear_boot_backups_cache
+from web.routes.objectstorage import clear_objectstorage_cache
+from web.routes.quota import clear_quota_cache
 
 FAKE_INSTANCE = "ocid1.instance.oc1..testxxxx"
 FAKE_INSTANCE_2 = "ocid1.instance.oc1..testyyyy"
@@ -90,6 +93,9 @@ class Phase5eShapesTestCase(unittest.TestCase):
         clear_instance_list_cache()
         clear_volumes_cache()
         clear_cloud_report_cache()
+        clear_quota_cache()
+        clear_boot_backups_cache()
+        clear_objectstorage_cache()
         LOGIN_GUARD.reset()
         SESSIONS.reset()
         self.client = TestClient(self.app)
@@ -112,8 +118,8 @@ class TestInstanceShape(Phase5eShapesTestCase):
         super().setUp()
         self._login()
 
-    @patch("web.routes.instances.get_public_ip", return_value=FAKE_IP)
-    @patch("web.routes.instances.list_instances",
+    @patch("web.routes.instances.attach_public_ips_bulk", return_value=[FAKE_IP])
+    @patch("web.routes.instances.cached_raw_instances",
            return_value=FAKE_INSTANCES_RAW)
     def test_shape_fields(self, mock_list, mock_ip):
         """新字段齐全：ocpus/memoryInGBs 取自 shape-config。"""
@@ -132,8 +138,8 @@ class TestInstanceShape(Phase5eShapesTestCase):
         self.assertEqual(inst["region"], "ap-singapore-1")
         self.assertEqual(inst["timeCreated"], "2026-11-11T10:00:00.000Z")
 
-    @patch("web.routes.instances.get_public_ip", return_value=None)
-    @patch("web.routes.instances.list_instances",
+    @patch("web.routes.instances.attach_public_ips_bulk", return_value=[None])
+    @patch("web.routes.instances.cached_raw_instances",
            return_value=FAKE_INSTANCES_RAW)
     def test_stopped_filtered_out(self, mock_list, mock_ip):
         """STOPPED 实例不在列表里。"""
@@ -141,8 +147,8 @@ class TestInstanceShape(Phase5eShapesTestCase):
         ids = [i["id"] for i in r.json()["instances"]]
         self.assertNotIn(FAKE_INSTANCE_2, ids)
 
-    @patch("web.routes.instances.get_public_ip", return_value=None)
-    @patch("web.routes.instances.list_instances",
+    @patch("web.routes.instances.attach_public_ips_bulk", return_value=[None, None])
+    @patch("web.routes.instances.cached_raw_instances",
            return_value=FAKE_INSTANCES_RAW + [
                {"id": FAKE_INSTANCE_3, "display-name": "instance-gone",
                 "shape": "VM.Standard.E2.1.Micro",
@@ -171,14 +177,14 @@ class TestVolumeShape(Phase5eShapesTestCase):
         super().setUp()
         self._login()
 
-    @patch("web.routes.volumes.list_instances",
+    @patch("web.routes.volumes.cached_raw_instances",
            return_value=[{"id": FAKE_INSTANCE, "display-name": "instance-a1"}])
     @patch("web.routes.volumes.list_boot_volume_attachments",
            return_value=[{"id": FAKE_ATTACHMENT,
                           "boot-volume-id": FAKE_VOLUME,
                           "instance-id": FAKE_INSTANCE,
                           "lifecycle-state": "ATTACHED"}])
-    @patch("web.routes.volumes.list_boot_volumes",
+    @patch("web.routes.volumes.cached_raw_boot_volumes",
            return_value=FAKE_VOLUMES_RAW)
     def test_attached_volume_shape(self, mock_list, mock_atts, mock_insts):
         """已挂载盘：attachmentId/instanceId/instanceName/attached 齐全。"""
@@ -206,11 +212,11 @@ class TestVolumeShape(Phase5eShapesTestCase):
         _args, kwargs = mock_atts.call_args
         self.assertTrue(kwargs.get("include_id"))
 
-    @patch("web.routes.volumes.list_instances",
+    @patch("web.routes.volumes.cached_raw_instances",
            side_effect=OCIError("boom"))
     @patch("web.routes.volumes.list_boot_volume_attachments",
            side_effect=OCIError("boom"))
-    @patch("web.routes.volumes.list_boot_volumes",
+    @patch("web.routes.volumes.cached_raw_boot_volumes",
            return_value=FAKE_VOLUMES_RAW)
     def test_enrichment_failure_degrades(self, mock_list, mock_atts,
                                          mock_insts):
@@ -235,10 +241,10 @@ class TestVolumesCache(Phase5eShapesTestCase):
         super().setUp()
         self._login()
 
-    @patch("web.routes.volumes.list_instances", return_value=[])
+    @patch("web.routes.volumes.cached_raw_instances", return_value=[])
     @patch("web.routes.volumes.list_boot_volume_attachments",
            return_value=[])
-    @patch("web.routes.volumes.list_boot_volumes",
+    @patch("web.routes.volumes.cached_raw_boot_volumes",
            return_value=FAKE_VOLUMES_RAW)
     def test_second_list_served_from_cache(self, mock_list, mock_atts,
                                            mock_insts):
@@ -250,10 +256,10 @@ class TestVolumesCache(Phase5eShapesTestCase):
         self.assertEqual(r1.json(), r2.json())
         mock_list.assert_called_once()
 
-    @patch("web.routes.volumes.list_instances", return_value=[])
+    @patch("web.routes.volumes.cached_raw_instances", return_value=[])
     @patch("web.routes.volumes.list_boot_volume_attachments",
            return_value=[])
-    @patch("web.routes.volumes.list_boot_volumes",
+    @patch("web.routes.volumes.cached_raw_boot_volumes",
            return_value=FAKE_VOLUMES_RAW)
     def test_refresh_bypasses_cache(self, mock_list, mock_atts,
                                     mock_insts):
@@ -262,10 +268,10 @@ class TestVolumesCache(Phase5eShapesTestCase):
         self.client.get("/api/volumes?refresh=1")
         self.assertEqual(mock_list.call_count, 2)
 
-    @patch("web.routes.volumes.list_instances", return_value=[])
+    @patch("web.routes.volumes.cached_raw_instances", return_value=[])
     @patch("web.routes.volumes.list_boot_volume_attachments",
            return_value=[])
-    @patch("web.routes.volumes.list_boot_volumes",
+    @patch("web.routes.volumes.cached_raw_boot_volumes",
            return_value=FAKE_VOLUMES_RAW)
     @patch("web.routes.volumes.delete_boot_volume", return_value=None)
     def test_delete_clears_cache(self, mock_delete, mock_list, mock_atts,
@@ -277,7 +283,7 @@ class TestVolumesCache(Phase5eShapesTestCase):
         self.client.get("/api/volumes")
         self.assertEqual(mock_list.call_count, 2)
 
-    @patch("web.routes.volumes.list_instances",
+    @patch("web.routes.volumes.cached_raw_instances",
            return_value=[{"id": FAKE_INSTANCE,
                           "display-name": "instance-a1"}])
     @patch("web.routes.volumes.list_boot_volume_attachments",
@@ -285,7 +291,7 @@ class TestVolumesCache(Phase5eShapesTestCase):
                           "boot-volume-id": FAKE_VOLUME,
                           "instance-id": FAKE_INSTANCE,
                           "lifecycle-state": "ATTACHED"}])
-    @patch("web.routes.volumes.list_boot_volumes",
+    @patch("web.routes.volumes.cached_raw_boot_volumes",
            return_value=FAKE_VOLUMES_RAW)
     def test_orphans_derives_from_volumes_list(self, mock_list, mock_atts,
                                                mock_insts):
@@ -299,10 +305,10 @@ class TestVolumesCache(Phase5eShapesTestCase):
         self.client.get("/api/volumes")
         mock_list.assert_called_once()
 
-    @patch("web.routes.volumes.list_instances", return_value=[])
+    @patch("web.routes.volumes.cached_raw_instances", return_value=[])
     @patch("web.routes.volumes.list_boot_volume_attachments",
            return_value=[])
-    @patch("web.routes.volumes.list_boot_volumes",
+    @patch("web.routes.volumes.cached_raw_boot_volumes",
            return_value=FAKE_VOLUMES_RAW)
     def test_orphans_refresh_bypasses_cache(self, mock_list, mock_atts,
                                             mock_insts):
@@ -473,13 +479,13 @@ class TestOciLayerParams(unittest.TestCase):
 
     def test_list_instances_include_shape_config(self):
         cli = MagicMock()
-        cli.run.return_value = {"data": [{
+        cli.sdk_list_instances.return_value = [{
             "id": FAKE_INSTANCE, "display-name": "a1",
             "shape": "VM.Standard.A1.Flex", "lifecycle-state": "RUNNING",
             "time-created": "2026-11-11T10:00:00.000Z",
             "shape-config": {"ocpus": 2, "memory-in-gbs": 12},
             "region": "ap-singapore-1",
-        }]}
+        }]
         result = list_instances(cli, FAKE_COMPARTMENT,
                                 include_shape_config=True)
         self.assertEqual(result[0]["shape-config"]["ocpus"], 2)
@@ -490,22 +496,22 @@ class TestOciLayerParams(unittest.TestCase):
 
     def test_list_boot_volumes_keeps_time_created(self):
         cli = MagicMock()
-        cli.run.return_value = {"data": [{
+        cli.sdk_list_boot_volumes.return_value = [{
             "id": FAKE_VOLUME, "display-name": "bv",
             "size-in-gbs": 47, "lifecycle-state": "AVAILABLE",
             "availability-domain": "AD-1",
             "time-created": "2026-11-11T10:00:00.000Z",
-        }]}
+        }]
         result = list_boot_volumes(cli, FAKE_COMPARTMENT)
         self.assertEqual(result[0]["time-created"],
                          "2026-11-11T10:00:00.000Z")
 
     def test_list_attachments_include_id(self):
         cli = MagicMock()
-        cli.run.return_value = {"data": [{
+        cli.sdk_list_boot_volume_attachments.return_value = [{
             "id": FAKE_ATTACHMENT, "boot-volume-id": FAKE_VOLUME,
             "instance-id": FAKE_INSTANCE, "lifecycle-state": "ATTACHED",
-        }]}
+        }]
         result = list_boot_volume_attachments(cli, FAKE_COMPARTMENT, "AD-1",
                                               include_id=True)
         self.assertEqual(result[0]["id"], FAKE_ATTACHMENT)

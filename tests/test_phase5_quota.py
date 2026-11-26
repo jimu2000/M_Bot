@@ -40,7 +40,7 @@ def _boot_volume(vol_id, display_name, size_gb, state="AVAILABLE"):
 
 
 def _make_cli(instances, boot_volumes):
-    """造一个 OCIClient，把 run 换成 mock：按命令返回预设的假数据。"""
+    """造一个 OCIClient，把 run 与 SDK 读方法换成 mock：返回预设的假数据。"""
     cli = OCIClient(profile="DEFAULT", region="ap-singapore-1")
 
     def _mock_run(args, **kwargs):
@@ -51,6 +51,10 @@ def _make_cli(instances, boot_volumes):
         raise AssertionError(f"unexpected command: {args}")
 
     cli.run = _mock_run
+    cli.sdk_list_instances = lambda compartment_id, region=None: \
+        list(instances)
+    cli.sdk_list_boot_volumes = lambda compartment_id, region=None: \
+        list(boot_volumes)
     return cli
 
 

@@ -61,17 +61,17 @@ class TestListBackups(unittest.TestCase):
     def test_list_command_and_sort(self):
         cli = MagicMock()
         # Returned deliberately out of order to verify the local re-sort by time-created ascending. 故意打乱顺序返回，验证本地按 time-created 升序重排。
-        cli.run.return_value = {"data": [
+        # SDK 读方法返回解包后的列表（不包 {"data": ...}）。
+        cli.sdk_list_boot_volume_backups.return_value = [
             _backup("ocid1.bootvolumebackup.oc1..new", "new",
                     "2026-11-24T10:00:00+00:00"),
             _backup("ocid1.bootvolumebackup.oc1..old", "old",
                     "2026-11-20T10:00:00+00:00"),
-        ]}
+        ]
         backups = list_boot_volume_backups(cli, FAKE_COMPARTMENT)
-        args = cli.run.call_args[0][0]
-        self.assertEqual(args[:3], ["bv", "boot-volume-backup", "list"])
-        self.assertIn(FAKE_COMPARTMENT, args)
-        self.assertIn("--all", args)
+        cli.sdk_list_boot_volume_backups.assert_called_once_with(
+            FAKE_COMPARTMENT, boot_volume_id=None)
+        cli.run.assert_not_called()
         self.assertEqual(backups[0]["display-name"], "old")
         self.assertEqual(backups[1]["display-name"], "new")
         self.assertEqual(backups[0]["size-in-gbs"], 47)
@@ -79,35 +79,34 @@ class TestListBackups(unittest.TestCase):
 
     def test_list_filter_by_boot_volume(self):
         cli = MagicMock()
-        cli.run.return_value = {"data": []}
+        cli.sdk_list_boot_volume_backups.return_value = []
         list_boot_volume_backups(cli, FAKE_COMPARTMENT,
                                  boot_volume_id=FAKE_BV)
-        args = cli.run.call_args[0][0]
-        self.assertIn("--boot-volume-id", args)
-        self.assertIn(FAKE_BV, args)
+        cli.sdk_list_boot_volume_backups.assert_called_once_with(
+            FAKE_COMPARTMENT, boot_volume_id=FAKE_BV)
 
     def test_list_excludes_terminated_by_default(self):
         # A deleted backup still shows up in OCI's listing for a while, but is hidden by default (consistent with quota counting only non-deleted ones). 已删除的备份 OCI 侧仍会列出一段时间，默认不显示（与配额计数只数未删除的一致）。
         cli = MagicMock()
-        cli.run.return_value = {"data": [
+        cli.sdk_list_boot_volume_backups.return_value = [
             _backup("ocid1.bootvolumebackup.oc1..gone", "gone",
                     "2026-11-20T10:00:00+00:00", state="TERMINATED"),
             _backup("ocid1.bootvolumebackup.oc1..going", "going",
                     "2026-11-21T10:00:00+00:00", state="TERMINATING"),
             _backup("ocid1.bootvolumebackup.oc1..live", "live",
                     "2026-11-22T10:00:00+00:00"),
-        ]}
+        ]
         backups = list_boot_volume_backups(cli, FAKE_COMPARTMENT)
         self.assertEqual([b["display-name"] for b in backups], ["live"])
 
     def test_list_include_terminated(self):
         cli = MagicMock()
-        cli.run.return_value = {"data": [
+        cli.sdk_list_boot_volume_backups.return_value = [
             _backup("ocid1.bootvolumebackup.oc1..gone", "gone",
                     "2026-11-20T10:00:00+00:00", state="TERMINATED"),
             _backup("ocid1.bootvolumebackup.oc1..live", "live",
                     "2026-11-22T10:00:00+00:00"),
-        ]}
+        ]
         backups = list_boot_volume_backups(cli, FAKE_COMPARTMENT,
                                            include_terminated=True)
         self.assertEqual([b["display-name"] for b in backups],
@@ -119,12 +118,11 @@ class TestGetBackup(unittest.TestCase):
 
     def test_get(self):
         cli = MagicMock()
-        cli.run.return_value = {"data": _backup(
-            FAKE_BACKUP, "b1", "2026-11-23T10:00:00+00:00")}
+        cli.sdk_get_boot_volume_backup.return_value = _backup(
+            FAKE_BACKUP, "b1", "2026-11-23T10:00:00+00:00")
         backup = get_boot_volume_backup(cli, FAKE_BACKUP)
-        args = cli.run.call_args[0][0]
-        self.assertEqual(args[:3], ["bv", "boot-volume-backup", "get"])
-        self.assertIn(FAKE_BACKUP, args)
+        cli.sdk_get_boot_volume_backup.assert_called_once_with(FAKE_BACKUP)
+        cli.run.assert_not_called()
         self.assertEqual(backup["id"], FAKE_BACKUP)
 
 
@@ -265,7 +263,7 @@ class TestCheckQuota(unittest.TestCase):
 
     def _cli_with(self, backups):
         cli = MagicMock()
-        cli.run.return_value = {"data": backups}
+        cli.sdk_list_boot_volume_backups.return_value = list(backups)
         return cli
 
     def test_not_full(self):
@@ -366,13 +364,12 @@ class TestRestore(unittest.TestCase):
     """恢复：两步流程（建卷 -> 开机）+ 失败清理 + 非 AVAILABLE 拒绝。"""
 
     def _cli_for_restore(self, shape_args=None):
-        """cli.run 按命令分发：get 备份 / create 卷 / launch 实例。"""
+        """cli.run 按命令分发：create 卷 / launch 实例；查备份走 SDK。"""
         cli = MagicMock()
+        cli.sdk_get_boot_volume_backup.return_value = _backup(
+            FAKE_BACKUP, "b1", "2026-11-23T10:00:00+00:00", size=50)
 
         def _run(args):
-            if args[:3] == ["bv", "boot-volume-backup", "get"]:
-                return {"data": _backup(
-                    FAKE_BACKUP, "b1", "2026-11-23T10:00:00+00:00", size=50)}
             if args[:3] == ["bv", "boot-volume", "create"]:
                 return {"data": {"id": FAKE_BV_NEW,
                                  "lifecycle-state": "AVAILABLE"}}
@@ -446,9 +443,9 @@ class TestRestore(unittest.TestCase):
 
     def test_restore_rejects_non_available_backup(self):
         cli = MagicMock()
-        cli.run.return_value = {"data": _backup(
+        cli.sdk_get_boot_volume_backup.return_value = _backup(
             FAKE_BACKUP, "b1", "2026-11-23T10:00:00+00:00",
-            state="CREATING")}
+            state="CREATING")
         with self.assertRaises(ValueError) as ctx:
             restore_boot_volume_backup(
                 cli, FAKE_COMPARTMENT, FAKE_BACKUP,
@@ -456,15 +453,15 @@ class TestRestore(unittest.TestCase):
                 display_name="restored-1", ssh_keys_file="")
         self.assertIn("CREATING", str(ctx.exception))
         # When not AVAILABLE, the backup was checked only once; no volume was built and nothing was launched. 非 AVAILABLE 时只查了一次备份，没建卷没开机。
-        self.assertEqual(cli.run.call_count, 1)
+        self.assertEqual(cli.sdk_get_boot_volume_backup.call_count, 1)
+        cli.run.assert_not_called()
 
     def test_restore_launch_failure_cleans_up_new_volume(self):
         cli = MagicMock()
+        cli.sdk_get_boot_volume_backup.return_value = _backup(
+            FAKE_BACKUP, "b1", "2026-11-23T10:00:00+00:00")
 
         def _run(args):
-            if args[:3] == ["bv", "boot-volume-backup", "get"]:
-                return {"data": _backup(
-                    FAKE_BACKUP, "b1", "2026-11-23T10:00:00+00:00")}
             if args[:3] == ["bv", "boot-volume", "create"]:
                 return {"data": {"id": FAKE_BV_NEW,
                                  "lifecycle-state": "AVAILABLE"}}
@@ -489,52 +486,48 @@ class TestWaitForBackupAvailable(unittest.TestCase):
 
     def test_available_immediately(self):
         cli = MagicMock()
-        cli.run.return_value = {"data": _backup(FAKE_BACKUP, "b1",
-                                                "2026-11-23T10:00:00+00:00")}
+        cli.sdk_get_boot_volume_backup.return_value = _backup(
+            FAKE_BACKUP, "b1", "2026-11-23T10:00:00+00:00")
         state = wait_for_backup_available(cli, FAKE_BACKUP)
         self.assertEqual(state, "AVAILABLE")
-        self.assertEqual(cli.run.call_count, 1)
+        self.assertEqual(cli.sdk_get_boot_volume_backup.call_count, 1)
 
     @patch("oci.boot_backup.time.sleep")
     def test_creating_then_available(self, _mock_sleep):
         cli = MagicMock()
-        cli.run.side_effect = [
-            {"data": _backup(FAKE_BACKUP, "b1",
-                             "2026-11-23T10:00:00+00:00",
-                             state="CREATING")},
-            {"data": _backup(FAKE_BACKUP, "b1",
-                             "2026-11-23T10:00:00+00:00")},
+        cli.sdk_get_boot_volume_backup.side_effect = [
+            _backup(FAKE_BACKUP, "b1", "2026-11-23T10:00:00+00:00",
+                    state="CREATING"),
+            _backup(FAKE_BACKUP, "b1", "2026-11-23T10:00:00+00:00"),
         ]
         state = wait_for_backup_available(cli, FAKE_BACKUP)
         self.assertEqual(state, "AVAILABLE")
-        self.assertEqual(cli.run.call_count, 2)
+        self.assertEqual(cli.sdk_get_boot_volume_backup.call_count, 2)
 
     @patch("oci.boot_backup.time.sleep")
     def test_request_received_then_available(self, _mock_sleep):
         cli = MagicMock()
-        cli.run.side_effect = [
-            {"data": _backup(FAKE_BACKUP, "b1",
-                             "2026-11-23T10:00:00+00:00",
-                             state="REQUEST_RECEIVED")},
-            {"data": _backup(FAKE_BACKUP, "b1",
-                             "2026-11-23T10:00:00+00:00")},
+        cli.sdk_get_boot_volume_backup.side_effect = [
+            _backup(FAKE_BACKUP, "b1", "2026-11-23T10:00:00+00:00",
+                    state="REQUEST_RECEIVED"),
+            _backup(FAKE_BACKUP, "b1", "2026-11-23T10:00:00+00:00"),
         ]
         state = wait_for_backup_available(cli, FAKE_BACKUP)
         self.assertEqual(state, "AVAILABLE")
 
     def test_faulty_is_terminal(self):
         cli = MagicMock()
-        cli.run.return_value = {"data": _backup(
-            FAKE_BACKUP, "b1", "2026-11-23T10:00:00+00:00", state="FAULTY")}
+        cli.sdk_get_boot_volume_backup.return_value = _backup(
+            FAKE_BACKUP, "b1", "2026-11-23T10:00:00+00:00", state="FAULTY")
         state = wait_for_backup_available(cli, FAKE_BACKUP)
         self.assertEqual(state, "FAULTY")
-        self.assertEqual(cli.run.call_count, 1)
+        self.assertEqual(cli.sdk_get_boot_volume_backup.call_count, 1)
 
     def test_timeout(self):
         cli = MagicMock()
-        cli.run.return_value = {"data": _backup(
+        cli.sdk_get_boot_volume_backup.return_value = _backup(
             FAKE_BACKUP, "b1", "2026-11-23T10:00:00+00:00",
-            state="CREATING")}
+            state="CREATING")
         with self.assertRaises(TimeoutError):
             wait_for_backup_available(cli, FAKE_BACKUP, timeout_seconds=0)
 

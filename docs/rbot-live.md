@@ -75,7 +75,7 @@ solusvm=begin ... solusvm=end  # [racknerd-1] api/key/hash
 
 ### 测试 IAM 用户（用户授权新建）
 
-- 用户名 api-user，邮箱 <测试邮箱已脱敏>
+- 用户名 rbot-test，邮箱 <测试邮箱已脱敏>
 - OCID：ocid1.user.oc1..xxxxxxxx（已脱敏）
 - 已加 Administrators 组；API 密钥指纹 <已脱敏>
 - 私钥：本地 ~/.oci/<测试用户>/key.pem（600），服务器上 /root/x.pem（旧密钥已备份）

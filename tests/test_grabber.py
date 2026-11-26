@@ -53,52 +53,51 @@ def _launch_args(cli):
     return calls[0]
 
 
+def _mock_launch_cli(launch_results=None, instances=None,
+                     instance_state="TERMINATED"):
+    """造一个 mock cli：launch 走 run_text，读接口走 SDK mock。
+
+    launch_results: launch 调用的返回值序列（元素也可以是异常实例）。
+    instances: find_existing 用的 sdk_list_instances 返回值（默认 []，
+        即无同名实例；每项是 kebab-case 字典，含 id / time-created /
+        lifecycle-state）。
+    instance_state: get_instance_state 用的状态（sdk_get_instance 返回）。
+    """
+    cli = MagicMock(spec=OCIClient)
+    launch_iter = iter(launch_results or [])
+
+    def dispatch(args, **kwargs):
+        if "launch" not in args:
+            raise AssertionError(f"未预期的 run_text 调用：{args}")
+        result = next(launch_iter)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    cli.run_text.side_effect = dispatch
+    cli.sdk_list_instances.return_value = (
+        [] if instances is None else instances)
+    cli.sdk_get_instance.return_value = {"lifecycle-state": instance_state}
+    cli.sdk_list_vnics.return_value = []
+    return cli
+
+
 def _launch_once_with(**kwargs):
     """用给定 Grabber 参数做一次 try_launch_once，返回 (grabber, launch 参数)。"""
-    cli = MagicMock(spec=OCIClient)
-    cli.run_text.side_effect = _run_text_dispatch(
-        list_result="", launch_results=[FAKE_INSTANCE_A])
+    cli = _mock_launch_cli(launch_results=[FAKE_INSTANCE_A])
     grabber = _make_grabber(cli=cli, **kwargs)
     grabber.try_launch_once()
     return grabber, _launch_args(cli)
 
 
-def _run_text_dispatch(list_result="", launch_results=None, get_result="TERMINATED"):
-    """按命令类型分发 run_text 的 mock 返回值。
-
-    list -> list_result（"" 表示无同名实例）；
-    launch -> 按顺序取 launch_results 里的值（元素也可以是异常实例，会被抛出来）；
-    get -> get_result（实例状态查询）。
-    """
-    launch_iter = iter(launch_results or [])
-
-    def dispatch(args, **kwargs):
-        if "list" in args:
-            return list_result
-        if "launch" in args:
-            result = next(launch_iter)
-            if isinstance(result, Exception):
-                raise result
-            return result
-        if "get" in args:
-            return get_result
-        raise AssertionError(f"未预期的 run_text 调用：{args}")
-
-    return dispatch
-
-
 class TestTryLaunchOnce(unittest.TestCase):
     def test_success_returns_ocid(self):
-        cli = MagicMock(spec=OCIClient)
-        cli.run_text.side_effect = _run_text_dispatch(
-            list_result="", launch_results=[FAKE_INSTANCE_A])
+        cli = _mock_launch_cli(launch_results=[FAKE_INSTANCE_A])
         grabber = _make_grabber(cli=cli)
         self.assertEqual(grabber.try_launch_once(), FAKE_INSTANCE_A)
 
     def test_launch_command_contains_no_retry(self):
-        cli = MagicMock(spec=OCIClient)
-        cli.run_text.side_effect = _run_text_dispatch(
-            list_result="", launch_results=[FAKE_INSTANCE_A])
+        cli = _mock_launch_cli(launch_results=[FAKE_INSTANCE_A])
         grabber = _make_grabber(cli=cli)
         grabber.try_launch_once()
         launch_args = [c.args[0] for c in cli.run_text.call_args_list
@@ -110,10 +109,8 @@ class TestTryLaunchOnce(unittest.TestCase):
 
     def test_existing_instance_reused_without_launch(self):
         created = datetime.now(timezone.utc).isoformat()
-        cli = MagicMock(spec=OCIClient)
-        cli.run_text.side_effect = _run_text_dispatch(
-            list_result=json.dumps({"id": FAKE_INSTANCE_A,
-                                    "created": created}))
+        cli = _mock_launch_cli(instances=[{
+            "id": FAKE_INSTANCE_A, "time-created": created}])
         grabber = _make_grabber(cli=cli)
         self.assertEqual(grabber.try_launch_once(), FAKE_INSTANCE_A)
         launch_calls = [c for c in cli.run_text.call_args_list
@@ -123,51 +120,43 @@ class TestTryLaunchOnce(unittest.TestCase):
     def test_old_same_name_instance_is_not_reused(self):
         created = (datetime.now(timezone.utc)
                    - timedelta(hours=1)).isoformat()
-        cli = MagicMock(spec=OCIClient)
-        cli.run_text.side_effect = _run_text_dispatch(
-            list_result=json.dumps({"id": FAKE_INSTANCE_A,
-                                    "created": created}),
+        cli = _mock_launch_cli(
+            instances=[{"id": FAKE_INSTANCE_A, "time-created": created}],
             launch_results=[FAKE_INSTANCE_B])
         grabber = _make_grabber(cli=cli)
         self.assertEqual(grabber.try_launch_once(), FAKE_INSTANCE_B)
 
     def test_missing_created_falls_back_to_old_behavior(self):
-        cli = MagicMock(spec=OCIClient)
-        cli.run_text.side_effect = _run_text_dispatch(
-            list_result=json.dumps({"id": FAKE_INSTANCE_A}))
+        cli = _mock_launch_cli(instances=[{"id": FAKE_INSTANCE_A}])
         grabber = _make_grabber(cli=cli)
         self.assertEqual(grabber.try_launch_once(), FAKE_INSTANCE_A)
 
     def test_terminated_same_name_is_not_reused(self):
         # A terminated same-name instance is never reused even when created within 15 minutes: reusing a dead machine turns the grab result into an unusable instance. 已终止的同名实例即使在 15 分钟内创建也不复用：复用死机会把抢机结果变成无法使用的实例。
         created = datetime.now(timezone.utc).isoformat()
-        cli = MagicMock(spec=OCIClient)
-        cli.run_text.side_effect = _run_text_dispatch(
-            list_result=json.dumps([{"id": FAKE_INSTANCE_A,
-                                     "created": created,
-                                     "state": "TERMINATED"}]),
+        cli = _mock_launch_cli(
+            instances=[{"id": FAKE_INSTANCE_A,
+                        "time-created": created,
+                        "lifecycle-state": "TERMINATED"}],
             launch_results=[FAKE_INSTANCE_B])
         grabber = _make_grabber(cli=cli)
         self.assertEqual(grabber.try_launch_once(), FAKE_INSTANCE_B)
 
     def test_stopped_same_name_is_not_reused(self):
         created = datetime.now(timezone.utc).isoformat()
-        cli = MagicMock(spec=OCIClient)
-        cli.run_text.side_effect = _run_text_dispatch(
-            list_result=json.dumps([{"id": FAKE_INSTANCE_A,
-                                     "created": created,
-                                     "state": "STOPPED"}]),
+        cli = _mock_launch_cli(
+            instances=[{"id": FAKE_INSTANCE_A,
+                        "time-created": created,
+                        "lifecycle-state": "STOPPED"}],
             launch_results=[FAKE_INSTANCE_B])
         grabber = _make_grabber(cli=cli)
         self.assertEqual(grabber.try_launch_once(), FAKE_INSTANCE_B)
 
     def test_running_same_name_list_shape_is_reused(self):
         created = datetime.now(timezone.utc).isoformat()
-        cli = MagicMock(spec=OCIClient)
-        cli.run_text.side_effect = _run_text_dispatch(
-            list_result=json.dumps([{"id": FAKE_INSTANCE_A,
-                                     "created": created,
-                                     "state": "RUNNING"}]))
+        cli = _mock_launch_cli(instances=[{
+            "id": FAKE_INSTANCE_A, "time-created": created,
+            "lifecycle-state": "RUNNING"}])
         grabber = _make_grabber(cli=cli)
         self.assertEqual(grabber.try_launch_once(), FAKE_INSTANCE_A)
         launch_calls = [c for c in cli.run_text.call_args_list
@@ -176,46 +165,38 @@ class TestTryLaunchOnce(unittest.TestCase):
 
     def test_newest_terminated_but_older_running_is_reused(self):
         now = datetime.now(timezone.utc)
-        cli = MagicMock(spec=OCIClient)
-        cli.run_text.side_effect = _run_text_dispatch(
-            list_result=json.dumps([
-                {"id": FAKE_INSTANCE_B,
-                 "created": now.isoformat(), "state": "TERMINATED"},
-                {"id": FAKE_INSTANCE_A,
-                 "created": (now - timedelta(minutes=5)).isoformat(),
-                 "state": "RUNNING"},
-            ]))
+        cli = _mock_launch_cli(instances=[
+            {"id": FAKE_INSTANCE_B,
+             "time-created": now.isoformat(),
+             "lifecycle-state": "TERMINATED"},
+            {"id": FAKE_INSTANCE_A,
+             "time-created": (now - timedelta(minutes=5)).isoformat(),
+             "lifecycle-state": "RUNNING"},
+        ])
         grabber = _make_grabber(cli=cli)
         self.assertEqual(grabber.try_launch_once(), FAKE_INSTANCE_A)
 
     def test_find_existing_null_returns_none(self):
-        cli = MagicMock(spec=OCIClient)
-        cli.run_text.side_effect = _run_text_dispatch(
-            list_result="null", launch_results=[FAKE_INSTANCE_A])
+        cli = _mock_launch_cli(instances=[],
+                               launch_results=[FAKE_INSTANCE_A])
         grabber = _make_grabber(cli=cli)
         self.assertEqual(grabber.try_launch_once(), FAKE_INSTANCE_A)
 
     def test_out_of_capacity_returns_none(self):
-        cli = MagicMock(spec=OCIClient)
-        cli.run_text.side_effect = _run_text_dispatch(
-            list_result="",
+        cli = _mock_launch_cli(
             launch_results=[OutOfCapacityError("Out of host capacity")])
         grabber = _make_grabber(cli=cli)
         self.assertIsNone(grabber.try_launch_once())
 
     def test_rate_limit_propagates(self):
-        cli = MagicMock(spec=OCIClient)
-        cli.run_text.side_effect = _run_text_dispatch(
-            list_result="",
+        cli = _mock_launch_cli(
             launch_results=[RateLimitError("TooManyRequests")])
         grabber = _make_grabber(cli=cli)
         with self.assertRaises(RateLimitError):
             grabber.try_launch_once()
 
     def test_quota_propagates(self):
-        cli = MagicMock(spec=OCIClient)
-        cli.run_text.side_effect = _run_text_dispatch(
-            list_result="",
+        cli = _mock_launch_cli(
             launch_results=[QuotaExceededError("LimitExceeded")])
         grabber = _make_grabber(cli=cli)
         with self.assertRaises(QuotaExceededError):
@@ -225,9 +206,7 @@ class TestTryLaunchOnce(unittest.TestCase):
 class TestRun(unittest.TestCase):
     @patch("oci.grabber.time.sleep")
     def test_rate_limit_backoff_doubles(self, mock_sleep):
-        cli = MagicMock(spec=OCIClient)
-        cli.run_text.side_effect = _run_text_dispatch(
-            list_result="",
+        cli = _mock_launch_cli(
             launch_results=[RateLimitError("TooManyRequests"),
                             RateLimitError("TooManyRequests"),
                             FAKE_INSTANCE_A])
@@ -243,9 +222,7 @@ class TestRun(unittest.TestCase):
 
     @patch("oci.grabber.time.sleep")
     def test_quota_stops_and_emits_event(self, mock_sleep):
-        cli = MagicMock(spec=OCIClient)
-        cli.run_text.side_effect = _run_text_dispatch(
-            list_result="",
+        cli = _mock_launch_cli(
             launch_results=[QuotaExceededError("LimitExceeded")])
         on_event = MagicMock()
         grabber = _make_grabber(cli=cli, on_event=on_event)
@@ -260,11 +237,8 @@ class TestRun(unittest.TestCase):
 
     @patch("oci.grabber.time.sleep")
     def test_wrong_cpu_terminates_and_continues(self, mock_sleep):
-        cli = MagicMock(spec=OCIClient)
-        cli.run_text.side_effect = _run_text_dispatch(
-            list_result="",
-            launch_results=[FAKE_INSTANCE_A, FAKE_INSTANCE_B],
-            get_result="TERMINATED")
+        cli = _mock_launch_cli(
+            launch_results=[FAKE_INSTANCE_A, FAKE_INSTANCE_B])
         cli.run.return_value = None
         events = []
         grabber = _make_grabber(cli=cli, target_cpu="7J13",
@@ -292,11 +266,8 @@ class TestRun(unittest.TestCase):
 
     @patch("oci.grabber.time.sleep")
     def test_target_cpu_list_keeps_any_match(self, mock_sleep):
-        cli = MagicMock(spec=OCIClient)
-        cli.run_text.side_effect = _run_text_dispatch(
-            list_result="",
-            launch_results=[FAKE_INSTANCE_A, FAKE_INSTANCE_B],
-            get_result="TERMINATED")
+        cli = _mock_launch_cli(
+            launch_results=[FAKE_INSTANCE_A, FAKE_INSTANCE_B])
         cli.run.return_value = None
         events = []
         grabber = _make_grabber(cli=cli, target_cpu=["7J13", "7745"],
@@ -315,9 +286,7 @@ class TestRun(unittest.TestCase):
 
     @patch("oci.grabber.time.sleep")
     def test_cpu_check_none_keeps_instance(self, mock_sleep):
-        cli = MagicMock(spec=OCIClient)
-        cli.run_text.side_effect = _run_text_dispatch(
-            list_result="", launch_results=[FAKE_INSTANCE_A])
+        cli = _mock_launch_cli(launch_results=[FAKE_INSTANCE_A])
         events = []
         grabber = _make_grabber(cli=cli, target_cpu=["7J13", "7745"],
                                 on_event=lambda e, m: events.append(e))
@@ -337,9 +306,7 @@ class TestRun(unittest.TestCase):
 
     @patch("oci.grabber.time.sleep")
     def test_cpu_check_raises_keeps_instance(self, mock_sleep):
-        cli = MagicMock(spec=OCIClient)
-        cli.run_text.side_effect = _run_text_dispatch(
-            list_result="", launch_results=[FAKE_INSTANCE_A])
+        cli = _mock_launch_cli(launch_results=[FAKE_INSTANCE_A])
         events = []
         grabber = _make_grabber(cli=cli, target_cpu="7J13",
                                 on_event=lambda e, m: events.append(e))
@@ -366,9 +333,7 @@ class TestRun(unittest.TestCase):
 
     @patch("oci.grabber.time.sleep")
     def test_no_capacity_retries_then_succeeds(self, mock_sleep):
-        cli = MagicMock(spec=OCIClient)
-        cli.run_text.side_effect = _run_text_dispatch(
-            list_result="",
+        cli = _mock_launch_cli(
             launch_results=[OutOfCapacityError("Out of host capacity"),
                             FAKE_INSTANCE_A])
         grabber = _make_grabber(cli=cli)
@@ -384,9 +349,7 @@ class TestRun(unittest.TestCase):
 
     @patch("oci.grabber.time.sleep")
     def test_max_attempts_raises(self, mock_sleep):
-        cli = MagicMock(spec=OCIClient)
-        cli.run_text.side_effect = _run_text_dispatch(
-            list_result="",
+        cli = _mock_launch_cli(
             launch_results=[OutOfCapacityError("Out of host capacity")] * 5)
         grabber = _make_grabber(cli=cli)
         with self.assertRaises(RuntimeError):
@@ -430,9 +393,7 @@ class TestCancellation(unittest.TestCase):
         from oci.grabber import GrabCancelledError
 
         stop_event = threading.Event()
-        cli = MagicMock(spec=OCIClient)
-        cli.run_text.side_effect = _run_text_dispatch(
-            list_result="",
+        cli = _mock_launch_cli(
             launch_results=[OutOfCapacityError("Out of host capacity")] * 5)
 
         def on_event(event_type, message):
@@ -466,8 +427,7 @@ class TestCancellation(unittest.TestCase):
 
         stop_event = threading.Event()
         stop_event.set()
-        cli = MagicMock(spec=OCIClient)
-        cli.run_text.return_value = ""
+        cli = _mock_launch_cli()
         grabber = _make_grabber(cli=cli, stop_event=stop_event)
         with self.assertRaises(GrabCancelledError):
             grabber.get_public_ip(FAKE_INSTANCE_A)
@@ -557,9 +517,7 @@ class TestLaunchOptions(unittest.TestCase):
 
     @patch("oci.grabber.time.sleep")
     def test_run_cleans_up_user_data_file(self, mock_sleep):
-        cli = MagicMock(spec=OCIClient)
-        cli.run_text.side_effect = _run_text_dispatch(
-            list_result="", launch_results=[FAKE_INSTANCE_A])
+        cli = _mock_launch_cli(launch_results=[FAKE_INSTANCE_A])
         grabber = _make_grabber(cli=cli, user_data="#!/bin/bash\necho hi\n")
         path = grabber._ensure_user_data_file()
         self.assertTrue(os.path.exists(path))

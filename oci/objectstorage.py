@@ -68,32 +68,24 @@ def _validate_bucket_name(name):
 
 
 def get_namespace(cli):
-    """查当前租户的对象存储命名空间。
-
-    对应命令：oci os ns get
+    """查当前租户的对象存储命名空间（SDK 直调）。
 
     返回命名空间字符串。拿不到时抛 ValueError。
     """
-    data = _extract_data(cli.run(["os", "ns", "get"]))
+    data = cli.sdk_get_namespace()
     if not isinstance(data, str) or not data:
-        raise ValueError("无法获取对象存储命名空间（oci os ns get 返回异常）")
+        raise ValueError("无法获取对象存储命名空间（SDK 返回异常）")
     return data
 
 
 def list_buckets(cli, compartment_id, namespace=None):
-    """列出指定 compartment 下的所有 Bucket。
-
-    对应命令：oci os bucket list --compartment-id <OCID>
-              --namespace-name <命名空间>
+    """列出指定 compartment 下的所有 Bucket（SDK 直调）。
 
     返回精简列表，每项含 name、time-created、public-access-type、
     storage-tier。
     """
     ns = _resolve_namespace(cli, namespace)
-    result = cli.run(["os", "bucket", "list",
-                      "--compartment-id", compartment_id,
-                      "--namespace-name", ns])
-    items = _extract_data(result) or []
+    items = cli.sdk_list_buckets(compartment_id, ns) or []
     return [{
         "name": item.get("name"),
         "time-created": item.get("time-created"),
@@ -144,19 +136,13 @@ def delete_bucket(cli, bucket_name, namespace=None, empty=False):
 
 
 def list_objects(cli, bucket_name, namespace=None):
-    """列出某 Bucket 下的所有对象。
-
-    对应命令：oci os object list --bucket-name <名>
-              --namespace-name <命名空间>
+    """列出某 Bucket 下的所有对象（SDK 直调）。
 
     返回精简列表，每项含 name、size、time-created。
     """
     _validate_bucket_name(bucket_name)
     ns = _resolve_namespace(cli, namespace)
-    result = cli.run(["os", "object", "list",
-                      "--bucket-name", bucket_name,
-                      "--namespace-name", ns])
-    items = _extract_data(result) or []
+    items = cli.sdk_list_objects(ns, bucket_name) or []
     return [{
         "name": item.get("name"),
         "size": item.get("size"),

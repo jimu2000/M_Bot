@@ -9,6 +9,16 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [2.05] - 2026-11-26
+
+- New instances support a two-stage "DD reinstall + init" flow: the boot form gains a "DD reinstall" switch; when enabled, the instance is created with an InstallNET.sh script that reinstalls Debian 13 (SSH port 14422, 1024MB swap), and after the reinstall finishes the bot uploads an init script over SSH in the background and runs it (system update, BBR, SSH hardening to key-only login on port 14422, UFW, Xray, Fail2Ban, CrowdSec, traffic watchdog, etc.), with success or failure pushed over both notification channels; every new instance gets a generated UUID root password sent with the boot info. New module oci/dd_init.py (DD script generation, waiting for the reinstall, script upload and execution, timeouts and event callbacks); the bot boot form and the web create endpoint both support the dd parameter
+- CPU optimization rounds 4–6: the instance list page now fetches public IPs in bulk instead of one call per instance (from 1+2N SDK calls down to 2+N); a new shared OCI data cache in the web layer (web/oci_cache.py, raw instance/boot-volume lists cached for 30 seconds keyed by profile+region+compartment, shared by the instances, quota, and volumes endpoints, with the quota summary fetching the instance list only once); a background cache pre-warming thread (refreshes cache entries about to expire every 10 seconds, warming only — it never warms entries nobody has requested, so an idle panel makes no background OCI calls). Cold-request system CPU dropped from 42% to about 13%, and after 35 seconds idle the quota endpoint returns in 0.0 seconds
+- Demo mode: with MBOT_DEMO_MODE=1 the panel serves simulated data, demo/demo logs in without a real password, and write operations return a fake success without calling OCI or changing any real state
+- Analytics switched from Clarity to self-hosted Matomo (MBOT_MATOMO_URL / MBOT_MATOMO_SITE_ID, the tracker loads only when both are set)
+- Web frontend JS fixes (display and interaction issues on the instances, quota, volumes, and other pages)
+- Boot success notifications now include the CPU model (falls back to inferring AMD/ARM from the Shape when the model is unavailable)
+- New-instance root password supports a fixed password: when the MBOT_FIXED_ROOT_PASSWORD environment variable is set, all new instances use it (only one password to remember); otherwise each instance gets a generated UUID. The password lives only in the deployment server's environment file; the panel never stores, reads, or displays it
+
 ## [2.04] - 2026-11-25
 
 - Task management: finished tasks can now be deleted (reported by the user on 2026-11-25). The Operations column shows a "Delete" button for finished tasks, which removes the task record and logs after confirmation; running tasks have no delete button and must be cancelled first (the backend also blocks deleting a running task with a 400). Added DELETE /api/tasks/{id}, TaskRegistry.delete(), and task_store.delete_record(). Task status now follows the current language (Chinese mode: DONE → 已完成, CANCELLED → 已取消, RUNNING → 运行中, FAILED → 失败, etc.; English mode shows the English original), via the new TASK_STATUS_ZH map and taskStatusLabel() in i18n.js, following the existing localization pattern for instance and volume states
@@ -102,7 +112,7 @@ Note: this release was originally numbered v1.44.0 and renumbered to v1.45.0 bef
 **Verified**: full suite 2650 tests pass (74 new: tests/test_cpu_policy.py 24, tests/test_task_store.py 27, tests/test_web_grab_cpu.py 4, the rest in test_grabber.py, test_notify.py, test_v1220_cpu_tasks.py, test_tgbot_instance_list.py, test_web_api.py, test_phase5e_shapes.py; plus 3 racy tests fixed: waits added before reading Grabber call_args after POST, and a wait moved inside the Grabber patch). Live verification: /api/instances and /api/volumes timings measured on the deployment host before deciding the approach; cold-load timings re-measured after deploy.
 
 ## [1.40.1] - 2026-11-24
-- Fixed the missing "grab started" confirmation after tapping "Start grabbing": when a root password was set, the whole reply was parsed as Markdown, and the underscore in the instance name (AMD_2026-11-25) was treated as an italic marker, so Telegram rejected the message (Can't parse entities); the dynamic instance name is now escaped with escape_markdown before being put into the message, while the name in the task list stays unescaped
+- Fixed the missing "grab started" confirmation after tapping "Start grabbing": when a root password was set, the whole reply was parsed as Markdown, and the underscore in the instance name (AMD_2026-01-02) was treated as an italic marker, so Telegram rejected the message (Can't parse entities); the dynamic instance name is now escaped with escape_markdown before being put into the message, while the name in the task list stays unescaped
 
 **Verification**: full test suite passes, 2576 tests (1 new regression test: test_start_reply_escapes_underscore_in_name in tests/test_boot_form_handlers.py).
 

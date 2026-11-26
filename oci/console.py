@@ -85,9 +85,8 @@ def create_console_connection(cli, instance_id, ssh_public_key_file=None):
          "--wait-interval-seconds", "5"])) or {}
     connection_id = created.get("id")
     if connection_id:
-        detail = _unwrap(cli.run(
-            ["compute", "instance-console-connection", "get",
-             "--instance-console-connection-id", connection_id])) or {}
+        # 跟进查详情走 SDK 直调（读接口，不起子进程）。
+        detail = cli.sdk_get_instance_console_connection(connection_id) or {}
         for key, value in detail.items():
             if value is not None:
                 created[key] = value
@@ -102,16 +101,13 @@ def create_console_connection(cli, instance_id, ssh_public_key_file=None):
 
 
 def list_console_connections(cli, compartment_id, instance_id=None):
-    """列出 compartment 下的串行控制台连接，可按实例过滤。
+    """列出 compartment 下的串行控制台连接，可按实例过滤（SDK 直调）。
 
     返回精简列表，每项含 id / instance-id / connection-string /
     lifecycle-state / time-created。
     """
-    args = ["compute", "instance-console-connection", "list",
-            "--compartment-id", compartment_id]
-    if instance_id:
-        args += ["--instance-id", instance_id]
-    items = _unwrap(cli.run(args)) or []
+    items = cli.sdk_list_instance_console_connections(
+        compartment_id, instance_id=instance_id) or []
     return [{
         "id": item.get("id"),
         "instance-id": item.get("instance-id"),

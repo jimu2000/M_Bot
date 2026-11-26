@@ -1,6 +1,11 @@
 # M_Bot依赖（阶段 1 + 阶段 2 + 阶段 3）
 # 安装：pip install -r requirements.txt
-# 注意：OCI 调用走官方 OCI CLI（subprocess），不在这里依赖 oci SDK。
+# 注意：热路径读接口（实例列表、配额、启动盘、对象存储、备份、云报告）
+# 走 OCI Python SDK 直调（进程内 HTTP，不起 CLI 子进程）；写操作仍走
+# 官方 OCI CLI（subprocess），所以 oci-cli 也要装（见手动安装）。
+
+# OCI Python SDK（热路径读接口直调用；已验证版本 oci 2.193.0）
+oci>=2.193.0
 
 # Telegram 机器人（阶段 2，python-telegram-bot v20+，async API）
 # job-queue extra 提供 APScheduler，用于监控/每日报告定时任务。

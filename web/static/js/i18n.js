@@ -181,9 +181,16 @@
   /* 启动盘状态中文映射（实例页格子用，同上：英文模式显示原文）。 */
   var VOLUME_STATE_ZH = {
     AVAILABLE: "可用",
+    "IN-USE": "使用中",
     CREATING: "创建中",
+    PROVISIONING: "配置中",
+    RESTORING: "恢复中",
+    REQUEST_RECEIVED: "已接收请求",
     TERMINATED: "已终止",
-    FAULTY: "故障"
+    FAULTY: "故障",
+    ACTIVE: "启用",
+    INACTIVE: "停用",
+    DELETED: "已删除"
   };
 
   /* 任务状态中文映射（任务管理页状态徽标用，同上：英文模式显示原文）。 */

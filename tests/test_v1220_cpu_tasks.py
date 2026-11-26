@@ -47,7 +47,7 @@ A1_SHAPE = "VM.Standard.A1.Flex"
 def _e2_preset(target_cpu="7J13"):
     return {
         "shape": E2_SHAPE, "ocpus": 1, "memory_gb": 1,
-        "display_name": "AMD_2026-11-24", "os": "ubuntu",
+        "display_name": "AMD_2026-01-01", "os": "ubuntu",
         "boot_volume_size_gbs": None, "count": 1,
         "ssh_keys_file": "/tmp/fake.pub", "root_login": False,
         "assign_public_ip": True, "assign_ipv6": False,
@@ -60,7 +60,7 @@ def _a1_preset():
     preset["shape"] = A1_SHAPE
     preset["ocpus"] = 1
     preset["memory_gb"] = 6
-    preset["display_name"] = "ARM_2026-11-24"
+    preset["display_name"] = "ARM_2026-01-01"
     return preset
 
 
@@ -244,9 +244,9 @@ class TestTaskLabel(unittest.TestCase):
     def test_register_stores_label(self):
         registry = TaskRegistry()
         task_id = registry.register("grab", detail="准备中…",
-                                    label="E2.1.Micro（新加坡）· AMD_2026-11-24")
+                                    label="E2.1.Micro（新加坡）· AMD_2026-01-01")
         task = registry.get(task_id)
-        self.assertEqual(task["label"], "E2.1.Micro（新加坡）· AMD_2026-11-24")
+        self.assertEqual(task["label"], "E2.1.Micro（新加坡）· AMD_2026-01-01")
 
     def test_register_without_label(self):
         registry = TaskRegistry()
@@ -256,9 +256,9 @@ class TestTaskLabel(unittest.TestCase):
     def test_fmt_task_list_shows_label(self):
         registry = TaskRegistry()
         registry.register("grab", detail="第 11 次失败（无容量），29 秒后重试。",
-                          label="E2.1.Micro（新加坡）· AMD_2026-11-24")
+                          label="E2.1.Micro（新加坡）· AMD_2026-01-01")
         text = fmt_task_list(registry.list_all())
-        self.assertIn("• E2.1.Micro（新加坡）· AMD_2026-11-24", text)
+        self.assertIn("• E2.1.Micro（新加坡）· AMD_2026-01-01", text)
         self.assertIn("第 11 次失败（无容量），29 秒后重试。", text)
         self.assertNotIn("g1", text)
         self.assertNotIn("grab", text)
@@ -276,10 +276,10 @@ class TestTaskLabel(unittest.TestCase):
     def test_cancel_keyboard_uses_label(self):
         registry = TaskRegistry()
         registry.register("grab", detail="准备中…",
-                          label="E2.1.Micro（新加坡）· AMD_2026-11-24")
+                          label="E2.1.Micro（新加坡）· AMD_2026-01-01")
         registry.register("grab", detail="准备中…")
         rows = _rows(task_list_keyboard(registry.list_all()))
-        self.assertEqual(rows[0], [("❌ 取消 E2.1.Micro（新加坡）· AMD_2026-11-24",
+        self.assertEqual(rows[0], [("❌ 取消 E2.1.Micro（新加坡）· AMD_2026-01-01",
                                     "t:cancel:g1")])
         self.assertEqual(rows[1], [("❌ 取消 g2", "t:cancel:g2")])
 
@@ -299,22 +299,22 @@ class TestWebTaskLabel(unittest.TestCase):
     def test_create_and_public_label(self):
         registry = web_tasks.TaskRegistry()
         task_id = registry.create("grab", detail="抢机中",
-                                  label="E2.1.Micro · AMD_2026-11-24")
+                                  label="E2.1.Micro · AMD_2026-01-01")
         task = registry.get(task_id)
-        self.assertEqual(task["label"], "E2.1.Micro · AMD_2026-11-24")
+        self.assertEqual(task["label"], "E2.1.Micro · AMD_2026-01-01")
 
     def test_label_survives_reload(self):
         registry = web_tasks.TaskRegistry()
         task_id = registry.create("grab", detail="抢机中",
-                                  label="E2.1.Micro · AMD_2026-11-24")
+                                  label="E2.1.Micro · AMD_2026-01-01")
         # A fresh registry instance restores from tasks.json (status becomes cancelled, label is kept). 新注册表实例从 tasks.json 恢复（状态变 cancelled，label 保留）。
         restored = web_tasks.TaskRegistry()
         task = restored.get(task_id)
-        self.assertEqual(task["label"], "E2.1.Micro · AMD_2026-11-24")
+        self.assertEqual(task["label"], "E2.1.Micro · AMD_2026-01-01")
 
     def test_start_grab_task_label(self):
         registry = web_tasks.TaskRegistry()
-        params = {"shape": E2_SHAPE, "display_name": "AMD_2026-11-24",
+        params = {"shape": E2_SHAPE, "display_name": "AMD_2026-01-01",
                   "availability_domain": "ad1", "image_id": "img",
                   "subnet_id": "sub", "ssh_keys_file": ""}
         with patch.object(web_tasks.threading, "Thread") as mock_thread_cls:
@@ -324,7 +324,7 @@ class TestWebTaskLabel(unittest.TestCase):
             mock_thread_cls.assert_called_once()
         task = registry.get(task_id)
         self.assertEqual(task["label"],
-                         "E2.1.Micro（新加坡）· AMD_2026-11-24")
+                         "E2.1.Micro（新加坡）· AMD_2026-01-01")
 
 
 if __name__ == "__main__":

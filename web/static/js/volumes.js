@@ -36,11 +36,12 @@
 
   function stateBadge(state) {
     var s = (state || "").toUpperCase();
-    if (s === "AVAILABLE") return '<span class="badge badge-green">AVAILABLE</span>';
-    if (s === "IN-USE") return '<span class="badge badge-blue">IN-USE</span>';
-    if (s === "PROVISIONING" || s === "RESTORING") return '<span class="badge badge-amber">' + MBot.escapeHtml(state) + "</span>";
-    if (s === "TERMINATED" || s === "FAULTY") return '<span class="badge badge-red">' + MBot.escapeHtml(state) + "</span>";
-    return '<span class="badge badge-gray">' + MBot.escapeHtml(state || "—") + "</span>";
+    var label = window.MBotI18n ? window.MBotI18n.volumeStateLabel(state) : (state || "—");
+    if (s === "AVAILABLE") return '<span class="badge badge-green">' + MBot.escapeHtml(label) + "</span>";
+    if (s === "IN-USE") return '<span class="badge badge-blue">' + MBot.escapeHtml(label) + "</span>";
+    if (s === "PROVISIONING" || s === "RESTORING") return '<span class="badge badge-amber">' + MBot.escapeHtml(label) + "</span>";
+    if (s === "TERMINATED" || s === "FAULTY") return '<span class="badge badge-red">' + MBot.escapeHtml(label) + "</span>";
+    return '<span class="badge badge-gray">' + MBot.escapeHtml(label) + "</span>";
   }
 
   function volumeRow(raw, showInstance) {
@@ -93,10 +94,11 @@
 
   function backupStateBadge(state) {
     var s = (state || "").toUpperCase();
-    if (s === "AVAILABLE") return '<span class="badge badge-green">AVAILABLE</span>';
-    if (s === "CREATING" || s === "REQUEST_RECEIVED") return '<span class="badge badge-amber">' + MBot.escapeHtml(state) + "</span>";
-    if (s === "TERMINATED" || s === "FAULTY") return '<span class="badge badge-red">' + MBot.escapeHtml(state) + "</span>";
-    return '<span class="badge badge-gray">' + MBot.escapeHtml(state || "—") + "</span>";
+    var label = window.MBotI18n ? window.MBotI18n.volumeStateLabel(state) : (state || "—");
+    if (s === "AVAILABLE") return '<span class="badge badge-green">' + MBot.escapeHtml(label) + "</span>";
+    if (s === "CREATING" || s === "REQUEST_RECEIVED") return '<span class="badge badge-amber">' + MBot.escapeHtml(label) + "</span>";
+    if (s === "TERMINATED" || s === "FAULTY") return '<span class="badge badge-red">' + MBot.escapeHtml(label) + "</span>";
+    return '<span class="badge badge-gray">' + MBot.escapeHtml(label) + "</span>";
   }
 
   // Source volume name: a backup record only carries bootVolumeId, so look the name up in the loaded volume list; when not found (the source volume was deleted), show the truncated OCID. 来源卷名：备份记录只有 bootVolumeId，在已加载的卷列表里找名字，找不到（来源盘已删）就显示截断的 OCID。

@@ -303,10 +303,10 @@ class TestDnsRecordsBound(DnsApiTestCase):
 
     FAKE_INSTANCES = [
         {"id": "ocid1.instance.oc1..fake0001",
-         "display-name": "ARM_2026-11-25", "shape": "VM.Standard.A1.Flex",
+         "display-name": "ARM_2026-01-02", "shape": "VM.Standard.A1.Flex",
          "lifecycle-state": "RUNNING", "time-created": "2026-11-25T00:00:00Z"},
         {"id": "ocid1.instance.oc1..fake0002",
-         "display-name": "AMD_2026-11-24", "shape": "VM.Standard.E2.1.Micro",
+         "display-name": "AMD_2026-01-01", "shape": "VM.Standard.E2.1.Micro",
          "lifecycle-state": "RUNNING", "time-created": "2026-11-24T00:00:00Z"},
     ]
     FAKE_INSTANCE_IPS = {
@@ -352,7 +352,7 @@ class TestDnsRecordsBound(DnsApiTestCase):
         r = self.client.get(f"/api/dns/zones/{FAKE_ZONE_ID}/records")
         self.assertEqual(r.status_code, 200)
         records = r.json()["records"]
-        self.assertEqual(records[0]["bound_instance"], "ARM_2026-11-25")
+        self.assertEqual(records[0]["bound_instance"], "ARM_2026-01-02")
         self.assertIsNone(records[1]["bound_instance"])
         self.assertIsNone(records[2]["bound_instance"])
 

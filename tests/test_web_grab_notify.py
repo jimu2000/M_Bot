@@ -19,7 +19,7 @@ from web import tasks as web_tasks
 class TestNotifyGrabSuccess(unittest.TestCase):
 
     def setUp(self):
-        self.params = {"display_name": "AMD_2026-11-25",
+        self.params = {"display_name": "AMD_2026-01-02",
                        "shape": "VM.Standard.E2.1.Micro",
                        "ocpus": 1, "memory_gb": 1,
                        "boot_volume_size_gbs": 47,
@@ -63,7 +63,7 @@ class TestNotifyGrabSuccess(unittest.TestCase):
         self.assertIsNone(instances[0]["public_ip"])
         followup.assert_called_once()
         args = followup.call_args[0]
-        self.assertEqual(args[1], "AMD_2026-11-25")
+        self.assertEqual(args[1], "AMD_2026-01-02")
         self.assertEqual(args[2], "T")
         self.assertEqual(args[3], 654321)
 

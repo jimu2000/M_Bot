@@ -29,6 +29,9 @@ M_Bot 独有功能。
 /orphans）。
 """
 
+import threading
+import time
+
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
@@ -53,6 +56,7 @@ from oci.quota import (
 )
 from tgbot.paid_profiles import is_paid_profile, set_paid_profile
 from web import config
+from web import demo_data
 from web.deps import (
     error_response,
     get_current_user,
@@ -61,10 +65,34 @@ from web.deps import (
 )
 from web.routes.cloudreport import clear_cloud_report_cache
 from web.routes.instances import clear_instance_list_cache
+from web.routes.quota import clear_quota_cache
 from web.routes.volumes import clear_volumes_cache
 from web.tasks import PLAN_DEFAULTS
 
 router = APIRouter()
+
+# ================= 配置区（改这里） =================
+# Boot backup list/quota server cache TTL (seconds): each call lists all boot volume backups via OCI CLI, several seconds serially; repeat visits within 30s return the cache, and a manual refresh (refresh=1) bypasses it. 备份列表/额度服务端缓存 TTL（秒）：每次查询要跑 OCI CLI 列全部备份，串行几秒；30 秒内重复访问直接返回缓存，手动刷新（refresh=1）绕过缓存。
+BOOT_BACKUPS_CACHE_TTL = 30
+# =====================================================
+
+# Boot backup cache: (profile, region, "list"/"quota") -> {"expires": monotonic-clock expiry, "payload": response body}. Memory only, never written to disk. 备份缓存：(profile, region, "list"/"quota") -> {"expires": 单调时钟过期点, "payload": 响应体}。只放内存不写盘。
+_BOOT_BACKUPS_CACHE = {}
+_BOOT_BACKUPS_CACHE_LOCK = threading.Lock()
+
+
+def clear_boot_backups_cache(profile=None):
+    """清备份列表/额度缓存：指定 profile 时只清该账号，否则全清。
+
+    写操作（创建/删除/批量删除/改付费标记）成功后调用，避免列表与
+    额度显示旧数据；单元测试在 setUp 里调用，避免缓存跨测试串数据。
+    """
+    with _BOOT_BACKUPS_CACHE_LOCK:
+        if profile is None:
+            _BOOT_BACKUPS_CACHE.clear()
+        else:
+            for key in [k for k in _BOOT_BACKUPS_CACHE if k[0] == profile]:
+                del _BOOT_BACKUPS_CACHE[key]
 
 # Placeholders in the deploy defaults (same as web/tasks.py's PLAN_DEFAULTS): if the AD / subnet are still placeholders at restore time, the deploy is unconfigured, so return 400 asking for config. 部署默认值里的占位符（与 web/tasks.py 的 PLAN_DEFAULTS 一致）：恢复时 AD / 子网仍是占位符说明部署没配，返回 400 提示配置。
 _AD_PLACEHOLDER = "xxxx:AP-SINGAPORE-1-AD-1"
@@ -190,30 +218,51 @@ class RestoreBody(BaseModel):
 @router.get("/api/boot-backups/quota")
 def quota(profile: str = Query(default=None),
           region: str = Query(default=None),
+          refresh: bool = Query(default=False),
           username: str = Depends(get_current_user)):
     """查备份额度：数量 / 上限 / 是否已满 / 最早备份 / 是否付费账号。
 
     付费账号不限 5 个：paid=true、limit=null、full=false。
+    refresh=true：绕过服务端缓存，强制重新查询（前端刷新按钮用）。
     """
+    if demo_data.is_demo():
+        # Demo mode: simulated backup quota (free account, limit 5).
+        # 演示模式：模拟备份额度（免费账号，上限 5 个）。
+        try:
+            return demo_data.demo_backup_quota(profile, region)
+        except ValueError as exc:
+            return error_response(str(exc), status_code=400)
     try:
         cli, compartment_id = resolve_profile(profile, region)
         prof = profile or config.DEFAULT_PROFILE
+        cache_key = (prof, cli.region, "quota")
+        if not refresh:
+            with _BOOT_BACKUPS_CACHE_LOCK:
+                entry = _BOOT_BACKUPS_CACHE.get(cache_key)
+            if entry and time.monotonic() < entry["expires"]:
+                return entry["payload"]
         paid = is_paid_profile(prof)
         count, limit, full, oldest = check_backup_quota(cli, compartment_id)
     except ValueError as exc:
         return error_response(str(exc), status_code=400)
     except OCIError as exc:
         return oci_error_response(exc)
-    return {"ok": True,
-            "profile": prof,
-            "paid": paid,
-            "count": count,
-            "limit": None if paid else limit,
-            "full": False if paid else full,
-            "oldest": ({"id": oldest.get("id"),
-                        "name": oldest.get("display-name"),
-                        "time_created": oldest.get("time-created")}
-                       if oldest else None)}
+    payload = {"ok": True,
+               "profile": prof,
+               "paid": paid,
+               "count": count,
+               "limit": None if paid else limit,
+               "full": False if paid else full,
+               "oldest": ({"id": oldest.get("id"),
+                           "name": oldest.get("display-name"),
+                           "time_created": oldest.get("time-created")}
+                          if oldest else None)}
+    with _BOOT_BACKUPS_CACHE_LOCK:
+        _BOOT_BACKUPS_CACHE[cache_key] = {
+            "expires": time.monotonic() + BOOT_BACKUPS_CACHE_TTL,
+            "payload": payload,
+        }
+    return payload
 
 
 @router.post("/api/boot-backups/paid")
@@ -222,12 +271,21 @@ def set_paid(body: PaidBody,
              region: str = Query(default=None),
              username: str = Depends(get_current_user)):
     """设置当前账号的付费/免费标记（与机器人端共用同一份配置）。"""
+    if demo_data.is_demo():
+        # Demo mode: fake success, do not touch the real paid-profile config.
+        # 演示模式：假成功，不动真实的付费标记配置。
+        return demo_data.fake_success(
+            "设置付费标记",
+            profile=profile or demo_data.DEFAULT_DEMO_PROFILE,
+            paid=body.paid)
     prof = profile or config.DEFAULT_PROFILE
     try:
         resolve_profile(profile, region)
     except ValueError as exc:
         return error_response(str(exc), status_code=400)
     set_paid_profile(prof, body.paid)
+    # The paid flag changes the quota payload (limit/full), so the backup cache must be cleared. 付费标记会改变额度接口的返回值（limit/full），备份缓存要清。
+    clear_boot_backups_cache(prof)
     return {"ok": True, "profile": prof, "paid": body.paid}
 
 
@@ -239,6 +297,12 @@ def delete_batch(body: DeleteBatchBody,
     """批量删除备份：逐个删除，单个失败不影响其他，返回成功/失败清单。"""
     if not body.backup_ids:
         return error_response("未选择要删除的备份", status_code=400)
+    if demo_data.is_demo():
+        # Demo mode: fake success, no OCI call, no state change.
+        # 演示模式：假成功，不调 OCI、不改状态。
+        return demo_data.fake_success(
+            "批量删除备份",
+            deleted=list(body.backup_ids), failed=[])
     try:
         cli, _compartment_id = resolve_profile(profile, region)
     except ValueError as exc:
@@ -252,24 +316,50 @@ def delete_batch(body: DeleteBatchBody,
             failed.append({"id": backup_id, "error": str(exc)})
         except Exception as exc:  # noqa: BLE001 - 单个失败继续删其余
             failed.append({"id": backup_id, "error": str(exc)})
+    if deleted:
+        clear_boot_backups_cache(profile or config.DEFAULT_PROFILE)
     return {"ok": True, "deleted": deleted, "failed": failed}
 
 
 @router.get("/api/boot-backups")
 def list_all(profile: str = Query(default=None),
              region: str = Query(default=None),
+             refresh: bool = Query(default=False),
              username: str = Depends(get_current_user)):
-    """列出该账号下的全部启动卷备份（按创建时间升序）。"""
+    """列出该账号下的全部启动卷备份（按创建时间升序）。
+
+    refresh=true：绕过服务端缓存，强制重新查询（前端刷新按钮用）。
+    """
+    if demo_data.is_demo():
+        # Demo mode: simulated backups, no OCI call.
+        # 演示模式：模拟备份，不调 OCI。
+        try:
+            return demo_data.demo_backups_payload(profile, region)
+        except ValueError as exc:
+            return error_response(str(exc), status_code=400)
     try:
         cli, compartment_id = resolve_profile(profile, region)
+        profile_name = profile or config.DEFAULT_PROFILE
+        cache_key = (profile_name, cli.region, "list")
+        if not refresh:
+            with _BOOT_BACKUPS_CACHE_LOCK:
+                entry = _BOOT_BACKUPS_CACHE.get(cache_key)
+            if entry and time.monotonic() < entry["expires"]:
+                return entry["payload"]
         backups = list_boot_volume_backups(cli, compartment_id)
     except ValueError as exc:
         return error_response(str(exc), status_code=400)
     except OCIError as exc:
         return oci_error_response(exc)
-    return {"ok": True,
-            "profile": profile or config.DEFAULT_PROFILE,
-            "backups": [format_backup(b) for b in backups]}
+    payload = {"ok": True,
+               "profile": profile_name,
+               "backups": [format_backup(b) for b in backups]}
+    with _BOOT_BACKUPS_CACHE_LOCK:
+        _BOOT_BACKUPS_CACHE[cache_key] = {
+            "expires": time.monotonic() + BOOT_BACKUPS_CACHE_TTL,
+            "payload": payload,
+        }
+    return payload
 
 
 @router.post("/api/boot-backups")
@@ -282,6 +372,29 @@ def create(body: CreateBackupBody,
     付费账号直接创建；免费账号满了自动删最早备份再创建（用户要求
     2026-11-24：不用等确认），响应里带 deleted_oldest。
     """
+    if demo_data.is_demo():
+        # Demo mode: fake success with a fake backup record.
+        # 演示模式：假成功，返回一条假备份记录。
+        fake_backup = {
+            "backupId": "ocid1.bootvolumebackup.oc1..demobackup0099",
+            "displayName": body.display_name or "DEMO-backup-20261125-1200",
+            "bootVolumeId": body.boot_volume_id,
+            "sizeInGBs": 47,
+            "lifecycleState": "CREATING",
+            "sourceType": "MANUAL",
+            "type": "FULL",
+            "timeCreated": "2026-11-25T12:00:00.000000+00:00",
+            "imageId": None,
+            "id": "ocid1.bootvolumebackup.oc1..demobackup0099",
+            "display-name": body.display_name or "DEMO-backup-20261125-1200",
+            "boot-volume-id": body.boot_volume_id,
+            "size-in-gbs": 47,
+            "lifecycle-state": "CREATING",
+            "source-type": "MANUAL",
+            "time-created": "2026-11-25T12:00:00.000000+00:00",
+            "image-id": None,
+        }
+        return demo_data.fake_success("创建备份", backup=fake_backup)
     try:
         cli, compartment_id = resolve_profile(profile, region)
         prof = profile or config.DEFAULT_PROFILE
@@ -315,6 +428,7 @@ def create(body: CreateBackupBody,
     result = {"ok": True, "backup": format_backup(backup)}
     if deleted_oldest is not None:
         result["deleted_oldest"] = deleted_oldest
+    clear_boot_backups_cache(prof)
     return result
 
 
@@ -342,6 +456,10 @@ def delete(backup_id: str,
             "（query 参数 ?confirm=true，或 DELETE 请求体 "
             '{"confirm": true}）',
             status_code=400)
+    if demo_data.is_demo():
+        # Demo mode: fake success, no OCI call, no state change.
+        # 演示模式：假成功，不调 OCI、不改状态。
+        return demo_data.fake_success("删除备份", backup_id=backup_id)
     try:
         cli, _compartment_id = resolve_profile(profile, region)
         delete_boot_volume_backup(cli, backup_id)
@@ -349,6 +467,7 @@ def delete(backup_id: str,
         return error_response(str(exc), status_code=400)
     except OCIError as exc:
         return oci_error_response(exc)
+    clear_boot_backups_cache(profile or config.DEFAULT_PROFILE)
     return {"ok": True, "backup_id": backup_id}
 
 
@@ -367,6 +486,16 @@ def restore(backup_id: str,
     if not body.confirm:
         return error_response("从备份恢复需要确认：请求体须含 confirm=true",
                               status_code=400)
+    if demo_data.is_demo():
+        # Demo mode: fake success with fake new instance/boot volume ids.
+        # 演示模式：假成功，返回假的新实例与启动盘 id。
+        return demo_data.fake_success(
+            "从备份恢复实例",
+            instance_id="ocid1.instance.oc1..demoinstance0099",
+            boot_volume_id="ocid1.bootvolume.oc1..demovolume0099",
+            shape=body.shape or "VM.Standard.A1.Flex",
+            ocpus=body.ocpus or 1,
+            memory_gb=body.memory_gb or 1)
     try:
         cli, compartment_id = resolve_profile(profile, region)
         backup = get_boot_volume_backup(cli, backup_id)
@@ -414,6 +543,7 @@ def restore(backup_id: str,
         # Restore built a new boot volume, so the boot volume list cache must be cleared too. 恢复新建了一块启动盘，启动盘列表缓存也要清。
         clear_volumes_cache(profile or config.DEFAULT_PROFILE)
         clear_cloud_report_cache()
+        clear_quota_cache(profile or config.DEFAULT_PROFILE)
     except ValueError as exc:
         return error_response(str(exc), status_code=400)
     except OCIError as exc:

@@ -315,6 +315,47 @@ class TestRealBackendIntegration(unittest.TestCase):
         self.assertNotIn("clarity.ms", resp.text)
         self.assertNotIn("getclicky.com", resp.text)
 
+    def test_login_page_matomo_when_configured(self):
+        from unittest.mock import patch
+
+        from web import config
+
+        with patch.object(config, "MATOMO_URL",
+                          "https://matomo.example.com/"), \
+                patch.object(config, "MATOMO_SITE_ID", "7"):
+            resp = self.client.get("/login")
+        self.assertEqual(resp.status_code, 200)
+        # URL 由 JS 拼接（g.src=u+'matomo.js'），断言基地址与拼接形式。
+        self.assertIn('var u="https://matomo.example.com/";', resp.text)
+        self.assertIn("g.src=u+'matomo.js'", resp.text)
+        self.assertIn("setSiteId', '7'", resp.text)
+        self.assertIn("matomo.php", resp.text)
+
+    def test_login_page_no_matomo_when_unconfigured(self):
+        from unittest.mock import patch
+
+        from web import config
+
+        with patch.object(config, "MATOMO_URL", ""), \
+                patch.object(config, "MATOMO_SITE_ID", ""):
+            resp = self.client.get("/login")
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotIn("matomo.js", resp.text)
+        self.assertNotIn("matomo.php", resp.text)
+
+    def test_login_page_no_matomo_when_only_url_configured(self):
+        # URL 配了、站点 ID 没配时也不加载（两项缺一不可）。
+        from unittest.mock import patch
+
+        from web import config
+
+        with patch.object(config, "MATOMO_URL",
+                          "https://matomo.example.com/"), \
+                patch.object(config, "MATOMO_SITE_ID", ""):
+            resp = self.client.get("/login")
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotIn("matomo.js", resp.text)
+
     def test_overview_redirects_when_anonymous(self):
         # Use a fresh client (no login cookie, so sessions do not leak across tests). 用全新 client（不带登录 cookie，避免其他测试的会话串用）。
         anon = TestClient(self.app, raise_server_exceptions=False)

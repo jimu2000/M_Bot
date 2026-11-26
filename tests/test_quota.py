@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""quota.py 的单元测试（mock OCIClient.run，不碰真实 API）。
+"""quota.py 的单元测试（mock SDK 读方法，不碰真实 API）。
 
 运行：python3 -m unittest tests.test_quota -v
 """
@@ -49,17 +49,12 @@ def _boot_volume(vol_id, display_name, size_gb, state="AVAILABLE"):
 
 
 def _make_cli(instances, boot_volumes):
-    """造一个 OCIClient，把 run 换成 mock：按命令返回预设的假数据。"""
+    """造一个 OCIClient，把 SDK 读方法换成 mock：返回预设的假数据。"""
     cli = OCIClient(profile="DEFAULT", region="ap-singapore-1")
-
-    def _mock_run(args, **kwargs):
-        if args[:2] == ["compute", "instance"]:
-            return {"data": instances}
-        if args[:2] == ["bv", "boot-volume"]:
-            return {"data": boot_volumes}
-        raise AssertionError(f"unexpected command: {args}")
-
-    cli.run = _mock_run
+    cli.sdk_list_instances = (lambda compartment_id, region=None:
+                              list(instances))
+    cli.sdk_list_boot_volumes = (lambda compartment_id, region=None:
+                                 list(boot_volumes))
     return cli
 
 

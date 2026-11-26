@@ -21,7 +21,7 @@ class TestRunGrabberCpuFilter(unittest.TestCase):
 
     def setUp(self):
         self.params = {
-            "display_name": "AMD_2026-11-25",
+            "display_name": "AMD_2026-01-02",
             "shape": "VM.Standard.E2.1.Micro",
             "availability_domain": "AD-1", "image_id": "img",
             "subnet_id": "subnet", "ocpus": 1, "memory_gb": 1,
@@ -254,18 +254,14 @@ class TestRunGrabberCpuFilter(unittest.TestCase):
     def test_wrong_cpu_released_by_default_filter(self):
         # 默认筛选下抢到 7742：M_Bot 自己验出并释放（永删引导卷），
         # 继续抢到 7J13 才留，全程不用人工 SSH 核查。
-        from tests.test_grabber import (_run_text_dispatch,
+        from tests.test_grabber import (_mock_launch_cli,
                                        FAKE_INSTANCE_A, FAKE_INSTANCE_B)
-        from oci.client import OCIClient
         from oci.grabber import Grabber as RealGrabber
 
         params = dict(self.params)
         params.pop("target_cpu", None)
-        cli = MagicMock(spec=OCIClient)
-        cli.run_text.side_effect = _run_text_dispatch(
-            list_result="",
-            launch_results=[FAKE_INSTANCE_A, FAKE_INSTANCE_B],
-            get_result="TERMINATED")
+        cli = _mock_launch_cli(
+            launch_results=[FAKE_INSTANCE_A, FAKE_INSTANCE_B])
         cli.run.return_value = None
         hook = MagicMock(side_effect=["AMD EPYC 7742", "AMD EPYC 7J13"])
         with patch.object(web_tasks, "combined_boot_keys",

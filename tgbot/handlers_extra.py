@@ -250,6 +250,7 @@ from oci.boot_swap import (
     swap_boot_volume,
 )
 from oci.client import OCIClient, QuotaExceededError
+from oci.dd_init import DD_SSH_PORT, start_dd_init
 from oci.email import create_sender, is_valid_email
 from oci.grabber import TARGET_CPU, Grabber, GrabCancelledError, GrabResult
 from oci.iam import (
@@ -1388,7 +1389,7 @@ async def _edit_boot_form(update, context, notice=None):
 def uniquify_display_name(base_name, count, existing_names):
     """实例名去重：返回一个与已有实例名不冲突的基础名。
 
-    实例名是日期格式（AMD_2026-11-24）后，同日同类型再开机会重名。
+    实例名是日期格式（AMD_2026-01-01）后，同日同类型再开机会重名。
     count == 1 时检查基础名本身；count > 1 时检查 base-1..base-N（
     抢机线程会给批量加 -1、-2 后缀）。冲突时依次试 base-2、base-3…，
     直到整组名字都不冲突。existing_names 是已有实例显示名集合。
@@ -1947,6 +1948,52 @@ def _run_grabber_thread(task_id, cli, compartment_id, preset, notify=None,
                              task_id=task_id)
 
 
+def _start_dd_init(preset, instances, notify, task_id=None):
+    """DD 重装开时，为每台有公网 IP 的实例起 DD 初始化后台任务。
+
+    preset 须含 dd=True、startup_script（初始化脚本原文）、
+    root_password（DD 密码，确认页生成的 UUID）。DD 完成 / 初始化
+    完成 / 失败时经 notify_dual 双通道推送。无公网 IP 的实例起不了
+    任务（SSH 没地址可连），记日志提示人工处理。
+    """
+    if not preset.get("dd"):
+        return
+    init_script = preset.get("startup_script")
+    password = preset.get("root_password")
+    if not init_script or not password:
+        logger.warning("DD 已开但缺初始化脚本或 root 密码，未起 DD 初始化。")
+        return
+    token = notify.get("token")
+    chat_id = notify.get("chat_id")
+    for inst in instances:
+        name = inst.get("name") or "?"
+        public_ip = inst.get("public_ip")
+        if not public_ip:
+            logger.warning("实例 %s 暂无公网 IP，未起 DD 初始化。", name)
+            continue
+
+        def _on_event(event_type, message, _name=name, _ip=public_ip):
+            # 只在关键节点双通道推送；等待过程不刷屏。
+            if event_type == "dd_done":
+                notify_dual(token, chat_id, "🔄 DD 完成",
+                            f"实例 {_name}（{_ip}）DD 完成，Debian 13 已就绪，"
+                            "开始执行初始化脚本。")
+            elif event_type == "init_done":
+                notify_dual(token, chat_id, "✅ 初始化完成",
+                            f"实例 {_name}（{_ip}）初始化脚本执行完成。\n"
+                            "初始化脚本已关掉密码登录，之后请用 SSH 密钥登录。")
+            elif event_type in ("dd_timeout", "init_timeout", "init_failed"):
+                notify_dual(token, chat_id, "❌ DD 初始化失败",
+                            f"实例 {_name}（{_ip}）{message}")
+            if task_id is not None:
+                TASKS.append_log(task_id, message)
+
+        start_dd_init(public_ip, password, init_script,
+                      instance_name=name, port=DD_SSH_PORT,
+                      on_event=_on_event)
+        logger.info("已起 DD 初始化任务：实例 %s（%s）", name, public_ip)
+
+
 def _notify_boot_success(cli, preset, successes, notify, task_id=None):
     """抢机成功后的双通道推送（线程内调用）。
 
@@ -2005,6 +2052,9 @@ def _notify_boot_success(cli, preset, successes, notify, task_id=None):
             logger.info("%s", line)
         if task_id is not None:
             TASKS.append_log(task_id, line)
+        # DD 重装开时：开机成功通知已发，接着为每台有公网 IP 的实例
+        # 起 DD 初始化后台任务（等 DD 完成再经 SSH 跑初始化脚本）。
+        _start_dd_init(preset, instances, notify, task_id=task_id)
         # Paid-shape instance: send an extra pinned reminder + Bark. Free shapes (A1.Flex / E2.1.Micro) do not get one. 付费规格实例：额外发一条置顶提醒 + Bark。免费形状（A1.Flex / E2.1.Micro）不发。
         if shape not in FREE_SHAPES:
             paid = notify_dual(
@@ -2229,9 +2279,10 @@ async def boot_go_callback(update, context):
         # Prefer reusing the password generated on the confirm page (the user already saw that same one); generate one on the spot when the old path has none. 优先复用确认页生成的密码（用户已在确认页看到同一份），旧路径没有预生成时现场生成。
         root_password = preset.get("root_password") or generate_root_password()
     script = preset.get("startup_script")
-    if root_password or script:
+    if root_password or script or preset.get("dd"):
         try:
-            preset["user_data"] = build_user_data(root_password, script)
+            preset["user_data"] = build_user_data(
+                root_password, script, dd=bool(preset.get("dd")))
         except ValueError as exc:
             await _reply(update, context, f"❌ {exc}")
             return
@@ -2270,7 +2321,7 @@ async def boot_go_callback(update, context):
     thread.start()
     # Clear pending_boot right after boot starts (it holds password-bearing user-data; do not keep it in memory). 启动后立即清除 pending_boot（里面含带密码的 user-data，不留内存）。
     context.user_data.pop("pending_boot", None)
-    # When a root password exists, the whole message goes through Markdown parsing (password in a code span): underscores in the instance name (AMD_2026-11-25) would be read as italic markers and the whole send fails, so escape the dynamic parts first; without a password use plain text, no escaping. 有 root 密码时整条消息走 Markdown 解析（密码放代码段）：实例名里的下划线（AMD_2026-11-25）会被当成斜体标记、整条消息发送失败，先转义动态部分；无密码时走纯文本，不转义。
+    # When a root password exists, the whole message goes through Markdown parsing (password in a code span): underscores in the instance name (AMD_2026-01-02) would be read as italic markers and the whole send fails, so escape the dynamic parts first; without a password use plain text, no escaping. 有 root 密码时整条消息走 Markdown 解析（密码放代码段）：实例名里的下划线（AMD_2026-01-02）会被当成斜体标记、整条消息发送失败，先转义动态部分；无密码时走纯文本，不转义。
     label_text = (escape_markdown(grab_label, version=1)
                   if root_password else grab_label)
     text = bot_i18n.tr(update, context, "boot.grab_started",

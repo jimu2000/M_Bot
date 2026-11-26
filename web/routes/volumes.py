@@ -22,17 +22,20 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
 from oci.client import OCIError
-from oci.instance import list_instances
+from oci.instance import slim_instances
 from oci.volume import (
     delete_boot_volume,
     get_boot_volume,
     list_boot_volume_attachments,
-    list_boot_volumes,
     resize_boot_volume,
+    simplify_boot_volumes,
     update_boot_volume_vpus,
 )
 from web import config
+from web import demo_data
+from web.oci_cache import cached_raw_boot_volumes, cached_raw_instances
 from web.routes.cloudreport import clear_cloud_report_cache
+from web.routes.quota import clear_quota_cache
 from web.deps import (
     error_response,
     get_current_user,
@@ -90,10 +93,15 @@ def _attachment_map(cli, compartment_id, volumes):
     return mapping
 
 
-def _instance_name_map(cli, compartment_id):
-    """返回 {实例 OCID: 显示名}；查询失败时返回空字典（降级）。"""
+def _instance_name_map(cli, compartment_id, refresh=False):
+    """返回 {实例 OCID: 显示名}；查询失败时返回空字典（降级）。
+
+    实例列表走 Web 层共享缓存（与实例列表/配额端点同一份数据），
+    refresh=true 时绕过缓存。
+    """
     try:
-        instances = list_instances(cli, compartment_id)
+        instances = slim_instances(
+            cached_raw_instances(cli, compartment_id, refresh=refresh))
     except OCIError:
         return {}
     return {inst.get("id"): inst.get("display-name")
@@ -141,7 +149,7 @@ def format_volume(volume, attachment=None, instance_name=None):
     }
 
 
-def _format_volumes(cli, compartment_id, volumes):
+def _format_volumes(cli, compartment_id, volumes, refresh=False):
     """给一批启动盘补挂载关系与实例名，返回 面板形状列表。
 
     挂载关系与实例名是两个独立的 OCI 查询，并行跑（各 1 次 CLI，
@@ -151,7 +159,7 @@ def _format_volumes(cli, compartment_id, volumes):
         att_future = pool.submit(_attachment_map, cli, compartment_id,
                                  volumes)
         names_future = pool.submit(_instance_name_map, cli,
-                                   compartment_id)
+                                   compartment_id, refresh=refresh)
         attachments = att_future.result()
         names = names_future.result()
     formatted = []
@@ -186,8 +194,10 @@ def _get_volumes_payload(cli, compartment_id, profile_name, refresh):
             entry = _VOLUMES_CACHE.get(cache_key)
         if entry and time.monotonic() < entry["expires"]:
             return entry["payload"]
-    volumes = list_boot_volumes(cli, compartment_id)
-    volumes = _format_volumes(cli, compartment_id, volumes)
+    volumes = simplify_boot_volumes(
+        cached_raw_boot_volumes(cli, compartment_id, refresh=refresh))
+    volumes = _format_volumes(cli, compartment_id, volumes,
+                              refresh=refresh)
     payload = {"ok": True,
                "profile": profile_name,
                "region": cli.region,
@@ -211,6 +221,13 @@ def orphans(profile: str = Query(default=None),
     oci.volume.list_orphan_boot_volumes 的判断一致）；refresh=true
     时绕过缓存，强制重新查询。
     """
+    if demo_data.is_demo():
+        # Demo mode: simulated orphan volumes, no OCI calls.
+        # 演示模式：模拟孤儿盘，不调 OCI。
+        try:
+            return demo_data.demo_orphans_payload(profile, region)
+        except ValueError as exc:
+            return error_response(str(exc), status_code=400)
     try:
         cli, compartment_id = resolve_profile(profile, region)
         profile_name = profile or config.DEFAULT_PROFILE
@@ -238,6 +255,13 @@ def list_all(profile: str = Query(default=None),
 
     refresh=true：绕过服务端缓存，强制重新查询（前端刷新按钮用）。
     """
+    if demo_data.is_demo():
+        # Demo mode: simulated volumes, no OCI calls, no cache.
+        # 演示模式：模拟启动盘，不调 OCI，不走缓存。
+        try:
+            return demo_data.demo_volumes_payload(profile, region)
+        except ValueError as exc:
+            return error_response(str(exc), status_code=400)
     try:
         cli, compartment_id = resolve_profile(profile, region)
         profile_name = profile or config.DEFAULT_PROFILE
@@ -253,16 +277,42 @@ def list_all(profile: str = Query(default=None),
 def detail(volume_id: str,
            profile: str = Query(default=None),
            region: str = Query(default=None),
+           refresh: bool = Query(default=False),
            username: str = Depends(get_current_user)):
-    """查单个启动盘详情。"""
+    """查单个启动盘详情（30 秒服务端缓存，与列表共用同一份缓存字典，
+    写操作清缓存时一并失效；refresh=true 绕过缓存）。
+
+    refresh=true：绕过服务端缓存，强制重新查询（前端刷新按钮用）。
+    """
+    if demo_data.is_demo():
+        # Demo mode: simulated volume detail, no OCI call.
+        # 演示模式：模拟启动盘详情，不调 OCI。
+        detail = demo_data.demo_volume_detail(volume_id)
+        if detail is None:
+            return error_response(f"找不到启动盘：{volume_id}",
+                                  status_code=404)
+        return detail
     try:
         cli, _compartment_id = resolve_profile(profile, region)
+        profile_name = profile or config.DEFAULT_PROFILE
+        cache_key = (profile_name, cli.region, "detail:" + volume_id)
+        if not refresh:
+            with _VOLUMES_CACHE_LOCK:
+                entry = _VOLUMES_CACHE.get(cache_key)
+            if entry and time.monotonic() < entry["expires"]:
+                return entry["payload"]
         volume = get_boot_volume(cli, volume_id)
     except ValueError as exc:
         return error_response(str(exc), status_code=400)
     except OCIError as exc:
         return oci_error_response(exc)
-    return {"ok": True, "volume": volume}
+    payload = {"ok": True, "volume": volume}
+    with _VOLUMES_CACHE_LOCK:
+        _VOLUMES_CACHE[cache_key] = {
+            "expires": time.monotonic() + VOLUMES_CACHE_TTL,
+            "payload": payload,
+        }
+    return payload
 
 
 @router.post("/api/volumes/{volume_id}/resize")
@@ -272,6 +322,24 @@ def resize(volume_id: str,
            region: str = Query(default=None),
            username: str = Depends(get_current_user)):
     """启动盘扩容：新容量必须大于当前容量（只能扩不能缩）。"""
+    if demo_data.is_demo():
+        # Demo mode: validate against the simulated volume, then fake
+        # success without calling OCI (the returned volume carries the
+        # new size; the simulated data itself is unchanged).
+        # 演示模式：按模拟盘校验新容量，通过后假成功，不调 OCI
+        # （返回的 volume 带新容量；模拟数据本身不变）。
+        detail = demo_data.demo_volume_detail(volume_id)
+        if detail is None:
+            return error_response(f"找不到启动盘：{volume_id}",
+                                  status_code=404)
+        current_gb = detail["volume"].get("size-in-gbs")
+        if current_gb is not None and body.size_in_gbs <= current_gb:
+            return error_response(
+                f"新容量 {body.size_in_gbs}GB 必须大于当前容量 {current_gb}GB",
+                status_code=400)
+        volume = dict(detail["volume"])
+        volume["size-in-gbs"] = body.size_in_gbs
+        return demo_data.fake_success("扩容启动盘", volume=volume)
     try:
         cli, _compartment_id = resolve_profile(profile, region)
         current = get_boot_volume(cli, volume_id)
@@ -287,6 +355,7 @@ def resize(volume_id: str,
         return oci_error_response(exc)
     clear_volumes_cache(profile or config.DEFAULT_PROFILE)
     clear_cloud_report_cache()
+    clear_quota_cache(profile or config.DEFAULT_PROFILE)
     return {"ok": True, "volume": volume}
 
 
@@ -300,6 +369,19 @@ def update_vpus(volume_id: str,
 
     无效值返回 400（见 update_boot_volume_vpus 的校验）。
     """
+    if demo_data.is_demo():
+        # Demo mode: same value check as the real path, then fake success.
+        # 演示模式：同样的取值校验，通过后假成功，不调 OCI。
+        if body.vpus_per_gb not in (10, 20, 30):
+            return error_response(
+                "vpus_per_gb 只能是 10、20 或 30", status_code=400)
+        detail = demo_data.demo_volume_detail(volume_id)
+        if detail is None:
+            return error_response(f"找不到启动盘：{volume_id}",
+                                  status_code=404)
+        volume = dict(detail["volume"])
+        volume["vpus-per-gb"] = body.vpus_per_gb
+        return demo_data.fake_success("修改启动盘 VPU", volume=volume)
     try:
         cli, _compartment_id = resolve_profile(profile, region)
         volume = update_boot_volume_vpus(cli, volume_id, body.vpus_per_gb)
@@ -317,6 +399,22 @@ def delete(volume_id: str,
            region: str = Query(default=None),
            username: str = Depends(get_current_user)):
     """删除启动盘（只能删未附加的盘；删了不可恢复）。"""
+    if demo_data.is_demo():
+        # Demo mode: only unattached simulated volumes can be "deleted".
+        # 演示模式：只有未附加的模拟盘能“删”，已附加的拒绝（与真实规则一致）。
+        try:
+            payload = demo_data.demo_volumes_payload(profile, region)
+        except ValueError as exc:
+            return error_response(str(exc), status_code=400)
+        target = next((v for v in payload["volumes"]
+                       if v["volumeId"] == volume_id), None)
+        if target is None:
+            return error_response(f"找不到启动盘：{volume_id}",
+                                  status_code=404)
+        if target["attached"]:
+            return error_response("该启动盘仍挂载在实例上，不能删除",
+                                  status_code=400)
+        return demo_data.fake_success("删除启动盘", volume_id=volume_id)
     try:
         cli, _compartment_id = resolve_profile(profile, region)
         delete_boot_volume(cli, volume_id)
@@ -326,4 +424,5 @@ def delete(volume_id: str,
         return oci_error_response(exc)
     clear_volumes_cache(profile or config.DEFAULT_PROFILE)
     clear_cloud_report_cache()
+    clear_quota_cache(profile or config.DEFAULT_PROFILE)
     return {"ok": True, "volume_id": volume_id}

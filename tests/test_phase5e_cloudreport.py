@@ -20,6 +20,9 @@ from oci.client import OCIError
 from web.app import create_app
 from web.auth import LOGIN_GUARD, SESSIONS, hash_password
 from web.routes.cloudreport import clear_cloud_report_cache
+from web.routes.boot_backups import clear_boot_backups_cache
+from web.routes.objectstorage import clear_objectstorage_cache
+from web.routes.quota import clear_quota_cache
 
 # Test password: generated randomly at runtime (no fixed password is ever written in code). 测试密码：运行时随机生成（不在代码里写任何固定口令）。
 TEST_PASSWORD = secrets.token_urlsafe(16)
@@ -57,6 +60,9 @@ class CloudReportTestCase(unittest.TestCase):
         self._profiles_patcher.start()
         # Clear the cloud report cache so cached data does not leak across tests. 清云报告缓存，避免缓存跨测试串数据。
         clear_cloud_report_cache()
+        clear_quota_cache()
+        clear_boot_backups_cache()
+        clear_objectstorage_cache()
         LOGIN_GUARD.reset()
         SESSIONS.reset()
         self.client = TestClient(self.app)

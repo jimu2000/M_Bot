@@ -234,7 +234,7 @@ def _callback_datas(markup):
 
 
 def _fake_instance(with_ip=True):
-    inst = {"id": FAKE_INSTANCE_ID, "display-name": "AMD_2026-11-25",
+    inst = {"id": FAKE_INSTANCE_ID, "display-name": "AMD_2026-01-02",
             "lifecycle-state": "RUNNING", "shape": "VM.Standard.E2.1.Micro"}
     if with_ip:
         inst["public-ip"] = FAKE_IP

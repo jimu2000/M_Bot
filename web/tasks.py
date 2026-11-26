@@ -24,6 +24,7 @@ from datetime import datetime
 
 from oci.boot_swap import BootSwapError, swap_boot_volume
 from oci.client import OCIClient, QuotaExceededError
+from oci.dd_init import DD_SSH_PORT, start_dd_init
 from oci.grabber import GrabCancelledError, Grabber
 from oci.network import get_public_ip, wait_for_public_ip
 from tgbot import config as bot_config
@@ -41,6 +42,7 @@ from tgbot.notify import (
 )
 from web import config
 from web.routes.cloudreport import clear_cloud_report_cache
+from web.routes.quota import clear_quota_cache
 
 try:
     # APScheduler: cron scheduling for grabber plans (an explicit dependency in requirements.txt; when not installed, plans can still be added/edited/removed, but the scheduler cannot start and validate_cron reports the error explicitly). APScheduler：抢机计划的 cron 调度（requirements.txt 里有显式依赖；未安装时计划仍可增删改，但调度器无法启动，validate_cron 会明确报错）。
@@ -114,7 +116,7 @@ class TaskRegistry:
         """注册一个任务，返回 ID（如抢机任务 "web-g1"）。初始状态 pending。
 
         label 是显示用的任务说明（如 "E2.1.Micro（新加坡）·
-        AMD_2026-11-24"），任务页用它当第一列，不再直接暴露
+        AMD_2026-01-01"），任务页用它当第一列，不再直接暴露
         grab 这类内部类型；旧任务没有 label 时前端退回 kind。
         """
         with self._lock:
@@ -285,6 +287,35 @@ def _notify_grab_success(registry, task_id, cli, params, result, notify):
                 registry.append_log(
                     task_id,
                     "付费实例提醒部分失败：" + "; ".join(paid["errors"]))
+        # DD 重装开时：开机成功通知已发，接着起 DD 初始化后台任务
+        # （等 DD 完成再经 SSH 跑初始化脚本）。
+        if params.get("dd") and params.get("init_script") \
+                and notify.get("root_password") and public_ip:
+            name = params.get("display_name") or "?"
+            token = notify.get("token")
+            chat_id = notify.get("chat_id")
+
+            def _on_event(event_type, message, _name=name, _ip=public_ip):
+                if event_type == "dd_done":
+                    notify_dual(token, chat_id, "🔄 DD 完成",
+                                f"实例 {_name}（{_ip}）DD 完成，Debian 13 "
+                                "已就绪，开始执行初始化脚本。")
+                elif event_type == "init_done":
+                    notify_dual(token, chat_id, "✅ 初始化完成",
+                                f"实例 {_name}（{_ip}）初始化脚本执行完成。\n"
+                                "初始化脚本已关掉密码登录，之后请用 SSH 密钥登录。")
+                elif event_type in ("dd_timeout", "init_timeout",
+                                    "init_failed"):
+                    notify_dual(token, chat_id, "❌ DD 初始化失败",
+                                f"实例 {_name}（{_ip}）{message}")
+                registry.append_log(task_id, message)
+
+            start_dd_init(public_ip, notify["root_password"],
+                          params["init_script"], instance_name=name,
+                          port=DD_SSH_PORT, on_event=_on_event)
+            registry.append_log(task_id, f"已起 DD 初始化任务：{name}（{public_ip}）")
+        elif params.get("dd"):
+            registry.append_log(task_id, "DD 已开但缺初始化脚本、root 密码或公网 IP，未起 DD 初始化。")
     except Exception as exc:  # noqa: BLE001 - 通知绝不拖垮任务
         registry.append_log(task_id, f"开机成功通知失败：{exc}")
 
@@ -426,6 +457,7 @@ def _run_grabber(registry, task_id, cli, compartment_id, params,
         f"总耗时 {result.elapsed_seconds:.0f} 秒。")
     registry.set_status(task_id, "done")
     clear_cloud_report_cache()
+    clear_quota_cache()
     if notify:
         notify_with_flag = dict(notify)
         notify_with_flag["cpu_unverified"] = cpu_unverified
@@ -644,6 +676,7 @@ def _run_bootswap(registry, task_id, cli, compartment_id, instance_id,
         f"换盘成功：新盘 …{new_tail}，旧盘 …{old_tail}（{old_note}）。")
     registry.set_status(task_id, "done")
     clear_cloud_report_cache()
+    clear_quota_cache()
     if notify:
         body = (
             f"✅ 实例「{instance_name}」引导卷恢复成功。\n"

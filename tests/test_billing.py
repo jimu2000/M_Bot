@@ -130,7 +130,7 @@ class TestCheckAccountBilling(unittest.TestCase):
     def test_free_shapes_only_no_stop(self):
         insts = self._instances(
             ("web-server-1", "VM.Standard.A1.Flex", "RUNNING", 1, 6),
-            ("AMD_2026-11-24", "VM.Standard.E2.1.Micro", "RUNNING", 1, 1),
+            ("AMD_2026-01-01", "VM.Standard.E2.1.Micro", "RUNNING", 1, 1),
             ("old", "VM.Standard.A1.Flex", "STOPPED", 2, 12),
         )
         with patch.object(bill, "list_instances", return_value=insts), \

@@ -27,7 +27,7 @@
 
   function statusBadge(t) {
     var s = taskStatus(t);
-    var label = MBot.I18n.taskStatusLabel(s);
+    var label = window.MBotI18n ? window.MBotI18n.taskStatusLabel(s) : s;
     if (isRunning(t)) return '<span class="badge badge-blue">' + MBot.escapeHtml(label) + "</span>";
     if (s === "SUCCESS" || s === "COMPLETED" || s === "DONE") return '<span class="badge badge-green">' + MBot.escapeHtml(label) + "</span>";
     if (s === "FAILED" || s === "ERROR") return '<span class="badge badge-red">' + MBot.escapeHtml(label) + "</span>";

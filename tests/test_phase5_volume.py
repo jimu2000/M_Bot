@@ -25,6 +25,9 @@ FAKE_BV = "ocid1.bootvolume.oc1..xxxxxxxx"
 def _mock_cli(return_value):
     cli = MagicMock()
     cli.run.return_value = return_value
+    data = return_value.get("data") if isinstance(return_value, dict) else None
+    if isinstance(data, list):
+        cli.sdk_list_boot_volumes.return_value = data
     return cli
 
 

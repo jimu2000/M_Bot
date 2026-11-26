@@ -282,30 +282,16 @@ class Grabber:
         实例就返回 OCID，不冒险重复建）。
         now 供测试注入（aware datetime，未传则取当前 UTC 时间）。
         """
-        out = self.cli.run_text(
-            ["compute", "instance", "list",
-             "--compartment-id", self.compartment_id,
-             "--display-name", self.display_name,
-             "--query", "data[].{id: id, created: \"time-created\", "
-                        "state: \"lifecycle-state\"}"])
-        if not out or out.strip() in ("null", "", "[]"):
-            return None
-        try:
-            found = json.loads(out)
-        except ValueError:
-            return None
-        # Compatible with the old query (data[0] returns a single object) and the new query (data[] returns a list). 兼容旧查询（data[0] 返回单个对象）与新查询（data[] 返回列表）。
-        if isinstance(found, dict):
-            found = [found]
-        if not isinstance(found, list):
-            return None
+        items = self.cli.sdk_list_instances(
+            self.compartment_id,
+            display_name=self.display_name) or []
         candidates = []
-        for item in found:
+        for item in items:
             if not isinstance(item, dict):
                 continue
             if not item.get("id"):
                 continue
-            state = (item.get("state") or "").upper()
+            state = (item.get("lifecycle-state") or "").upper()
             # State is known and not in the live set: a dead machine, do not accept it. 状态明确且不在活着的集合里：死机，不认。
             if state and state not in DEDUP_LIVE_STATES:
                 continue
@@ -316,7 +302,7 @@ class Grabber:
         def _created_at(item):
             try:
                 created = datetime.fromisoformat(
-                    str(item.get("created")).replace("Z", "+00:00"))
+                    str(item.get("time-created")).replace("Z", "+00:00"))
             except (ValueError, TypeError):
                 return None
             if created.tzinfo is None:
@@ -343,12 +329,11 @@ class Grabber:
         取消（stop_event 置位）时抛 GrabCancelledError。
         """
         for _ in range(PUBLIC_IP_MAX_POLLS):
-            out = self.cli.run_text(
-                ["compute", "instance", "list-vnics",
-                 "--instance-id", instance_id,
-                 "--query", 'data[0]."public-ip"', "--raw-output"])
-            if out and out != "null":
-                return out
+            vnics = self.cli.sdk_list_vnics(
+                instance_id, compartment_id=self.compartment_id) or []
+            for vnic in vnics:
+                if vnic.get("is-primary") and vnic.get("public-ip"):
+                    return vnic["public-ip"]
             if self._sleep(PUBLIC_IP_POLL_INTERVAL):
                 raise GrabCancelledError("等公网 IP 时抢机被取消")
         raise RuntimeError(f"实例已创建但 {PUBLIC_IP_MAX_POLLS * PUBLIC_IP_POLL_INTERVAL // 60} "
@@ -357,9 +342,8 @@ class Grabber:
     def get_instance_state(self, instance_id):
         """查实例生命周期状态（如 RUNNING / TERMINATED），查不到返回 ""。"""
         try:
-            return self.cli.run_text(
-                ["compute", "instance", "get", "--instance-id", instance_id,
-                 "--query", 'data."lifecycle-state"', "--raw-output"])
+            detail = self.cli.sdk_get_instance(instance_id) or {}
+            return detail.get("lifecycle-state") or ""
         except OCIError:
             return ""
 

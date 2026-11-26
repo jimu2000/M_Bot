@@ -39,6 +39,9 @@ from web.routes import instances as instances_routes
 from web.routes.cloudreport import clear_cloud_report_cache
 from web.routes.instances import clear_instance_list_cache
 from web.routes.volumes import clear_volumes_cache
+from web.routes.boot_backups import clear_boot_backups_cache
+from web.routes.objectstorage import clear_objectstorage_cache
+from web.routes.quota import clear_quota_cache
 
 FAKE_INSTANCE = "ocid1.instance.oc1..testxxxx"
 FAKE_INSTANCE_2 = "ocid1.instance.oc1..testyyyy"
@@ -109,6 +112,9 @@ class _Base(unittest.TestCase):
         clear_instance_list_cache()
         clear_volumes_cache()
         clear_cloud_report_cache()
+        clear_quota_cache()
+        clear_boot_backups_cache()
+        clear_objectstorage_cache()
         LOGIN_GUARD.reset()
         SESSIONS.reset()
         self.client = TestClient(self.app)
@@ -173,53 +179,56 @@ class TestProfilesApi(_Base):
 class TestInstancesParallelAndCache(_Base):
     """GET /api/instances：并行取 IP + 服务端缓存。"""
 
-    def _slow_ip(self, cli, instance_id):
-        """模拟一次 OCI CLI 调用（约 0.3 秒）：串行 3 台要 0.9 秒以上。"""
+    def _slow_bulk(self, cli, instances, compartment_id):
+        """模拟一次批量取 IP（约 0.3 秒）：旧的逐台串行要 0.9 秒以上。"""
         time.sleep(0.3)
-        return FAKE_IPS[instance_id]
+        return [FAKE_IPS[inst["id"]] for inst in instances]
 
     def test_public_ips_fetched_in_parallel(self):
-        with patch("web.routes.instances.list_instances",
+        with patch("web.routes.instances.cached_raw_instances",
                    return_value=FAKE_INSTANCES_3), \
-             patch("web.routes.instances.get_public_ip",
-                   side_effect=self._slow_ip) as mock_ip:
+             patch("web.routes.instances.attach_public_ips_bulk",
+                   side_effect=self._slow_bulk) as mock_bulk:
             start = time.monotonic()
             resp = self.client.get("/api/instances")
             elapsed = time.monotonic() - start
         self.assertEqual(resp.status_code, 200)
-        # Parallel: 3 instances at 0.3s each, total far below the serial 0.9s. 并行：3 台各 0.3 秒，总耗时远小于串行的 0.9 秒。
+        # 一次批量调用（约 0.3 秒），远小于旧的逐台串行 0.9 秒。
         self.assertLess(elapsed, 0.75, "耗时 %.2fs，疑似串行取 IP" % elapsed)
-        self.assertEqual(mock_ip.call_count, 3)
+        self.assertEqual(mock_bulk.call_count, 1)
         # Results map one-to-one onto instances (order preserved). 结果与实例一一对应（保序）。
         got = {inst["id"]: inst["publicIp"]
                for inst in resp.json()["instances"]}
         self.assertEqual(got, FAKE_IPS)
 
     def test_list_cache_hit(self):
-        with patch("web.routes.instances.list_instances",
+        with patch("web.routes.instances.cached_raw_instances",
                    return_value=FAKE_INSTANCES_3) as mock_list, \
-             patch("web.routes.instances.get_public_ip",
-                   return_value="203.0.113.10"):
+             patch("web.routes.instances.attach_public_ips_bulk",
+                   return_value=["203.0.113.10", "203.0.113.11",
+                                 "203.0.113.12"]):
             self.assertEqual(self.client.get("/api/instances").status_code, 200)
             self.assertEqual(self.client.get("/api/instances").status_code, 200)
         # The second call hits the cache; list_instances was called only once. 第二次命中缓存，list_instances 只调了一次。
         self.assertEqual(mock_list.call_count, 1)
 
     def test_list_cache_refresh_bypass(self):
-        with patch("web.routes.instances.list_instances",
+        with patch("web.routes.instances.cached_raw_instances",
                    return_value=FAKE_INSTANCES_3) as mock_list, \
-             patch("web.routes.instances.get_public_ip",
-                   return_value="203.0.113.10"):
+             patch("web.routes.instances.attach_public_ips_bulk",
+                   return_value=["203.0.113.10", "203.0.113.11",
+                                 "203.0.113.12"]):
             self.client.get("/api/instances")
             resp = self.client.get("/api/instances?refresh=1")
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(mock_list.call_count, 2)
 
     def test_list_cache_expiry(self):
-        with patch("web.routes.instances.list_instances",
+        with patch("web.routes.instances.cached_raw_instances",
                    return_value=FAKE_INSTANCES_3) as mock_list, \
-             patch("web.routes.instances.get_public_ip",
-                   return_value="203.0.113.10"):
+             patch("web.routes.instances.attach_public_ips_bulk",
+                   return_value=["203.0.113.10", "203.0.113.11",
+                                 "203.0.113.12"]):
             self.client.get("/api/instances")
             entry = instances_routes._LIST_CACHE[
                 ("DEFAULT", "ap-singapore-1", "running")]
@@ -233,10 +242,11 @@ class TestInstancesParallelAndCache(_Base):
                    return_value={"DEFAULT": ["ap-singapore-1",
                                              "ap-seoul-1"],
                                  "ACCOUNT2": ["us-sanjose-1"]}), \
-             patch("web.routes.instances.list_instances",
+             patch("web.routes.instances.cached_raw_instances",
                    return_value=FAKE_INSTANCES_3) as mock_list, \
-             patch("web.routes.instances.get_public_ip",
-                   return_value="203.0.113.10"):
+             patch("web.routes.instances.attach_public_ips_bulk",
+                   return_value=["203.0.113.10", "203.0.113.11",
+                                 "203.0.113.12"]):
             self.client.get("/api/instances")
             self.client.get("/api/instances?profile=ACCOUNT2")
             self.client.get("/api/instances?state=all")
@@ -245,10 +255,11 @@ class TestInstancesParallelAndCache(_Base):
         self.assertEqual(mock_list.call_count, 4)
 
     def test_mutation_invalidates_cache(self):
-        with patch("web.routes.instances.list_instances",
+        with patch("web.routes.instances.cached_raw_instances",
                    return_value=FAKE_INSTANCES_3) as mock_list, \
-             patch("web.routes.instances.get_public_ip",
-                   return_value="203.0.113.10"), \
+             patch("web.routes.instances.attach_public_ips_bulk",
+                   return_value=["203.0.113.10", "203.0.113.11",
+                                 "203.0.113.12"]), \
              patch("web.routes.instances.start_instance",
                    return_value=None):
             self.client.get("/api/instances")

@@ -659,14 +659,14 @@ class TestTrafficGuardCommands(MonitoringBotTestCase):
         self.assertEqual(mon.fetch_city_for_ip(""), "未知地区")
         with patch.object(mon.urllib.request, "urlopen",
                           side_effect=RuntimeError("timeout")):
-            self.assertEqual(mon.fetch_city_for_ip("1.2.3.4"), "未知地区")
+            self.assertEqual(mon.fetch_city_for_ip("203.0.113.4"), "未知地区")
         resp = MagicMock()
         resp.read.return_value = b'{"status": "fail"}'
         resp.__enter__.return_value = resp
         resp.__exit__.return_value = False
         with patch.object(mon.urllib.request, "urlopen",
                           return_value=resp):
-            self.assertEqual(mon.fetch_city_for_ip("1.2.3.4"), "未知地区")
+            self.assertEqual(mon.fetch_city_for_ip("203.0.113.4"), "未知地区")
 
 
 class TestGuardFetch(MonitoringBotTestCase):

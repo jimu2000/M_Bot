@@ -58,6 +58,7 @@ from web.deps import (
 )
 from web.routes.boot_backups import _resolve_restore_shape
 from web.routes.instances import clear_instance_list_cache
+from web.routes.quota import clear_quota_cache
 from web.routes.volumes import clear_volumes_cache
 from web.tasks import PLAN_DEFAULTS
 
@@ -165,6 +166,7 @@ def safe_restore_endpoint(body: SafeRestoreBody,
             cli, compartment_id, body.instance_id, body.backup_id,
             allow_delete_backup_source=body.allow_delete_backup_source)
         clear_volumes_cache(profile or config.DEFAULT_PROFILE)
+        clear_quota_cache(profile or config.DEFAULT_PROFILE)
     except ValueError as exc:
         return error_response(str(exc), status_code=400)
     except OCIError as exc:
@@ -232,6 +234,7 @@ def diskless_rebuild(instance_id: str,
             assign_public_ip=body.assign_public_ip)
         clear_instance_list_cache(profile or config.DEFAULT_PROFILE)
         clear_volumes_cache(profile or config.DEFAULT_PROFILE)
+        clear_quota_cache(profile or config.DEFAULT_PROFILE)
     except ValueError as exc:
         return error_response(str(exc), status_code=400)
     except OCIError as exc:
@@ -283,6 +286,7 @@ def delete_orphan(volume_id: str,
             cli, compartment_id, volume_id, confirm=True,
             allow_backup_source=allow)
         clear_volumes_cache(profile or config.DEFAULT_PROFILE)
+        clear_quota_cache(profile or config.DEFAULT_PROFILE)
     except ValueError as exc:
         return error_response(str(exc), status_code=400)
     except OCIError as exc:
@@ -306,6 +310,7 @@ def delete_volume_guarded_endpoint(volume_id: str,
             cli, compartment_id, volume_id, confirm=True,
             allow_backup_source=body.allow_backup_source)
         clear_volumes_cache(profile or config.DEFAULT_PROFILE)
+        clear_quota_cache(profile or config.DEFAULT_PROFILE)
     except ValueError as exc:
         return error_response(str(exc), status_code=400)
     except OCIError as exc:

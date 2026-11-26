@@ -101,29 +101,26 @@ class TestDeleteUser(unittest.TestCase):
 
 class TestListApiKeys(unittest.TestCase):
     def test_returns_simplified_list(self):
-        cli = _mock_cli({"data": [{
+        cli = _mock_cli(None)
+        cli.sdk_list_api_keys.return_value = [{
             "fingerprint": FAKE_FP,
             "lifecycle-state": "ACTIVE",
             "time-created": "2026-11-20T00:00:00Z",
             "key-value": "ssh-rsa AAAA...（不应返回）",
             "user-id": FAKE_USER,
-        }]})
+        }]
         result = list_api_keys(cli, FAKE_USER)
         self.assertEqual(result, [{
             "fingerprint": FAKE_FP,
             "lifecycle-state": "ACTIVE",
             "time-created": "2026-11-20T00:00:00Z",
         }])
-        cli.run.assert_called_once_with(
-            ["iam", "user", "api-key", "list", "--user-id", FAKE_USER])
+        cli.sdk_list_api_keys.assert_called_once_with(FAKE_USER)
+        cli.run.assert_not_called()
 
     def test_empty(self):
-        cli = _mock_cli({"data": []})
-        self.assertEqual(list_api_keys(cli, FAKE_USER), [])
-
-    def test_empty_no_data_field(self):
-        """空列表时 OCI CLI 只返回 {"opc-total-items": "0"}。"""
-        cli = _mock_cli({"opc-total-items": "0"})
+        cli = _mock_cli(None)
+        cli.sdk_list_api_keys.return_value = []
         self.assertEqual(list_api_keys(cli, FAKE_USER), [])
 
     def test_empty_user_id_rejected(self):
@@ -217,27 +214,30 @@ class TestGroupHelpers(unittest.TestCase):
     """get_group_id_by_name / add_user_to_group。"""
 
     def test_find_admin_group(self):
-        cli = _mock_cli({"data": [
+        cli = _mock_cli(None)
+        cli.sdk_list_groups.return_value = [
             {"id": "ocid1.group.oc1..aaaa", "name": "Group_for_Api_used"},
             {"id": "ocid1.group.oc1..bbbb", "name": "Administrators"},
-        ]})
+        ]
         self.assertEqual(
             get_group_id_by_name(cli, "ocid1.tenancy.oc1..xxxx",
                                  "Administrators"),
             "ocid1.group.oc1..bbbb")
-        cli.run.assert_called_once_with(
-            ["iam", "group", "list",
-             "--compartment-id", "ocid1.tenancy.oc1..xxxx"])
+        cli.sdk_list_groups.assert_called_once_with(
+            "ocid1.tenancy.oc1..xxxx")
+        cli.run.assert_not_called()
 
     def test_group_not_found_returns_none(self):
-        cli = _mock_cli({"data": [
+        cli = _mock_cli(None)
+        cli.sdk_list_groups.return_value = [
             {"id": "ocid1.group.oc1..aaaa", "name": "Other"},
-        ]})
+        ]
         self.assertIsNone(get_group_id_by_name(
             cli, "ocid1.tenancy.oc1..xxxx", "Administrators"))
 
     def test_empty_group_list_returns_none(self):
-        cli = _mock_cli({"opc-total-items": "0"})
+        cli = _mock_cli(None)
+        cli.sdk_list_groups.return_value = []
         self.assertIsNone(get_group_id_by_name(
             cli, "ocid1.tenancy.oc1..xxxx", "Administrators"))
 

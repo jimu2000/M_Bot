@@ -626,7 +626,7 @@ class TestBootFormEn(unittest.TestCase):
         """配置摘要确认页英文。"""
         preset = {
             "shape": "VM.Standard.A1.Flex", "ocpus": 1, "memory_gb": 6,
-            "os": "ubuntu", "display_name": "ARM_2026-11-25",
+            "os": "ubuntu", "display_name": "ARM_2026-01-02",
             "count": 1, "boot_volume_size_gbs": None,
             "min_delay": 25, "max_delay": 25,
             "ssh_keys_file": "/root/.ssh/rbot_guard.pub",

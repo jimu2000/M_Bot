@@ -60,6 +60,19 @@ def _render(request, name, title, context=None):
         "title": title,
         "current_page": os.path.splitext(os.path.basename(name))[0],
         "username": _current_username(request),
+        # Demo mode flag: templates show a "演示模式" badge when on.
+        # 演示模式标记：开启时模板显示“演示模式”角标。
+        "demo_mode": config.DEMO_MODE,
+        # Microsoft Clarity project ID (empty = do not load): every page
+        # rendered here carries it, so the stats snippet in base.html
+        # loads on inner pages too, not only on the login page.
+        # Microsoft Clarity 项目 ID（空 = 不加载）：经这里渲染的每个页面
+        # 都带上，base.html 里的统计代码在内页也能加载，不只登录页。
+        "clarity_id": config.CLARITY_ID,
+        # Matomo tracker URL + site ID (both empty = do not load).
+        # Matomo 追踪地址与站点 ID（都为空 = 不加载）。
+        "matomo_url": config.MATOMO_URL,
+        "matomo_site_id": config.MATOMO_SITE_ID,
     }
     ctx.update(context or {})
     try:
@@ -84,9 +97,17 @@ def index(request: Request):
 
 @router.get("/login")
 def login_page(request: Request):
-    """登录页（不需要登录）。Clicky 只在配置了站点 ID 时加载。"""
+    """登录页（不需要登录）。Clicky 只在配置了站点 ID 时加载。
+
+    演示模式下没有登录页：直接进面板首页（自动按 demo 用户建会话，
+    见 app.py 的演示自动登录中间件）。
+    """
+    if config.DEMO_MODE:
+        return RedirectResponse("/overview", status_code=302)
     return _render(request, "login.html", "登录",
-                   {"clarity_id": config.CLARITY_ID})
+                   {"clarity_id": config.CLARITY_ID,
+                    "matomo_url": config.MATOMO_URL,
+                    "matomo_site_id": config.MATOMO_SITE_ID})
 
 
 @router.get("/overview")

@@ -241,7 +241,7 @@ def main_menu_keyboard(lang="zh"):
 def _instance_button_text(inst, lang="zh"):
     """实例按钮文字：名称 · A1/E2 · 公网 IP 或状态词。
 
-    有公网 IP 时显示 IP（`名称 · E2 · 1.2.3.4`）；没有 IP 时
+    有公网 IP 时显示 IP（`名称 · E2 · 203.0.113.4`）；没有 IP 时
     显示状态词（运行中 / 已停止 / 已终止 / 原状态英文）。
     按钮就是唯一的列表，文字部分只剩标题，不再逐台重复。
     """

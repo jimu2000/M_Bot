@@ -47,7 +47,6 @@ profile 与 region 通过查询参数传（如 ?profile=ACCOUNT2&region=us-sanjo
 默认 DEFAULT 账号的主区。
 """
 
-from concurrent.futures import ThreadPoolExecutor
 import threading
 import time
 
@@ -72,16 +71,17 @@ from oci.instance import (
     batch_terminate,
     get_instance,
     get_serial_console,
-    list_instances,
     reinstall_instance,
     rename_instance,
     resize_instance,
     restart_instance,
+    slim_instances,
     start_instance,
     stop_instance,
     terminate_instance,
 )
 from oci.network import (
+    attach_public_ips_bulk,
     change_public_ip,
     create_ipv6,
     delete_ipv6,
@@ -119,7 +119,10 @@ from tgbot.watchdog import (
     probe_command,
 )
 from web import config
+from web import demo_data
+from web.oci_cache import cached_raw_instances
 from web.routes.cloudreport import clear_cloud_report_cache
+from web.routes.quota import clear_quota_cache
 from web.routes.volumes import clear_volumes_cache
 from web.deps import (
     error_response,
@@ -134,8 +137,6 @@ router = APIRouter()
 # ================= 配置区（改这里） =================
 # Instance list server cache TTL (seconds): each list call runs 1 + N OCI CLI invocations (1 list + 1 list-vnics per instance for the public IP), ~10s serially; repeat visits within 30s return the cache, and a manual refresh (refresh=1) bypasses it. 实例列表服务端缓存 TTL（秒）：列表接口每次要跑 1 + N 次 OCI CLI（1 次 list + 每台实例 1 次 list-vnics 取公网 IP），串行约 10 秒；30 秒内重复访问直接返回缓存，手动刷新（refresh=1）绕过缓存。
 INSTANCE_LIST_CACHE_TTL = 30
-# Max threads for parallel public-IP fetching. OCIClient.run only spawns independent subprocesses with no shared mutable state between threads, so parallel is safe. 并行取公网 IP 的线程数上限。OCIClient.run 只跑独立子进程，各线程间无共享可变状态，并行安全。
-MAX_IP_WORKERS = 8
 # =====================================================
 
 # Instance list cache: (profile, state) -> {"expires": monotonic-clock expiry, "payload": response body}. 实例列表缓存：(profile, state) -> {"expires": 单调时钟过期点, "payload": 响应体}。
@@ -370,6 +371,14 @@ def list_all(profile: str = Query(default=None),
     refresh=true：绕过服务端缓存，强制重新查询（前端刷新按钮用）。
     """
     show_all = (state or "").lower() == "all"
+    if demo_data.is_demo():
+        # Demo mode: return simulated instances, no OCI calls, no cache.
+        # 演示模式：返回模拟实例，不调 OCI，不走缓存。
+        try:
+            return demo_data.demo_instances_payload(profile, region,
+                                                    show_all)
+        except ValueError as exc:
+            return error_response(str(exc), status_code=400)
     try:
         cli, compartment_id = resolve_profile(profile, region)
         profile_name = profile or config.DEFAULT_PROFILE
@@ -380,8 +389,9 @@ def list_all(profile: str = Query(default=None),
                 entry = _LIST_CACHE.get(cache_key)
             if entry and time.monotonic() < entry["expires"]:
                 return entry["payload"]
-        raw = list_instances(cli, compartment_id,
-                             include_shape_config=True)
+        raw = slim_instances(
+            cached_raw_instances(cli, compartment_id, refresh=refresh),
+            include_shape_config=True)
         filtered = []
         for inst in raw:
             inst_state = inst.get("lifecycle-state") or ""
@@ -391,12 +401,10 @@ def list_all(profile: str = Query(default=None),
             elif inst_state != "RUNNING":
                 continue
             filtered.append(inst)
-        # Fetch each instance's public IP in parallel (1 list-vnics each; map preserves order, so results line up one-to-one with filtered; _safe_public_ip returns None on failure). 各实例的公网 IP 并行取（每台 1 次 list-vnics；map 保序，结果与 filtered 一一对应；_safe_public_ip 失败时返回 None）。
+        # 批量取各实例的公网 IP（1 次 compartment 级挂载列表 + 每台 1 次
+        # get-vnic；比逐台 list-vnics 少 N-1 次 SDK 调用；失败的单台记 None）。
         if filtered:
-            with ThreadPoolExecutor(max_workers=MAX_IP_WORKERS) as pool:
-                ips = list(pool.map(
-                    lambda inst: _safe_public_ip(cli, inst.get("id")),
-                    filtered))
+            ips = attach_public_ips_bulk(cli, filtered, compartment_id)
         else:
             ips = []
         cpu_models = load_cpu_models()
@@ -437,6 +445,15 @@ def batch(body: BatchBody,
     if body.action == "terminate" and not body.confirm:
         return error_response("批量删除需要确认：请求体须含 confirm=true",
                               status_code=400)
+    if demo_data.is_demo():
+        # Demo mode: fake success, no OCI call, no state change.
+        # 演示模式：假成功，不调 OCI、不改状态。
+        return demo_data.fake_success(
+            {"start": "批量启动", "stop": "批量停止",
+             "restart": "批量重启", "terminate": "批量删除"}.get(
+                body.action, body.action),
+            action=body.action, succeeded=list(body.instance_ids),
+            failed=[])
     try:
         cli, _compartment_id = resolve_profile(profile, region)
         # Call the module-level imported function directly (do not pre-build a dict), so tests can patch it. 直接调模块级导入的函数（不要预建成 dict），测试才能 patch。
@@ -454,6 +471,7 @@ def batch(body: BatchBody,
         return oci_error_response(exc)
     clear_instance_list_cache(profile or config.DEFAULT_PROFILE)
     clear_cloud_report_cache()
+    clear_quota_cache(profile or config.DEFAULT_PROFILE)
     if body.action == "terminate":
         # Batch terminate permanently deletes boot volumes by default, so the boot-volume list cache must be cleared too. 批量终止默认永删引导卷，启动盘列表缓存也要清。
         clear_volumes_cache(profile or config.DEFAULT_PROFILE)
@@ -473,6 +491,14 @@ def detail(instance_id: str,
     另含 cpu_model：缓存的 CPU 型号；无缓存且实例运行中时同步
     SSH 检测一次（约 2-4 秒），检测失败为 None。
     """
+    if demo_data.is_demo():
+        # Demo mode: simulated instance detail, no OCI/SSH calls.
+        # 演示模式：模拟实例详情，不调 OCI、不 SSH。
+        detail = demo_data.demo_instance_detail(instance_id)
+        if detail is None:
+            return error_response(f"找不到实例：{instance_id}",
+                                  status_code=404)
+        return detail
     try:
         cli, compartment_id = resolve_profile(profile, region)
         data = get_instance(cli, instance_id)
@@ -504,6 +530,14 @@ def detail(instance_id: str,
 
 def _action(instance_id, profile, func, action_name, region=None):
     """启动/停止/重启的公共逻辑。"""
+    if demo_data.is_demo():
+        # Demo mode: fake success, no OCI call, no state change.
+        # 演示模式：假成功，不调 OCI、不改状态。
+        return demo_data.fake_success(
+            {"start": "启动实例", "stop": "停止实例",
+             "restart": "重启实例", "terminate": "终止实例"}.get(
+                action_name, action_name),
+            instance_id=instance_id, action=action_name)
     try:
         cli, _compartment_id = resolve_profile(profile, region)
         func(cli, instance_id)
@@ -513,6 +547,7 @@ def _action(instance_id, profile, func, action_name, region=None):
         return oci_error_response(exc)
     clear_instance_list_cache(profile or config.DEFAULT_PROFILE)
     clear_cloud_report_cache()
+    clear_quota_cache(profile or config.DEFAULT_PROFILE)
     if action_name == "terminate":
         delete_cpu_model(instance_id)
     return {"ok": True, "instance_id": instance_id, "action": action_name}
@@ -554,6 +589,12 @@ def console(instance_id: str,
             region: str = Query(default=None),
             username: str = Depends(get_current_user)):
     """获取串行控制台连接信息（含 ssh 连接命令与指纹）。"""
+    if demo_data.is_demo():
+        # Demo mode: no real serial console.
+        # 演示模式：无真实串行控制台。
+        return {"ok": True, "instance_id": instance_id,
+                "console": {"demo": True,
+                            "message": "演示模式：无真实串行控制台"}}
     try:
         cli, _compartment_id = resolve_profile(profile, region)
         connection = get_serial_console(cli, instance_id)
@@ -573,6 +614,14 @@ def rename(instance_id: str,
     """更改实例显示名（新名字不能为空，见 rename_instance 的校验）。"""
     if not (body.name or "").strip():
         return error_response("新实例名不能为空", status_code=400)
+    if demo_data.is_demo():
+        # Demo mode: fake success, no OCI call, no state change.
+        # 演示模式：假成功，不调 OCI、不改状态。
+        return demo_data.fake_success(
+            "改名",
+            instance_id=instance_id,
+            instance={"id": instance_id,
+                      "display-name": body.name.strip()})
     try:
         cli, _compartment_id = resolve_profile(profile, region)
         detail = rename_instance(cli, instance_id, body.name)
@@ -598,6 +647,15 @@ def reinstall(instance_id: str,
     if not body.confirm:
         return error_response("重装系统需要确认：请求体须含 confirm=true",
                               status_code=400)
+    if demo_data.is_demo():
+        # Demo mode: fake success (skip the confirm-name check: the demo
+        # detail is simulated, so the check would be meaningless).
+        # 演示模式：假成功（跳过确认名校验：演示详情是模拟的，校验无意义）。
+        detail = demo_data.demo_instance_detail(instance_id)
+        return demo_data.fake_success(
+            "重装系统",
+            instance_id=instance_id,
+            instance=(detail or {}).get("instance"))
     try:
         cli, _compartment_id = resolve_profile(profile, region)
         current = get_instance(cli, instance_id)
@@ -633,6 +691,13 @@ def terminate(instance_id: str,
     if not body.confirm:
         return error_response("终止实例需要确认：请求体须含 confirm=true",
                               status_code=400)
+    if demo_data.is_demo():
+        # Demo mode: fake success, no OCI call, no state change.
+        # 演示模式：假成功，不调 OCI、不改状态。
+        return demo_data.fake_success(
+            "终止实例",
+            instance_id=instance_id, action="terminate",
+            preserve_boot_volume=body.preserve_boot_volume)
     try:
         cli, _compartment_id = resolve_profile(profile, region)
         # Default preserve_boot_volume=False: terminating permanently deletes the boot volume. 默认 preserve_boot_volume=False：终止时永久删除引导卷。
@@ -646,6 +711,7 @@ def terminate(instance_id: str,
     # Terminate permanently deletes the boot volume by default (keeping it leaves an orphan volume), so the boot-volume list cache must be cleared too. 终止默认永删引导卷（保留时变孤儿盘），启动盘列表缓存也要清。
     clear_volumes_cache(profile or config.DEFAULT_PROFILE)
     clear_cloud_report_cache()
+    clear_quota_cache(profile or config.DEFAULT_PROFILE)
     return {"ok": True, "instance_id": instance_id, "action": "terminate",
             "preserve_boot_volume": body.preserve_boot_volume}
 
@@ -665,6 +731,15 @@ def change_ip(instance_id: str,
     if not body.confirm:
         return error_response("换 IP 需要确认：请求体须含 confirm=true",
                               status_code=400)
+    if demo_data.is_demo():
+        # Demo mode: fake success with a fake new TEST-NET IP.
+        # 演示模式：假成功，返回一个假的新 TEST-NET IP。
+        detail = demo_data.demo_instance_detail(instance_id)
+        old_ip = (detail or {}).get("public_ip")
+        return demo_data.fake_success(
+            "换 IP",
+            instance_id=instance_id,
+            old_ip=old_ip, new_ip="203.0.113.99")
     try:
         cli, compartment_id = resolve_profile(profile, region)
         old_ip = _safe_public_ip(cli, instance_id)
@@ -684,6 +759,12 @@ def add_ipv6(instance_id: str,
              region: str = Query(default=None),
              username: str = Depends(get_current_user)):
     """给实例主 VNIC 附加一个 IPv6，返回新地址。"""
+    if demo_data.is_demo():
+        # Demo mode: fake success with a fake documentation-range IPv6.
+        # 演示模式：假成功，返回一个假的文档段 IPv6。
+        return demo_data.fake_success(
+            "添加 IPv6",
+            instance_id=instance_id, ipv6="2001:db8::99")
     try:
         cli, _compartment_id = resolve_profile(profile, region)
         vnic = get_primary_vnic(cli, instance_id)
@@ -706,6 +787,19 @@ def delete_all_ipv6(instance_id: str,
 
     无 IPv6 时返回 ok + 提示，不报错。本接口一次删全部（与面板“删除 IPv6”按钮语义一致）。
     """
+    if demo_data.is_demo():
+        # Demo mode: fake success, report the demo IPv6 addresses as deleted.
+        # 演示模式：假成功，把演示 IPv6 当作已删除返回。
+        detail = demo_data.demo_instance_detail(instance_id)
+        deleted = (detail or {}).get("ipv6_addresses") or []
+        if not deleted:
+            return demo_data.fake_success(
+                "删除 IPv6",
+                instance_id=instance_id, deleted=[],
+                message="演示模式：该实例没有 IPv6，无需删除")
+        return demo_data.fake_success(
+            "删除 IPv6",
+            instance_id=instance_id, deleted=deleted)
     try:
         cli, _compartment_id = resolve_profile(profile, region)
         vnic = get_primary_vnic(cli, instance_id)
@@ -742,6 +836,29 @@ def resize(instance_id: str,
                               status_code=400)
     if body.ocpus < 1 or body.memory_gb < 1:
         return error_response("OCPU 与内存都必须大于 0", status_code=400)
+    if demo_data.is_demo():
+        # Demo mode: validate the shape against the demo data (same rules
+        # as the real path), then fake success without calling OCI.
+        # 演示模式：按演示数据做同样的形状校验，通过后假成功，不调 OCI。
+        detail = demo_data.demo_instance_detail(instance_id)
+        shape = ((detail or {}).get("instance") or {}).get("shape") or ""
+        if shape == SHAPE_E2_MICRO:
+            return error_response(
+                "E2.1.Micro 是固定规格（1 核 / 1GB），不支持升/降配",
+                status_code=400)
+        if shape != SHAPE_A1_FLEX:
+            return error_response(
+                f"规格 {shape} 不支持升/降配，只支持 A1.Flex",
+                status_code=400)
+        cap_error = check_a1_single_instance_cap(body.ocpus,
+                                                 body.memory_gb)
+        if cap_error:
+            return error_response(cap_error, status_code=400)
+        return demo_data.fake_success(
+            "升/降配",
+            instance_id=instance_id,
+            ocpus=body.ocpus, memory_gb=body.memory_gb,
+            message="演示模式：改规格未真实执行")
     try:
         cli, _compartment_id = resolve_profile(profile, region)
         detail_data = _unwrap_instance(get_instance(cli, instance_id))
@@ -764,6 +881,8 @@ def resize(instance_id: str,
     except OCIError as exc:
         return oci_error_response(exc)
     clear_instance_list_cache(profile or config.DEFAULT_PROFILE)
+    # Resizing changes the instance shape, so the A1 quota usage changes too. 改规格会改变实例形状，A1 配额用量也变了。
+    clear_quota_cache(profile or config.DEFAULT_PROFILE)
     return {"ok": True, "instance_id": instance_id,
             "ocpus": body.ocpus, "memory_gb": body.memory_gb,
             "message": "改规格已提交，实例可能会重启，请稍后查看状态"}
@@ -779,6 +898,19 @@ def repair(instance_id: str,
     返回修复报告 {state, public_ip, repaired, new_ip, checks}；
     公网 IP 正常时不做任何改动。
     """
+    if demo_data.is_demo():
+        # Demo mode: fake report from the simulated instance, no repair.
+        # 演示模式：按模拟实例返回假报告，不做任何修复。
+        detail = demo_data.demo_instance_detail(instance_id)
+        state = ((detail or {}).get("instance") or {}).get(
+            "lifecycle-state") or ""
+        return demo_data.fake_success(
+            "尝试修复",
+            instance_id=instance_id,
+            report={"state": state,
+                    "public_ip": (detail or {}).get("public_ip"),
+                    "repaired": False, "new_ip": None,
+                    "checks": ["演示模式：未检查真实实例"]})
     try:
         cli, compartment_id = resolve_profile(profile, region)
         report = repair_instance_ip(cli, compartment_id, instance_id)
@@ -806,6 +938,34 @@ def boot_backups(instance_id: str,
     默认模式下 backups 为空时另含 other_available_count（账号里其他
     启动盘的可用备份数，供前端提示用：删盘不会删备份，旧备份还在）。
     """
+    if demo_data.is_demo():
+        # Demo mode: simulated backups of the instance's boot volume.
+        # 演示模式：模拟该实例启动盘的备份。
+        detail = demo_data.demo_instance_detail(instance_id)
+        if detail is None:
+            return error_response(f"找不到实例：{instance_id}",
+                                  status_code=404)
+        boot_volume_id = detail.get("boot_volume_id")
+        try:
+            name, _region, _comp = demo_data.resolve_demo_profile(
+                profile, region)
+        except ValueError as exc:
+            return error_response(str(exc), status_code=400)
+        payload = demo_data.demo_backups_payload(
+            name, boot_volume_id=boot_volume_id)
+        backups = payload["backups"]
+        if not include_all:
+            backups = [b for b in backups
+                       if (b.get("lifecycle-state") or "").upper()
+                       == "AVAILABLE"]
+        result = {"ok": True, "boot_volume_id": boot_volume_id,
+                  "backups": backups}
+        if not include_all and not backups:
+            all_backups = demo_data.demo_backups_payload(name)["backups"]
+            result["other_available_count"] = sum(
+                1 for b in all_backups
+                if (b.get("lifecycle-state") or "").upper() == "AVAILABLE")
+        return result
     try:
         cli, compartment_id = resolve_profile(profile, region)
         attachment = get_boot_volume_attachment(cli, compartment_id,
@@ -849,6 +1009,35 @@ def create_boot_backup(instance_id: str,
     提示先删除再创建，前端弹出删除历史备份弹窗），响应里带
     full/count/limit；未满直接创建。
     """
+    if demo_data.is_demo():
+        # Demo mode: fake success with a fake backup record.
+        # 演示模式：假成功，返回一条假备份记录。
+        detail = demo_data.demo_instance_detail(instance_id)
+        if detail is None:
+            return error_response(f"找不到实例：{instance_id}",
+                                  status_code=404)
+        fake_backup = {
+            "backupId": "ocid1.bootvolumebackup.oc1..demobackup0099",
+            "displayName": "DEMO-backup-20261125-1200",
+            "bootVolumeId": detail.get("boot_volume_id"),
+            "sizeInGBs": detail.get("boot_volume_size_gbs"),
+            "lifecycleState": "CREATING",
+            "sourceType": "MANUAL",
+            "type": "FULL",
+            "timeCreated": "2026-11-25T12:00:00.000000+00:00",
+            "imageId": None,
+            "id": "ocid1.bootvolumebackup.oc1..demobackup0099",
+            "display-name": "DEMO-backup-20261125-1200",
+            "boot-volume-id": detail.get("boot_volume_id"),
+            "size-in-gbs": detail.get("boot_volume_size_gbs"),
+            "lifecycle-state": "CREATING",
+            "source-type": "MANUAL",
+            "time-created": "2026-11-25T12:00:00.000000+00:00",
+            "image-id": None,
+        }
+        return demo_data.fake_success(
+            "创建备份",
+            backup=fake_backup, count=3, limit=5)
     try:
         cli, compartment_id = resolve_profile(profile, region)
         prof = profile or config.DEFAULT_PROFILE
@@ -913,6 +1102,13 @@ def restore_boot_volume(instance_id: str,
                               status_code=400)
     if not (body.backup_id or "").strip():
         return error_response("backup_id 不能为空", status_code=400)
+    if demo_data.is_demo():
+        # Demo mode: fake success with a fake task id.
+        # 演示模式：假成功，返回一个假任务 id。
+        return demo_data.fake_success(
+            "恢复引导卷",
+            instance_id=instance_id, task_id="demo-restore-1",
+            message="演示模式：引导卷恢复未真实执行，进度请在任务页查看")
     try:
         cli, compartment_id = resolve_profile(profile, region)
         detail = get_instance(cli, instance_id)
@@ -960,6 +1156,7 @@ def restore_boot_volume(instance_id: str,
     clear_instance_list_cache(profile or config.DEFAULT_PROFILE)
     # A swap task creates a new boot volume and deletes the old one (the 30s cache heals itself; clear it once at startup). 换盘任务会新建一块启动盘并删旧盘（30 秒缓存自愈，启动时先清一次）。
     clear_volumes_cache(profile or config.DEFAULT_PROFILE)
+    clear_quota_cache(profile or config.DEFAULT_PROFILE)
     return {"ok": True, "instance_id": instance_id, "task_id": task_id,
             "message": "引导卷恢复已开始，进度请在任务页查看"}
 
@@ -989,6 +1186,11 @@ def watchdog_status(instance_id: str,
     limited}, label}；SSH 连不上或未配密钥时返回 ok + watchdog=None
     与原因，不报错（前端只展示）。
     """
+    if demo_data.is_demo():
+        # Demo mode: no watchdog on simulated instances.
+        # 演示模式：模拟实例上没有看门狗。
+        return {"ok": True, "watchdog": None,
+                "label": "演示模式：看门狗未安装"}
     try:
         cli, _compartment_id = resolve_profile(profile, region)
     except ValueError as exc:
@@ -1020,6 +1222,16 @@ def refresh_cpu_model(instance_id: str,
     并附原因（不报错，前端只展示）。检测成功后清列表缓存，
     下次打开列表即显示新型号。
     """
+    if demo_data.is_demo():
+        # Demo mode: return the simulated CPU model, no SSH detection.
+        # 演示模式：返回模拟 CPU 型号，不 SSH 检测。
+        detail = demo_data.demo_instance_detail(instance_id)
+        model = (detail or {}).get("cpu_model")
+        if model is None:
+            return {"ok": True, "cpu_model": None,
+                    "message": "演示模式：找不到该实例"}
+        return {"ok": True, "cpu_model": model,
+                "message": f"演示模式：CPU 型号：{model}"}
     try:
         cli, _compartment_id = resolve_profile(profile, region)
     except ValueError as exc:
@@ -1052,6 +1264,15 @@ def watchdog_toggle(instance_id: str,
     测试推送）；false：摘 cron + 解除熔断/限速。安装可能耗时几分钟
     （新机要装 vnstat），前端请显示等待提示。
     """
+    if demo_data.is_demo():
+        # Demo mode: fake success, no SSH, no script install.
+        # 演示模式：假成功，不 SSH、不装脚本。
+        return demo_data.fake_success(
+            "开启看门狗" if body.enabled else "关闭看门狗",
+            instance_id=instance_id,
+            action="enabled" if body.enabled else "disabled",
+            message=("演示模式：看门狗已开启（假动作）"
+                     if body.enabled else "演示模式：看门狗已关闭（假动作）"))
     try:
         cli, _compartment_id = resolve_profile(profile, region)
     except ValueError as exc:

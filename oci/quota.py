@@ -48,33 +48,28 @@ def _fmt(n):
 def _list_instances(cli, compartment_id):
     """列出 compartment 下所有实例，返回 list（空则 []）。
 
-    instance list 返回 {"data": [...]}；空输出时 cli.run 返回 None。
+    SDK 直调（cli.sdk_list_instances），不再起 OCI CLI 子进程。
     """
-    result = cli.run(["compute", "instance", "list",
-                      "--compartment-id", compartment_id])
-    if not result:
-        return []
-    if isinstance(result, dict):
-        return result.get("data") or []
-    return result
+    return cli.sdk_list_instances(compartment_id) or []
 
 
 def _list_boot_volumes(cli, compartment_id):
-    """列出 compartment 下所有启动盘，返回 list（空则 []）。"""
-    result = cli.run(["bv", "boot-volume", "list",
-                      "--compartment-id", compartment_id])
-    if not result:
-        return []
-    if isinstance(result, dict):
-        return result.get("data") or []
-    return result
+    """列出 compartment 下所有启动盘，返回 list（空则 []）。
+
+    SDK 直调（cli.sdk_list_boot_volumes），不再起 OCI CLI 子进程。
+    """
+    return cli.sdk_list_boot_volumes(compartment_id) or []
 
 
-def get_a1_usage(cli, compartment_id):
+def get_a1_usage(cli, compartment_id, instances=None):
     """查 A1.Flex 使用量。
 
     只统计 RUNNING 状态的 VM.Standard.A1.Flex 实例，把每台 shape-config
     里的 ocpus 与 memory-in-gbs 加总。
+
+    instances：已取好的实例原始列表（sdk_list_instances 的返回值），
+    传了就直接用，不再调 _list_instances——get_free_tier_summary
+    一次取来分给三项用，避免同一次请求里重复调 SDK。
 
     返回：
         {"ocpu_used": X, "ocpu_limit": 4,
@@ -83,8 +78,10 @@ def get_a1_usage(cli, compartment_id):
     """
     ocpu_used = 0
     memory_used_gb = 0
-    instances = []
-    for inst in _list_instances(cli, compartment_id):
+    instances_list = []
+    if instances is None:
+        instances = _list_instances(cli, compartment_id)
+    for inst in instances:
         if inst.get("lifecycle-state") != "RUNNING":
             continue
         if inst.get("shape") != SHAPE_A1_FLEX:
@@ -94,7 +91,7 @@ def get_a1_usage(cli, compartment_id):
         memory_gb = cfg.get("memory-in-gbs") or 0
         ocpu_used += ocpus
         memory_used_gb += memory_gb
-        instances.append({
+        instances_list.append({
             "id": inst.get("id"),
             "display_name": inst.get("display-name"),
             "ocpus": ocpus,
@@ -105,37 +102,42 @@ def get_a1_usage(cli, compartment_id):
         "ocpu_limit": A1_MAX_OCPU,
         "memory_used_gb": memory_used_gb,
         "memory_limit_gb": A1_MAX_MEMORY_GB,
-        "instances": instances,
+        "instances": instances_list,
     }
 
 
-def get_e2_usage(cli, compartment_id):
+def get_e2_usage(cli, compartment_id, instances=None):
     """查 E2.1.Micro 数量。
 
     只统计 RUNNING 状态的 VM.Standard.E2.1.Micro 实例。
+
+    instances：已取好的实例原始列表，传了就直接用，不再调
+    _list_instances（见 get_a1_usage 的说明）。
 
     返回：
         {"count": N, "limit": 2,
          "instances": [{"id", "display_name"}, ...]}
     """
-    instances = []
-    for inst in _list_instances(cli, compartment_id):
+    instances_list = []
+    if instances is None:
+        instances = _list_instances(cli, compartment_id)
+    for inst in instances:
         if inst.get("lifecycle-state") != "RUNNING":
             continue
         if inst.get("shape") != SHAPE_E2_MICRO:
             continue
-        instances.append({
+        instances_list.append({
             "id": inst.get("id"),
             "display_name": inst.get("display-name"),
         })
     return {
-        "count": len(instances),
+        "count": len(instances_list),
         "limit": E2_MAX_INSTANCES,
-        "instances": instances,
+        "instances": instances_list,
     }
 
 
-def get_boot_volume_usage(cli, compartment_id):
+def get_boot_volume_usage(cli, compartment_id, volumes=None):
     """查启动盘总量。
 
     统计除 TERMINATING / TERMINATED 之外的全部启动盘，把 size-in-gbs
@@ -144,18 +146,23 @@ def get_boot_volume_usage(cli, compartment_id):
     要排除的是已删除（TERMINATED）与删除中（TERMINATING）的盘，
     它们不占免费额度。
 
+    volumes：已取好的启动盘原始列表，传了就直接用，不再调
+    _list_boot_volumes（见 get_a1_usage 的说明）。
+
     返回：
         {"used_gb": X, "limit_gb": 200,
          "volumes": [{"id", "display_name", "size_gb"}, ...]}
     """
     used_gb = 0
-    volumes = []
-    for vol in _list_boot_volumes(cli, compartment_id):
+    volumes_list = []
+    if volumes is None:
+        volumes = _list_boot_volumes(cli, compartment_id)
+    for vol in volumes:
         if vol.get("lifecycle-state") in ("TERMINATING", "TERMINATED"):
             continue
         size_gb = vol.get("size-in-gbs") or 0
         used_gb += size_gb
-        volumes.append({
+        volumes_list.append({
             "id": vol.get("id"),
             "display_name": vol.get("display-name"),
             "size_gb": size_gb,
@@ -163,19 +170,28 @@ def get_boot_volume_usage(cli, compartment_id):
     return {
         "used_gb": used_gb,
         "limit_gb": BOOT_VOLUME_MAX_GB,
-        "volumes": volumes,
+        "volumes": volumes_list,
     }
 
 
-def get_free_tier_summary(cli, compartment_id):
+def get_free_tier_summary(cli, compartment_id, instances=None,
+                          volumes=None):
     """汇总 A1 / E2 / 启动盘三项额度，返回 used/limit/remaining 与 overall_ok。
+
+    实例列表与启动盘列表只取一次，分给三项用：以前这里调
+    get_a1_usage 与 get_e2_usage，各自又调一次 _list_instances，
+    同一次请求里实例列表被重复查了两遍。
 
     remaining = limit - used，超限时为负数。
     overall_ok 为 True 当且仅当三项全部未超限。
     """
-    a1 = get_a1_usage(cli, compartment_id)
-    e2 = get_e2_usage(cli, compartment_id)
-    boot = get_boot_volume_usage(cli, compartment_id)
+    if instances is None:
+        instances = _list_instances(cli, compartment_id)
+    if volumes is None:
+        volumes = _list_boot_volumes(cli, compartment_id)
+    a1 = get_a1_usage(cli, compartment_id, instances=instances)
+    e2 = get_e2_usage(cli, compartment_id, instances=instances)
+    boot = get_boot_volume_usage(cli, compartment_id, volumes=volumes)
 
     a1_ok = (a1["ocpu_used"] <= a1["ocpu_limit"]
              and a1["memory_used_gb"] <= a1["memory_limit_gb"])

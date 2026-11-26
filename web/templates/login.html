@@ -17,6 +17,21 @@
     })(window, document, "clarity", "script", "{{ clarity_id }}");
 </script>
 {% endif %}
+{% if matomo_url and matomo_site_id %}
+{# Matomo stats (self-hosted): only loaded when MBOT_MATOMO_URL and MBOT_MATOMO_SITE_ID are both configured. Matomo 统计（自建）：MBOT_MATOMO_URL 与 MBOT_MATOMO_SITE_ID 都配了才加载。 #}
+<script>
+  var _paq = window._paq = window._paq || [];
+  _paq.push(['trackPageView']);
+  _paq.push(['enableLinkTracking']);
+  (function() {
+    var u="{{ matomo_url }}";
+    _paq.push(['setTrackerUrl', u+'matomo.php']);
+    _paq.push(['setSiteId', '{{ matomo_site_id }}']);
+    var d=document, g=d.createElement('script'), s=d.getElementsByTagName('script')[0];
+    g.async=true; g.src=u+'matomo.js'; s.parentNode.insertBefore(g,s);
+  })();
+</script>
+{% endif %}
 </head>
 <body>
 <div class="login-page">
@@ -31,6 +46,10 @@
     </div>
     <h1 class="login-title">M_Bot Oracle开源管理面板</h1>
     <p class="login-subtitle" data-i18n="login.subtitle">登录到你的账号</p>
+    {% if demo_mode %}
+    {# Demo mode hint: the demo login account is shown only when MBOT_DEMO_MODE=1. 演示模式提示：仅 MBOT_DEMO_MODE=1 时显示演示登录账号。 #}
+    <p style="margin: 12px 0 0; padding: 10px 12px; border: 1px dashed rgba(255,255,255,0.4); border-radius: 8px; font-size: 14px; text-align: left; color: #fff; background: rgba(255,255,255,0.08);">演示模式：数据为模拟数据，不连接真实云账号。<br>演示账号：<b>demo</b> / <b>demo</b>（管理员账号仍可用）</p>
+    {% endif %}
 
     <div class="login-tabs" role="tablist">
       <button type="button" class="login-tab active" id="tab-password" role="tab" aria-selected="true" data-i18n="login.tab_password">密码登录</button>

@@ -24,6 +24,7 @@ from fastapi.testclient import TestClient
 
 from oci.client import NotFoundError, RateLimitError
 from oci.grabber import GrabResult
+from oci.instance import slim_instances
 from tgbot.cpu_policy import BootKeys
 from web import config
 from web import deps as deps_mod
@@ -33,6 +34,9 @@ from web.deps import effective_region, get_profile_regions, resolve_profile
 from web.routes.cloudreport import clear_cloud_report_cache
 from web.routes.instances import clear_instance_list_cache
 from web.routes.volumes import clear_volumes_cache
+from web.routes.boot_backups import clear_boot_backups_cache
+from web.routes.objectstorage import clear_objectstorage_cache
+from web.routes.quota import clear_quota_cache
 from web import tasks as tasks_mod
 from web.tasks import TASKS
 
@@ -116,6 +120,9 @@ class WebApiTestCase(unittest.TestCase):
         clear_instance_list_cache()
         clear_volumes_cache()
         clear_cloud_report_cache()
+        clear_quota_cache()
+        clear_boot_backups_cache()
+        clear_objectstorage_cache()
         LOGIN_GUARD.reset()
         SESSIONS.reset()
         TASKS.reset()
@@ -159,7 +166,8 @@ class TestAuthApi(WebApiTestCase):
         self._login()
         r = self.client.get("/api/auth/me")
         self.assertEqual(r.status_code, 200)
-        self.assertEqual(r.json(), {"ok": True, "username": "admin"})
+        self.assertEqual(r.json(), {"ok": True, "username": "admin",
+                                    "demoMode": False})
 
     def test_login_wrong_password(self):
         r = self._login(password="wrong-password")
@@ -216,9 +224,10 @@ class TestInstancesApi(WebApiTestCase):
         super().setUp()
         self._login()
 
-    @patch("web.routes.instances.get_public_ip", return_value=FAKE_IP)
-    @patch("web.routes.instances.list_instances", return_value=FAKE_INSTANCES)
-    def test_list_instances(self, mock_list, mock_ip):
+    @patch("web.routes.instances.attach_public_ips_bulk", return_value=[FAKE_IP])
+    @patch("web.routes.instances.cached_raw_instances", return_value=FAKE_INSTANCES)
+    @patch("web.routes.instances.slim_instances", wraps=slim_instances)
+    def test_list_instances(self, mock_slim, mock_list, mock_ip):
         """面板形状：只含 RUNNING 实例，新字段齐全，旧字段双写。"""
         r = self.client.get("/api/instances")
         self.assertEqual(r.status_code, 200)
@@ -239,11 +248,13 @@ class TestInstancesApi(WebApiTestCase):
         self.assertEqual(inst["display-name"], "instance-a1")
         self.assertEqual(inst["lifecycle-state"], "RUNNING")
         mock_list.assert_called_once()
-        _args, kwargs = mock_list.call_args
+        # 路由现在把 include_shape_config 交给 slim_instances（第 5 轮去重后
+        # 原始列表走共享缓存，字段裁剪仍由 slim_instances 做）。
+        _args, kwargs = mock_slim.call_args
         self.assertTrue(kwargs.get("include_shape_config"))
 
-    @patch("web.routes.instances.get_public_ip", return_value=FAKE_IP)
-    @patch("web.routes.instances.list_instances", return_value=FAKE_INSTANCES)
+    @patch("web.routes.instances.attach_public_ips_bulk", return_value=[FAKE_IP])
+    @patch("web.routes.instances.cached_raw_instances", return_value=FAKE_INSTANCES)
     @patch("web.routes.instances.resolve_profile")
     def test_list_instances_region_param(self, mock_resolve, mock_list,
                                          mock_ip):
@@ -265,9 +276,8 @@ class TestInstancesApi(WebApiTestCase):
         self.assertEqual(r.status_code, 400)
         self.assertIn("未订阅", r.json()["error"])
 
-    @patch("web.routes.instances.get_public_ip",
-           side_effect=NotFoundError("no vnic"))
-    @patch("web.routes.instances.list_instances", return_value=FAKE_INSTANCES)
+    @patch("web.routes.instances.attach_public_ips_bulk", return_value=[None])
+    @patch("web.routes.instances.cached_raw_instances", return_value=FAKE_INSTANCES)
     def test_list_instances_ip_failure_tolerated(self, mock_list, mock_ip):
         """单台实例取 IP 失败时列表仍返回，IP 为 None。"""
         r = self.client.get("/api/instances")
@@ -283,7 +293,7 @@ class TestInstancesApi(WebApiTestCase):
                           "instance-id": FAKE_INSTANCE,
                           "lifecycle-state": "ATTACHED"}])
     @patch("web.routes.instances.list_ipv6_for_vnic",
-           return_value=[{"ip-address": "2603:c024:c021:1d01::1"}])
+           return_value=[{"ip-address": "2001:db8::1"}])
     @patch("web.routes.instances.list_vnics",
            return_value=[{"id": "ocid1.vnic.oc1..testxxxx",
                           "public-ip": FAKE_IP,
@@ -304,7 +314,7 @@ class TestInstancesApi(WebApiTestCase):
         self.assertEqual(body["public_ip"], FAKE_IP)
         self.assertEqual(body["private_ip"], "10.0.0.5")
         self.assertEqual(body["ipv6_addresses"],
-                         ["2603:c024:c021:1d01::1"])
+                         ["2001:db8::1"])
         self.assertEqual(body["boot_volume_size_gbs"], 47)
         self.assertEqual(body["boot_volume_id"], FAKE_VOLUME)
         self.assertEqual(body["boot_volume_vpus_per_gb"], 10)
@@ -318,7 +328,7 @@ class TestInstancesApi(WebApiTestCase):
         self.assertEqual(r.status_code, 404)
         self.assertFalse(r.json()["ok"])
 
-    @patch("web.routes.instances.list_instances",
+    @patch("web.routes.instances.cached_raw_instances",
            side_effect=RateLimitError("429 TooManyRequests"))
     def test_list_rate_limited_429(self, mock_list):
         r = self.client.get("/api/instances")
@@ -521,8 +531,8 @@ class TestCpuModelApi(WebApiTestCase):
     @patch("web.routes.instances.load_cpu_models",
            return_value={FAKE_INSTANCE: {"model": "AMD EPYC 7J13",
                                          "checked_at": "2026-11-24T00:00:00+00:00"}})
-    @patch("web.routes.instances.get_public_ip", return_value=FAKE_IP)
-    @patch("web.routes.instances.list_instances", return_value=FAKE_INSTANCES)
+    @patch("web.routes.instances.attach_public_ips_bulk", return_value=[FAKE_IP])
+    @patch("web.routes.instances.cached_raw_instances", return_value=FAKE_INSTANCES)
     def test_list_includes_cpu_model(self, mock_list, mock_ip,
                                      mock_cache, mock_bg):
         r = self.client.get("/api/instances")
@@ -533,8 +543,8 @@ class TestCpuModelApi(WebApiTestCase):
 
     @patch("web.routes.instances._refresh_cpu_models_background")
     @patch("web.routes.instances.load_cpu_models", return_value={})
-    @patch("web.routes.instances.get_public_ip", return_value=FAKE_IP)
-    @patch("web.routes.instances.list_instances", return_value=FAKE_INSTANCES)
+    @patch("web.routes.instances.attach_public_ips_bulk", return_value=[FAKE_IP])
+    @patch("web.routes.instances.cached_raw_instances", return_value=FAKE_INSTANCES)
     def test_list_cpu_model_none_when_uncached(self, mock_list, mock_ip,
                                                mock_cache, mock_bg):
         r = self.client.get("/api/instances")
@@ -614,9 +624,9 @@ class TestVolumesApi(WebApiTestCase):
         super().setUp()
         self._login()
 
-    @patch("web.routes.volumes.list_instances", return_value=[])
+    @patch("web.routes.volumes.cached_raw_instances", return_value=[])
     @patch("web.routes.volumes.list_boot_volume_attachments", return_value=[])
-    @patch("web.routes.volumes.list_boot_volumes", return_value=FAKE_VOLUMES)
+    @patch("web.routes.volumes.cached_raw_boot_volumes", return_value=FAKE_VOLUMES)
     def test_list_volumes(self, mock_list, mock_atts, mock_insts):
         """面板形状：新字段齐全，旧字段双写；无挂载时 attached=false。"""
         r = self.client.get("/api/volumes")
@@ -641,9 +651,9 @@ class TestVolumesApi(WebApiTestCase):
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()["volume"]["id"], FAKE_VOLUME)
 
-    @patch("web.routes.volumes.list_instances", return_value=[])
+    @patch("web.routes.volumes.cached_raw_instances", return_value=[])
     @patch("web.routes.volumes.list_boot_volume_attachments", return_value=[])
-    @patch("web.routes.volumes.list_boot_volumes",
+    @patch("web.routes.volumes.cached_raw_boot_volumes",
            return_value=FAKE_VOLUMES)
     def test_orphans(self, mock_list, mock_atts, mock_insts):
         """孤儿盘从启动盘列表过滤而来（无挂载记录的 AVAILABLE 盘），
@@ -1401,7 +1411,7 @@ class TestNotifyGrabSuccess(unittest.TestCase):
     def setUp(self):
         self.registry = MagicMock()
         self.params = {
-            "display_name": "ARM_2026-11-24",
+            "display_name": "ARM_2026-01-01",
             "shape": "VM.Standard.A1.Flex",
             "ocpus": 1, "memory_gb": 6,
             "boot_volume_size_gbs": 47,
@@ -1433,7 +1443,7 @@ class TestNotifyGrabSuccess(unittest.TestCase):
         self.assertEqual(args[3], "首尔")
         self.assertEqual(args[4], "VM.Standard.A1.Flex")
         self.assertEqual(args[7], 47)
-        self.assertEqual(args[8][0]["name"], "ARM_2026-11-24")
+        self.assertEqual(args[8][0]["name"], "ARM_2026-01-01")
         self.assertEqual(args[8][0]["public_ip"], FAKE_IP)
         self.assertEqual(args[8][0]["attempts"], 2)
         self.assertEqual(kwargs["root_password"], self.notify["root_password"])
@@ -1480,7 +1490,7 @@ class TestNotifyGrabSuccess(unittest.TestCase):
         self.assertIsNone(notify_fn.call_args[0][8][0]["public_ip"])
         followup.assert_called_once()
         args = followup.call_args[0]
-        self.assertEqual(args[1], "ARM_2026-11-24")
+        self.assertEqual(args[1], "ARM_2026-01-01")
         self.assertEqual(args[2], "T")
         self.assertEqual(args[3], 654321)
         with patch.object(tasks_mod, "get_public_ip",

@@ -435,6 +435,16 @@ STRINGS = {
     "boot.label_pubip": {"zh": "公网IP", "en": "Public IP"},
     "boot.label_ipv6": {"zh": "IPv6", "en": "IPv6"},
     "boot.label_script": {"zh": "开机脚本", "en": "Startup script"},
+    "boot.label_dd": {"zh": "DD重装", "en": "DD reinstall"},
+    "boot.dd_on": {"zh": "开（Debian 13）", "en": "On (Debian 13)"},
+    "boot.dd_off": {"zh": "不开", "en": "Off"},
+    "boot.dd_summary": {"zh": "DD重装：开（Debian 13，SSH 14422，装完跑初始化脚本）",
+                        "en": "DD reinstall: on (Debian 13, SSH 14422, "
+                              "then run init script)"},
+    "boot.dd_requires_root": {"zh": "开 DD 重装时必须开 root 登录（DD 后的 "
+                               "SSH 靠 root 密码进）",
+                              "en": "DD reinstall requires root login on "
+                                    "(SSH after DD uses the root password)"},
     "boot.not_selected": {"zh": "未选", "en": "Not selected"},
     "boot.default_disk": {"zh": "默认（47GB）", "en": "Default (47GB)"},
     "boot.delay_not_selected": {"zh": "未选（默认 25±5 秒）",

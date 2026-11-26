@@ -55,6 +55,7 @@ from tgbot.handlers_client import (
     remove_oci_profile,
 )
 from web import config
+from web import demo_data
 from web.deps import (
     error_response,
     get_current_user,
@@ -112,6 +113,19 @@ class PendingProfileStore:
 PENDING_PROFILES = PendingProfileStore()
 
 
+def _demo_blocked():
+    """演示模式下禁止修改账号配置：返回 400 响应，否则返回 None。
+
+    账号增删与私钥补传改的是服务器真实的 OCI 配置文件，不是演示
+    数据，所以演示模式下直接拒绝（而不是假成功，避免前端误以为
+    真删了账号）。
+    """
+    if demo_data.is_demo():
+        return error_response("演示模式：演示租户不能修改",
+                              status_code=400)
+    return None
+
+
 def _is_private_key_pem(data):
     """上传内容是不是私钥文件：UTF-8 文本且含私钥 BEGIN/END 行。"""
     try:
@@ -162,6 +176,11 @@ def _ordered_regions(name, home_region, codes):
 def list_profiles(username: str = Depends(get_current_user)):
     """列出已配置的账号（profile）：名字、区域、区域中文名、订阅区数、
     订阅区域列表、显示名、私钥路径与私钥是否就位。"""
+    if demo_data.is_demo():
+        # Demo mode: simulated tenants, no OCI calls (no region-subscription
+        # lookup, no key_file check). 演示模式：模拟租户，不调 OCI
+        # （不查订阅区域、不查私钥）。
+        return demo_data.demo_profile_list()
     counts = get_region_counts()
     regions = get_profile_regions()
     key_files = _configured_key_files()
@@ -195,6 +214,9 @@ async def upload_profile_key(profile: str,
     权限 600）。内容必须是私钥文件，否则什么都不写。响应不回显
     私钥内容。多账号共用同一 key_file 时，传一次就全好了。
     """
+    blocked = _demo_blocked()
+    if blocked is not None:
+        return blocked
     if profile not in config.PROFILES:
         return error_response(f"没有这个账号：{profile}", status_code=404)
     target = _configured_key_files().get(profile, "")
@@ -234,6 +256,9 @@ def delete_profile(profile: str,
     DEFAULT 是默认账号不能删；至少保留一个账号。面板列表立即更新
     （本进程重读账号表），机器人是独立进程、需重启后生效。
     """
+    blocked = _demo_blocked()
+    if blocked is not None:
+        return blocked
     if profile not in config.PROFILES:
         return error_response(f"没有这个账号：{profile}", status_code=404)
     if profile == config.DEFAULT_PROFILE:
@@ -275,6 +300,9 @@ async def parse_profiles(config_text: str = Form(default=""),
     自动过滤已存在的 profile（与机器人 /uploadapi 一致）；返回待确认
     列表与 pending_id。响应里不回显 OCID、指纹与凭据值。
     """
+    blocked = _demo_blocked()
+    if blocked is not None:
+        return blocked
     text = (config_text or "").strip()
     if config_file is not None and config_file.filename:
         raw = await config_file.read(MAX_CONFIG_BYTES + 1)
@@ -338,6 +366,9 @@ async def commit_profiles(request: Request,
     顺序：先校验全部 pem 内容（失败则什么都不写）→ 写配置 → 写 pem
     文件（600）→ 保存 [cloudflare] 段 → 补 compartment 环境变量。
     """
+    blocked = _demo_blocked()
+    if blocked is not None:
+        return blocked
     form = await request.form()
     pending = PENDING_PROFILES.consume(form.get("pending_id"))
     if pending is None:

@@ -17,6 +17,8 @@
 
 import os
 import tempfile
+import threading
+import time
 
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 from pydantic import BaseModel
@@ -41,6 +43,29 @@ from web.deps import (
 
 router = APIRouter()
 
+# ================= 配置区（改这里） =================
+# Bucket list server cache TTL (seconds): each list call runs 2 OCI CLI calls (namespace lookup + list), several seconds serially; repeat visits within 30s return the cache, and a manual refresh (refresh=1) bypasses it. Bucket 列表服务端缓存 TTL（秒）：列表接口每次要跑 2 次 OCI CLI（查命名空间 + list），串行几秒；30 秒内重复访问直接返回缓存，手动刷新（refresh=1）绕过缓存。
+OBJECTSTORAGE_CACHE_TTL = 30
+# =====================================================
+
+# Bucket list cache: (profile, region) -> {"expires": monotonic-clock expiry, "payload": response body}. Memory only, never written to disk. Bucket 列表缓存：(profile, region) -> {"expires": 单调时钟过期点, "payload": 响应体}。只放内存不写盘。
+_BUCKETS_CACHE = {}
+_BUCKETS_CACHE_LOCK = threading.Lock()
+
+
+def clear_objectstorage_cache(profile=None):
+    """清对象存储 Bucket 列表缓存：指定 profile 时只清该账号，否则全清。
+
+    写操作（新建/删除 Bucket）成功后调用，避免列表显示旧数据；
+    单元测试在 setUp 里调用，避免缓存跨测试串数据。
+    """
+    with _BUCKETS_CACHE_LOCK:
+        if profile is None:
+            _BUCKETS_CACHE.clear()
+        else:
+            for key in [k for k in _BUCKETS_CACHE if k[0] == profile]:
+                del _BUCKETS_CACHE[key]
+
 
 class CreateBucketBody(BaseModel):
     """新建 Bucket 请求体。"""
@@ -56,19 +81,36 @@ def _resolve_namespace(cli):
 @router.get("/api/objectstorage/buckets")
 def list_all_buckets(profile: str = Query(default=None),
                      region: str = Query(default=None),
+                     refresh: bool = Query(default=False),
                      username: str = Depends(get_current_user)):
-    """Bucket 列表。"""
+    """Bucket 列表（30 秒服务端缓存；refresh=true 绕过缓存）。
+
+    refresh=true：绕过服务端缓存，强制重新查询（前端刷新按钮用）。
+    """
     try:
         cli, compartment_id = resolve_profile(profile, region)
+        profile_name = profile or config.DEFAULT_PROFILE
+        cache_key = (profile_name, cli.region)
+        if not refresh:
+            with _BUCKETS_CACHE_LOCK:
+                entry = _BUCKETS_CACHE.get(cache_key)
+            if entry and time.monotonic() < entry["expires"]:
+                return entry["payload"]
         namespace = _resolve_namespace(cli)
         buckets = list_buckets(cli, compartment_id, namespace=namespace)
     except ValueError as exc:
         return error_response(str(exc), status_code=400)
     except OCIError as exc:
         return oci_error_response(exc)
-    return {"ok": True,
-            "profile": profile or config.DEFAULT_PROFILE,
-            "buckets": buckets}
+    payload = {"ok": True,
+               "profile": profile_name,
+               "buckets": buckets}
+    with _BUCKETS_CACHE_LOCK:
+        _BUCKETS_CACHE[cache_key] = {
+            "expires": time.monotonic() + OBJECTSTORAGE_CACHE_TTL,
+            "payload": payload,
+        }
+    return payload
 
 
 @router.post("/api/objectstorage/buckets", status_code=201)
@@ -86,6 +128,7 @@ def create_new_bucket(body: CreateBucketBody,
         return error_response(str(exc), status_code=400)
     except OCIError as exc:
         return oci_error_response(exc)
+    clear_objectstorage_cache(profile or config.DEFAULT_PROFILE)
     return {"ok": True, "bucket": bucket}
 
 
@@ -104,6 +147,7 @@ def delete_bucket_route(bucket_name: str,
         return error_response(str(exc), status_code=400)
     except OCIError as exc:
         return oci_error_response(exc)
+    clear_objectstorage_cache(profile or config.DEFAULT_PROFILE)
     return {"ok": True, "bucket_name": bucket_name}
 
 

@@ -57,8 +57,21 @@ FAKE_GET_RESPONSE = {
 
 
 def _mock_cli(return_value=None):
+    """造一个 mock CLI。
+
+    cli.run 返回原值（写操作仍走 CLI，返回值包 {"data": ...}）；
+    SDK 读方法（sdk_list_instances / sdk_get_instance / sdk_get_image）
+    返回解包后的数据（不包 {"data": ...}），与真实 SDK 方法一致。
+    """
     cli = MagicMock()
     cli.run.return_value = return_value
+    unwrapped = (return_value.get("data", return_value)
+                 if isinstance(return_value, dict) else return_value)
+    if isinstance(unwrapped, list):
+        cli.sdk_list_instances.return_value = unwrapped
+    elif isinstance(unwrapped, dict):
+        cli.sdk_get_instance.return_value = unwrapped
+        cli.sdk_get_image.return_value = unwrapped
     return cli
 
 
@@ -80,10 +93,8 @@ class TestListInstances(unittest.TestCase):
     def test_command_includes_compartment(self):
         cli = _mock_cli({"data": []})
         list_instances(cli, FAKE_COMPARTMENT)
-        args = cli.run.call_args[0][0]
-        self.assertEqual(args[:3], ["compute", "instance", "list"])
-        self.assertIn("--compartment-id", args)
-        self.assertIn(FAKE_COMPARTMENT, args)
+        cli.sdk_list_instances.assert_called_once_with(FAKE_COMPARTMENT)
+        cli.run.assert_not_called()
 
     def test_empty_list(self):
         cli = _mock_cli({"data": []})
@@ -94,14 +105,15 @@ class TestGetInstance(unittest.TestCase):
     def test_returns_full_json(self):
         cli = _mock_cli(FAKE_GET_RESPONSE)
         result = get_instance(cli, FAKE_INSTANCE)
-        self.assertEqual(result, FAKE_GET_RESPONSE)
-        args = cli.run.call_args[0][0]
-        self.assertEqual(args[:3], ["compute", "instance", "get"])
-        self.assertIn(FAKE_INSTANCE, args)
+        # SDK 直调返回解包后的字典（不包 {"data": ...}）。
+        self.assertEqual(result, FAKE_GET_RESPONSE["data"])
+        cli.sdk_get_instance.assert_called_once_with(FAKE_INSTANCE)
+        cli.run.assert_not_called()
 
     def test_not_found_propagates(self):
         cli = MagicMock()
-        cli.run.side_effect = NotFoundError("NotAuthorizedOrNotFound")
+        cli.sdk_get_instance.side_effect = NotFoundError(
+            "NotAuthorizedOrNotFound")
         with self.assertRaises(NotFoundError):
             get_instance(cli, FAKE_INSTANCE)
 
@@ -118,7 +130,8 @@ class TestGetInstanceState(unittest.TestCase):
 
     def test_not_found_propagates(self):
         cli = MagicMock()
-        cli.run.side_effect = NotFoundError("NotAuthorizedOrNotFound")
+        cli.sdk_get_instance.side_effect = NotFoundError(
+            "NotAuthorizedOrNotFound")
         with self.assertRaises(NotFoundError):
             get_instance_state(cli, FAKE_INSTANCE)
 
@@ -267,15 +280,15 @@ class TestImageArch(unittest.TestCase):
 
     def test_get_image_arch_queries_image_get(self):
         cli = MagicMock()
-        cli.run.return_value = {
+        cli.sdk_get_image.return_value = {
             "display-name": "Canonical-Ubuntu-24.04-aarch64-2026.11.05-0"}
         self.assertEqual(get_image_arch(cli, FAKE_IMAGE), "aarch64")
-        cli.run.assert_called_once_with(
-            ["compute", "image", "get", "--image-id", FAKE_IMAGE])
+        cli.sdk_get_image.assert_called_once_with(FAKE_IMAGE)
+        cli.run.assert_not_called()
 
     def test_get_image_arch_failure_returns_none(self):
         cli = MagicMock()
-        cli.run.side_effect = Exception("NotAuthorizedOrNotFound")
+        cli.sdk_get_image.side_effect = Exception("NotAuthorizedOrNotFound")
         self.assertIsNone(get_image_arch(cli, FAKE_IMAGE))
 
 

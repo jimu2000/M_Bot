@@ -39,6 +39,9 @@ from web.auth import LOGIN_GUARD, SESSIONS, hash_password
 from web.routes.cloudreport import clear_cloud_report_cache
 from web.routes.instances import clear_instance_list_cache
 from web.routes.volumes import clear_volumes_cache
+from web.routes.boot_backups import clear_boot_backups_cache
+from web.routes.objectstorage import clear_objectstorage_cache
+from web.routes.quota import clear_quota_cache
 from web.tasks import TASKS
 
 # Placeholders (no real OCID / IP in tests). 占位符（测试里不出现真实 OCID / IP）。
@@ -50,7 +53,7 @@ FAKE_IPV6_2 = "ocid1.ipv6.oc1..test2222"
 FAKE_VOLUME = "ocid1.bootvolume.oc1..testxxxx"
 FAKE_OLD_IP = "203.0.113.10"
 FAKE_NEW_IP = "203.0.113.99"
-FAKE_IPV6_ADDR = "2603:c024:c021:1d01::1"
+FAKE_IPV6_ADDR = "2001:db8::1"
 
 TEST_PASSWORD = "test-admin-password"
 
@@ -91,6 +94,9 @@ class InstanceOpsTestCase(unittest.TestCase):
         clear_instance_list_cache()
         clear_volumes_cache()
         clear_cloud_report_cache()
+        clear_quota_cache()
+        clear_boot_backups_cache()
+        clear_objectstorage_cache()
         LOGIN_GUARD.reset()
         SESSIONS.reset()
         TASKS.reset()
@@ -167,7 +173,7 @@ class TestChangeIpApi(InstanceOpsTestCase):
     @patch("web.routes.instances.change_public_ip",
            return_value=FAKE_NEW_IP)
     @patch("web.routes.instances.get_public_ip", return_value=FAKE_OLD_IP)
-    @patch("web.routes.instances.list_instances",
+    @patch("web.routes.instances.cached_raw_instances",
            return_value=FAKE_INSTANCES)
     def test_change_ip_clears_list_cache(self, mock_list, mock_ip,
                                          mock_change):
@@ -208,7 +214,7 @@ class TestIpv6Api(InstanceOpsTestCase):
     @patch("web.routes.instances.list_ipv6_for_vnic",
            return_value=[{"id": FAKE_IPV6_1, "ip-address": FAKE_IPV6_ADDR},
                          {"id": FAKE_IPV6_2,
-                          "ip-address": "2603:c024:c021:1d01::2"}])
+                          "ip-address": "2001:db8::2"}])
     @patch("web.routes.instances.get_primary_vnic",
            return_value={"id": FAKE_VNIC, "is-primary": True})
     def test_delete_ipv6_all(self, mock_vnic, mock_list, mock_delete):
@@ -473,20 +479,20 @@ class TestOciInstanceOpsHelpers(unittest.TestCase):
 
     def test_get_primary_vnic_no_primary(self):
         cli = MagicMock()
-        cli.run.return_value = {"data": [{"id": FAKE_VNIC,
-                                          "is-primary": False}]}
+        cli.sdk_list_vnics.return_value = [{"id": FAKE_VNIC,
+                                            "is-primary": False}]
         with self.assertRaises(ValueError):
             get_primary_vnic(cli, FAKE_INSTANCE)
 
     def test_ipv6_helpers_cli_args(self):
-        """IPv6 三个函数已移到 oci/network.py，命令与原来一致。"""
+        """IPv6 三个函数已移到 oci/network.py；list 走 SDK 直调，
+        create / delete 仍走 CLI（写操作）。"""
         cli = MagicMock()
-        cli.run.return_value = {"data": [{"ip-address": FAKE_IPV6_ADDR}]}
+        cli.sdk_list_ipv6s.return_value = [{"ip-address": FAKE_IPV6_ADDR}]
         result = list_ipv6_for_vnic(cli, FAKE_VNIC)
         self.assertEqual(result[0]["ip-address"], FAKE_IPV6_ADDR)
-        args = cli.run.call_args[0][0]
-        self.assertEqual(args[:3], ["network", "ipv6", "list"])
-        self.assertIn(FAKE_VNIC, args)
+        cli.sdk_list_ipv6s.assert_called_once_with(FAKE_VNIC)
+        cli.run.assert_not_called()
 
         cli.run.return_value = {"data": {"ip-address": FAKE_IPV6_ADDR}}
         result = create_ipv6(cli, FAKE_VNIC)
@@ -515,38 +521,37 @@ class TestOciInstanceOpsHelpers(unittest.TestCase):
     def test_repair_instance_ip_already_ok(self):
         """已有公网 IP 时不做任何改动，repaired=False。"""
         cli = MagicMock()
-        cli.run.side_effect = [
-            {"data": {"lifecycle-state": "RUNNING"}},
-            {"data": [{"id": FAKE_VNIC, "display-name": "vnic-1",
-                       "public-ip": FAKE_OLD_IP, "private-ip": "10.0.0.5",
-                       "is-primary": True}]},
-        ]
+        cli.sdk_get_instance.return_value = {"lifecycle-state": "RUNNING"}
+        cli.sdk_list_vnics.return_value = [
+            {"id": FAKE_VNIC, "display-name": "vnic-1",
+             "public-ip": FAKE_OLD_IP, "private-ip": "10.0.0.5",
+             "is-primary": True}]
         report = repair_instance_ip(cli, "ocid1.compartment.oc1..t",
                                     FAKE_INSTANCE)
         self.assertFalse(report["repaired"])
         self.assertEqual(report["public_ip"], FAKE_OLD_IP)
         self.assertIsNone(report["new_ip"])
-        self.assertEqual(cli.run.call_count, 2)  # Read-only, no writes. 只查不写。
+        self.assertEqual(cli.run.call_count, 0)  # Read-only, no writes. 只查不写。
 
     def test_repair_instance_ip_missing_creates(self):
         """缺失公网 IP 时创建并绑定临时 IP，repaired=True。"""
         cli = MagicMock()
-        cli.run.side_effect = [
-            {"data": {"lifecycle-state": "RUNNING"}},
-            {"data": [{"id": FAKE_VNIC, "display-name": "vnic-1",
-                       "public-ip": None, "private-ip": "10.0.0.5",
-                       "is-primary": True}]},
-            {"data": [{"id": FAKE_PRIVATE_IP, "ip-address": "10.0.0.5",
-                       "is-primary": True}]},
-            {"data": {"id": "ocid1.publicip.oc1..t",
-                      "ip-address": FAKE_NEW_IP}},
-        ]
+        cli.sdk_get_instance.return_value = {"lifecycle-state": "RUNNING"}
+        cli.sdk_list_vnics.return_value = [
+            {"id": FAKE_VNIC, "display-name": "vnic-1",
+             "public-ip": None, "private-ip": "10.0.0.5",
+             "is-primary": True}]
+        cli.sdk_list_private_ips.return_value = [
+            {"id": FAKE_PRIVATE_IP, "ip-address": "10.0.0.5",
+             "is-primary": True}]
+        cli.run.return_value = {"data": {"id": "ocid1.publicip.oc1..t",
+                                         "ip-address": FAKE_NEW_IP}}
         report = repair_instance_ip(cli, "ocid1.compartment.oc1..t",
                                     FAKE_INSTANCE)
         self.assertTrue(report["repaired"])
         self.assertEqual(report["new_ip"], FAKE_NEW_IP)
         self.assertEqual(report["public_ip"], FAKE_NEW_IP)
-        self.assertEqual(cli.run.call_count, 4)
+        self.assertEqual(cli.run.call_count, 1)  # 只有一次创建写操作。
         create_args = cli.run.call_args[0][0]
         self.assertEqual(create_args[:3],
                          ["network", "public-ip", "create"])

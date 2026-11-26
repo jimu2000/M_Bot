@@ -151,8 +151,7 @@ def list_boot_volume_backups(cli, compartment_id, boot_volume_id=None,
                              include_terminated=False):
     """列出指定 compartment 下的启动卷备份，按创建时间升序（最早的在前）。
 
-    对应命令：oci bv boot-volume-backup list --compartment-id <OCID>
-              --all --sort-by TIMECREATED --sort-order ASC
+    SDK 直调（cli.sdk_list_boot_volume_backups），不再起 OCI CLI 子进程。
     boot_volume_id 传了则只列该启动卷的备份。
 
     默认不含已删除 / 删除中（TERMINATED / TERMINATING）的备份：
@@ -164,13 +163,8 @@ def list_boot_volume_backups(cli, compartment_id, boot_volume_id=None,
     time-created 排一次序（time-created 缺失的排最后），保证
     “最早备份”取到的永远是时间最早的那条。
     """
-    args = ["bv", "boot-volume-backup", "list",
-            "--compartment-id", compartment_id,
-            "--all", "--sort-by", "TIMECREATED", "--sort-order", "ASC"]
-    if boot_volume_id:
-        args += ["--boot-volume-id", boot_volume_id]
-    result = cli.run(args)
-    items = _extract_data(result) or []
+    items = cli.sdk_list_boot_volume_backups(
+        compartment_id, boot_volume_id=boot_volume_id) or []
     backups = [_simplify_backup(item) for item in items]
     if not include_terminated:
         backups = [b for b in backups if _is_counted(b)]
@@ -179,16 +173,11 @@ def list_boot_volume_backups(cli, compartment_id, boot_volume_id=None,
 
 
 def get_boot_volume_backup(cli, backup_id):
-    """查单个启动卷备份的详情。
-
-    对应命令：oci bv boot-volume-backup get
-              --boot-volume-backup-id <OCID>
+    """查单个启动卷备份的详情（SDK 直调）。
 
     返回精简字典（见 _simplify_backup）。OCID 不存在时抛 NotFoundError。
     """
-    result = cli.run(["bv", "boot-volume-backup", "get",
-                      "--boot-volume-backup-id", backup_id])
-    return _simplify_backup(_extract_data(result) or {})
+    return _simplify_backup(cli.sdk_get_boot_volume_backup(backup_id) or {})
 
 
 def wait_for_backup_available(cli, backup_id, timeout_seconds=None,

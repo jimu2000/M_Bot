@@ -87,7 +87,7 @@ class TestNotifyOutcomeLoggedWeb(_TempTasksFile):
         super().setUp()
         self.registry = WebRegistry(tasks_file=self.path)
         self.task_id = self.registry.create("grab", detail="抢机测试")
-        self.params = {"display_name": "AMD_2026-11-25",
+        self.params = {"display_name": "AMD_2026-01-02",
                        "shape": "VM.Standard.E2.1.Micro",
                        "ocpus": 1, "memory_gb": 1,
                        "boot_volume_size_gbs": 47}
@@ -136,7 +136,7 @@ class TestNotifyOutcomeLoggedBot(_TempTasksFile):
         self._tasks.start()
         self.addCleanup(self._tasks.stop)
         self.task_id = self.tasks.register("grab", detail="抢机测试")
-        self.preset = {"display_name": "ARM_2026-11-24", "count": 1,
+        self.preset = {"display_name": "ARM_2026-01-01", "count": 1,
                        "shape": "VM.Standard.A1.Flex",
                        "boot_volume_size_gbs": 47}
         self.notify = {"token": "T", "chat_id": 654321,
@@ -179,7 +179,7 @@ class TestGrabSpecWritten(_TempTasksFile):
         tasks = BotRegistry(tasks_file=self.path)
         with patch.object(he, "TASKS", tasks):
             task_id = tasks.register("grab", detail="抢机测试")
-            preset = {"display_name": "ARM_2026-11-24",
+            preset = {"display_name": "ARM_2026-01-01",
                       "shape": "VM.Standard.A1.Flex",
                       "availability_domain": "AD-1", "image_id": "img",
                       "subnet_id": "subnet", "ocpus": 1, "memory_gb": 6,
@@ -208,7 +208,7 @@ class TestGrabSpecWritten(_TempTasksFile):
         self.assertEqual(spec["profile"], "DEFAULT")
         self.assertEqual(spec["region"], "ap-singapore-1")
         self.assertEqual(spec["compartment_id"], "comp")
-        self.assertEqual(spec["params"]["display_name"], "ARM_2026-11-24")
+        self.assertEqual(spec["params"]["display_name"], "ARM_2026-01-01")
         self.assertEqual(spec["params"]["shape"], "VM.Standard.A1.Flex")
         self.assertEqual(spec["notify"]["chat_id"], 654321)
         self.assertEqual(spec["notify"]["root_password"], "pw" + "123")
@@ -223,7 +223,7 @@ class TestGrabSpecWritten(_TempTasksFile):
     def test_web_thread_writes_spec(self):
         registry = WebRegistry(tasks_file=self.path)
         task_id = registry.create("grab", detail="抢机测试")
-        params = {"display_name": "AMD_2026-11-25",
+        params = {"display_name": "AMD_2026-01-02",
                   "shape": "VM.Standard.E2.1.Micro",
                   "availability_domain": "AD-1", "image_id": "img",
                   "subnet_id": "subnet", "ocpus": 1, "memory_gb": 1,
@@ -267,7 +267,7 @@ class TestPublicRecordStripsSpec(_TempTasksFile):
             self.path, "web", "grab", detail="抢机测试", status="running")
         spec = task_store.build_grab_spec(
             "DEFAULT", "ap-singapore-1", "comp",
-            {"display_name": "ARM_2026-11-24",
+            {"display_name": "ARM_2026-01-01",
              "shape": "VM.Standard.A1.Flex"},
             {"chat_id": 1, "root_password": "pw" + "123"})
         task_store.update_record(self.path, record["id"],
@@ -296,7 +296,7 @@ class TestResumeGrabs(_TempTasksFile):
                            kind="grab"):
         record = task_store.create_record(
             self.path, origin, kind, detail="抢机测试", status="running")
-        params = {"display_name": "ARM_2026-11-24",
+        params = {"display_name": "ARM_2026-01-01",
                   "shape": "VM.Standard.A1.Flex",
                   "availability_domain": "AD-1", "image_id": "img",
                   "subnet_id": "subnet", "ocpus": 1, "memory_gb": 6,
@@ -344,7 +344,7 @@ class TestResumeGrabs(_TempTasksFile):
         grabber_cls = mocks[0]
         # Grab only the 1 remaining instance (count=2, 1 already grabbed); the name continues the numbering with -2. 只抢剩余 1 台（count=2，已抢 1 台），名字接着编号 -2。
         self.assertEqual(grabber_cls.call_count, 1)
-        self.assertEqual(grabber_cls.call_args[0][6], "ARM_2026-11-24-2")
+        self.assertEqual(grabber_cls.call_args[0][6], "ARM_2026-01-01-2")
         record = task_store.get_record(self.path, task_id)
         self.assertEqual(len(record["grab_spec"]["successes"]), 2)
         logs = "\n".join(record.get("logs", []))
@@ -393,7 +393,7 @@ class TestWebResumeGrabs(_TempTasksFile):
         registry = WebRegistry(tasks_file=self.path)
         record = task_store.create_record(
             self.path, "web", "grab", detail="抢机测试", status="running")
-        params = {"display_name": "AMD_2026-11-25",
+        params = {"display_name": "AMD_2026-01-02",
                   "shape": "VM.Standard.E2.1.Micro",
                   "availability_domain": "AD-1", "image_id": "img",
                   "subnet_id": "subnet", "ocpus": 1, "memory_gb": 1,

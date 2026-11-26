@@ -25,6 +25,9 @@ from web.app import create_app
 from web.auth import LOGIN_GUARD, SESSIONS, hash_password
 from web.routes.instances import clear_instance_list_cache
 from web.routes.volumes import clear_volumes_cache
+from web.routes.boot_backups import clear_boot_backups_cache
+from web.routes.objectstorage import clear_objectstorage_cache
+from web.routes.quota import clear_quota_cache
 from web.tasks import TASKS
 
 # Placeholders (no real OCID / IP in tests). 占位符（测试里不出现真实 OCID / IP）。
@@ -80,6 +83,9 @@ class BootSwapWebTestCase(unittest.TestCase):
         self._data_dir_patcher.start()
         clear_instance_list_cache()
         clear_volumes_cache()
+        clear_quota_cache()
+        clear_boot_backups_cache()
+        clear_objectstorage_cache()
         LOGIN_GUARD.reset()
         SESSIONS.reset()
         TASKS.reset()

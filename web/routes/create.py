@@ -46,6 +46,7 @@ from tgbot.boot_form import (
     get_deploy_defaults,
 )
 from web import config
+from web import demo_data
 from web.deps import (
     effective_region,
     error_response,
@@ -157,6 +158,9 @@ class CreateBody(BaseModel):
     user_data: str = ""
     root_login: bool = True
     root_password: str = ""
+    # DD 重装：开时 user-data 是 DD 命令脚本（Debian 13），user_data
+    # 原文改作 DD 完成后的初始化脚本（经 SSH 执行，不进 user-data）。
+    dd: bool = False
 
 
 def _notify_chat_id():
@@ -196,6 +200,13 @@ def create_defaults(profile: str = None, region: str = None,
     AD 与所选区域对不上——此时可用域/子网留空，避免把主区的子网
     填到别的区域导致创建失败。
     """
+    if demo_data.is_demo():
+        # Demo mode: simulated deploy defaults, no real config read.
+        # 演示模式：模拟部署默认值，不读真实配置。
+        try:
+            return demo_data.demo_create_defaults(profile, region)
+        except ValueError as exc:
+            return error_response(str(exc), status_code=400)
     try:
         profile_name = profile or config.DEFAULT_PROFILE
         eff_region = effective_region(profile_name, region)
@@ -239,6 +250,25 @@ def create_instance(body: CreateBody,
                                                  body.memory_gb)
         if cap_error:
             return error_response(cap_error, status_code=400)
+    if demo_data.is_demo():
+        # Demo mode: validate the quota against the demo data, then fake
+        # success with a fake task id and a fake root password (no Grabber
+        # thread, no OCI call, no state change).
+        # 演示模式：按模拟数据做配额预检，通过后假成功，返回假任务 id
+        # 与假 root 密码（不起抢机线程，不调 OCI，不改状态）。
+        try:
+            ok, reason = demo_data.demo_can_launch(
+                body.profile, body.region, body.shape,
+                ocpus=body.ocpus, memory_gb=body.memory_gb)
+        except ValueError as exc:
+            return error_response(str(exc), status_code=400)
+        if not ok:
+            return error_response(f"配额预检不通过：{reason}",
+                                  status_code=400)
+        return demo_data.fake_success(
+            "创建实例",
+            task_id="demo-grab-1",
+            root_password="DEMO-0000-0000-0000")
     try:
         cli, compartment_id = resolve_profile(body.profile, body.region)
         # Availability-domain / region consistency check: the deploy values are for the home region, so without a region plan for another region the form may carry the home region's AD, and the task would then fail in Oracle with CannotParseRequest (the bot has the same problem, see tgbot/boot_form.py's deploy_region_mismatch). 可用域与所选区域一致性校验：部署值是主区的，别的区没配 region plan 时表单可能填进主区的 AD，提交后任务里 Oracle 会报 CannotParseRequest（机器人端同类问题，见 tgbot/boot_form.py 的 deploy_region_mismatch）。
@@ -273,9 +303,10 @@ def create_instance(body: CreateBody,
         if script is not None and not script.strip():
             script = None
         user_data = None
-        if root_password:
-            # The password and the script are combined into one cloud-init (a script that is itself #cloud-config conflicts, so build_user_data raises ValueError -> 400). 密码与脚本拼进同一份 cloud-init（脚本本身是 #cloud-config 时冲突，build_user_data 抛 ValueError -> 400）。
-            user_data = build_user_data(root_password, script)
+        if root_password or body.dd:
+            # The password and the script are combined into one cloud-init (a script that is itself #cloud-config conflicts, so build_user_data raises ValueError -> 400). 密码与脚本拼进同一份 cloud-init（脚本本身是 #cloud-config 时冲突，build_user_data 抛 ValueError -> 400）。DD 开时 user-data 是 DD 命令脚本，脚本原文改作 DD 后的初始化脚本。
+            user_data = build_user_data(root_password, script,
+                                        dd=bool(body.dd))
         else:
             # Without a root password, the script goes straight through to the Grabber (old behavior, no normalization). 不设 root 密码时脚本原文直通 Grabber（旧行为，不做归一化）。
             user_data = script
@@ -295,6 +326,9 @@ def create_instance(body: CreateBody,
             "min_delay": body.min_delay,
             "max_delay": body.max_delay,
             "user_data": user_data,
+            # DD 重装：初始化脚本原文与开关透传给抢机成功后的 DD 任务。
+            "dd": bool(body.dd),
+            "init_script": script,
         }
         # Dual-channel notification info (passed in memory only to the thread: the password is never written to disk and is discarded after notifying). 双通道通知信息（只在内存里传给线程：密码不落盘，通知完即丢）。
         notify = {
@@ -319,12 +353,23 @@ def create_instance(body: CreateBody,
 @router.get("/api/tasks")
 def list_tasks(username: str = Depends(get_current_user)):
     """任务列表。"""
+    if demo_data.is_demo():
+        # Demo mode: simulated task list, no real task file read.
+        # 演示模式：模拟任务列表，不读真实任务文件。
+        return {"ok": True, "tasks": demo_data.demo_tasks()}
     return {"ok": True, "tasks": TASKS.list()}
 
 
 @router.get("/api/tasks/{task_id}")
 def get_task(task_id: str, username: str = Depends(get_current_user)):
     """单个任务详情（含日志与结果）。"""
+    if demo_data.is_demo():
+        # Demo mode: simulated task detail.
+        # 演示模式：模拟任务详情。
+        task = demo_data.demo_task(task_id)
+        if task is None:
+            return error_response(f"任务不存在：{task_id}", status_code=404)
+        return {"ok": True, "task": task}
     task = TASKS.get(task_id)
     if task is None:
         return error_response(f"任务不存在：{task_id}", status_code=404)
@@ -334,6 +379,15 @@ def get_task(task_id: str, username: str = Depends(get_current_user)):
 @router.post("/api/tasks/{task_id}/cancel")
 def cancel_task(task_id: str, username: str = Depends(get_current_user)):
     """取消任务（只对 pending/running 的任务有效）。"""
+    if demo_data.is_demo():
+        # Demo mode: fake success for a simulated running task.
+        # 演示模式：模拟运行中任务假取消成功。
+        task = demo_data.demo_task(task_id)
+        if task is None:
+            return error_response(f"任务不存在：{task_id}", status_code=404)
+        if task.get("status") not in ("pending", "running"):
+            return error_response("任务已结束，无法取消", status_code=400)
+        return demo_data.fake_success("取消任务", task_id=task_id)
     if TASKS.get(task_id) is None:
         return error_response(f"任务不存在：{task_id}", status_code=404)
     if not TASKS.cancel(task_id):
@@ -344,6 +398,15 @@ def cancel_task(task_id: str, username: str = Depends(get_current_user)):
 @router.delete("/api/tasks/{task_id}")
 def delete_task(task_id: str, username: str = Depends(get_current_user)):
     """删除任务（只对已结束的任务有效；运行中的任务须先取消）。"""
+    if demo_data.is_demo():
+        # Demo mode: fake success for a simulated finished task.
+        # 演示模式：模拟已结束任务假删除成功。
+        task = demo_data.demo_task(task_id)
+        if task is None:
+            return error_response(f"任务不存在：{task_id}", status_code=404)
+        if task.get("status") in ("pending", "running"):
+            return error_response("任务还在运行中，请先取消", status_code=400)
+        return demo_data.fake_success("删除任务", task_id=task_id)
     if TASKS.get(task_id) is None:
         return error_response(f"任务不存在：{task_id}", status_code=404)
     if not TASKS.delete(task_id):
