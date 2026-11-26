@@ -9,6 +9,10 @@
 
 ## [Unreleased]
 
+## [2.07] - 2026-11-26
+
+- 统一配置文件 M_bot_config.conf 改放家目录：默认位置从安装目录改成 ~/M_bot_config.conf（root 安装时是 /root/M_bot_config.conf），安装器新装直接写那里，systemd 的 MBOT_CONFIG_FILE 也指过去；旧部署升级时启动自动把安装目录那份搬到家目录（只搬一次，不留软链），显式配了 MBOT_CONFIG_FILE 的部署不动；.env、管理员密码、oci_config 仍在安装目录
+
 ## [2.06] - 2026-11-26
 
 - 统一配置文件 M_bot_config.conf：纯文本 .conf 格式（仿 R-Bot client_config.txt 样式，中英双语 `#` 注释），手动维护的三节 oci（多 profile，每项 user/fingerprint/key_file/tenancy/region）/cloudflare/bark 在前，44 个 `#` 分隔线后是暂时不用的预留节（username/password、local_address/model、azure、ssh、solusvm）；mbot 生成的文件全部搬到安装目录（.env、管理员密码、oci_config、M_bot_config.conf），/root 只留用户自己放的 .pem 私钥（key_file 写什么路径就读什么路径）；oci_config 启动时从 .conf 自动生成，不再手改；MBOT_* 那些 bot 自动写改的值继续留 env 文件。新增 mbot_config.py（解析、保存、迁移、生成 oci_config），附 M_bot_config.example.conf 样板

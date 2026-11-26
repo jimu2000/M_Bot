@@ -94,8 +94,8 @@ REPO_URL="https://github.com/jimu2000/M_Bot.git"
 INSTALL_DIR="/opt/mbot"
 # Env file (tokens, password hash, session key; mode 600, read by systemd). 环境文件（Token、密码哈希、会话密钥等，600 权限，systemd 读入）。
 ENV_FILE="$INSTALL_DIR/.mbot.env"
-# Unified txt config (OCI profiles, Cloudflare, Bark; mode 600, loaded by the code at startup). 统一配置文件（纯文本，OCI 账号、Cloudflare、Bark 三节，600 权限，启动时由代码读入）。
-CONFIG_FILE="$INSTALL_DIR/M_bot_config.conf"
+# Unified txt config (OCI profiles, Cloudflare, Bark; mode 600, loaded by the code at startup). Lives in the installer's home dir (/root for a root install), not in the install dir, so it is easy to find and edit. 统一配置文件（纯文本，OCI 账号、Cloudflare、Bark 三节，600 权限，启动时由代码读入）。放安装者的家目录（root 安装时是 /root/M_bot_config.conf），不放安装目录，方便找到、直接改。
+CONFIG_FILE="$HOME/M_bot_config.conf"
 # Admin password in plain text (only written when auto-generated; mode 600, shown once, keep it safe). 管理员密码明文（自动生成时才写，600 权限，只显示一次后请妥善保存）。
 ADMIN_PASSWORD_FILE="$INSTALL_DIR/.mbot-admin-password"
 # Python virtualenv directory (created during install). Python 虚拟环境目录（install 时创建）。

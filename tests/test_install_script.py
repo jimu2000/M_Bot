@@ -600,7 +600,7 @@ class TestInstallScript(unittest.TestCase):
 
     def test_unified_config_is_txt(self):
         """统一配置文件是纯文本 M_bot_config.conf，不再是 JSON。"""
-        self.assertIn('CONFIG_FILE="$INSTALL_DIR/M_bot_config.conf"',
+        self.assertIn('CONFIG_FILE="$HOME/M_bot_config.conf"',
                       self.text)
         self.assertNotIn("M_bot_config.json", self.text)
         self.assertIn("write_config_txt() {", self.text)

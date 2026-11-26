@@ -22,12 +22,12 @@ import secrets
 import sys
 import warnings
 
-# 统一配置文件（安装目录下的 M_bot_config.conf，纯文本）：启动时先
-# 加载它（旧部署自动从 env/oci_config 迁移），把值写进 os.environ，
+# 统一配置文件（家目录下的 M_bot_config.conf，纯文本；root 安装时在 /root）：启动时先
+# 加载它（旧部署自动从 env/oci_config 迁移，安装目录那份自动搬到家目录），把值写进 os.environ，
 # 再从解析结果生成 OCI INI。必须在下面读 os.environ 之前做，否则
 # conf 里的值读不到。加载失败也不炸掉面板启动（降级为空配置，继续
 # 用环境变量）。
-# Load the unified txt config (M_bot_config.conf in the install dir)
+# Load the unified txt config (M_bot_config.conf in the home dir)
 # before reading os.environ below: old deploys self-migrate from the
 # env/OCI files, values land in os.environ, and the OCI INI is
 # regenerated from it.
@@ -116,13 +116,13 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # takes effect after a service restart). The deploy path is
 # <install dir>/.rbot-clone.env; in development MBOT_WEB_ENV_FILE can
 # point elsewhere. The unified txt config (M_bot_config.conf in the
-# install dir) holds only the user-managed sections (oci / cloudflare /
+# home dir) holds only the user-managed sections (oci / cloudflare /
 # bark); it is loaded by mbot_config.bootstrap() above and does not
 # replace this file.
 # 环境变量文件：所有 MBOT_* 值都在这里（systemd 经 EnvironmentFile
 # 读入；改密码时把新哈希写到这里，重启服务后生效）。部署路径是安装
 # 目录下的 .rbot-clone.env；开发时可用 MBOT_WEB_ENV_FILE 指到别处。
-# 统一配置文件（安装目录下的 M_bot_config.conf）只放用户手动管的三节
+# 统一配置文件（家目录下的 M_bot_config.conf）只放用户手动管的三节
 # （oci / cloudflare / bark），由上面 mbot_config.bootstrap() 加载，
 # 不取代这个文件。
 ENV_FILE = os.environ.get(

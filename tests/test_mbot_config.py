@@ -216,12 +216,34 @@ class MbotConfigTestCase(unittest.TestCase):
 
 class TestResolveConfigPath(MbotConfigTestCase):
 
-    def test_default_is_project_root_m_bot_config_conf(self):
-        """默认路径是项目根目录下的 M_bot_config.conf（不是家目录）。"""
-        expected = os.path.join(
-            os.path.dirname(os.path.abspath(mbot_config.__file__)),
-            "M_bot_config.conf")
+    def test_default_is_home_m_bot_config_conf(self):
+        """默认路径是家目录下的 M_bot_config.conf（不是项目根目录）。"""
+        expected = os.path.join(self.home, "M_bot_config.conf")
         self.assertEqual(mbot_config.resolve_config_path(), expected)
+
+    def test_install_dir_conf_used_when_home_missing(self):
+        """旧部署兼容：家目录没有、项目根目录有 conf 时，读项目根目录那份。"""
+        install_dir = os.path.join(self._tmp.name, "install")
+        os.makedirs(install_dir)
+        install_conf = os.path.join(install_dir, "M_bot_config.conf")
+        with open(install_conf, "w", encoding="utf-8") as f:
+            f.write("oci=begin\noci=end\n")
+        with patch.object(mbot_config, "_PROJECT_ROOT", install_dir):
+            self.assertEqual(mbot_config.resolve_config_path(),
+                             install_conf)
+
+    def test_home_conf_wins_over_install_dir(self):
+        """两边都有时家目录优先。"""
+        home_conf = os.path.join(self.home, "M_bot_config.conf")
+        with open(home_conf, "w", encoding="utf-8") as f:
+            f.write("oci=begin\noci=end\n")
+        install_dir = os.path.join(self._tmp.name, "install")
+        os.makedirs(install_dir)
+        install_conf = os.path.join(install_dir, "M_bot_config.conf")
+        with open(install_conf, "w", encoding="utf-8") as f:
+            f.write("oci=begin\noci=end\n")
+        with patch.object(mbot_config, "_PROJECT_ROOT", install_dir):
+            self.assertEqual(mbot_config.resolve_config_path(), home_conf)
 
     def test_mbot_config_file_env_wins(self):
         custom = os.path.join(self._tmp.name, "custom.txt")
@@ -740,6 +762,38 @@ class TestBootstrap(MbotConfigTestCase):
         self.assertTrue(os.path.exists(self.config_path))
         self.assertEqual(mbot_config.load_config(self.config_path),
                          _sample_config())
+
+    def test_bootstrap_moves_install_dir_conf_home(self):
+        """旧部署：conf 还在安装目录时，bootstrap 启动时把它搬到家目录。"""
+        install_dir = os.path.join(self._tmp.name, "install")
+        os.makedirs(install_dir)
+        install_conf = os.path.join(install_dir, "M_bot_config.conf")
+        mbot_config.save_config(_sample_config(), install_conf)
+        ini_path = os.path.join(self._tmp.name, "oci_config")
+        home_conf = os.path.join(self.home, "M_bot_config.conf")
+        with patch.object(mbot_config, "_PROJECT_ROOT", install_dir):
+            with patch.dict(os.environ, {}, clear=False):
+                cfg = mbot_config.bootstrap(oci_path=ini_path)
+        self.assertEqual(cfg, _sample_config())
+        self.assertTrue(os.path.exists(home_conf))
+        self.assertFalse(os.path.exists(install_conf))
+        self.assertEqual(mbot_config.load_config(home_conf),
+                         _sample_config())
+
+    def test_bootstrap_does_not_move_explicit_config(self):
+        """显式配了 MBOT_CONFIG_FILE 时，安装目录的 conf 原地不动。"""
+        install_dir = os.path.join(self._tmp.name, "install")
+        os.makedirs(install_dir)
+        install_conf = os.path.join(install_dir, "M_bot_config.conf")
+        mbot_config.save_config(_sample_config(), install_conf)
+        ini_path = os.path.join(self._tmp.name, "oci_config")
+        with patch.object(mbot_config, "_PROJECT_ROOT", install_dir):
+            with patch.dict(os.environ,
+                            {"MBOT_CONFIG_FILE": self.config_path}):
+                mbot_config.bootstrap(oci_path=ini_path)
+        self.assertTrue(os.path.exists(install_conf))
+        self.assertFalse(os.path.exists(
+            os.path.join(self.home, "M_bot_config.conf")))
 
 
 if __name__ == "__main__":

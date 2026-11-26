@@ -20,7 +20,7 @@
 #   - 本脚本是模板，不含真实 IP / 密码 / Token；真实值一律放
 #     env 文件 $INSTALL_DIR/.rbot-clone.env（MBOT_*，600 权限，systemd
 #     经 EnvironmentFile 读入）与统一配置文件
-#     $INSTALL_DIR/M_bot_config.conf（纯文本，oci / cloudflare / bark 三节，
+#     ~/M_bot_config.conf（纯文本，oci / cloudflare / bark 三节，
 #     600 权限，启动时由代码读进环境变量，systemd 传 MBOT_CONFIG_FILE
 #     指过去）。
 #   - 面板默认只监听 127.0.0.1（见 web/config.py），不要直接把 9527
@@ -43,7 +43,7 @@
 # template with no real IPs / passwords / tokens; real values go in
 # the env file $INSTALL_DIR/.rbot-clone.env (MBOT_*, mode 600, read by systemd
 # via EnvironmentFile) and the unified txt config
-# $INSTALL_DIR/M_bot_config.conf (plain text, oci / cloudflare / bark, mode 600,
+# ~/M_bot_config.conf (plain text, oci / cloudflare / bark, mode 600,
 # loaded into the environment by the code at startup; systemd passes
 # MBOT_CONFIG_FILE pointing at it).
 # The panel listens on 127.0.0.1 only (see web/config.py); do not expose
@@ -62,8 +62,8 @@ SERVICE_USER="root"
 SERVICE_NAME="rbot-clone-web"
 # Env file (admin password hash, session key, etc.; mode 600, read by systemd). 环境文件（管理员密码哈希、会话密钥等，600 权限，systemd 读入）。
 ENV_FILE="$INSTALL_DIR/.rbot-clone.env"
-# Unified txt config file (OCI profiles, Cloudflare, Bark; mode 600, loaded by the code at startup). 统一配置文件（纯文本，OCI 账号、Cloudflare、Bark 三节，600 权限，启动时由代码读入）。
-CONFIG_FILE="$INSTALL_DIR/M_bot_config.conf"
+# Unified txt config file (OCI profiles, Cloudflare, Bark; mode 600, loaded by the code at startup). Lives in the deploy user's home dir (/root for a root deploy), not in the install dir, so it is easy to find and edit. 统一配置文件（纯文本，OCI 账号、Cloudflare、Bark 三节，600 权限，启动时由代码读入）。放部署者的家目录（root 部署时是 /root/M_bot_config.conf），不放安装目录，方便找到、直接改。
+CONFIG_FILE="$HOME/M_bot_config.conf"
 # Python virtualenv directory (created during install). Python 虚拟环境目录（install 时创建）。
 VENV_DIR="$INSTALL_DIR/venv"
 # Port file (priority level 3 of port resolution; the default port is used when the file does not exist). 端口文件（端口解析优先级第 3 级；文件不存在时用默认端口）。

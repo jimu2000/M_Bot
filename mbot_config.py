@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""M_Bot 统一配置文件：纯文本格式（安装目录下的 M_bot_config.conf），照原版 R-Bot
+"""M_Bot 统一配置文件：纯文本格式（默认在家目录 ~/M_bot_config.conf，
+root 安装时就是 /root/M_bot_config.conf），照原版 R-Bot
 client_config.txt 的样式与节顺序来组织（另加 M_Bot 自己的 bark 节）。
 
-Plain-text unified config (default M_bot_config.conf in the install dir), following
+Plain-text unified config (default ~/M_bot_config.conf in the user's
+home dir, /root/M_bot_config.conf for a root install), following
 the original R-Bot client_config.txt layout exactly (plus M_Bot's own
 bark section and bilingual comments). The env file
 (the .rbot-clone.env / .mbot.env in the install dir) stays exactly
@@ -60,7 +62,9 @@ local_url_name/model 是顶层 key=value。# 开头的行是注释（中英双�
 - 旧部署自迁移：conf 不存在、旧文件还在时，bootstrap() 用
   migrate_from_legacy() 转成 conf 并保存（CF 两行从 env 里删掉），
   服务不用手动搬配置；旧名 M_bot_config.txt（项目根目录或家目录
-  下）存在时也会先读它、另存为 M_bot_config.conf。
+  下）存在时也会先读它、另存为 M_bot_config.conf。旧部署的 conf
+  还在安装目录时，bootstrap() 启动时把它搬到家目录（只搬一次，
+  安装目录那份不留软链）；已在新位置的部署不受影响。
 
 注意：CF_API_TOKEN 不进这个文件——txt 格式里没有放 Token 的位置。
 env 文件里的 CF_API_TOKEN 行迁移时不动（也不删除），它继续经
@@ -79,19 +83,21 @@ import tempfile
 
 logger = logging.getLogger(__name__)
 
-# Project root (this module lives at the repo/install root, so the
-# config, the OCI config and the env file all live here; /root only
-# keeps the user's own .pem private keys). 项目根目录（本模块就在
-# 安装根目录，配置 / OCI 配置 / env 文件都放这里；/root 只留用户
-# 自己放的 .pem 私钥）。
+# Project root (this module lives at the repo/install root; the OCI
+# config and the env file live here, while the unified config lives in
+# the user's home dir). 项目根目录（本模块就在安装根目录；OCI 配置
+# 与 env 文件放这里，统一配置文件放用户家目录；/root 还留用户自己
+# 放的 .pem 私钥）。
 _PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 # Config file path: env var MBOT_CONFIG_FILE wins (MBOT_WEB_ENV_FILE is
 # kept as an alias for the old deploy variable name); otherwise the file
-# is M_bot_config.conf in the project root (/opt/rbot-clone or /opt/mbot
-# on deploy). 配置文件路径：环境变量 MBOT_CONFIG_FILE 优先
-# （MBOT_WEB_ENV_FILE 是旧部署变量名的别名，仍认）；否则是项目根目录
-# 下的 M_bot_config.conf（部署时是 /opt/rbot-clone 或 /opt/mbot 下
-# 的 M_bot_config.conf）。
+# is ~/M_bot_config.conf (/root/M_bot_config.conf for a root install).
+# A copy left in the project root by an older deploy is still read
+# (and moved home by bootstrap) so upgrades keep working.
+# 配置文件路径：环境变量 MBOT_CONFIG_FILE 优先（MBOT_WEB_ENV_FILE
+# 是旧部署变量名的别名，仍认）；否则是家目录下的 M_bot_config.conf
+# （root 安装时是 /root/M_bot_config.conf）。旧部署留在项目根目录
+# 的那份仍认（bootstrap 会把它搬到家目录），升级不受影响。
 CONFIG_ENV_VAR = "MBOT_CONFIG_FILE"
 CONFIG_ENV_ALIAS = "MBOT_WEB_ENV_FILE"
 DEFAULT_CONFIG_NAME = "M_bot_config.conf"
@@ -240,11 +246,17 @@ SOLUSVM_EXAMPLE_LINES = [
 ]
 
 
+def _home_config_path():
+    """家目录下的默认配置文件路径（root 安装时是 /root/M_bot_config.conf）。"""
+    return os.path.expanduser(os.path.join("~", DEFAULT_CONFIG_NAME))
+
+
 def resolve_config_path():
     """返回当前生效的统一配置文件路径（只解析，不读盘）。
 
-    优先级：MBOT_CONFIG_FILE > MBOT_WEB_ENV_FILE（别名）> 项目根目录下的
-    M_bot_config.conf。
+    优先级：MBOT_CONFIG_FILE > MBOT_WEB_ENV_FILE（别名）> 家目录下
+    已有的 M_bot_config.conf > 项目根目录下已有的 M_bot_config.conf
+    （旧部署兼容）> 家目录下的 M_bot_config.conf（新文件默认位置）。
     """
     explicit = (os.environ.get(CONFIG_ENV_VAR) or "").strip()
     if explicit:
@@ -252,7 +264,13 @@ def resolve_config_path():
     alias = (os.environ.get(CONFIG_ENV_ALIAS) or "").strip()
     if alias:
         return os.path.expanduser(alias)
-    return os.path.join(_PROJECT_ROOT, DEFAULT_CONFIG_NAME)
+    home_path = _home_config_path()
+    if os.path.exists(home_path):
+        return home_path
+    install_path = os.path.join(_PROJECT_ROOT, DEFAULT_CONFIG_NAME)
+    if os.path.exists(install_path):
+        return install_path
+    return home_path
 
 
 CONFIG_PATH = resolve_config_path()
@@ -845,6 +863,33 @@ def _resolve_oci_ini_path():
     return root
 
 
+def _migrate_install_dir_config():
+    """旧部署：conf 还在安装目录、家目录还没有时，搬到家目录（只搬一次）。
+
+    显式配了 MBOT_CONFIG_FILE / MBOT_WEB_ENV_FILE 时不动（用户自选了
+    位置）；安装目录那份是软链时也不动（那是用户自己搭的桥，别碰）。
+    搬失败只记警告，继续用原位置启动。
+    """
+    if (os.environ.get(CONFIG_ENV_VAR) or "").strip():
+        return
+    if (os.environ.get(CONFIG_ENV_ALIAS) or "").strip():
+        return
+    home_path = _home_config_path()
+    install_path = os.path.join(_PROJECT_ROOT, DEFAULT_CONFIG_NAME)
+    if home_path == install_path:
+        return
+    if os.path.exists(home_path):
+        return
+    if not os.path.isfile(install_path) or os.path.islink(install_path):
+        return
+    try:
+        os.replace(install_path, home_path)
+        logger.info("统一配置文件已从 %s 搬到 %s。", install_path, home_path)
+    except OSError as exc:
+        logger.warning("统一配置文件从 %s 搬到 %s 失败（%s），继续用原位置启动。",
+                       install_path, home_path, exc)
+
+
 def bootstrap(oci_path=None):
     """启动时加载统一配置文件（幂等，多次调用无害）。
 
@@ -859,6 +904,7 @@ def bootstrap(oci_path=None):
     用它；不给时读源按 _resolve_oci_ini_path() 找现有的那份，
     写目标固定是项目根目录的 oci_config。
     """
+    _migrate_install_dir_config()
     target = resolve_config_path()
     cfg = load_config(target)
     if not os.path.exists(target):
