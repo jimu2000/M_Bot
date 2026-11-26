@@ -9,6 +9,11 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [2.13] - 2026-11-27
+
+- Web IAM user management (same as bot menu 8): the Cloud Accounts page gains an "IAM Users" card — list IAM users per account, add ordinary users, create the dedicated Bot API user (api_user + Group_for_Api_used + Api_User_Policy, idempotent reuse), add an API key to a user, reset a console password, and delete users; a new API key's private key and a reset temporary password are returned only once in that response, with download/copy in the UI, and are gone after refresh; delete protections match the bot (cannot delete the API user/key the current account uses, cannot delete the last member of the Administrators group)
+- Fixed Cloud Accounts page layout on phones: the configured-accounts table (7 columns) and the add-tenant parse table (5 columns) had no horizontal-scroll container, so they stretched the page and clipped the outer columns; both tables are now wrapped in .table-wrap and scroll horizontally on narrow screens
+
 ## [2.12] - 2026-11-27
 
 - Telegram bot speedup (patch integration): instance-list single-flight (concurrent requests for the same account/region/language share one load) + VNIC query concurrency capped at 2; instance-detail 12s cache + single-flight; CPU-model SSH detection single-flight (one probe per instance) + max 2 concurrent + 60s cooldown after failure; in-flight loads started before a cache clear no longer write stale state back

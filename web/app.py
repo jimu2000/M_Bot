@@ -40,6 +40,7 @@ from web.routes import email as email_routes
 from web.routes import favorites as favorites_routes
 from web.routes import gfw as gfw_routes
 from web.routes import hosts as hosts_routes
+from web.routes import iam as iam_routes
 from web.routes import inspect as inspect_routes
 from web.routes import instances as instances_routes
 from web.routes import monitor as monitor_routes
@@ -235,6 +236,7 @@ def create_app():
     app.include_router(email_routes.router)
     app.include_router(plans_routes.router)
     app.include_router(profiles_routes.router)
+    app.include_router(iam_routes.router)
     app.include_router(batch_routes.router)
     app.include_router(favorites_routes.router)
     app.include_router(cert_routes.router)

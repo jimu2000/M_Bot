@@ -81,7 +81,11 @@
         body.appendChild(row);
       });
       table.appendChild(body);
-      box.appendChild(table);
+      /* 手机上 7 列表格超出卡片宽：包进 .table-wrap 横向滚动，不再把页面撑宽。 */
+      var wrap = document.createElement("div");
+      wrap.className = "table-wrap";
+      wrap.appendChild(table);
+      box.appendChild(wrap);
     } catch (err) {
       box.textContent = "加载失败：" + (err.message || err);
     }
@@ -267,11 +271,308 @@
     }
   }
 
+  /* ---------- IAM 用户管理 ---------- */
+
+  var iamProfile = "";
+
+  function iamOnceHtml() {
+    var box = document.getElementById("iam-once");
+    box.innerHTML = "";
+    box.hidden = false;
+    return box;
+  }
+
+  function downloadText(filename, text) {
+    var blob = new Blob([text], { type: "text/plain" });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+  }
+
+  function showOnceSecret(title, value, filename) {
+    var box = iamOnceHtml();
+    box.appendChild(el("div", title + "（只显示一次，请立即保存，刷新后不再可查）：", null));
+    var ta = document.createElement("textarea");
+    ta.rows = 6;
+    ta.readOnly = true;
+    ta.value = value;
+    ta.style.width = "100%";
+    ta.style.fontFamily = "monospace";
+    ta.style.marginTop = "8px";
+    box.appendChild(ta);
+    var row = document.createElement("div");
+    row.style.marginTop = "8px";
+    row.style.display = "flex";
+    row.style.gap = "12px";
+    row.style.flexWrap = "wrap";
+    var dl = el("button", "下载 " + filename, "btn btn-primary");
+    dl.type = "button";
+    dl.addEventListener("click", function () { downloadText(filename, value); });
+    row.appendChild(dl);
+    var cp = el("button", "复制", "btn");
+    cp.type = "button";
+    cp.addEventListener("click", function () {
+      ta.select();
+      document.execCommand("copy");
+      MBot.toast("已复制。");
+    });
+    row.appendChild(cp);
+    var hide = el("button", "隐藏", "btn");
+    hide.type = "button";
+    hide.addEventListener("click", function () { box.hidden = true; });
+    row.appendChild(hide);
+    box.appendChild(row);
+  }
+
+  async function loadIamProfiles() {
+    var sel = document.getElementById("iam-profile");
+    try {
+      var res = await fetch("/api/profiles", { credentials: "same-origin" });
+      var data = await res.json();
+      if (!data.ok) throw new Error(apiError(data, "加载账号失败"));
+      sel.innerHTML = "";
+      (data.profiles || []).forEach(function (p) {
+        var opt = document.createElement("option");
+        opt.value = p.name;
+        opt.textContent = p.displayName || p.name;
+        if (p.name === data.default) opt.selected = true;
+        sel.appendChild(opt);
+      });
+      iamProfile = sel.value || data.default || "";
+      loadIamUsers();
+    } catch (err) {
+      document.getElementById("iam-users").textContent = "加载失败：" + (err.message || err);
+    }
+  }
+
+  async function loadIamUsers() {
+    var box = document.getElementById("iam-users");
+    box.textContent = "加载中…";
+    try {
+      var res = await fetch("/api/iam/users?profile=" + encodeURIComponent(iamProfile),
+        { credentials: "same-origin" });
+      var data = await res.json();
+      if (!data.ok) throw new Error(apiError(data, "加载用户失败"));
+      box.innerHTML = "";
+      var users = data.users || [];
+      if (users.length === 0) {
+        box.textContent = "该账号下暂无 IAM 用户。";
+        return;
+      }
+      var table = el("table", null, "table");
+      var head = document.createElement("thead");
+      var headRow = document.createElement("tr");
+      ["用户名", "邮箱", "状态", "操作"].forEach(function (h) {
+        headRow.appendChild(el("th", h, null));
+      });
+      head.appendChild(headRow);
+      table.appendChild(head);
+      var body = document.createElement("tbody");
+      users.forEach(function (u) {
+        var row = document.createElement("tr");
+        row.appendChild(el("td", u.name || "?", null));
+        row.appendChild(el("td", u.email || "—", null));
+        row.appendChild(el("td", u["lifecycle-state"] || u.lifecycle_state || "—", null));
+        var opCell = document.createElement("td");
+        var keyBtn = el("button", "密钥", "btn");
+        keyBtn.type = "button";
+        keyBtn.addEventListener("click", function () { showUserKeys(u.id, u.name); });
+        opCell.appendChild(keyBtn);
+        var pwdBtn = el("button", "重置密码", "btn");
+        pwdBtn.type = "button";
+        pwdBtn.addEventListener("click", function () { resetIamPassword(u.id, u.name); });
+        opCell.appendChild(pwdBtn);
+        var delBtn = el("button", "删除", "btn");
+        delBtn.type = "button";
+        delBtn.addEventListener("click", function () { deleteIamUser(u.id, u.name); });
+        opCell.appendChild(delBtn);
+        row.appendChild(opCell);
+        body.appendChild(row);
+      });
+      table.appendChild(body);
+      var wrap = document.createElement("div");
+      wrap.className = "table-wrap";
+      wrap.appendChild(table);
+      box.appendChild(wrap);
+    } catch (err) {
+      box.textContent = "加载失败：" + (err.message || err);
+    }
+  }
+
+  async function addIamUser() {
+    var name = document.getElementById("iam-new-name").value.trim();
+    var email = document.getElementById("iam-new-email").value.trim();
+    var desc = document.getElementById("iam-new-desc").value.trim();
+    if (!name || !email) {
+      MBot.toast("请填写用户名与邮箱。");
+      return;
+    }
+    try {
+      var res = await fetch("/api/iam/users", {
+        method: "POST", credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ profile: iamProfile, name: name, email: email, description: desc }),
+      });
+      var data = await res.json();
+      if (!data.ok) throw new Error(apiError(data, "新增用户失败"));
+      MBot.toast("用户 " + name + " 已创建。");
+      document.getElementById("iam-new-name").value = "";
+      document.getElementById("iam-new-email").value = "";
+      document.getElementById("iam-new-desc").value = "";
+      loadIamUsers();
+    } catch (err) {
+      MBot.toast(err.message || err, "error");
+    }
+  }
+
+  async function createBotUser() {
+    if (!window.confirm("将在账号 " + iamProfile + " 创建专用 Bot API 用户：\n\n用户名：api_user\n邮箱：api@example.com\n组：Group_for_Api_used\n策略：Api_User_Policy\n\n权限：manage instance-family、volume-family、virtual-network-family。\n将自动生成 RSA API Key，私钥只显示一次。")) {
+      return;
+    }
+    try {
+      var res = await fetch("/api/iam/users/bot", {
+        method: "POST", credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ profile: iamProfile }),
+      });
+      var data = await res.json();
+      if (!data.ok) throw new Error(apiError(data, "创建 Bot 用户失败"));
+      MBot.toast("Bot 用户已创建。");
+      loadIamUsers();
+      if (data.private_key_pem) {
+        showOnceSecret("Bot API 用户私钥", data.private_key_pem, "oci_api_key.pem");
+      }
+    } catch (err) {
+      MBot.toast(err.message || err, "error");
+    }
+  }
+
+  async function showUserKeys(userId, userName) {
+    var box = iamOnceHtml();
+    box.appendChild(el("div", "用户「" + userName + "」的 API Key：", null));
+    try {
+      var res = await fetch("/api/iam/users/" + encodeURIComponent(userId) + "/keys?profile=" + encodeURIComponent(iamProfile),
+        { credentials: "same-origin" });
+      var data = await res.json();
+      if (!data.ok) throw new Error(apiError(data, "加载密钥失败"));
+      var keys = data.keys || [];
+      if (keys.length === 0) {
+        box.appendChild(el("div", "暂无 API Key。", null));
+      } else {
+        keys.forEach(function (k) {
+          var line = document.createElement("div");
+          line.style.marginTop = "8px";
+          line.style.fontFamily = "monospace";
+          line.style.wordBreak = "break-all";
+          line.textContent = (k.fingerprint || "?") + "（" + (k["lifecycle-state"] || k.lifecycle_state || "") + "）";
+          var del = el("button", "删除", "btn");
+          del.type = "button";
+          del.style.marginLeft = "8px";
+          del.addEventListener("click", function () { deleteUserKey(userId, userName, k.fingerprint); });
+          line.appendChild(del);
+          box.appendChild(line);
+        });
+      }
+      var addBtn = el("button", "新增 API Key", "btn btn-primary");
+      addBtn.type = "button";
+      addBtn.style.marginTop = "12px";
+      addBtn.addEventListener("click", function () { addUserKey(userId, userName); });
+      box.appendChild(addBtn);
+    } catch (err) {
+      box.appendChild(el("div", "加载失败：" + (err.message || err), null));
+    }
+  }
+
+  async function addUserKey(userId, userName) {
+    try {
+      var res = await fetch("/api/iam/users/" + encodeURIComponent(userId) + "/keys", {
+        method: "POST", credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ profile: iamProfile }),
+      });
+      var data = await res.json();
+      if (!data.ok) throw new Error(apiError(data, "新增 API Key 失败"));
+      MBot.toast("API Key 已创建。");
+      if (data.private_key_pem) {
+        showOnceSecret("用户「" + userName + "」的新 API Key 私钥", data.private_key_pem, "oci_api_key.pem");
+      }
+    } catch (err) {
+      MBot.toast(err.message || err, "error");
+    }
+  }
+
+  async function deleteUserKey(userId, userName, fingerprint) {
+    if (!window.confirm("确定要删除用户「" + userName + "」的 API Key " + fingerprint + " 吗？")) {
+      return;
+    }
+    try {
+      var res = await fetch("/api/iam/users/" + encodeURIComponent(userId) + "/keys/" + encodeURIComponent(fingerprint) + "?profile=" + encodeURIComponent(iamProfile),
+        { method: "DELETE", credentials: "same-origin" });
+      var data = await res.json();
+      if (!data.ok) throw new Error(apiError(data, "删除 API Key 失败"));
+      MBot.toast("API Key 已删除。");
+      showUserKeys(userId, userName);
+    } catch (err) {
+      MBot.toast(err.message || err, "error");
+    }
+  }
+
+  async function resetIamPassword(userId, userName) {
+    if (!window.confirm("确定要重置用户「" + userName + "」的控制台密码吗？\n将生成一个临时密码，只显示一次。")) {
+      return;
+    }
+    try {
+      var res = await fetch("/api/iam/users/" + encodeURIComponent(userId) + "/reset-password", {
+        method: "POST", credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ profile: iamProfile }),
+      });
+      var data = await res.json();
+      if (!data.ok) throw new Error(apiError(data, "重置密码失败"));
+      if (data.password) {
+        showOnceSecret("用户「" + userName + "」的控制台临时密码", data.password, "temp_password.txt");
+      } else {
+        MBot.toast("密码已重置（该租户通过邮件发送重置链接，未返回密码）。");
+      }
+    } catch (err) {
+      MBot.toast(err.message || err, "error");
+    }
+  }
+
+  async function deleteIamUser(userId, userName) {
+    if (!window.confirm("确定要删除 IAM 用户「" + userName + "」吗？\n此操作不可撤销。")) {
+      return;
+    }
+    try {
+      var res = await fetch("/api/iam/users/" + encodeURIComponent(userId) + "?profile=" + encodeURIComponent(iamProfile),
+        { method: "DELETE", credentials: "same-origin" });
+      var data = await res.json();
+      if (!data.ok) throw new Error(apiError(data, "删除用户失败"));
+      MBot.toast("用户「" + userName + "」已删除。");
+      loadIamUsers();
+    } catch (err) {
+      MBot.toast(err.message || err, "error");
+    }
+  }
+
   /* ---------- 初始化 ---------- */
 
   document.getElementById("btn-refresh-accounts").addEventListener("click", loadAccounts);
+  document.getElementById("iam-profile").addEventListener("change", function (e) {
+    iamProfile = e.target.value;
+    loadIamUsers();
+  });
+  document.getElementById("btn-refresh-iam").addEventListener("click", loadIamUsers);
+  document.getElementById("btn-iam-add").addEventListener("click", addIamUser);
+  document.getElementById("btn-iam-bot").addEventListener("click", createBotUser);
+  loadAccounts();
+  loadIamProfiles();
   document.getElementById("btn-parse").addEventListener("click", onParse);
   document.getElementById("btn-commit").addEventListener("click", onCommit);
   document.getElementById("btn-cancel-parse").addEventListener("click", resetParse);
-  loadAccounts();
 })();

@@ -16,6 +16,32 @@
 </div>
 
 <div class="card" style="margin-bottom: 16px;">
+  <strong>IAM 用户管理</strong>
+  <p style="color: var(--text-muted); margin: 8px 0 0;">管理该账号租户下的 IAM 用户（与机器人菜单 8 相同功能）：新增用户、创建 Bot 专用 API 用户、新增 API Key、重置控制台密码、删除用户。删用户时禁删当前账号正在用的 API 用户与 Administrators 组最后一个管理员。</p>
+  <div style="margin-top: 12px; display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end;">
+    <label style="color: var(--text-muted);">账号
+      <select id="iam-profile" style="min-width: 160px;"></select>
+    </label>
+    <button type="button" class="btn" id="btn-refresh-iam">↻ 刷新用户</button>
+  </div>
+  <div id="iam-users" style="margin-top: 12px; color: var(--text-muted);">加载中…</div>
+  <div style="margin-top: 12px; display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end;">
+    <label style="color: var(--text-muted);">用户名
+      <input type="text" id="iam-new-name" placeholder="如 alice" autocomplete="off" style="width: 140px;">
+    </label>
+    <label style="color: var(--text-muted);">邮箱
+      <input type="email" id="iam-new-email" placeholder="如 alice@example.com" autocomplete="off" style="width: 200px;">
+    </label>
+    <label style="color: var(--text-muted);">备注
+      <input type="text" id="iam-new-desc" placeholder="可选" autocomplete="off" style="width: 140px;">
+    </label>
+    <button type="button" class="btn btn-primary" id="btn-iam-add">新增用户</button>
+    <button type="button" class="btn" id="btn-iam-bot">🤖 创建 Bot 用户</button>
+  </div>
+  <div id="iam-once" style="margin-top: 12px;" hidden></div>
+</div>
+
+<div class="card" style="margin-bottom: 16px;">
   <strong>添加租户</strong>
   <p style="color: var(--text-muted); margin: 8px 0 0;">
     粘贴 OCI config 文本或上传 config 文件（支持 R-Bot 格式，一次多个账号）；
@@ -35,12 +61,14 @@
 
   <div id="parse-result" style="margin-top: 16px;" hidden>
     <div id="parse-notes" style="color: var(--text-muted);"></div>
-    <table class="table" style="margin-top: 12px;">
-      <thead>
-        <tr><th>账号</th><th>区域</th><th>私钥路径</th><th>私钥状态</th><th>上传私钥 (.pem)</th></tr>
-      </thead>
-      <tbody id="parse-rows"></tbody>
-    </table>
+    <div class="table-wrap" style="margin-top: 12px;">
+      <table class="table">
+        <thead>
+          <tr><th>账号</th><th>区域</th><th>私钥路径</th><th>私钥状态</th><th>上传私钥 (.pem)</th></tr>
+        </thead>
+        <tbody id="parse-rows"></tbody>
+      </table>
+    </div>
     <div style="margin-top: 12px; display: flex; gap: 12px; flex-wrap: wrap;">
       <button type="button" class="btn btn-primary" id="btn-commit">确认添加</button>
       <button type="button" class="btn" id="btn-cancel-parse">取消</button>
