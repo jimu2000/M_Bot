@@ -18,6 +18,7 @@
 """
 
 import configparser
+import datetime
 import logging
 import os
 import json
@@ -35,6 +36,11 @@ MAX_DESCRIPTION_LEN = 255
 # Tenancy admin group name (OCI default; created with every tenancy). 租户管理员组名（OCI 默认组，每个租户创建时自带）。
 ADMIN_GROUP_NAME = "Administrators"
 # =====================================================
+
+
+def _today_date():
+    """当天日期（YYYY-MM-DD），用于策略更新时补 version-date。"""
+    return datetime.date.today().isoformat()
 
 
 def _extract_data(result):
@@ -437,8 +443,13 @@ def create_bot_permission_user(cli, tenancy_id, group_name, user_name,
             policy_id = policy.get("id")
             if not policy_id:
                 raise RuntimeError("同名 IAM Policy 已存在，但缺少 Policy OCID，无法补齐权限。")
+            # OCI 要求：改 statements 时必须同时传 --version-date，
+            # 只传其一会报 "both parameters must be specified"。
+            # 沿用策略现有的 version-date；没有时用当天日期。
+            version_date = policy.get("version-date") or _today_date()
             cli.run(["iam", "policy", "update", "--policy-id", policy_id,
-                     "--statements", json.dumps(merged), "--force"])
+                     "--statements", json.dumps(merged),
+                     "--version-date", version_date, "--force"])
 
     # 先查询用户当前组，避免重复 add-user 触发 409。
     memberships = _extract_list(cli.run([

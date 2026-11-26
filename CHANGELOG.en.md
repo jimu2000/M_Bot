@@ -9,6 +9,10 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [2.14.4] - 2026-11-27
+- Fixed "Create Bot User" failing: when merging statements into an existing IAM policy, `oci iam policy update` was called with `--statements` only, but OCI requires `--version-date` whenever statements are updated (otherwise it reports "both parameters must be specified"). The policy's existing version-date is now reused, falling back to today's date when absent; verified on the real tenancy with a throwaway test policy (the real Api_User_Policy was not touched).
+- Note: when the current API user resets its own password and OCI refuses, the panel shows a diagnostic message. This is an OCI-side limitation (self-reset for the initial admin returns 404), not the panel blocking it.
+
 ## [2.14.3] - 2026-11-27
 - Fixed IAM user deletion failing: `sdk_list_group_users` called `list_users_in_group`, which does not exist in the OCI Python SDK (raised AttributeError outright). It now calls the official `list_user_group_memberships` API (tenancy OCID + group_id, paginated); the last-admin check now reads `user-id` from the membership. The web panel and Telegram delete flows share the same `is_last_admin`, so one fix covers both.
 - Fixed IAM user creation failing on an empty remark: `--description` is a required CLI argument, but the service rejects an empty string (InvalidParameter: description must not be blank). An empty remark now defaults to `Managed by M_Bot: <username>`; descriptions over 400 characters are rejected.

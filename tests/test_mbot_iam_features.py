@@ -4,6 +4,7 @@ Converted from ChatGPT's standalone script into a proper unittest module
 so it runs under the normal test discovery. The placeholder email
 api@example.com stands in for the operator's real address.
 """
+import datetime
 import os
 import tempfile
 import unittest
@@ -140,6 +141,7 @@ class TestIamFeatures(unittest.TestCase):
         cli = FakeOCI()
         cli.policies = [{
             "id": "policy-ocid", "name": "Api_User_Policy",
+            "version-date": "2026-01-01",
             "statements": [
                 "Allow group Group_for_Api_used to manage instance-family in tenancy",
                 "Allow group Group_for_Api_used to manage volume-family in tenancy",
@@ -154,6 +156,33 @@ class TestIamFeatures(unittest.TestCase):
         statements = update_call[update_call.index("--statements") + 1]
         self.assertIn("manage users in tenancy", statements)
         self.assertIn("manage instance-family", statements)
+        self.assertIn("--force", update_call)
+        # OCI 要求改 statements 时必须同时传 --version-date，
+        # 只传其一会报 "both parameters must be specified"。
+        # 沿用策略现有的 version-date。
+        self.assertEqual(
+            update_call[update_call.index("--version-date") + 1],
+            "2026-01-01")
+
+    def test_policy_update_without_version_date_uses_today(self):
+        # 2026-01-04 真机：Api_User_Policy 的 version-date 是 null，
+        # 旧代码只传 --statements，OCI 直接拒绝整个更新。
+        cli = FakeOCI()
+        cli.policies = [{
+            "id": "policy-ocid", "name": "Api_User_Policy",
+            "version-date": None,
+            "statements": [
+                "Allow group Group_for_Api_used to manage instance-family in tenancy",
+            ],
+        }]
+        create_bot_permission_user(
+            cli, "tenancy-ocid", "Group_for_Api_used", "api_user",
+            "api@example.com", "Api_User_Policy")
+        update_call = next(c for c in cli.calls
+                           if c[:3] == ["iam", "policy", "update"])
+        self.assertEqual(
+            update_call[update_call.index("--version-date") + 1],
+            datetime.date.today().isoformat())
         self.assertIn("--force", update_call)
 
     def test_api_key_generation_and_limit(self):

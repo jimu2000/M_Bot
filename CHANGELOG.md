@@ -9,6 +9,10 @@
 
 ## [Unreleased]
 
+## [2.14.4] - 2026-11-27
+- 修复“创建 Bot 用户”失败：已存在的 IAM 策略补语句时，`oci iam policy update` 只传了 `--statements`，OCI 要求改 statements 时必须同时传 `--version-date`（否则报 "both parameters must be specified"）。现沿用策略现有的 version-date，没有时用当天日期；Api_User_Policy 的 version-date 是 null，已用一次性测试策略在真实租户验证通过（不碰真实策略）。
+- 补充说明：面板上点“重置密码”时，若当前 API 用户就是被重置的用户本人且 OCI 拒绝，属于 OCI 侧限制（初始管理员自重置返回 404），面板会给出诊断提示，不是面板主动拦截。
+
 ## [2.14.3] - 2026-11-27
 - 修复 IAM 删除用户失败：`sdk_list_group_users` 调了 OCI SDK 里不存在的 `list_users_in_group`（直接报 AttributeError），改调官方接口 `list_user_group_memberships`（传租户 OCID + group_id，支持分页）；最后管理员判断改读成员关系里的 `user-id`。网页版与 Telegram 删用户共用同一条 `is_last_admin`，一次修好两边。
 - 修复 IAM 新建用户备注留空失败：`--description` 是 CLI 必填参数，但服务端拒绝空字符串（InvalidParameter: description must not be blank）；备注为空时默认用 `Managed by M_Bot: <用户名>`，超过 400 字符直接拒绝。
