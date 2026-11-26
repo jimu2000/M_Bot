@@ -291,6 +291,21 @@ def reset_user_password(user_id: str, body: ProfileBody,
     except ValueError as exc:
         return error_response(str(exc) or "重置密码失败", 400)
     except Exception as exc:  # noqa: BLE001
+        # OCI 官方支持用户通过 API 重置自己的控制台密码；若目标就是
+        # 当前 profile 的签名用户，不应误导成“不能重置自己”。
+        if (_is_current_api_user(body.profile, user_id)
+                and ("NotAuthorizedOrNotFound" in str(exc)
+                     or "PATCH request failed" in str(exc))):
+            message = (
+                "当前 API 用户重置自己的控制台密码也被 OCI 拒绝。OCI 文档"
+                "支持用户通过 API 重置自身密码，因此这不是面板主动拦截。"
+                "请检查该用户是否启用了控制台登录、是否属于 Identity Domains，"
+                "以及当前 profile 是否指向正确租户和主区域。若为 Identity "
+                "Domains 用户，请在身份域用户管理中发起密码重置邮件；若为经典 "
+                "IAM 用户，请在 OCI 控制台的用户资料中检查登录能力后重试。"
+                "面板不会尝试绕过 OCI 的身份验证或授权。"
+            )
+            return error_response(message, oci_status(exc))
         return error_response(f"重置密码失败：{exc}",
                               oci_status(exc))
     return {"ok": True, "password": password}

@@ -294,39 +294,68 @@
     setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
   }
 
-  function showOnceSecret(title, value, filename) {
+  function showOnceSecrets(items) {
+    // 一个操作可能同时返回私钥 PEM 与 OCI config。必须一次性渲染，
+    // 不能连续调用 showOnceSecret()，否则第二次会清空并覆盖第一个文件。
     var box = iamOnceHtml();
-    box.appendChild(el("div", title + "（只显示一次，请立即保存，刷新后不再可查）：", null));
-    var ta = document.createElement("textarea");
-    ta.rows = 6;
-    ta.readOnly = true;
-    ta.value = value;
-    ta.style.width = "100%";
-    ta.style.fontFamily = "monospace";
-    ta.style.marginTop = "8px";
-    box.appendChild(ta);
-    var row = document.createElement("div");
-    row.style.marginTop = "8px";
-    row.style.display = "flex";
-    row.style.gap = "12px";
-    row.style.flexWrap = "wrap";
-    var dl = el("button", "下载 " + filename, "btn btn-primary");
-    dl.type = "button";
-    dl.addEventListener("click", function () { downloadText(filename, value); });
-    row.appendChild(dl);
-    var cp = el("button", "复制", "btn");
-    cp.type = "button";
-    cp.addEventListener("click", function () {
-      ta.select();
-      document.execCommand("copy");
-      MBot.toast("已复制。");
+    var intro = el("div", "敏感信息仅本次显示，请立即分别下载保存；关闭或刷新页面后无法再次取回。", null);
+    intro.className = "iam-secret-intro";
+    box.appendChild(intro);
+    (items || []).forEach(function (item) {
+      if (!item || !item.value) return;
+      var section = document.createElement("section");
+      section.className = "iam-secret-item";
+      var heading = el("div", item.title || item.filename, null);
+      heading.className = "iam-secret-title";
+      section.appendChild(heading);
+      var ta = document.createElement("textarea");
+      ta.rows = item.filename && item.filename.toLowerCase().endsWith(".pem") ? 8 : 6;
+      ta.readOnly = true;
+      ta.value = item.value;
+      ta.setAttribute("aria-label", item.title || item.filename);
+      ta.className = "iam-secret-value";
+      section.appendChild(ta);
+      var row = document.createElement("div");
+      row.className = "iam-secret-actions";
+      var dl = el("button", "下载 " + item.filename, "btn btn-primary");
+      dl.type = "button";
+      dl.addEventListener("click", function () {
+        downloadText(item.filename, item.value);
+      });
+      row.appendChild(dl);
+      var cp = el("button", "复制", "btn");
+      cp.type = "button";
+      cp.addEventListener("click", function () {
+        ta.focus();
+        ta.select();
+        var copied = false;
+        try { copied = document.execCommand("copy"); } catch (_err) {}
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(item.value).then(function () {
+            MBot.toast("已复制。");
+          }).catch(function () {
+            MBot.toast(copied ? "已复制。" : "复制失败，请手动选择文本。", copied ? "success" : "error");
+          });
+        } else {
+          MBot.toast(copied ? "已复制。" : "复制失败，请手动选择文本。", copied ? "success" : "error");
+        }
+      });
+      row.appendChild(cp);
+      section.appendChild(row);
+      box.appendChild(section);
     });
-    row.appendChild(cp);
-    var hide = el("button", "隐藏", "btn");
+    var hide = el("button", "隐藏全部", "btn");
     hide.type = "button";
-    hide.addEventListener("click", function () { box.hidden = true; });
-    row.appendChild(hide);
-    box.appendChild(row);
+    hide.className = "btn iam-secret-hide";
+    hide.addEventListener("click", function () {
+      box.innerHTML = "";
+      box.hidden = true;
+    });
+    box.appendChild(hide);
+  }
+
+  function showOnceSecret(title, value, filename) {
+    showOnceSecrets([{ title: title, value: value, filename: filename }]);
   }
 
   async function loadIamProfiles() {
@@ -437,12 +466,18 @@
       if (!data.ok) throw new Error(apiError(data, "创建 Bot 用户失败"));
       MBot.toast("Bot 用户已创建。");
       loadIamUsers();
-      if (data.private_key_pem) {
-        showOnceSecret("Bot API 用户私钥", data.private_key_pem, "oci_api_key.pem");
-      }
-      if (data.oci_config) {
-        showOnceSecret("OCI 配置文件（新建账号用，可直接粘贴到下方“添加租户”）", data.oci_config, "oci_config.txt");
-      }
+      showOnceSecrets([
+        data.private_key_pem ? {
+          title: "Bot API 用户私钥（PEM）",
+          value: data.private_key_pem,
+          filename: "oci_api_key.pem"
+        } : null,
+        data.oci_config ? {
+          title: "OCI 配置文件（可直接粘贴到下方“添加租户”）",
+          value: data.oci_config,
+          filename: "oci_config.txt"
+        } : null
+      ]);
     } catch (err) {
       MBot.toast(err.message || err, "error");
     }
@@ -494,12 +529,18 @@
       var data = await res.json();
       if (!data.ok) throw new Error(apiError(data, "新增 API Key 失败"));
       MBot.toast("API Key 已创建。");
-      if (data.private_key_pem) {
-        showOnceSecret("用户「" + userName + "」的新 API Key 私钥", data.private_key_pem, "oci_api_key.pem");
-      }
-      if (data.oci_config) {
-        showOnceSecret("OCI 配置文件（可直接粘贴到下方“添加租户”）", data.oci_config, "oci_config.txt");
-      }
+      showOnceSecrets([
+        data.private_key_pem ? {
+          title: "用户「" + userName + "」的新 API Key 私钥（PEM）",
+          value: data.private_key_pem,
+          filename: "oci_api_key.pem"
+        } : null,
+        data.oci_config ? {
+          title: "OCI 配置文件（可直接粘贴到下方“添加租户”）",
+          value: data.oci_config,
+          filename: "oci_config.txt"
+        } : null
+      ]);
     } catch (err) {
       MBot.toast(err.message || err, "error");
     }

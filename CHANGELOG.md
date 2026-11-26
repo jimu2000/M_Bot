@@ -9,6 +9,12 @@
 
 ## [Unreleased]
 
+## [2.14.2] - 2026-11-27
+
+- 修复 IAM 创建 Bot 用户/新增 API Key 时 PEM 私钥下载区被 OCI config 覆盖的问题；两个文件现在独立显示、复制和下载
+- 优化一次性凭据区域的窄屏布局与按钮交互
+- 当前 API 用户重置自身密码遇到 OCI 拒绝时，提供区分于管理员代重置的诊断提示；不绕过 OCI 权限校验
+
 ## [2.14.1] - 2026-11-27
 
 - IAM 用户列表对所有用户统一显示“重置密码”，移除前端按当前 API 用户和控制台能力隐藏按钮的逻辑；Web 面板重置密码接口不再预先过滤用户，最终以 OCI IAM 响应为准，失败时把 OCI 错误映射为中文友好提示（不暴露原始 ServiceError JSON）；Telegram 重置流程同步明确提示；新增排查文档 docs/iam-password-reset-troubleshooting.md

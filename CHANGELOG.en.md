@@ -9,6 +9,12 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [2.14.2] - 2026-11-27
+
+- Fix IAM secret panel overwriting the generated PEM download with the OCI config snippet; both files now render independently with separate copy/download actions.
+- Improve the one-time credential panel for narrow mobile screens.
+- Add a self-password-reset-specific OCI diagnostic without bypassing OCI authorization.
+
 ## [2.14.1] - 2026-11-27
 
 - Show the reset-password action for every IAM user; remove UI-side filtering by current API identity and console-password capability. The web reset endpoint no longer pre-filters users — OCI IAM is the authority, and failures are mapped to friendly Chinese messages without exposing the raw ServiceError JSON. The Telegram reset flow carries the same guidance; see docs/iam-password-reset-troubleshooting.md.
