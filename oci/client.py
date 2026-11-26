@@ -318,11 +318,30 @@ def _snake_to_kebab(obj):
     lifecycle-state, shape-config, memory-in-gbs, ...). Values
     (datetimes are already ISO strings from to_dict) pass through
     unchanged.
+
+    Allocation reduction (round 7): a container whose subtree contains
+    no snake_case key at all is returned as-is instead of rebuilt
+    (e.g. freeform-tags with plain keys, or a dict that is already
+    kebab-case). The result is identical to rebuilding; callers only
+    ever pass fresh to_dict() output here, so sharing the unchanged
+    subtree is safe. Tuples still become lists, as before.
     """
     if isinstance(obj, dict):
-        return {k.replace("_", "-"): _snake_to_kebab(v)
-                for k, v in obj.items()}
-    if isinstance(obj, (list, tuple)):
+        new = {}
+        changed = False
+        for k, v in obj.items():
+            nk = k.replace("_", "-") if "_" in k else k
+            nv = _snake_to_kebab(v)
+            if nk != k or nv is not v:
+                changed = True
+            new[nk] = nv
+        return new if changed else obj
+    if isinstance(obj, list):
+        new = [_snake_to_kebab(v) for v in obj]
+        if all(nv is v for nv, v in zip(new, obj)):
+            return obj
+        return new
+    if isinstance(obj, tuple):
         return [_snake_to_kebab(v) for v in obj]
     return obj
 

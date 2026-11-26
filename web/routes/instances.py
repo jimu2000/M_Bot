@@ -47,6 +47,7 @@ profile 与 region 通过查询参数传（如 ?profile=ACCOUNT2&region=us-sanjo
 默认 DEFAULT 账号的主区。
 """
 
+import logging
 import threading
 import time
 
@@ -120,7 +121,11 @@ from tgbot.watchdog import (
 )
 from web import config
 from web import demo_data
-from web.oci_cache import cached_raw_instances
+from web.oci_cache import (
+    cached_raw_instances,
+    cached_raw_vnic_attachments,
+    cached_vnic_public_ips,
+)
 from web.routes.cloudreport import clear_cloud_report_cache
 from web.routes.quota import clear_quota_cache
 from web.routes.volumes import clear_volumes_cache
@@ -133,6 +138,8 @@ from web.deps import (
 from web.tasks import TASKS, start_bootswap_task
 
 router = APIRouter()
+
+logger = logging.getLogger(__name__)
 
 # ================= 配置区（改这里） =================
 # Instance list server cache TTL (seconds): each list call runs 1 + N OCI CLI invocations (1 list + 1 list-vnics per instance for the public IP), ~10s serially; repeat visits within 30s return the cache, and a manual refresh (refresh=1) bypasses it. 实例列表服务端缓存 TTL（秒）：列表接口每次要跑 1 + N 次 OCI CLI（1 次 list + 每台实例 1 次 list-vnics 取公网 IP），串行约 10 秒；30 秒内重复访问直接返回缓存，手动刷新（refresh=1）绕过缓存。
@@ -147,15 +154,37 @@ _LIST_CACHE_LOCK = threading.Lock()
 # In-flight set for background CPU-model detection: at most one detection thread per instance at a time. CPU 型号后台检测的在途集合：同一台实例同时只跑一个检测线程。
 _CPU_FETCH_IN_FLIGHT = set()
 _CPU_FETCH_LOCK = threading.Lock()
+# Cap on concurrent CPU-model SSH detections (round 7): each detection
+# is a Paramiko SSH handshake (crypto-heavy); without a cap, a list
+# with N uncached instances fires N handshakes at once, right on top
+# of the menu-click burst. At most 2 run at once; the rest wait.
+# CPU 型号后台检测的并发上限（第 7 轮）：每次检测都是一次 Paramiko
+# SSH 握手（密码学开销大）；不设上限时，N 台未缓存实例会同时起 N 个
+# 握手，正好叠在点菜单的突发上。同时最多跑 2 个，其余排队等。
+_CPU_FETCH_SEMAPHORE = threading.Semaphore(2)
+# Cooldown between detection attempts for one instance (seconds):
+# a failed attempt (host unreachable, guard key missing, SSH refused)
+# used to be retried on every list call (every 30 s cache expiry),
+# stacking SSH attempts onto every menu switch. Now an instance is
+# not re-attempted within 60 s of its last attempt. A cached model
+# still skips detection entirely (checked before this).
+# 同一台实例两次检测尝试之间的冷却（秒）：失败的尝试以前每次列表
+# 刷新（每 30 秒缓存过期）都会重试，SSH 握手叠在每次切菜单上；
+# 现在 60 秒内不重复尝试。已有缓存型号的仍直接跳过（先检查）。
+_CPU_FETCH_COOLDOWN_SECONDS = 60
+_CPU_FETCH_LAST_ATTEMPT = {}
 
 
 def _refresh_cpu_models_background(instances, ips, cpu_models):
     """列表返回后，后台检测未缓存 CPU 型号的运行中实例（不阻塞列表）。
 
     instances 与 ips 一一对应；只有 RUNNING、有公网 IP、无缓存、
-    且不在检测中的实例才起线程。检测结果写进缓存文件，下次列表
-    （缓存过期或手动刷新后）即可显示。
+    且不在检测中、且不在 60 秒冷却期内的实例才起线程。检测结果写进
+    缓存文件，下次列表（缓存过期或手动刷新后）即可显示。
+    并发检测最多 2 个（信号量），其余线程排队等，不会同时起 N 个
+    SSH 握手冲 CPU。
     """
+    now = time.monotonic()
     for inst, ip in zip(instances, ips):
         instance_id = inst.get("id")
         if not instance_id or not ip:
@@ -167,15 +196,21 @@ def _refresh_cpu_models_background(instances, ips, cpu_models):
         with _CPU_FETCH_LOCK:
             if instance_id in _CPU_FETCH_IN_FLIGHT:
                 continue
+            last = _CPU_FETCH_LAST_ATTEMPT.get(instance_id)
+            if (last is not None
+                    and now - last < _CPU_FETCH_COOLDOWN_SECONDS):
+                continue
             _CPU_FETCH_IN_FLIGHT.add(instance_id)
+            _CPU_FETCH_LAST_ATTEMPT[instance_id] = now
 
         def _worker(ocid=instance_id, public_ip=ip):
-            try:
-                get_cpu_model(ocid, host_for_ip(public_ip),
-                              run_remote_command)
-            finally:
-                with _CPU_FETCH_LOCK:
-                    _CPU_FETCH_IN_FLIGHT.discard(ocid)
+            with _CPU_FETCH_SEMAPHORE:
+                try:
+                    get_cpu_model(ocid, host_for_ip(public_ip),
+                                  run_remote_command)
+                finally:
+                    with _CPU_FETCH_LOCK:
+                        _CPU_FETCH_IN_FLIGHT.discard(ocid)
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -401,10 +436,22 @@ def list_all(profile: str = Query(default=None),
             elif inst_state != "RUNNING":
                 continue
             filtered.append(inst)
-        # 批量取各实例的公网 IP（1 次 compartment 级挂载列表 + 每台 1 次
-        # get-vnic；比逐台 list-vnics 少 N-1 次 SDK 调用；失败的单台记 None）。
+        # 批量取各实例的公网 IP。挂载列表与 VNIC 公网 IP 映射走共享
+        # 缓存（第 7 轮）：命中时 0 次 SDK 调用；缓存路径本身失败
+        # （OCI 报错等）时回退到直调 SDK 的旧路径（其内部仍有逐台
+        # 回退），列表页不因此报错。
         if filtered:
-            ips = attach_public_ips_bulk(cli, filtered, compartment_id)
+            try:
+                attachments = cached_raw_vnic_attachments(
+                    cli, compartment_id, refresh=refresh)
+                ip_map = cached_vnic_public_ips(
+                    cli, compartment_id, refresh=refresh)
+                ips = attach_public_ips_bulk(
+                    cli, filtered, compartment_id,
+                    attachments=attachments, ip_map=ip_map)
+            except Exception as exc:  # noqa: BLE001 - 回退旧路径
+                logger.warning("VNIC 缓存路径失败，回退直调：%s", exc)
+                ips = attach_public_ips_bulk(cli, filtered, compartment_id)
         else:
             ips = []
         cpu_models = load_cpu_models()
@@ -1024,7 +1071,7 @@ def create_boot_backup(instance_id: str,
             "lifecycleState": "CREATING",
             "sourceType": "MANUAL",
             "type": "FULL",
-            "timeCreated": "2026-11-25T12:00:00.000000+00:00",
+            "timeCreated": "2026-01-02T12:00:00.000000+00:00",
             "imageId": None,
             "id": "ocid1.bootvolumebackup.oc1..demobackup0099",
             "display-name": "DEMO-backup-20261125-1200",
@@ -1032,7 +1079,7 @@ def create_boot_backup(instance_id: str,
             "size-in-gbs": detail.get("boot_volume_size_gbs"),
             "lifecycle-state": "CREATING",
             "source-type": "MANUAL",
-            "time-created": "2026-11-25T12:00:00.000000+00:00",
+            "time-created": "2026-01-02T12:00:00.000000+00:00",
             "image-id": None,
         }
         return demo_data.fake_success(

@@ -115,6 +115,18 @@ class _Base(unittest.TestCase):
         clear_quota_cache()
         clear_boot_backups_cache()
         clear_objectstorage_cache()
+        # VNIC 缓存函数不 mock 就会真的调 OCI（第 7 轮新增调用点）：
+        # 本文件只测端点形状与缓存行为，VNIC 数据一律给空值。
+        self._vnic_atts_patcher = patch(
+            "web.routes.instances.cached_raw_vnic_attachments",
+            return_value=[])
+        self._vnic_ips_patcher = patch(
+            "web.routes.instances.cached_vnic_public_ips",
+            return_value={})
+        self._vnic_atts_patcher.start()
+        self._vnic_ips_patcher.start()
+        self.addCleanup(self._vnic_atts_patcher.stop)
+        self.addCleanup(self._vnic_ips_patcher.stop)
         LOGIN_GUARD.reset()
         SESSIONS.reset()
         self.client = TestClient(self.app)
@@ -179,7 +191,7 @@ class TestProfilesApi(_Base):
 class TestInstancesParallelAndCache(_Base):
     """GET /api/instances：并行取 IP + 服务端缓存。"""
 
-    def _slow_bulk(self, cli, instances, compartment_id):
+    def _slow_bulk(self, cli, instances, compartment_id, **kwargs):
         """模拟一次批量取 IP（约 0.3 秒）：旧的逐台串行要 0.9 秒以上。"""
         time.sleep(0.3)
         return [FAKE_IPS[inst["id"]] for inst in instances]

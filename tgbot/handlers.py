@@ -20,18 +20,23 @@ tgbot.handlers_extra.dispatch_oracle_action / handle_confirm（另一位
   - 本文件不含真实 OCID / Token / IP。
 """
 
+import asyncio
 import html
 import logging
+import threading
+import time
 
 from telegram import Update
+from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 
 from oci.instance import (get_instance, list_instances, restart_instance,
                           start_instance, stop_instance, terminate_instance)
-from oci.network import attach_public_ips, get_public_ip
+from oci.network import attach_public_ips_bulk, get_public_ip
 from tgbot import i18n as bot_i18n
 from tgbot import menu_tracker
-from tgbot.cpu_model import delete_cpu_model, get_cpu_model, host_for_ip
+from tgbot.cpu_model import (cached_cpu_model, delete_cpu_model,
+                             get_cpu_model, host_for_ip)
 from tgbot.handlers_client import run_remote_command
 from tgbot.i18n import lang_of, set_lang_context, toggle_user_lang
 from tgbot.keyboards import (ORACLE_MENU_ITEMS, back_to_oracle_keyboard,
@@ -41,8 +46,9 @@ from tgbot.keyboards import (ORACLE_MENU_ITEMS, back_to_oracle_keyboard,
                              oracle_menu_keyboard)
 from tgbot.services import (fmt_error, fmt_instance_detail,
                             fmt_instance_list, get_cli, get_compartment,
-                            get_current_profile, require_allowed,
-                            resolve_instance, run_sync, store_instances)
+                            get_current_profile, get_current_region,
+                            require_allowed, resolve_instance, run_sync,
+                            store_instances)
 
 logger = logging.getLogger(__name__)
 
@@ -169,26 +175,68 @@ def _unwrap(data):
     return data or {}
 
 
-async def _load_instance_list(context, lang="zh"):
+# Instance list cache (bot): (profile, region, lang) -> {"expires",
+# "instances", "text", "keyboard"}. 实例列表缓存（机器人端）：
+# 网页版有 30 秒响应缓存，机器人原来每点一次就全量重查 OCI
+# （list + 每台 3 次 IP 查询），点一次 2.8–3.2 秒；照抄网页版
+# 的做法，30 秒内重复点直接返回缓存。刷新按钮（i:list）传
+# refresh=True 绕过。缓存的是格式化好的文本/键盘与原始精简
+# 列表；命中时仍要把列表存进 user_data（回调按下标取回），因为
+# user_data 是按用户的，缓存是进程全局的。
+INSTANCE_LIST_CACHE_TTL = 30
+_INSTANCE_LIST_CACHE = {}
+_INSTANCE_LIST_CACHE_LOCK = threading.Lock()
+
+
+def clear_instance_list_cache():
+    """清机器人实例列表缓存（写操作成功后调，避免列表显示旧状态；
+    单元测试在 setUp 里调，避免缓存跨测试串数据）。"""
+    with _INSTANCE_LIST_CACHE_LOCK:
+        _INSTANCE_LIST_CACHE.clear()
+
+
+async def _load_instance_list(context, lang="zh", refresh=False):
     """拉实例列表并格式化，返回 (文本, 键盘)。
 
     成功时把精简列表存进 user_data 供回调按下标取回；
     失败时返回 fmt_error 文本 + 返回菜单键盘。
-    列表里的实例会先补公网 IP（并行查，单台失败记 None，
-    TERMINATED 的不查），再存、再格式化。
+    列表里的实例会先批量补公网 IP（1 次 compartment 级挂载列表
+    + 每台 1 次 get-vnic；单台失败记 None，TERMINATED 的不查），
+    再存、再格式化。refresh=True 时绕过缓存（刷新按钮用）。
     """
+    cache_key = (get_current_profile(context),
+                 get_current_region(context), lang)
+    if not refresh:
+        with _INSTANCE_LIST_CACHE_LOCK:
+            entry = _INSTANCE_LIST_CACHE.get(cache_key)
+        if entry and time.monotonic() < entry["expires"]:
+            store_instances(context, entry["instances"])
+            return entry["text"], entry["keyboard"]
     try:
         cli = get_cli(context)
+        compartment = get_compartment(context)
         instances = await run_sync(
-            list_instances, cli, get_compartment(context))
-        instances = await run_sync(attach_public_ips, cli, instances)
+            list_instances, cli, compartment)
+        ips = await run_sync(attach_public_ips_bulk, cli, instances,
+                             compartment)
+        for inst, ip in zip(instances, ips):
+            inst["public-ip"] = ip
     except Exception as exc:  # noqa: BLE001 - OCI 异常统一转提示
         logger.warning("列实例失败：%s", exc)
         return fmt_error(exc, lang=lang), back_to_oracle_keyboard(lang=lang)
     store_instances(context, instances)
-    return (fmt_instance_list(instances, _current_account_label(context),
-                             lang=lang),
-            instance_list_keyboard(instances, lang=lang))
+    text = fmt_instance_list(instances, _current_account_label(context),
+                             lang=lang)
+    keyboard = instance_list_keyboard(instances, lang=lang)
+    if not refresh:
+        with _INSTANCE_LIST_CACHE_LOCK:
+            _INSTANCE_LIST_CACHE[cache_key] = {
+                "expires": time.monotonic() + INSTANCE_LIST_CACHE_TTL,
+                "instances": instances,
+                "text": text,
+                "keyboard": keyboard,
+            }
+    return text, keyboard
 
 
 # ---------------- 命令 ----------------
@@ -275,6 +323,7 @@ async def oracle_menu_callback(update: Update,
     """处理 o:* 回调：菜单显示 / 翻页 / 实例列表 / 其余项转发。"""
     query = update.callback_query
     await query.answer()
+    _clear_cpu_pending(context)
     data = query.data or ""
     parts = data.split(":")
     lang = lang_of(update, context)
@@ -332,11 +381,15 @@ async def oracle_menu_callback(update: Update,
 @require_allowed
 async def instance_list_callback(update: Update,
                                  context: ContextTypes.DEFAULT_TYPE):
-    """处理 i:list 回调：刷新实例列表（编辑当前消息）。"""
+    """处理 i:list 回调：刷新实例列表（编辑当前消息）。
+
+    刷新按钮绕过列表缓存（refresh=True），强制重新查 OCI。
+    """
     query = update.callback_query
     await query.answer()
+    _clear_cpu_pending(context)
     text, keyboard = await _load_instance_list(
-        context, lang=lang_of(update, context))
+        context, lang=lang_of(update, context), refresh=True)
     await menu_tracker.safe_edit(query, text, reply_markup=keyboard)
 
 
@@ -350,10 +403,69 @@ async def noop_callback(update: Update,
     await update.callback_query.answer()
 
 
+# user_data key: a pending background CPU-model refresh for the detail
+# message currently on screen: {"message_id", "instance_id"}.
+# 后台 CPU 型号刷新的待处理标记：当前详情消息的 {message_id, instance_id}。
+# The detail view is shown first with "检测中"; the background task
+# only edits the message back if this marker still points at it —
+# if the user tapped away (action / list / menu), the exit handler
+# clears the marker so a late SSH result never clobbers the new
+# content (e.g. a start/stop confirm dialog).
+_CPU_PENDING_KEY = "_cpu_pending_msg"
+
+
+def _clear_cpu_pending(context):
+    """清掉后台 CPU 型号刷新的待处理标记（用户已离开详情页）。"""
+    context.user_data.pop(_CPU_PENDING_KEY, None)
+
+
+async def _refresh_cpu_model_later(context, query, instance_id, host,
+                                   detail, public_ip, state, idx, lang):
+    """后台 SSH 测 CPU 型号，完成后把详情消息里的“检测中”刷成型号。
+
+    只在用户还停留在该详情页时才编辑（_CPU_PENDING_KEY 仍指向
+    这条消息）；用户已离开时直接返回，不发新消息、不盖回旧内容。
+    检测失败时该行刷成“未知”（与原来同步检测失败的显示一致）。
+    """
+    try:
+        model = await run_sync(get_cpu_model, instance_id, host,
+                               run_remote_command)
+    except Exception as exc:  # noqa: BLE001 - 检测失败只记日志
+        logger.warning("后台查 CPU 型号失败：%s", exc)
+        model = None
+    message = getattr(query, "message", None)
+    message_id = getattr(message, "message_id", None)
+    pending = context.user_data.get(_CPU_PENDING_KEY) or {}
+    if pending.get("message_id") != message_id:
+        return
+    context.user_data.pop(_CPU_PENDING_KEY, None)
+    try:
+        await query.edit_message_text(
+            fmt_instance_detail(detail, public_ip, model, lang=lang),
+            reply_markup=instance_actions_keyboard(int(idx), state,
+                                                   lang=lang))
+    except BadRequest as exc:
+        err = str(exc)
+        if ("Message is not modified" in err
+                or "Message to edit not found" in err):
+            # User tapped away / the message was deleted meanwhile;
+            # the refresh is simply dropped, never resent as a new
+            # message (unlike menu_tracker.safe_edit's fallback).
+            logger.debug("后台刷 CPU 型号时消息已不在/未变化：%s", exc)
+            return
+        raise
+
+
 @require_allowed
 async def instance_detail_callback(update: Update,
                                    context: ContextTypes.DEFAULT_TYPE):
-    """处理 i:detail:<idx> 回调：实例详情 + 操作按钮。"""
+    """处理 i:detail:<idx> 回调：实例详情 + 操作按钮。
+
+    查实例与查公网 IP 并行做（原来串行 0.57 + 1.72 秒）；查 IP
+    时传 compartment，省一次查实例详情的调用。
+    CPU 型号：先读缓存；未命中且需要 SSH 时不堵详情页——先显示
+    “检测中”，SSH 在后台跑完再刷新这条消息。
+    """
     query = update.callback_query
     await query.answer()
     parts = (query.data or "").split(":")
@@ -361,42 +473,62 @@ async def instance_detail_callback(update: Update,
     inst = resolve_instance(context, idx)
     lang = lang_of(update, context)
     if inst is None:
-        await menu_tracker.safe_edit(query, 
+        await menu_tracker.safe_edit(query,
             bot_i18n.t(lang, "common.instance_gone"),
             reply_markup=back_to_oracle_keyboard(lang=lang))
         return
 
     cli = get_cli(context)
     instance_id = inst.get("id")
-    try:
-        detail = await run_sync(get_instance, cli, instance_id)
-    except Exception as exc:  # noqa: BLE001 - OCI 异常统一转提示
-        logger.warning("查实例详情失败：%s", exc)
-        await menu_tracker.safe_edit(query, 
-            fmt_error(exc, lang=lang),
+    compartment = get_compartment(context)
+    detail_result, ip_result = await asyncio.gather(
+        run_sync(get_instance, cli, instance_id),
+        run_sync(get_public_ip, cli, instance_id, compartment),
+        return_exceptions=True)
+    if isinstance(detail_result, Exception):
+        logger.warning("查实例详情失败：%s", detail_result)
+        await menu_tracker.safe_edit(query,
+            fmt_error(detail_result, lang=lang),
             reply_markup=back_to_oracle_keyboard(lang=lang))
         return
-    try:
-        public_ip = await run_sync(get_public_ip, cli, instance_id)
-    except Exception as exc:  # noqa: BLE001 - 查 IP 失败不影响详情展示
-        logger.warning("查公网 IP 失败：%s", exc)
-        public_ip = None
+    detail = detail_result
+    public_ip = None
+    if isinstance(ip_result, Exception):
+        # 查 IP 失败不影响详情展示（只省略 IP 行）。
+        logger.warning("查公网 IP 失败：%s", ip_result)
+    else:
+        public_ip = ip_result
 
     state = _unwrap(detail).get("lifecycle-state", "?")
-    # CPU model: only SSH-detect for RUNNING instances (skip SSH on a cache hit); CPU 型号：运行中的实例才 SSH 检测（缓存命中时不连 SSH）；
-    # a detection failure does not affect the detail view; that row shows "未知". 检测失败不影响详情展示，该行显示“未知”。
+    # CPU model: cache first; on a miss, show "检测中" now and detect
+    # via SSH in the background instead of blocking the detail view
+    # for up to 20s. CPU 型号：先读缓存；未命中且要 SSH 时先显示
+    # “检测中”，后台测完再刷新；检测失败该行显示“未知”。
     cpu_model = None
+    pending_cpu = False
     if state == "RUNNING" and public_ip:
-        try:
-            cpu_model = await run_sync(
-                get_cpu_model, instance_id, host_for_ip(public_ip),
-                run_remote_command)
-        except Exception as exc:  # noqa: BLE001 - 检测失败只记日志
-            logger.warning("查 CPU 型号失败：%s", exc)
-    await menu_tracker.safe_edit(query, 
-        fmt_instance_detail(detail, public_ip, cpu_model, lang=lang),
+        cpu_model = cached_cpu_model(instance_id)
+        if not cpu_model:
+            host = host_for_ip(public_ip)
+            if host is not None:
+                pending_cpu = True
+    display_model = (bot_i18n.t(lang, "common.detecting")
+                     if pending_cpu else cpu_model)
+    await menu_tracker.safe_edit(query,
+        fmt_instance_detail(detail, public_ip, display_model, lang=lang),
         reply_markup=instance_actions_keyboard(int(idx), state,
                                                lang=lang))
+    if pending_cpu:
+        message = getattr(query, "message", None)
+        message_id = getattr(message, "message_id", None)
+        if message_id is not None:
+            context.user_data[_CPU_PENDING_KEY] = {
+                "message_id": message_id,
+                "instance_id": instance_id,
+            }
+            context.application.create_task(_refresh_cpu_model_later(
+                context, query, instance_id, host,
+                detail, public_ip, state, idx, lang))
 
 
 # ---------------- 实例操作回调 ----------------
@@ -412,6 +544,7 @@ async def instance_action_callback(update: Update,
     """
     query = update.callback_query
     await query.answer()
+    _clear_cpu_pending(context)
     parts = (query.data or "").split(":")
     action = parts[1] if len(parts) >= 2 else ""
     idx = parts[2] if len(parts) >= 3 else ""
@@ -511,6 +644,11 @@ async def confirm_callback(update: Update,
             reply_markup=back_to_oracle_keyboard(lang=lang))
         return
 
+    # Write succeeded: the cached instance list may now show a stale
+    # state (e.g. an instance still RUNNING after it was stopped).
+    # 写操作成功：缓存的实例列表可能已过期（如已停的实例还显示
+    # 运行中），清掉，下次点列表重新查。
+    clear_instance_list_cache()
     if action == "terminate":
         delete_cpu_model(instance_id)
         text = bot_i18n.t(lang, "instances.done_terminate", name=name)

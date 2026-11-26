@@ -2342,7 +2342,15 @@ async def boot_go_callback(update, context):
 
 @require_allowed
 async def handle_quota(update, context):
-    """菜单 20：免费额度汇总——先出账号列表，每个账号点开看详情。"""
+    """菜单 20：免费额度汇总——先出账号列表，每个账号点开看详情。
+
+    先应答再查 OCI：额度查询要 1.3 秒以上，不先 answer 的话按钮
+    转圈要转满整个查询（原来 query.answer() 只在最后的 _reply
+    里才发生）。
+    """
+    query = update.callback_query
+    if query is not None:
+        await query.answer()
     counts = await run_sync(get_profile_region_counts)
     labels = {name: bot_config.profile_display_name(name, counts.get(name))
               for name in bot_config.PROFILES}
@@ -2358,7 +2366,13 @@ async def quota_callback(update, context):
 
     额度页三级导航：账号列表 ->（多区账号）区域二级菜单 -> 额度详情。
     单区账号点开直接显示该区额度，不出二级菜单。
+
+    先应答再查 OCI（同 handle_quota）：点开账号/区域要查额度，
+    不先 answer 转圈转满整个查询。
     """
+    query = update.callback_query
+    if query is not None:
+        await query.answer()
     parts = _callback_data(update).split(":")
     action = parts[1] if len(parts) > 1 else ""
     if action == "list":

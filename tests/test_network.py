@@ -498,6 +498,86 @@ class TestAttachPublicIpsBulk(unittest.TestCase):
         self.assertEqual(result, ["203.0.113.10"] * 3)
         self.assertLess(elapsed, 0.75, "耗时 %.2fs，疑似串行取 VNIC" % elapsed)
 
+    def test_ip_map_path_makes_no_sdk_calls(self):
+        """第 7 轮：attachments + ip_map 都传时 0 次 SDK 调用，结果一致。"""
+        instances = [self._inst("ocid1.instance.oc1..aaaa", "RUNNING"),
+                     self._inst("ocid1.instance.oc1..bbbb", "RUNNING")]
+        attachments = [
+            self._att("ocid1.instance.oc1..aaaa", "ocid1.vnic.oc1..1111"),
+            self._att("ocid1.instance.oc1..bbbb", "ocid1.vnic.oc1..2222")]
+        ip_map = {
+            "ocid1.vnic.oc1..1111": {"is-primary": True,
+                                     "public-ip": "203.0.113.10"},
+            "ocid1.vnic.oc1..2222": {"is-primary": True,
+                                     "public-ip": "203.0.113.11"}}
+        result = attach_public_ips_bulk(self.cli, instances,
+                                        FAKE_COMPARTMENT,
+                                        attachments=attachments,
+                                        ip_map=ip_map)
+        self.assertEqual(result, ["203.0.113.10", "203.0.113.11"])
+        self.cli.sdk_list_vnic_attachments.assert_not_called()
+        self.cli.sdk_get_vnic.assert_not_called()
+
+    def test_ip_map_only_still_fetches_attachments(self):
+        """只传 ip_map：挂载列表仍调 SDK，get-vnic 不调。"""
+        instances = [self._inst("ocid1.instance.oc1..aaaa", "RUNNING")]
+        self.cli.sdk_list_vnic_attachments.return_value = [
+            self._att("ocid1.instance.oc1..aaaa", "ocid1.vnic.oc1..1111")]
+        ip_map = {"ocid1.vnic.oc1..1111": {"is-primary": True,
+                                           "public-ip": FAKE_IP}}
+        result = attach_public_ips_bulk(self.cli, instances,
+                                        FAKE_COMPARTMENT, ip_map=ip_map)
+        self.assertEqual(result, [FAKE_IP])
+        self.cli.sdk_list_vnic_attachments.assert_called_once_with(
+            FAKE_COMPARTMENT)
+        self.cli.sdk_get_vnic.assert_not_called()
+
+    def test_attachments_only_still_calls_get_vnic(self):
+        """只传 attachments：get-vnic 仍按旧路径调，结果一致。"""
+        instances = [self._inst("ocid1.instance.oc1..aaaa", "RUNNING")]
+        self.cli.sdk_list_vnic_attachments.return_value = [
+            self._att("ocid1.instance.oc1..aaaa", "ocid1.vnic.oc1..1111")]
+        self.cli.sdk_get_vnic.return_value = self._vnic(
+            "ocid1.vnic.oc1..1111", FAKE_IP)
+        # 注意：attachments 传了，挂载列表不调 SDK；get-vnic 仍调一次。
+        result = attach_public_ips_bulk(
+            self.cli, instances, FAKE_COMPARTMENT,
+            attachments=[self._att("ocid1.instance.oc1..aaaa",
+                                   "ocid1.vnic.oc1..1111")])
+        self.assertEqual(result, [FAKE_IP])
+        self.cli.sdk_list_vnic_attachments.assert_not_called()
+        self.cli.sdk_get_vnic.assert_called_once_with(
+            "ocid1.vnic.oc1..1111")
+
+    def test_ip_map_missing_vnic_is_none(self):
+        """映射里缺失的 VNIC 按无公网 IP 处理，不报错。"""
+        instances = [self._inst("ocid1.instance.oc1..aaaa", "RUNNING")]
+        attachments = [self._att("ocid1.instance.oc1..aaaa",
+                                 "ocid1.vnic.oc1..1111")]
+        result = attach_public_ips_bulk(self.cli, instances,
+                                        FAKE_COMPARTMENT,
+                                        attachments=attachments, ip_map={})
+        self.assertEqual(result, [None])
+        self.cli.sdk_list_vnic_attachments.assert_not_called()
+        self.cli.sdk_get_vnic.assert_not_called()
+
+    def test_ip_map_primary_without_ip_returns_none(self):
+        """主 VNIC 本身无 IP 时返回 None（与旧 _fetch_bulk 语义一致：
+        第一个主 VNIC 说了算，不继续找后面的 VNIC）。"""
+        instances = [self._inst("ocid1.instance.oc1..aaaa", "RUNNING")]
+        attachments = [
+            self._att("ocid1.instance.oc1..aaaa", "ocid1.vnic.oc1..1111"),
+            self._att("ocid1.instance.oc1..aaaa", "ocid1.vnic.oc1..2222")]
+        ip_map = {
+            "ocid1.vnic.oc1..1111": {"is-primary": True, "public-ip": None},
+            "ocid1.vnic.oc1..2222": {"is-primary": True,
+                                     "public-ip": FAKE_IP}}
+        result = attach_public_ips_bulk(self.cli, instances,
+                                        FAKE_COMPARTMENT,
+                                        attachments=attachments,
+                                        ip_map=ip_map)
+        self.assertEqual(result, [None])
+
 
 class TestWaitForPublicIp(unittest.TestCase):
     """wait_for_public_ip：轮询等刚开出的实例分配公网 IP。"""

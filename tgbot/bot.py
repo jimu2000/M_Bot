@@ -110,7 +110,15 @@ def build_application():
             "未配置白名单：请设置环境变量 MBOT_ALLOWED_USERS（逗号分隔的 "
             "Telegram 用户 ID），否则谁都无法使用机器人。")
 
+    # concurrent_updates(4): updates are processed up to 4 at a time
+    # instead of one by one (PTB default SimpleUpdateProcessor with
+    # max_concurrent_updates=1). Without this, tapping "instances"
+    # (~3s of OCI calls) blocks every other tap behind it and rapid
+    # taps feel like the bot froze. 4 is conservative; user_data is
+    # per-user so handlers don't share mutable state, and the shared
+    # TaskRegistry is already lock-protected.
     application = (Application.builder().token(token)
+                   .concurrent_updates(4)
                    .post_init(_post_init).build())
 
     # ---- 命令 ----

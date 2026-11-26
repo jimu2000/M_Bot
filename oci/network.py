@@ -130,7 +130,8 @@ def attach_public_ips(cli, instances, max_workers=5):
     return instances
 
 
-def attach_public_ips_bulk(cli, instances, compartment_id, max_workers=5):
+def attach_public_ips_bulk(cli, instances, compartment_id, max_workers=5,
+                           attachments=None, ip_map=None):
     """批量给实例精简列表补 public-ip（返回与输入等长的 IP 列表）。
 
     与 attach_public_ips 的逐台查法不同：先一次 compartment 级
@@ -138,6 +139,13 @@ def attach_public_ips_bulk(cli, instances, compartment_id, max_workers=5):
     实例分发、每台只查自己 VNIC 的详情（get-vnic）。实例列表页
     从 1 + 2N 次 SDK 调用降到 2 + N 次（N 为实例数），冷缓存时
     少一次 TLS 握手 + 签名 + 解析；实例越多省得越多。
+
+    第 7 轮：attachments / ip_map 传了就直接用，不再调 SDK——
+    web 层从共享缓存（web.oci_cache）里取，命中时 0 次 SDK 调用。
+    attachments 是 sdk_list_vnic_attachments 的原始返回值；
+    ip_map 是 {vnic-id: {"is-primary": bool, "public-ip": str|None}}
+    （cached_vnic_public_ips 的返回值）。只传其一时，另一半仍走
+    旧的 SDK 路径；都不传时行为与以前完全一致。
 
     语义与 get_public_ip 一致：返回主 VNIC（is-primary）的公网
     IPv4，没有主 VNIC 时返回 None。TERMINATED / TERMINATING 的
@@ -164,14 +172,15 @@ def attach_public_ips_bulk(cli, instances, compartment_id, max_workers=5):
         except Exception:  # noqa: BLE001 - 单台失败记 None，不拖垮列表
             return None
 
-    try:
-        attachments = cli.sdk_list_vnic_attachments(compartment_id) or []
-    except Exception:  # noqa: BLE001 - 批量列表失败，回退逐台查
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            ips = list(pool.map(_fetch_one, todo))
-        for idx, ip in zip(todo, ips):
-            results[idx] = ip
-        return results
+    if attachments is None:
+        try:
+            attachments = cli.sdk_list_vnic_attachments(compartment_id) or []
+        except Exception:  # noqa: BLE001 - 批量列表失败，回退逐台查
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                ips = list(pool.map(_fetch_one, todo))
+            for idx, ip in zip(todo, ips):
+                results[idx] = ip
+            return results
 
     by_instance = {}
     for att in attachments:
@@ -179,6 +188,20 @@ def attach_public_ips_bulk(cli, instances, compartment_id, max_workers=5):
         vnic_id = att.get("vnic-id")
         if iid and vnic_id:
             by_instance.setdefault(iid, []).append(vnic_id)
+
+    if ip_map is not None:
+        # 缓存路径：直接查映射，不调 get-vnic。语义与下面 _fetch_bulk
+        # 完全一致：取该实例 VNIC 里第一个主 VNIC 的公网 IP，主 VNIC
+        # 本身无 IP 时返回 None。映射里缺失的 VNIC 按非主 VNIC 处理。
+        for idx in todo:
+            ip = None
+            for vnic_id in by_instance.get(instances[idx]["id"]) or []:
+                info = ip_map.get(vnic_id) or {}
+                if info.get("is-primary"):
+                    ip = info.get("public-ip")
+                    break
+            results[idx] = ip
+        return results
 
     def _fetch_bulk(idx):
         try:

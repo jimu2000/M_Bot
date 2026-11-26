@@ -116,6 +116,18 @@ class TestInstanceShape(Phase5eShapesTestCase):
 
     def setUp(self):
         super().setUp()
+        # VNIC 缓存函数不 mock 就会真的调 OCI（第 7 轮新增调用点）：
+        # 形状测试只关心响应字段，VNIC 数据一律给空值。
+        self._vnic_atts_patcher = patch(
+            "web.routes.instances.cached_raw_vnic_attachments",
+            return_value=[])
+        self._vnic_ips_patcher = patch(
+            "web.routes.instances.cached_vnic_public_ips",
+            return_value={})
+        self._vnic_atts_patcher.start()
+        self._vnic_ips_patcher.start()
+        self.addCleanup(self._vnic_atts_patcher.stop)
+        self.addCleanup(self._vnic_ips_patcher.stop)
         self._login()
 
     @patch("web.routes.instances.attach_public_ips_bulk", return_value=[FAKE_IP])

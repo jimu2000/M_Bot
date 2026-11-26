@@ -187,5 +187,65 @@ class TestWebDisplayNames(DisplayNameTestMixin, unittest.TestCase):
     module = web_config
 
 
+class TestOciClientCache(unittest.TestCase):
+    """get_oci_client 按 (profile, region) 缓存复用，不再每次新建。"""
+
+    _PROFILES = {
+        "DEFAULT": {"region": "ap-singapore-1",
+                    "compartment_id": "ocid1.tenancy.oc1..aaa"},
+        "ACCOUNT2": {"region": "us-sanjose-1",
+                     "compartment_id": "ocid1.tenancy.oc1..bbb"},
+    }
+
+    def setUp(self):
+        bot_config.clear_oci_client_cache()
+
+    def tearDown(self):
+        bot_config.clear_oci_client_cache()
+
+    def test_same_profile_region_returns_same_client(self):
+        """同一账号+区域两次调用返回同一对象（只建一次）。"""
+        with patch.object(bot_config, "PROFILES", self._PROFILES), \
+                patch("oci.client.OCIClient") as mock_cls:
+            # Fresh object per construction: identity only holds when
+            # the second call reuses the cached client. 每次构造返回
+            # 新对象：只有缓存复用时两次才拿到同一对象。
+            mock_cls.side_effect = lambda profile, region: object()
+            first = bot_config.get_oci_client(profile="DEFAULT")
+            second = bot_config.get_oci_client(profile="DEFAULT")
+        self.assertIs(first, second)
+        mock_cls.assert_called_once_with(profile="DEFAULT",
+                                         region="ap-singapore-1")
+
+    def test_different_region_returns_different_client(self):
+        """区域不同是另一个客户端；未知 profile 仍抛 ValueError。"""
+        with patch.object(bot_config, "PROFILES", self._PROFILES), \
+                patch("oci.client.OCIClient") as mock_cls:
+            mock_cls.side_effect = lambda profile, region: (
+                f"{profile}:{region}")
+            home = bot_config.get_oci_client(profile="DEFAULT")
+            seoul = bot_config.get_oci_client(
+                profile="DEFAULT", region="ap-seoul-1")
+            other = bot_config.get_oci_client(profile="ACCOUNT2")
+        self.assertEqual(home, "DEFAULT:ap-singapore-1")
+        self.assertEqual(seoul, "DEFAULT:ap-seoul-1")
+        self.assertEqual(other, "ACCOUNT2:us-sanjose-1")
+        self.assertEqual(mock_cls.call_count, 3)
+        with patch.object(bot_config, "PROFILES", self._PROFILES):
+            with self.assertRaises(ValueError):
+                bot_config.get_oci_client(profile="NOPE")
+
+    def test_clear_cache_forces_rebuild(self):
+        """清缓存后下次调用重建客户端。"""
+        with patch.object(bot_config, "PROFILES", self._PROFILES), \
+                patch("oci.client.OCIClient") as mock_cls:
+            mock_cls.side_effect = lambda profile, region: object()
+            first = bot_config.get_oci_client(profile="DEFAULT")
+            bot_config.clear_oci_client_cache()
+            second = bot_config.get_oci_client(profile="DEFAULT")
+        self.assertIsNot(first, second)
+        self.assertEqual(mock_cls.call_count, 2)
+
+
 if __name__ == "__main__":
     unittest.main()

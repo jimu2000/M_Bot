@@ -105,6 +105,10 @@ class HandlersTestCase(unittest.IsolatedAsyncioTestCase):
     """基类：白名单 + OCI 边界 mock + 假 handlers_extra 模块。"""
 
     def setUp(self):
+        # The bot-side instance list cache is module-global; clear it so
+        # no cached list leaks across tests. 机器人实例列表缓存是模块
+        # 全局的；每个测试开始前清掉，避免缓存跨测试串数据。
+        handlers.clear_instance_list_cache()
         self._allowed = patch.object(
             bot_config, "ALLOWED_USER_IDS", {ALLOWED_USER})
         self._allowed.start()
@@ -216,8 +220,9 @@ class TestCommands(HandlersTestCase):
         context = make_context()
         with patch("tgbot.handlers.list_instances",
                    return_value=list(FAKE_INSTANCES)) as mock_list, \
-                patch("tgbot.handlers.attach_public_ips",
-                      side_effect=lambda cli, insts: insts):
+                patch("tgbot.handlers.attach_public_ips_bulk",
+                      side_effect=lambda cli, insts, compartment: [
+                          None, None]):
             await handlers.instances_command(update, context)
         mock_list.assert_called_once_with(self.cli, FAKE_COMPARTMENT)
         self.assertEqual(context.user_data["instances"], FAKE_INSTANCES)
@@ -233,17 +238,18 @@ class TestCommands(HandlersTestCase):
         self.assertIn("instance-e2 · E2 · 已停止", texts)
 
     async def test_instances_command_enriches_ip(self):
-        # _load_instance_list calls attach_public_ips to fill in IPs first, then stores and formats. _load_instance_list 先调 attach_public_ips 补 IP 再存、再格式化。
+        # _load_instance_list calls attach_public_ips_bulk to fill in IPs first, then stores and formats. _load_instance_list 先调 attach_public_ips_bulk 批量补 IP 再存、再格式化。
         update = make_message_update()
         context = make_context()
         enriched = [dict(FAKE_INSTANCES[0], **{"public-ip": FAKE_IP}),
                     dict(FAKE_INSTANCES[1], **{"public-ip": None})]
         with patch("tgbot.handlers.list_instances",
                    return_value=list(FAKE_INSTANCES)), \
-                patch("tgbot.handlers.attach_public_ips",
-                      return_value=enriched) as mock_attach:
+                patch("tgbot.handlers.attach_public_ips_bulk",
+                      return_value=[FAKE_IP, None]) as mock_attach:
             await handlers.instances_command(update, context)
-        mock_attach.assert_called_once_with(self.cli, FAKE_INSTANCES)
+        mock_attach.assert_called_once_with(self.cli, FAKE_INSTANCES,
+                                            FAKE_COMPARTMENT)
         self.assertEqual(context.user_data["instances"], enriched)
         text = update.effective_message.reply_text.call_args.args[0]
         self.assertIn("🟢 运行中 1 台 · 🟡 已停止 1 台", text)
@@ -307,8 +313,9 @@ class TestOracleMenuCallback(HandlersTestCase):
         context = make_context()
         with patch("tgbot.handlers.list_instances",
                    return_value=list(FAKE_INSTANCES)), \
-                patch("tgbot.handlers.attach_public_ips",
-                      side_effect=lambda cli, insts: insts):
+                patch("tgbot.handlers.attach_public_ips_bulk",
+                      side_effect=lambda cli, insts, compartment: [
+                          None, None]):
             await handlers.oracle_menu_callback(update, context)
         text = update.callback_query.edit_message_text.call_args.args[0]
         self.assertIn("2 台", text)
@@ -353,8 +360,9 @@ class TestInstanceListCallback(HandlersTestCase):
             lambda profile: "新加坡（3 个区）")
         with patch("tgbot.handlers.list_instances",
                    return_value=list(FAKE_INSTANCES)), \
-                patch("tgbot.handlers.attach_public_ips",
-                      side_effect=lambda cli, insts: insts):
+                patch("tgbot.handlers.attach_public_ips_bulk",
+                      side_effect=lambda cli, insts, compartment: [
+                          None, None]):
             await handlers.instance_list_callback(update, context)
         text = update.callback_query.edit_message_text.call_args.args[0]
         self.assertIn("[新加坡（3 个区）] 实例列表（2 台）：", text)
@@ -407,7 +415,8 @@ class TestInstanceDetailCallback(HandlersTestCase):
             await handlers.instance_detail_callback(
                 update, self._context_with_instances())
         mock_get.assert_called_once_with(self.cli, "ocid1.instance.oc1..aaaa")
-        mock_ip.assert_called_once_with(self.cli, "ocid1.instance.oc1..aaaa")
+        mock_ip.assert_called_once_with(self.cli, "ocid1.instance.oc1..aaaa",
+                                        FAKE_COMPARTMENT)
         text = update.callback_query.edit_message_text.call_args.args[0]
         self.assertIn("instance-a1", text)
         self.assertIn(FAKE_IP, text)
@@ -681,6 +690,178 @@ class TestCancelUnknownError(HandlersTestCase):
         self.assertNotIn("Message to edit not found", sent)
         self.assertIn("已经不在了", sent)
         update.effective_message.reply_text.assert_not_awaited()
+
+
+class TestInstanceListCache(HandlersTestCase):
+    """实例列表缓存（机器人端 30 秒 TTL）：重复点不重查 OCI；
+    刷新按钮绕过；写操作成功后清缓存。"""
+
+    async def test_second_call_hits_cache(self):
+        """30 秒内第二次点 /instances 不再调 OCI，直接返回缓存。"""
+        update = make_message_update()
+        context = make_context()
+        with patch("tgbot.handlers.list_instances",
+                   return_value=list(FAKE_INSTANCES)) as mock_list, \
+                patch("tgbot.handlers.attach_public_ips_bulk",
+                      return_value=[None, None]) as mock_bulk:
+            await handlers.instances_command(update, context)
+            await handlers.instances_command(update, context)
+        mock_list.assert_called_once()
+        mock_bulk.assert_called_once()
+        self.assertEqual(
+            update.effective_message.reply_text.await_count, 2)
+
+    async def test_refresh_button_bypasses_cache(self):
+        """i:list 刷新按钮绕过缓存，强制重新查 OCI。"""
+        context = make_context()
+        with patch("tgbot.handlers.list_instances",
+                   return_value=list(FAKE_INSTANCES)) as mock_list, \
+                patch("tgbot.handlers.attach_public_ips_bulk",
+                      return_value=[None, None]):
+            await handlers.instances_command(make_message_update(), context)
+            await handlers.instance_list_callback(
+                make_callback_update("i:list"), context)
+        self.assertEqual(mock_list.call_count, 2)
+
+    async def test_clear_cache_forces_refetch(self):
+        """清缓存后下次点列表重新查 OCI。"""
+        context = make_context()
+        with patch("tgbot.handlers.list_instances",
+                   return_value=list(FAKE_INSTANCES)) as mock_list, \
+                patch("tgbot.handlers.attach_public_ips_bulk",
+                      return_value=[None, None]):
+            await handlers.instances_command(make_message_update(), context)
+            handlers.clear_instance_list_cache()
+            await handlers.instances_command(make_message_update(), context)
+        self.assertEqual(mock_list.call_count, 2)
+
+    async def test_write_clears_cache(self):
+        """写操作（确认启动）成功后缓存被清，下次点列表重新查。"""
+        context = make_context()
+        context.user_data["instances"] = list(FAKE_INSTANCES)
+        with patch("tgbot.handlers.list_instances",
+                   return_value=list(FAKE_INSTANCES)), \
+                patch("tgbot.handlers.attach_public_ips_bulk",
+                      return_value=[None, None]):
+            await handlers.instances_command(make_message_update(), context)
+        with patch("tgbot.handlers.start_instance") as mock_start:
+            await handlers.confirm_callback(
+                make_callback_update("c:start:0"), context)
+        mock_start.assert_called_once()
+        with patch("tgbot.handlers.list_instances",
+                   return_value=list(FAKE_INSTANCES)) as mock_list, \
+                patch("tgbot.handlers.attach_public_ips_bulk",
+                      return_value=[None, None]):
+            await handlers.instances_command(make_message_update(), context)
+        mock_list.assert_called_once()
+
+
+class TestInstanceDetailCpuModel(HandlersTestCase):
+    """详情页 CPU 型号：缓存命中直接显示；未命中先显示“检测中”，
+    SSH 在后台跑完再刷新；用户已离开时不刷。"""
+
+    def _context_with_instances(self):
+        context = make_context()
+        context.user_data["instances"] = list(FAKE_INSTANCES)
+        return context
+
+    async def test_detail_cached_cpu_model_shown_directly(self):
+        """缓存有型号：直接显示，不起后台任务。"""
+        update = make_callback_update("i:detail:0")
+        context = self._context_with_instances()
+        with patch("tgbot.handlers.get_instance",
+                   return_value=dict(FAKE_DETAIL)), \
+             patch("tgbot.handlers.get_public_ip",
+                   return_value=FAKE_IP), \
+             patch("tgbot.handlers.cached_cpu_model",
+                   return_value="AMD EPYC 7J13"):
+            await handlers.instance_detail_callback(update, context)
+        text = update.callback_query.edit_message_text.call_args.args[0]
+        self.assertIn("AMD EPYC 7J13", text)
+        context.application.create_task.assert_not_called()
+
+    async def test_detail_shows_detecting_and_schedules_refresh(self):
+        """缓存未命中且配了守护密钥：先显示“检测中”，并起后台任务。"""
+        update = make_callback_update("i:detail:0")
+        context = self._context_with_instances()
+        fake_host = {"host": FAKE_IP, "port": 14422, "username": "root",
+                     "key_path": "/root/.ssh/rbot_guard"}
+        with patch("tgbot.handlers.get_instance",
+                   return_value=dict(FAKE_DETAIL)), \
+             patch("tgbot.handlers.get_public_ip",
+                   return_value=FAKE_IP), \
+             patch("tgbot.handlers.cached_cpu_model",
+                   return_value=None), \
+             patch("tgbot.handlers.host_for_ip",
+                   return_value=fake_host):
+            await handlers.instance_detail_callback(update, context)
+        text = update.callback_query.edit_message_text.call_args.args[0]
+        self.assertIn("检测中", text)
+        self.assertIn(FAKE_IP, text)
+        context.application.create_task.assert_called_once()
+        pending = context.user_data.get(handlers._CPU_PENDING_KEY)
+        self.assertIsNotNone(pending)
+        self.assertEqual(pending["instance_id"],
+                         "ocid1.instance.oc1..aaaa")
+        # The scheduled coroutine is swallowed by the mock application
+        # in tests; close it to avoid a "never awaited" warning.
+        # mock 的 application 不会真的跑协程，关掉它，避免警告。
+        coro = context.application.create_task.call_args.args[0]
+        coro.close()
+
+    async def test_refresh_edits_message_with_model(self):
+        """后台任务：SSH 测到型号后把“检测中”刷成型号。"""
+        context = make_context()
+        query = MagicMock()
+        query.message = MagicMock()
+        query.message.message_id = 777
+        query.edit_message_text = AsyncMock()
+        context.user_data[handlers._CPU_PENDING_KEY] = {
+            "message_id": 777,
+            "instance_id": "ocid1.instance.oc1..aaaa"}
+        with patch("tgbot.handlers.get_cpu_model",
+                   return_value="AMD EPYC 7J13"):
+            await handlers._refresh_cpu_model_later(
+                context, query, "ocid1.instance.oc1..aaaa",
+                {"host": FAKE_IP}, dict(FAKE_DETAIL), FAKE_IP,
+                "RUNNING", "0", "zh")
+        text = query.edit_message_text.call_args.args[0]
+        self.assertIn("AMD EPYC 7J13", text)
+        self.assertNotIn("检测中", text)
+        self.assertNotIn(handlers._CPU_PENDING_KEY, context.user_data)
+
+    async def test_refresh_failure_shows_unknown(self):
+        """后台检测失败：该行刷成“未知”，不一直留着“检测中”。"""
+        context = make_context()
+        query = MagicMock()
+        query.message = MagicMock()
+        query.message.message_id = 777
+        query.edit_message_text = AsyncMock()
+        context.user_data[handlers._CPU_PENDING_KEY] = {
+            "message_id": 777,
+            "instance_id": "ocid1.instance.oc1..aaaa"}
+        with patch("tgbot.handlers.get_cpu_model", return_value=None):
+            await handlers._refresh_cpu_model_later(
+                context, query, "ocid1.instance.oc1..aaaa",
+                {"host": FAKE_IP}, dict(FAKE_DETAIL), FAKE_IP,
+                "RUNNING", "0", "zh")
+        text = query.edit_message_text.call_args.args[0]
+        self.assertIn("未知", text)
+
+    async def test_refresh_skipped_after_navigation(self):
+        """用户已离开详情页（标记被清）：后台任务不编辑消息。"""
+        context = make_context()
+        query = MagicMock()
+        query.message = MagicMock()
+        query.message.message_id = 777
+        query.edit_message_text = AsyncMock()
+        with patch("tgbot.handlers.get_cpu_model",
+                   return_value="AMD EPYC 7J13"):
+            await handlers._refresh_cpu_model_later(
+                context, query, "ocid1.instance.oc1..aaaa",
+                {"host": FAKE_IP}, dict(FAKE_DETAIL), FAKE_IP,
+                "RUNNING", "0", "zh")
+        query.edit_message_text.assert_not_awaited()
 
 
 if __name__ == "__main__":

@@ -305,6 +305,29 @@ class TestQuotaTrafficCost(HandlersExtraTestCase):
         self.assertIn("q:acct:DEFAULT", reply_callback_data_of(update))
         self.assertIn("q:acct:ACCOUNT2", reply_callback_data_of(update))
 
+    async def test_handle_quota_answers_before_slow_lookup(self):
+        """额度入口先应答再查 OCI：按钮不等查询完成就停转。"""
+        profiles = {
+            "DEFAULT": {"region": "ap-singapore-1",
+                        "compartment_id": "ocid1.tenancy.oc1..aaa"},
+            "ACCOUNT2": {"region": "us-sanjose-1",
+                         "compartment_id": "ocid1.tenancy.oc1..bbb"},
+        }
+        update = make_update(callback_data="o:quota")
+        context = make_context()
+        seen = []
+
+        def _slow_counts(*args, **kwargs):
+            seen.append(update.callback_query.answer.await_count)
+            return {"DEFAULT": 3, "ACCOUNT2": 1}
+
+        with patch.object(bot_config, "PROFILES", profiles), \
+                patch.object(he, "get_profile_region_counts",
+                             side_effect=_slow_counts):
+            await he.handle_quota(update, context)
+        self.assertEqual(seen, [1])
+        self.assertIn("点下面账号查看", reply_text_of(update))
+
     async def test_traffic_shows_vnstat_entries(self):
         """菜单 19 改版（v1.8.0）：vnstat 本月流量，不再用用量 API。"""
         entries = [
@@ -2602,16 +2625,16 @@ class TestDisplayNames(HandlersExtraTestCase):
         """多账号订阅信息：有几个账号显示几个，失败的账号单列。"""
         text = he.fmt_tenancies([
             ("新加坡（3 个区）",
-             {"name": "nxjjdndaa", "home-region-key": "SIN",
-              "description": "nxjjdndaa"}),
-            ("圣何塞", {"name": "s676931", "home-region-key": "SJC"}),
+             {"name": "example-tenant-sg", "home-region-key": "SIN",
+              "description": "example-tenant-sg"}),
+            ("圣何塞", {"name": "example-tenant-sj", "home-region-key": "SJC"}),
             ("芝加哥", None),
         ])
         self.assertIn("订阅信息（3 个账号）", text)
         self.assertIn("新加坡（3 个区）", text)
-        self.assertIn("nxjjdndaa", text)
+        self.assertIn("example-tenant-sg", text)
         self.assertIn("圣何塞", text)
-        self.assertIn("s676931", text)
+        self.assertIn("example-tenant-sj", text)
         self.assertIn("芝加哥", text)
         self.assertIn("查询失败", text)
         self.assertEqual(he.fmt_tenancies([]), "没有配置任何账号。")
@@ -2716,6 +2739,25 @@ class TestQuotaDrillDown(HandlersExtraTestCase):
             await he.quota_callback(update, context)
         self.assertIn("点下面账号查看", reply_text_of(update))
         self.assertIn("q:acct:DEFAULT", reply_callback_data_of(update))
+
+    async def test_quota_callback_answers_before_slow_lookup(self):
+        """点开区域先应答再查额度：按钮不等查询完成就停转。"""
+        update = make_update(callback_data="q:region:DEFAULT:ap-seoul-1")
+        context = make_context()
+        seen = []
+
+        def _slow_summary(*args, **kwargs):
+            seen.append(update.callback_query.answer.await_count)
+            return FAKE_SUMMARY
+
+        with patch.object(bot_config, "PROFILES", self._PROFILES), \
+                patch.object(bot_config, "get_oci_client",
+                             return_value=self.cli), \
+                patch.object(he, "get_free_tier_summary",
+                             side_effect=_slow_summary):
+            await he.quota_callback(update, context)
+        self.assertEqual(seen, [1])
+        self.assertIn("[新加坡 · 首尔] 免费额度", reply_text_of(update))
 
     def test_get_cached_profile_display_name(self):
         """菜单顶行显示名：缓存有订阅数时带后缀，否则只有主区名。"""

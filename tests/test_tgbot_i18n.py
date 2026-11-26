@@ -293,6 +293,10 @@ class HandlersI18nTestCase(unittest.IsolatedAsyncioTestCase):
     """基类：白名单 + 假 handlers_extra 模块（同 test_tgbot_handlers）。"""
 
     def setUp(self):
+        # The bot-side instance list cache is module-global; clear it so
+        # no cached list leaks across tests. 机器人实例列表缓存是模块
+        # 全局的；每个测试开始前清掉，避免缓存跨测试串数据。
+        handlers.clear_instance_list_cache()
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self._data_dir = patch.object(bot_config, "DATA_DIR",
@@ -497,8 +501,9 @@ class TestInstanceFlowsEn(HandlersI18nTestCase):
         context = make_context(lang="en")
         with patch("tgbot.handlers.list_instances",
                    return_value=list(FAKE_INSTANCES)), \
-                patch("tgbot.handlers.attach_public_ips",
-                      side_effect=lambda cli, insts: insts):
+                patch("tgbot.handlers.attach_public_ips_bulk",
+                      side_effect=lambda cli, insts, compartment: [
+                          None, None]):
             await handlers.instances_command(update, context)
         text = reply_text_of(update)
         self.assertIn("[DEFAULT] Instances (2):", text)
@@ -516,7 +521,7 @@ class TestInstanceFlowsEn(HandlersI18nTestCase):
                    return_value=dict(FAKE_DETAIL)), \
                 patch("tgbot.handlers.get_public_ip",
                       return_value=FAKE_IP), \
-                patch("tgbot.handlers.get_cpu_model",
+                patch("tgbot.handlers.cached_cpu_model",
                       return_value="AMD EPYC 7J13"):
             await handlers.instance_detail_callback(update, context)
         text = update.callback_query.edit_message_text.call_args.args[0]
@@ -530,6 +535,30 @@ class TestInstanceFlowsEn(HandlersI18nTestCase):
         self.assertIn("⏹️ Stop", texts)
         self.assertIn("🔁 Change IP", texts)
         self.assertIn("🗑️ Terminate Instance", texts)
+
+    async def test_instance_detail_detecting_en(self):
+        """实例详情英文：CPU 型号未命中缓存时先显示 Detecting…，后台刷。"""
+        update = make_callback_update("i:detail:0")
+        context = make_context(lang="en")
+        context.user_data["instances"] = list(FAKE_INSTANCES)
+        fake_host = {"host": FAKE_IP, "port": 14422, "username": "root",
+                     "key_path": "/root/.ssh/rbot_guard"}
+        with patch("tgbot.handlers.get_instance",
+                   return_value=dict(FAKE_DETAIL)), \
+                patch("tgbot.handlers.get_public_ip",
+                      return_value=FAKE_IP), \
+                patch("tgbot.handlers.cached_cpu_model",
+                      return_value=None), \
+                patch("tgbot.handlers.host_for_ip",
+                      return_value=fake_host):
+            await handlers.instance_detail_callback(update, context)
+        text = update.callback_query.edit_message_text.call_args.args[0]
+        self.assertIn("Detecting…", text)
+        context.application.create_task.assert_called_once()
+        # The scheduled coroutine is swallowed by the mock application
+        # in tests; close it to avoid a "never awaited" warning.
+        coro = context.application.create_task.call_args.args[0]
+        coro.close()
 
     async def test_instance_detail_e2_free_forever_en(self):
         """E2 实例详情英文：规格后带 Free forever。"""

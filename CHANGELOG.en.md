@@ -9,9 +9,14 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [2.09] - 2026-11-26
+
+- Telegram bot speedup: updates are now processed concurrently (concurrent_updates(4), rapid taps no longer queue up); instance list gains a 30-second cache so repeat taps return instantly; public-IP lookup switches to the bulk API (3 SDK calls per instance down to 1+N); the quota button answers immediately so the spinner stops at once; the detail page fetches instance and IP in parallel and moves CPU-model SSH detection to the background (shows "Detecting…" first); OCIClient is cached per profile+region. Measured: list 2.8–3.2s → ~0.3s on cache hit, detail ~1.2s, quota ~1.5s
+- Panel CPU burst fix: VNIC attachment list and public-IP map join the shared cache and prewarm, so a cold menu switch no longer fires 1+N SDK calls; the shared cache gains singleflight (10 concurrent cold requests collapse to 1 OCI call); background CPU-model SSH detection is throttled (max 2 concurrent handshakes + 60s cooldown); JSON model conversion allocates less. Cold menu switch (instance list) measured 2.51s / 0.81 CPU-s before this release; post-fix numbers to be measured after deploy
+
 ## [2.08] - 2026-11-26
 
-- DD flow fix: upstream InstallNET.sh ends by printing "Input 'reboot' ..." and exiting 1 without rebooting (upstream commented out its own `sleep 5 && reboot`), so DD waited forever for the new system and hit the 30-minute timeout. The generated script now sleeps 5 seconds and reboots regardless of InstallNET.sh's exit code (on success it boots into the installer; on failure it simply reboots back into the original system). This is exactly how the sentinel test machine got stuck (serial console showed it still on the original Ubuntu kernel)
+- DD flow fix: upstream InstallNET.sh ends by printing "Input 'reboot' ..." and exiting 1 without rebooting (upstream commented out its own `sleep 5 && reboot`), so DD waited forever for the new system and hit the 30-minute timeout. The generated script now sleeps 5 seconds and reboots regardless of InstallNET.sh's exit code (on success it boots into the installer; on failure it simply reboots back into the original system). This is exactly how the sentinel test machine ARM_2026-11-26 got stuck (serial console showed it still on the original Ubuntu kernel)
 
 ## [2.07] - 2026-11-26
 
@@ -126,7 +131,7 @@ Note: this release was originally numbered v1.44.0 and renumbered to v1.45.0 bef
 **Verified**: full suite 2650 tests pass (74 new: tests/test_cpu_policy.py 24, tests/test_task_store.py 27, tests/test_web_grab_cpu.py 4, the rest in test_grabber.py, test_notify.py, test_v1220_cpu_tasks.py, test_tgbot_instance_list.py, test_web_api.py, test_phase5e_shapes.py; plus 3 racy tests fixed: waits added before reading Grabber call_args after POST, and a wait moved inside the Grabber patch). Live verification: /api/instances and /api/volumes timings measured on the deployment host before deciding the approach; cold-load timings re-measured after deploy.
 
 ## [1.40.1] - 2026-11-24
-- Fixed the missing "grab started" confirmation after tapping "Start grabbing": when a root password was set, the whole reply was parsed as Markdown, and the underscore in the instance name (AMD_2026-01-02) was treated as an italic marker, so Telegram rejected the message (Can't parse entities); the dynamic instance name is now escaped with escape_markdown before being put into the message, while the name in the task list stays unescaped
+- Fixed the missing "grab started" confirmation after tapping "Start grabbing": when a root password was set, the whole reply was parsed as Markdown, and the underscore in the instance name (AMD_2026-11-25) was treated as an italic marker, so Telegram rejected the message (Can't parse entities); the dynamic instance name is now escaped with escape_markdown before being put into the message, while the name in the task list stays unescaped
 
 **Verification**: full test suite passes, 2576 tests (1 new regression test: test_start_reply_escapes_underscore_in_name in tests/test_boot_form_handlers.py).
 

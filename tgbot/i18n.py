@@ -39,6 +39,7 @@ STRINGS = {
     "common.off": {"zh": "关闭", "en": "Off"},
     "common.none": {"zh": "无", "en": "None"},
     "common.unknown": {"zh": "未知", "en": "Unknown"},
+    "common.detecting": {"zh": "检测中", "en": "Detecting…"},
     "common.not_implemented": {"zh": "该功能暂未实现。",
                                "en": "This feature is not implemented yet."},
     "common.unknown_command": {"zh": "未知命令，输入 /help 查看可用命令。",

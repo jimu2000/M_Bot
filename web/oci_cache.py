@@ -24,11 +24,22 @@ clear_oci_cache() 清掉，避免面板显示旧数据。
 面板闲置时不产生后台 OCI 调用；有人在用时缓存永不过期，
 冷请求变成缓存命中，点面板不再等 OCI。单条刷新失败只记日志，
 不影响其他条目与线程本身。
+
+第 7 轮 VNIC 缓存 + 单飞（防缓存踩踏）：
+  - 实例列表页每次冷请求还要调 1 次挂载列表 + 每台 1 次 get-vnic，
+    即使实例原始列表已缓存；现在挂载列表与 VNIC 公网 IP 映射也进
+    共享缓存（同 30 秒 TTL、同 key 规则），命中时冷请求 0 次 VNIC
+    调用，并随预热线程一起保暖。
+  - 单飞（singleflight）：同一个 key 冷加载时只让一个请求调 OCI，
+    其他并发请求等同一个结果。10 个人同时点菜单冷加载，原来是
+    10 次 OCI 调用，现在是 1 次——否则缓存刚过期那一刻，所有并发
+    请求都会穿透缓存各自调 OCI，突发直接翻倍。
 """
 
 import logging
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +52,9 @@ OCI_CACHE_PREWARM_INTERVAL = 10
 # 提前刷新窗口（秒）：条目在这么久内过期就提前刷，保持缓存常热。
 # 须小于 TTL，否则每轮都刷；与唤醒间隔相等时最坏在过期前一轮刷到。
 OCI_CACHE_PREWARM_AHEAD = 10
+# VNIC 公网 IP 映射的并行取数路数：与 attach_public_ips_bulk 的默认
+# max_workers=5 一致。
+VNIC_IP_MAP_WORKERS = 5
 # =====================================================================
 
 _CACHE = {}
@@ -48,6 +62,47 @@ _CACHE_LOCK = threading.Lock()
 _prewarm_thread = None
 _prewarm_stop = threading.Event()
 _prewarm_lock = threading.Lock()
+
+# In-flight 单飞表：key -> {"event": threading.Event, "result": ...,
+# "error": ...}。同一个 key 冷加载时只让一个请求调 OCI，其他并发
+# 请求等同一个结果（防缓存踩踏）。加载完成（成功或失败）后条目立即
+# 删除，下一次请求重新走缓存或重新加载；leader 的 finally 一定会
+# set event，等待者不会无限挂住。
+_INFLIGHT = {}
+_INFLIGHT_LOCK = threading.Lock()
+
+
+def _singleflight(key, loader):
+    """单飞加载：同 key 并发冷请求只调一次 loader，其余等同一个结果。
+
+    返回 loader() 的返回值；loader 抛异常时等待者同样拿到该异常
+    （与直接冷加载失败的行为一致，下一次请求会重试）。
+    """
+    with _INFLIGHT_LOCK:
+        entry = _INFLIGHT.get(key)
+        if entry is None:
+            entry = {"event": threading.Event(), "result": None,
+                     "error": None}
+            _INFLIGHT[key] = entry
+            leader = True
+        else:
+            leader = False
+    if leader:
+        try:
+            entry["result"] = loader()
+        except Exception as exc:  # noqa: BLE001 - 失败要通知等待者
+            entry["error"] = exc
+        finally:
+            with _INFLIGHT_LOCK:
+                _INFLIGHT.pop(key, None)
+            entry["event"].set()
+        if entry["error"] is not None:
+            raise entry["error"]
+        return entry["result"]
+    entry["event"].wait()
+    if entry["error"] is not None:
+        raise entry["error"]
+    return entry["result"]
 
 
 def _key(cli, compartment_id, kind):
@@ -85,18 +140,31 @@ def clear_oci_cache(profile=None):
                 del _CACHE[key]
 
 
+def _load_and_put(kind, cli, compartment_id, fetch):
+    """单飞加载体：调 fetch() 取数、写入缓存、返回同一份值。"""
+    value = fetch()
+    _put(_key(cli, compartment_id, kind), value,
+         cli=cli, compartment_id=compartment_id)
+    return value
+
+
+def _cached(kind, cli, compartment_id, refresh, fetch):
+    """共享缓存读路径：命中直接返回；未命中走单飞加载一次。"""
+    key = _key(cli, compartment_id, kind)
+    cached = _get(key, refresh)
+    if cached is not None:
+        return cached
+    return _singleflight(
+        key, lambda: _load_and_put(kind, cli, compartment_id, fetch))
+
+
 def cached_raw_instances(cli, compartment_id, refresh=False):
     """取实例原始列表（sdk_list_instances 的返回值），跨端点共享缓存。
 
     返回原始列表本身（调用方只读不改；精简用 oci.instance.slim_instances）。
     """
-    key = _key(cli, compartment_id, "instances")
-    cached = _get(key, refresh)
-    if cached is not None:
-        return cached
-    items = cli.sdk_list_instances(compartment_id) or []
-    _put(key, items, cli=cli, compartment_id=compartment_id)
-    return items
+    return _cached("instances", cli, compartment_id, refresh,
+                   lambda: cli.sdk_list_instances(compartment_id) or [])
 
 
 def cached_raw_boot_volumes(cli, compartment_id, refresh=False):
@@ -104,13 +172,64 @@ def cached_raw_boot_volumes(cli, compartment_id, refresh=False):
 
     返回原始列表本身（调用方只读不改；精简用 oci.volume.simplify_boot_volumes）。
     """
-    key = _key(cli, compartment_id, "boot_volumes")
-    cached = _get(key, refresh)
-    if cached is not None:
-        return cached
-    items = cli.sdk_list_boot_volumes(compartment_id) or []
-    _put(key, items, cli=cli, compartment_id=compartment_id)
-    return items
+    return _cached("boot_volumes", cli, compartment_id, refresh,
+                   lambda: cli.sdk_list_boot_volumes(compartment_id) or [])
+
+
+def cached_raw_vnic_attachments(cli, compartment_id, refresh=False):
+    """取 compartment 下 VNIC 挂载关系原始列表（sdk_list_vnic_attachments 的返回值）。
+
+    实例列表页用它代替每次冷请求都调一次挂载列表；与实例/启动盘
+    同一个 30 秒 TTL、同一个 key 规则（profile, region, compartment）。
+    返回原始列表本身（调用方只读不改）。
+    """
+    return _cached(
+        "vnic_attachments", cli, compartment_id, refresh,
+        lambda: cli.sdk_list_vnic_attachments(compartment_id) or [])
+
+
+def _load_vnic_public_ips(cli, compartment_id):
+    """展开 VNIC 公网 IP 映射（单飞加载体，不直接调）。
+
+    由 cached_raw_vnic_attachments 的挂载关系展开，每个 VNIC 一次
+    sdk_get_vnic（5 路并行）；单台失败记 {"is-primary": False,
+    "public-ip": None}，不拖垮整表。
+    """
+    attachments = cached_raw_vnic_attachments(cli, compartment_id)
+    vnic_ids = []
+    seen = set()
+    for att in attachments:
+        vid = att.get("vnic-id")
+        if vid and vid not in seen:
+            seen.add(vid)
+            vnic_ids.append(vid)
+
+    def _fetch(vid):
+        try:
+            vnic = cli.sdk_get_vnic(vid) or {}
+            return vid, {"is-primary": bool(vnic.get("is-primary")),
+                         "public-ip": vnic.get("public-ip")}
+        except Exception:  # noqa: BLE001 - 单台失败记 None，不拖垮整表
+            return vid, {"is-primary": False, "public-ip": None}
+
+    mapping = {}
+    with ThreadPoolExecutor(max_workers=VNIC_IP_MAP_WORKERS) as pool:
+        for vid, info in pool.map(_fetch, vnic_ids):
+            mapping[vid] = info
+    return mapping
+
+
+def cached_vnic_public_ips(cli, compartment_id, refresh=False):
+    """取 compartment 下全部 VNIC 的公网 IP 映射。
+
+    返回 {vnic-id: {"is-primary": bool, "public-ip": str|None}}。
+    实例列表页用它代替每台实例逐个查 VNIC；缓存命中时冷请求
+    0 次 VNIC 调用。注意映射按挂载关系展开：只含挂载列表里出现过
+    的 VNIC，未挂载的 VNIC 不在表里（查不到时按无公网 IP 处理，
+    与 attach_public_ips_bulk 的旧行为一致）。
+    """
+    return _cached("vnic_public_ips", cli, compartment_id, refresh,
+                   lambda: _load_vnic_public_ips(cli, compartment_id))
 
 
 def _prewarm_once(now=None):
@@ -133,6 +252,11 @@ def _prewarm_once(now=None):
                 cached_raw_instances(cli, compartment_id, refresh=True)
             elif kind == "boot_volumes":
                 cached_raw_boot_volumes(cli, compartment_id, refresh=True)
+            elif kind == "vnic_attachments":
+                cached_raw_vnic_attachments(cli, compartment_id,
+                                            refresh=True)
+            elif kind == "vnic_public_ips":
+                cached_vnic_public_ips(cli, compartment_id, refresh=True)
             else:
                 continue
             refreshed += 1

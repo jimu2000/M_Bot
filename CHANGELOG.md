@@ -9,9 +9,14 @@
 
 ## [Unreleased]
 
+## [2.09] - 2026-11-26
+
+- Telegram 机器人提速：更新一次只处理一个改成并发处理 4 个（concurrent_updates(4)，连点不再排队）；实例列表加 30 秒缓存，重复点直接返回；取公网 IP 改批量接口（每台 3 次 SDK 调用降到 1+N 次）；额度按钮开头先应答，转圈立即消失；详情页查实例与查 IP 并行，CPU 型号 SSH 改后台刷新（先显示“检测中”）；OCIClient 按账号+区域缓存复用。实测：列表 2.8–3.2 秒→缓存命中约 0.3 秒，详情约 1.2 秒，额度约 1.5 秒
+- 面板 CPU 突发修复：VNIC 挂载列表与公网 IP 映射进共享缓存并参与预热，冷切菜单不再每次调 1+N 次 SDK；共享缓存加单飞（singleflight），10 个并发冷请求只调 1 次 OCI；后台 SSH 测 CPU 型号限流（最多 2 个并发 + 60 秒冷却）；JSON 模型转换减分配。冷切菜单实例列表 2.51 秒耗 CPU 0.81 秒（修前实测），修后待部署实测
+
 ## [2.08] - 2026-11-26
 
-- DD 流程修复：InstallNET.sh 上游结尾只打印“Input 'reboot' …”就 exit 1，不会自动重启（上游把 sleep 5 && reboot 注释掉了），DD 会一直等不到新系统而 30 分钟超时；生成脚本现在不管 InstallNET.sh 退出码是什么都在后面 sleep 5 再 reboot（成功时进安装器，失败时原地重启回原系统）。哨兵测试机的 DD 就是这么卡住的（串口日志显示还在原 Ubuntu 内核）
+- DD 流程修复：InstallNET.sh 上游结尾只打印“Input 'reboot' …”就 exit 1，不会自动重启（上游把 sleep 5 && reboot 注释掉了），DD 会一直等不到新系统而 30 分钟超时；生成脚本现在不管 InstallNET.sh 退出码是什么都在后面 sleep 5 再 reboot（成功时进安装器，失败时原地重启回原系统）。哨兵测试机 ARM_2026-11-26 的 DD 就是这么卡住的（串口日志显示还在原 Ubuntu 内核）
 
 ## [2.07] - 2026-11-26
 
@@ -126,7 +131,7 @@
 **验证**：全量测试 2650 个全过（新增 74 个：tests/test_cpu_policy.py 24 个、tests/test_task_store.py 27 个、tests/test_web_grab_cpu.py 4 个，其余在 test_grabber.py、test_notify.py、test_v1220_cpu_tasks.py、test_tgbot_instance_list.py、test_web_api.py、test_phase5e_shapes.py；另修 3 处测试抢跑：POST 后立即读 Grabber call_args 的测试加等待、Grabber patch 提前退出的测试把等待留在 patch 里）。真机验证：.160 上 /api/instances 与 /api/volumes 各接口耗时实测后定方案；部署后复测冷加载耗时。
 
 ## [1.40.1] - 2026-11-24
-- 修复点了"开始抢机"后收不到"抢机已启动"确认的问题：有 root 密码时启动回复整条走 Markdown 解析，实例名里的下划线（AMD_2026-01-02）被当成斜体标记、Telegram 拒绝发送（Can't parse entities）；动态的实例名现在先经 escape_markdown 转义再拼进消息，任务列表里的名字保持原样不转义
+- 修复点了"开始抢机"后收不到"抢机已启动"确认的问题：有 root 密码时启动回复整条走 Markdown 解析，实例名里的下划线（AMD_2026-11-25）被当成斜体标记、Telegram 拒绝发送（Can't parse entities）；动态的实例名现在先经 escape_markdown 转义再拼进消息，任务列表里的名字保持原样不转义
 
 **验证**：全量测试 2576 个全过（新增 1 个回归测试 tests/test_boot_form_handlers.py 的 test_start_reply_escapes_underscore_in_name）。
 

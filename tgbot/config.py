@@ -19,6 +19,7 @@ import json
 import os
 import sys
 import tempfile
+import threading
 
 # ================= 配置区（改这里） =================
 # Telegram bot Token: read from an env var, never hardcode it. Telegram 机器人 Token：从环境变量读，不要硬编码。
@@ -369,13 +370,44 @@ def get_region(profile=None):
     return get_profile_config(profile)["region"]
 
 
+# OCIClient cache, keyed by (profile, region). OCIClient 缓存，按
+# (profile, region) 键保存；见 get_oci_client。
+_OCI_CLIENTS = {}
+_OCI_CLIENTS_LOCK = threading.Lock()
+
+
 def get_oci_client(profile=None, region=None):
     """返回指定 profile 的 OCIClient（认证由 OCI CLI 自己处理）。
 
     注意：这里延迟 import，避免 config 被无 oci 环境的测试 import 时失败。
+
+    客户端按 (profile, region) 缓存复用：新建一个 OCIClient 要读
+    配置 + 私钥建 signer（冷启动约 0.2 秒），每次点击都新建等于
+    每点一次多付一次；SDK 服务端 client 缓存是按 OCIClient 实例
+    存的，新对象等于全部重建。复用后点击只付热调用的成本。
+    线程安全：调用方经 run_sync 在线程里跑 OCI 调用；共享的
+    SDK client 只被并发读/调（urllib3 连接池本身线程安全），
+    代理每次使用时重设为同一值；创建时用锁 guard，避免重复建。
+    配置文件本身没有进程内重载路径（改配置要重启机器人，新进程
+    本来就是空缓存），见 clear_oci_client_cache。
     """
     from oci.client import OCIClient
 
     cfg = get_profile_config(profile)
-    return OCIClient(profile=profile or DEFAULT_PROFILE,
-                      region=region or cfg["region"])
+    key = (profile or DEFAULT_PROFILE, region or cfg["region"])
+    with _OCI_CLIENTS_LOCK:
+        client = _OCI_CLIENTS.get(key)
+        if client is None:
+            client = OCIClient(profile=key[0], region=key[1])
+            _OCI_CLIENTS[key] = client
+        return client
+
+
+def clear_oci_client_cache():
+    """丢掉缓存的 OCIClient（如下次要重建，如配置重载后）。
+
+    目前没有进程内重载配置的路径（改配置要重启机器人，重启后
+    本来就是空缓存）；留给未来重载路径与测试用。
+    """
+    with _OCI_CLIENTS_LOCK:
+        _OCI_CLIENTS.clear()

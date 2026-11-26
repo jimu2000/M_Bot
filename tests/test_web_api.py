@@ -31,6 +31,7 @@ from web import deps as deps_mod
 from web.app import create_app
 from web.auth import LOGIN_GUARD, SESSIONS, hash_password
 from web.deps import effective_region, get_profile_regions, resolve_profile
+from web.oci_cache import clear_oci_cache
 from web.routes.cloudreport import clear_cloud_report_cache
 from web.routes.instances import clear_instance_list_cache
 from web.routes.volumes import clear_volumes_cache
@@ -118,6 +119,7 @@ class WebApiTestCase(unittest.TestCase):
         self._data_dir_patcher.start()
         # Clear the server cache (instance list / cloud report) so cached data does not leak across tests. 清服务端缓存（实例列表 / 云报告），避免缓存跨测试串数据。
         clear_instance_list_cache()
+        clear_oci_cache()
         clear_volumes_cache()
         clear_cloud_report_cache()
         clear_quota_cache()
@@ -222,7 +224,31 @@ class TestInstancesApi(WebApiTestCase):
 
     def setUp(self):
         super().setUp()
+        # VNIC 缓存函数不 mock 就会真的调 OCI（第 7 轮新增调用点）：
+        # 列表测试只关心端点形状，VNIC 数据一律给空值；接线由
+        # test_list_passes_cached_vnic_data_to_bulk 单独验证。
+        self._vnic_atts_patcher = patch(
+            "web.routes.instances.cached_raw_vnic_attachments",
+            return_value=[])
+        self._vnic_ips_patcher = patch(
+            "web.routes.instances.cached_vnic_public_ips",
+            return_value={})
+        self._vnic_atts_patcher.start()
+        self._vnic_ips_patcher.start()
+        self.addCleanup(self._vnic_atts_patcher.stop)
+        self.addCleanup(self._vnic_ips_patcher.stop)
         self._login()
+
+    @patch("web.routes.instances.attach_public_ips_bulk", return_value=[FAKE_IP])
+    @patch("web.routes.instances.cached_raw_instances", return_value=FAKE_INSTANCES)
+    def test_list_passes_cached_vnic_data_to_bulk(self, mock_list, mock_ip):
+        """第 7 轮：列表把缓存的挂载列表与 IP 映射传给批量取 IP。"""
+        r = self.client.get("/api/instances")
+        self.assertEqual(r.status_code, 200)
+        mock_ip.assert_called_once()
+        _args, kwargs = mock_ip.call_args
+        self.assertEqual(kwargs.get("attachments"), [])
+        self.assertEqual(kwargs.get("ip_map"), {})
 
     @patch("web.routes.instances.attach_public_ips_bulk", return_value=[FAKE_IP])
     @patch("web.routes.instances.cached_raw_instances", return_value=FAKE_INSTANCES)
