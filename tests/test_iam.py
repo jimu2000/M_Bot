@@ -209,11 +209,13 @@ class TestCreateUser(unittest.TestCase):
         cli = _mock_cli({"data": {"id": FAKE_USER}})
         create_user(cli, "ocid1.tenancy.oc1..xxxx", "newadmin",
                     "a@example.com")
+        # 备注为空时不再传空字符串（服务端拒绝空描述），
+        # 改用默认描述 Managed by M_Bot: <用户名>（v2.14.3）。
         cli.run.assert_called_once_with(
             ["iam", "user", "create",
              "--compartment-id", "ocid1.tenancy.oc1..xxxx",
              "--name", "newadmin", "--email", "a@example.com",
-             "--description", "",
+             "--description", "Managed by M_Bot: newadmin",
              "--wait-for-state", "ACTIVE",
              "--wait-interval-seconds", "2",
              "--max-wait-seconds", "60"],

@@ -778,11 +778,21 @@ class OCIClient:
             lambda: client.get_instance_console_connection(connection_id))
         return _model_to_dict(resp.data)
 
-    def sdk_list_group_users(self, group_id, region=None):
-        """列出某 IAM 组里的用户（SDK 直调）。"""
+    def sdk_list_group_users(self, compartment_id, group_id, region=None):
+        """列出某 IAM 组里的用户（SDK 直调）。
+
+        返回组员关系列表（每项是 kebab-case 字典，user-id 才是用户
+        OCID，id 是成员关系本身的 OCID）。
+
+        注意：OCI SDK 的 IdentityClient 没有 list_users_in_group
+        这个方法（v2.14.2 前的代码调的就是它，删用户时直接报
+        AttributeError）；正确接口是 list_user_group_memberships，
+        按 group_id 过滤。
+        """
         client = self._sdk_service_client("identity", region)
         items = self._sdk_paginate("iam group user list",
-                                   client.list_users_in_group, group_id)
+                                   client.list_user_group_memberships,
+                                   compartment_id, group_id=group_id)
         return [_model_to_dict(item) for item in items]
 
     def sdk_list_groups(self, compartment_id, region=None):

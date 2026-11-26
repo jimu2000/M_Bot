@@ -31,7 +31,7 @@ class FakeOCI:
         self.group_users = {}
         self.policies = []
 
-    def sdk_list_group_users(self, group_id):
+    def sdk_list_group_users(self, compartment_id, group_id):
         return list(self.group_users.get(group_id, []))
 
     def sdk_list_api_keys(self, user_id):
@@ -186,14 +186,15 @@ class TestIamFeatures(unittest.TestCase):
         cli = FakeOCI()
         cli.groups = [{"name": "Administrators", "id": "group-ocid"}]
         # 组里只剩目标用户一人 -> 是最后一个管理员。
-        cli.group_users = {"group-ocid": [{"id": "user-ocid"}]}
+        # sdk_list_group_users 返回成员关系，user-id 才是用户 OCID。
+        cli.group_users = {"group-ocid": [{"user-id": "user-ocid"}]}
         self.assertTrue(is_last_admin(cli, "tenancy-ocid", "user-ocid"))
         # 组里还有其他成员 -> 不是最后一个。
-        cli.group_users = {"group-ocid": [{"id": "user-ocid"},
-                                          {"id": "other-ocid"}]}
+        cli.group_users = {"group-ocid": [{"user-id": "user-ocid"},
+                                          {"user-id": "other-ocid"}]}
         self.assertFalse(is_last_admin(cli, "tenancy-ocid", "user-ocid"))
         # 目标用户不在 Administrators 组里 -> 不是管理员。
-        cli.group_users = {"group-ocid": [{"id": "other-ocid"}]}
+        cli.group_users = {"group-ocid": [{"user-id": "other-ocid"}]}
         self.assertFalse(is_last_admin(cli, "tenancy-ocid", "user-ocid"))
         # 没有 Administrators 组 -> 不拦。
         cli.groups = []

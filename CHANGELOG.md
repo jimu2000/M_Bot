@@ -9,6 +9,12 @@
 
 ## [Unreleased]
 
+## [2.14.3] - 2026-11-27
+- 修复 IAM 删除用户失败：`sdk_list_group_users` 调了 OCI SDK 里不存在的 `list_users_in_group`（直接报 AttributeError），改调官方接口 `list_user_group_memberships`（传租户 OCID + group_id，支持分页）；最后管理员判断改读成员关系里的 `user-id`。网页版与 Telegram 删用户共用同一条 `is_last_admin`，一次修好两边。
+- 修复 IAM 新建用户备注留空失败：`--description` 是 CLI 必填参数，但服务端拒绝空字符串（InvalidParameter: description must not be blank）；备注为空时默认用 `Managed by M_Bot: <用户名>`，超过 400 字符直接拒绝。
+- IAM 新建/删除失败不再把整段 ServiceError JSON 贴给用户，只取其中的 message 字段并翻成中文。
+- 新增回归测试 `tests/test_iam_regressions_20261127.py`（5 项）：用真实 SDK 的 UserGroupMembership 模型验证最后管理员判断，不再只 mock 掉关键判断函数。
+
 ## [2.14.2] - 2026-11-27
 
 - 修复 IAM 创建 Bot 用户/新增 API Key 时 PEM 私钥下载区被 OCI config 覆盖的问题；两个文件现在独立显示、复制和下载

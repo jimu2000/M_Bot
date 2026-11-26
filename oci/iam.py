@@ -76,8 +76,18 @@ def create_user(cli, compartment_id, name, email, description=None):
             "--name", name]
     if email:
         args += ["--email", email]
-    # OCI CLI 当前版本将 description 列为必填；空描述也显式传入。
-    args += ["--description", description or "",
+    # OCI 要求 description 非空。Web 表单允许备注留空，Bot 端也可能
+    # 不提供备注；此时生成稳定默认值，避免 InvalidParameter。
+    # （--description 是 CLI 必填参数，但服务端拒绝空字符串；
+    # CLI 帮助里“可以为空”是错的，实测服务端报 description must
+    # not be blank。）
+    safe_description = (str(description).strip()
+                        if description is not None else "")
+    if not safe_description:
+        safe_description = f"Managed by M_Bot: {name}"[:400]
+    if len(safe_description) > 400:
+        raise ValueError("用户描述不能超过 400 个字符")
+    args += ["--description", safe_description,
              "--wait-for-state", "ACTIVE",
              "--wait-interval-seconds", "2",
              "--max-wait-seconds", "60"]
@@ -106,8 +116,10 @@ def is_last_admin(cli, tenancy_id, user_id):
     group_id = get_group_id_by_name(cli, tenancy_id, ADMIN_GROUP_NAME)
     if not group_id:
         return False
-    members = cli.sdk_list_group_users(group_id) or []
-    member_ids = [m.get("id") for m in members if isinstance(m, dict)]
+    # sdk_list_group_users 返回的是成员关系（UserGroupMembership），
+    # 用户 OCID 在 user-id 键里（id 是成员关系本身的 OCID）。
+    members = cli.sdk_list_group_users(tenancy_id, group_id) or []
+    member_ids = [m.get("user-id") for m in members if isinstance(m, dict)]
     return user_id in member_ids and len(member_ids) == 1
 
 

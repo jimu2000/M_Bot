@@ -28,6 +28,7 @@ OCI 配置文件读（get_profile_tenancy_id），读不到时回落 compartment
 下载/复制，页面刷新即失效。
 """
 
+import json
 import logging
 
 from fastapi import APIRouter, Depends, Query
@@ -58,6 +59,38 @@ from web.deps import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _translate_oci_message(code, msg):
+    """把常见的 OCI 错误信息翻成中文（其余原文返回）。"""
+    if code == "NotAuthorizedOrNotFound":
+        return "权限不足：当前 API 用户没有管理 IAM 用户的权限"
+    if "description size must be between 1 and 400" in msg:
+        return "用户描述不能为空，长度需在 1–400 字符之间"
+    return msg
+
+
+def _oci_short_message(exc):
+    """从 OCI 异常文本里抽出最短的可用信息。
+
+    CLI 失败时异常文本里常带整段 ServiceError JSON（含 client_version、
+    opc-request-id、request_endpoint 等），直接展示给用户太长。
+    只取 JSON 里的 message 字段并翻成中文；解析不到就返回原文本
+    （截断到 200 字）。
+    """
+    text = str(exc)
+    start = text.find("{")
+    if start >= 0:
+        try:
+            data, _ = json.JSONDecoder().raw_decode(text[start:])
+            if isinstance(data, dict):
+                code = (data.get("code") or "").strip()
+                msg = (data.get("message") or "").strip()
+                if msg:
+                    return _translate_oci_message(code, msg)
+        except ValueError:
+            pass
+    return text[:200]
 
 # Bot 专用 API 用户的默认身份（与机器人端菜单 8 一致）。
 BOT_USER_NAME = "api_user"
@@ -141,7 +174,7 @@ def create_iam_user(body: CreateUserBody,
     except ValueError as exc:
         return error_response(str(exc) or "创建用户失败", 400)
     except Exception as exc:  # noqa: BLE001
-        return error_response(f"创建用户失败：{exc}",
+        return error_response(f"创建用户失败：{_oci_short_message(exc)}",
                               oci_status(exc))
     return {"ok": True, "user": user}
 
@@ -199,7 +232,7 @@ def delete_iam_user(user_id: str, profile: str = Query(""),
     except ValueError as exc:
         return error_response(str(exc) or "删除用户失败", 400)
     except Exception as exc:  # noqa: BLE001
-        return error_response(f"删除用户失败：{exc}",
+        return error_response(f"删除用户失败：{_oci_short_message(exc)}",
                               oci_status(exc))
     return {"ok": True}
 

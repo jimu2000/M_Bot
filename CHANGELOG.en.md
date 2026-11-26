@@ -9,6 +9,12 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [2.14.3] - 2026-11-27
+- Fixed IAM user deletion failing: `sdk_list_group_users` called `list_users_in_group`, which does not exist in the OCI Python SDK (raised AttributeError outright). It now calls the official `list_user_group_memberships` API (tenancy OCID + group_id, paginated); the last-admin check now reads `user-id` from the membership. The web panel and Telegram delete flows share the same `is_last_admin`, so one fix covers both.
+- Fixed IAM user creation failing on an empty remark: `--description` is a required CLI argument, but the service rejects an empty string (InvalidParameter: description must not be blank). An empty remark now defaults to `Managed by M_Bot: <username>`; descriptions over 400 characters are rejected.
+- IAM create/delete failures no longer dump the full ServiceError JSON to the user; only the message field is shown, translated into Chinese.
+- Added regression tests in `tests/test_iam_regressions_20261127.py` (5 tests): the last-admin check is verified with real SDK UserGroupMembership models instead of only mocking the key decision function.
+
 ## [2.14.2] - 2026-11-27
 
 - Fix IAM secret panel overwriting the generated PEM download with the OCI config snippet; both files now render independently with separate copy/download actions.
