@@ -9,6 +9,7 @@ import tempfile
 import unittest
 
 from oci.iam import (
+    build_oci_config,
     create_api_key,
     create_bot_permission_user,
     create_or_reset_ui_password,
@@ -79,6 +80,42 @@ class TestIamFeatures(unittest.TestCase):
             pwd_call,
             ["iam", "user", "ui-password", "create-or-reset",
              "--user-id", "user-ocid"])
+
+    def test_ui_password_reset_translates_oci_errors(self):
+        # OCI 拒绝时不把原始 ServiceError JSON 甩给调用方，翻译成中文。
+        class FailingOCI(FakeOCI):
+            def __init__(self, message):
+                super().__init__()
+                self.message = message
+
+            def run(self, args, timeout=None):
+                raise RuntimeError(self.message)
+
+        with self.assertRaises(RuntimeError) as ctx:
+            create_or_reset_ui_password(
+                FailingOCI("ServiceError: NotAuthorizedOrNotFound"),
+                "user-ocid")
+        self.assertIn("不能通过 API 重置自己的", str(ctx.exception))
+        with self.assertRaises(RuntimeError) as ctx:
+            create_or_reset_ui_password(
+                FailingOCI("ServiceError: IdcsConversionError"),
+                "user-ocid")
+        self.assertIn("已停用控制台登录", str(ctx.exception))
+
+    def test_build_oci_config(self):
+        config = build_oci_config(
+            "api_user", "ocid1.user.oc1..testuser0001",
+            "aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99",
+            "ocid1.tenancy.oc1..testtenant1", "ap-singapore-1")
+        self.assertEqual(config,
+                         "[api_user]\n"
+                         "user=ocid1.user.oc1..testuser0001\n"
+                         "fingerprint=aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99\n"
+                         "key_file=/root/oci_api_key.pem\n"
+                         "tenancy=ocid1.tenancy.oc1..testtenant1\n"
+                         "region=ap-singapore-1\n")
+        with self.assertRaises(ValueError):
+            build_oci_config("", "user-ocid", "fp", "tenancy", "region")
 
     def test_bot_permission_user(self):
         cli = FakeOCI()

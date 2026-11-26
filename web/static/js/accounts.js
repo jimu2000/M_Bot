@@ -373,6 +373,7 @@
       head.appendChild(headRow);
       table.appendChild(head);
       var body = document.createElement("tbody");
+      var currentApiUserId = data.current_api_user_id || "";
       users.forEach(function (u) {
         var row = document.createElement("tr");
         row.appendChild(el("td", u.name || "?", null));
@@ -383,10 +384,18 @@
         keyBtn.type = "button";
         keyBtn.addEventListener("click", function () { showUserKeys(u.id, u.name); });
         opCell.appendChild(keyBtn);
-        var pwdBtn = el("button", "重置密码", "btn");
-        pwdBtn.type = "button";
-        pwdBtn.addEventListener("click", function () { resetIamPassword(u.id, u.name); });
-        opCell.appendChild(pwdBtn);
+        /* 不能重置密码的用户不显示按钮：关了控制台登录的（rbot-test、
+           api_user）与当前 API 用户自己（OCI 不许用 API 重置自己的密码）。
+           后端重置接口同样会预检拒绝，这里只是不展示做不到的操作。 */
+        var caps = u.capabilities || {};
+        var canReset = caps["can-use-console-password"] !== false
+          && u.id !== currentApiUserId;
+        if (canReset) {
+          var pwdBtn = el("button", "重置密码", "btn");
+          pwdBtn.type = "button";
+          pwdBtn.addEventListener("click", function () { resetIamPassword(u.id, u.name); });
+          opCell.appendChild(pwdBtn);
+        }
         var delBtn = el("button", "删除", "btn");
         delBtn.type = "button";
         delBtn.addEventListener("click", function () { deleteIamUser(u.id, u.name); });
@@ -447,6 +456,9 @@
       if (data.private_key_pem) {
         showOnceSecret("Bot API 用户私钥", data.private_key_pem, "oci_api_key.pem");
       }
+      if (data.oci_config) {
+        showOnceSecret("OCI 配置文件（新建账号用，可直接粘贴到下方“添加租户”）", data.oci_config, "oci_config.txt");
+      }
     } catch (err) {
       MBot.toast(err.message || err, "error");
     }
@@ -500,6 +512,9 @@
       MBot.toast("API Key 已创建。");
       if (data.private_key_pem) {
         showOnceSecret("用户「" + userName + "」的新 API Key 私钥", data.private_key_pem, "oci_api_key.pem");
+      }
+      if (data.oci_config) {
+        showOnceSecret("OCI 配置文件（可直接粘贴到下方“添加租户”）", data.oci_config, "oci_config.txt");
       }
     } catch (err) {
       MBot.toast(err.message || err, "error");

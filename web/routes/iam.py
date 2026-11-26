@@ -33,6 +33,7 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
 from oci.iam import (
+    build_oci_config,
     create_api_key,
     create_bot_permission_user,
     create_or_reset_ui_password,
@@ -120,6 +121,7 @@ def list_iam_users(profile: str = Query(""),
         return error_response(f"列出用户失败：{exc}",
                               oci_status(exc))
     return {"ok": True, "profile": profile or "DEFAULT",
+            "current_api_user_id": get_profile_user_id(profile or "DEFAULT"),
             "users": users}
 
 
@@ -159,17 +161,22 @@ def create_bot_user(body: CreateBotUserBody,
     except Exception as exc:  # noqa: BLE001
         return error_response(f"创建 Bot 用户失败：{exc}",
                               oci_status(exc))
-    # 私钥只在本次响应里返回一次，不写日志。
+    # 私钥只在本次响应里返回一次，不写日志。配置文件随私钥一起返回，
+    # 用户可直接粘贴到云账户页“添加租户”（机器人端创建时也会发这段）。
     pem = key_data.get("private_key_pem")
     if isinstance(pem, bytes):
         pem = pem.decode("utf-8")
+    oci_config = build_oci_config(
+        BOT_USER_NAME, result.get("user_id"),
+        key_data.get("fingerprint"), tenancy_id,
+        getattr(cli, "region", None))
     return {"ok": True, "user_id": result.get("user_id"),
             "user_name": BOT_USER_NAME,
             "group_created": result.get("group_created"),
             "policy_created": result.get("policy_created"),
             "key": {"fingerprint": key_data.get("fingerprint"),
                     "lifecycle_state": key_data.get("lifecycle_state")},
-            "private_key_pem": pem}
+            "private_key_pem": pem, "oci_config": oci_config}
 
 
 @router.delete("/api/iam/users/{user_id}")
@@ -214,9 +221,9 @@ def list_user_keys(user_id: str, profile: str = Query(""),
 @router.post("/api/iam/users/{user_id}/keys")
 def create_user_key(user_id: str, body: ProfileBody,
                     _user: str = Depends(get_current_user)):
-    """给用户新增 API Key（私钥只返回一次）。"""
+    """给用户新增 API Key（私钥与配置文件只返回一次）。"""
     try:
-        cli, _tenancy_id = _iam_cli(body.profile)
+        cli, tenancy_id = _iam_cli(body.profile)
         key_data = create_api_key(cli, user_id)
     except ValueError as exc:
         return error_response(str(exc) or "新增 API Key 失败", 400)
@@ -231,7 +238,20 @@ def create_user_key(user_id: str, body: ProfileBody,
         pem = key_data.get("private_key_pem")
     if isinstance(pem, bytes):
         pem = pem.decode("utf-8")
-    return {"ok": True, "key": key, "private_key_pem": pem}
+    # 配置文件随私钥一起返回：段名用 IAM 用户名，找不到时用 user OCID。
+    profile_name = user_id
+    try:
+        users = cli.sdk_list_users(tenancy_id) or []
+        target = next((u for u in users if u.get("id") == user_id), None)
+        if target and target.get("name"):
+            profile_name = target["name"]
+    except Exception:  # noqa: BLE001 - 查不到名字不影响出配置
+        pass
+    oci_config = build_oci_config(
+        profile_name, user_id, key.get("fingerprint"), tenancy_id,
+        getattr(cli, "region", None))
+    return {"ok": True, "key": key, "private_key_pem": pem,
+            "oci_config": oci_config}
 
 
 @router.delete("/api/iam/users/{user_id}/keys/{fingerprint}")
@@ -257,9 +277,27 @@ def delete_user_key(user_id: str, fingerprint: str,
 @router.post("/api/iam/users/{user_id}/reset-password")
 def reset_user_password(user_id: str, body: ProfileBody,
                         _user: str = Depends(get_current_user)):
-    """重置控制台临时密码（只返回一次）。"""
+    """重置控制台临时密码（只返回一次）。
+
+    先预检两种 OCI 一定会拒绝的情况，给出明确原因而不是等 OCI 报错：
+      - 目标用户就是当前 profile 的 API 用户：OCI 不允许通过 API
+        重置自己的控制台密码。
+      - 目标用户已停用控制台登录（can-use-console-password 为 false）。
+    """
     try:
-        cli, _tenancy_id = _iam_cli(body.profile)
+        cli, tenancy_id = _iam_cli(body.profile)
+        if _is_current_api_user(body.profile, user_id):
+            return error_response(
+                "不能重置该用户的控制台密码：它就是当前账号正在使用的 "
+                "API 用户，OCI 不允许通过 API 重置自己的密码。请用控制台"
+                "的忘记密码流程，或换一个管理员账号操作。", 400)
+        users = cli.sdk_list_users(tenancy_id) or []
+        target = next((u for u in users if u.get("id") == user_id), None)
+        if target is not None:
+            caps = target.get("capabilities") or {}
+            if caps.get("can-use-console-password") is False:
+                return error_response(
+                    "该用户已停用控制台登录，不能重置密码。", 400)
         password = create_or_reset_ui_password(cli, user_id)
     except ValueError as exc:
         return error_response(str(exc) or "重置密码失败", 400)

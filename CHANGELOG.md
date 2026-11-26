@@ -9,6 +9,11 @@
 
 ## [Unreleased]
 
+## [2.13.1] - 2026-11-27
+
+- 修 IAM 重置密码报错：三个用户都重置不了是有原因的——rbot-test 与 api_user 关了控制台登录（can-use-console-password=false），管理员账号就是当前 API 用户自己、OCI 不许用 API 重置自己的密码；现在重置前先预检这两种情况并直接说明原因，不再等 OCI 报错；OCI 报错时也不再把原始 ServiceError JSON 甩到提示框里，翻译成中文；不能重置密码的用户不显示“重置密码”按钮（列表接口返回 current_api_user_id，前端按 capabilities 与当前 API 用户判断）
+- 新建用户/新增 API Key 后生成 OCI 配置文件：机器人端创建 Bot 用户后会发 config 片段，网页版之前只给私钥 PEM、没给配置文件；现在创建 Bot 用户与新增 API Key 都随私钥一起返回一段可直接用的 config（段名/user/fingerprint/key_file/tenancy/region），前端显示为可下载的 oci_config.txt，可直接粘贴到云账户页“添加租户”
+
 ## [2.13] - 2026-11-27
 
 - 网页版 IAM 用户管理（与机器人菜单 8 同步）：云账户页新增“IAM 用户管理”卡片，可按账号列出 IAM 用户、新增普通用户、创建 Bot 专用 API 用户（api_user + Group_for_Api_used + Api_User_Policy，幂等复用）、给用户新增 API Key、重置控制台临时密码、删除用户；新增 API Key 的私钥与临时密码只在本次响应里返回一次，前端提供下载/复制，刷新后不再可查；删用户/删 Key 的保护与机器人端一致（禁删当前账号正在用的 API 用户/Key，禁删 Administrators 组最后一个管理员）

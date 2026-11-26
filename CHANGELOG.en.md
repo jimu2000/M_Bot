@@ -9,6 +9,11 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [2.13.1] - 2026-11-27
+
+- Fixed IAM password-reset errors: none of the three users could be reset, for a reason — rbot-test and api_user have console login disabled (can-use-console-password=false), and the admin account is the current API user itself, which OCI does not allow resetting via API; the reset now pre-checks both cases and explains why instead of waiting for OCI to fail; OCI errors are translated into Chinese instead of dumping the raw ServiceError JSON into the toast; users whose password cannot be reset no longer show a "Reset password" button (the list endpoint returns current_api_user_id, and the frontend checks capabilities and the current API user)
+- New users and new API keys now come with an OCI config file: the bot already sends a config snippet after creating a Bot user, but the web panel only returned the private key PEM; creating a Bot user and adding an API key now both return a ready-to-use config (section/user/fingerprint/key_file/tenancy/region) alongside the private key, shown as a downloadable oci_config.txt that can be pasted straight into "Add tenancy" on the accounts page
+
 ## [2.13] - 2026-11-27
 
 - Web IAM user management (same as bot menu 8): the Cloud Accounts page gains an "IAM Users" card — list IAM users per account, add ordinary users, create the dedicated Bot API user (api_user + Group_for_Api_used + Api_User_Policy, idempotent reuse), add an API key to a user, reset a console password, and delete users; a new API key's private key and a reset temporary password are returned only once in that response, with download/copy in the UI, and are gone after refresh; delete protections match the bot (cannot delete the API user/key the current account uses, cannot delete the last member of the Administrators group)

@@ -229,12 +229,31 @@ def get_profile_user_id(profile="DEFAULT", config_path=None):
     return user_id.strip() or None
 
 def create_or_reset_ui_password(cli, user_id):
-    """为 IAM 用户生成/重置 OCI 控制台临时密码。只返回密码，不记录日志。"""
+    """为 IAM 用户生成/重置 OCI 控制台临时密码。只返回密码，不记录日志。
+
+    已知 OCI 拒绝场景（翻译成中文，不把原始 ServiceError JSON 甩给调用方）：
+      - NotAuthorizedOrNotFound：OCI 不允许通过 API 重置自己的控制台密码
+        （目标用户就是当前 API 用户时），或目标用户无控制台登录权限。
+      - IdcsConversionError（含“用户已停用”）：目标用户已停用控制台登录。
+    """
     if not user_id or not isinstance(user_id, str):
         raise ValueError("user_id 不能为空")
     # OCI CLI 的真实命令路径为 iam user ui-password create-or-reset。
-    result = cli.run(["iam", "user", "ui-password", "create-or-reset",
-                      "--user-id", user_id])
+    try:
+        result = cli.run(["iam", "user", "ui-password", "create-or-reset",
+                          "--user-id", user_id])
+    except Exception as exc:  # noqa: BLE001 - 翻译已知 OCI 错误再抛出
+        text = str(exc)
+        if "NotAuthorizedOrNotFound" in text:
+            raise RuntimeError(
+                "OCI 拒绝重置该用户的控制台密码：不能通过 API 重置自己的"
+                "控制台密码（目标用户就是当前 API 用户时），或该用户没有"
+                "控制台登录权限。请用控制台的忘记密码流程，或换一个管理"
+                "员账号操作。") from exc
+        if "IdcsConversionError" in text or "用户已停用" in text:
+            raise RuntimeError(
+                "该用户已停用控制台登录，不能重置密码。") from exc
+        raise
     data = _extract_data(result) or {}
     if isinstance(data, dict):
         password = (data.get("password") or data.get("temporary-password")
@@ -243,6 +262,28 @@ def create_or_reset_ui_password(cli, user_id):
         password = None
     # 使用 Identity Domains 的租户可能通过邮件发送重置链接，而不是返回密码。
     return str(password) if password else None
+
+
+def build_oci_config(profile_name, user_id, fingerprint, tenancy_id,
+                     region):
+    """拼一段可直接用的 OCI config 文本。
+
+    新建用户/新增 API Key 后随私钥一起返回，前端展示为可下载的
+    oci_config.txt，用户可直接粘贴到云账户页“添加租户”。key_file
+    用 /root/oci_api_key.pem，与该页占位示例一致（机器人端用的是
+    ~/.oci/oci_api_key.pem，那是另一条路）。
+    """
+    if not profile_name or not user_id or not fingerprint or not tenancy_id:
+        raise ValueError("生成 OCI 配置缺少必要字段")
+    lines = [
+        f"[{profile_name}]",
+        f"user={user_id}",
+        f"fingerprint={fingerprint}",
+        "key_file=/root/oci_api_key.pem",
+        f"tenancy={tenancy_id}",
+        f"region={region or 'ap-singapore-1'}",
+    ]
+    return "\n".join(lines) + "\n"
 
 
 def create_api_key(cli, user_id, bits=2048):

@@ -73,6 +73,7 @@ class IamApiTestCase(unittest.TestCase):
         self._login()
 
         self.cli = MagicMock()
+        self.cli.region = "ap-singapore-1"
         self.cli.sdk_list_users.return_value = list(FAKE_USERS)
         self._cli_patch = patch.object(
             iam_routes, "get_oci_client", return_value=self.cli)
@@ -114,6 +115,8 @@ class TestListUsers(IamApiTestCase):
         self.assertTrue(data["ok"])
         self.assertEqual(len(data["users"]), 2)
         self.assertEqual(data["users"][0]["name"], "alice")
+        # 列表带当前 API 用户 OCID，前端据此隐藏“重置密码”按钮。
+        self.assertEqual(data["current_api_user_id"], FAKE_USER_2)
         self.cli.sdk_list_users.assert_called_once_with(FAKE_TENANCY)
 
     def test_list_users_requires_login(self):
@@ -162,6 +165,14 @@ class TestCreateBotUser(IamApiTestCase):
         self.assertEqual(data["user_name"], "api_user")
         self.assertEqual(data["private_key_pem"], FAKE_PEM)
         self.assertEqual(data["key"]["fingerprint"], FAKE_FINGERPRINT)
+        # 新建用户随私钥一起返回 OCI 配置文件，可直接粘贴到添加租户。
+        config = data["oci_config"]
+        self.assertIn("[api_user]", config)
+        self.assertIn("user=" + FAKE_USER, config)
+        self.assertIn("fingerprint=" + FAKE_FINGERPRINT, config)
+        self.assertIn("key_file=/root/oci_api_key.pem", config)
+        self.assertIn("tenancy=" + FAKE_TENANCY, config)
+        self.assertIn("region=ap-singapore-1", config)
 
 
 class TestDeleteUser(IamApiTestCase):
@@ -225,6 +236,13 @@ class TestApiKeys(IamApiTestCase):
         self.assertTrue(data["ok"])
         self.assertEqual(data["private_key_pem"], FAKE_PEM)
         self.assertEqual(data["key"]["fingerprint"], FAKE_FINGERPRINT)
+        # 新增 Key 随私钥一起返回 OCI 配置文件，段名用 IAM 用户名。
+        config = data["oci_config"]
+        self.assertIn("[alice]", config)
+        self.assertIn("user=" + FAKE_USER, config)
+        self.assertIn("fingerprint=" + FAKE_FINGERPRINT, config)
+        self.assertIn("tenancy=" + FAKE_TENANCY, config)
+        self.assertIn("region=ap-singapore-1", config)
 
     def test_delete_key(self):
         with patch.object(iam_routes, "delete_api_key",
@@ -265,6 +283,33 @@ class TestResetPassword(IamApiTestCase):
         self.assertTrue(data["ok"])
         self.assertEqual(data["password"], "TempPass123!")
         mock_reset.assert_called_once_with(self.cli, FAKE_USER)
+
+    def test_reset_password_refuses_current_api_user(self):
+        # 目标用户就是当前 profile 的 API 用户 -> 拒绝，不调 OCI。
+        with patch.object(iam_routes, "get_profile_user_id",
+                          return_value=FAKE_USER), \
+             patch.object(iam_routes, "create_or_reset_ui_password",
+                          return_value="TempPass123!") as mock_reset:
+            resp = self.client.post(
+                f"/api/iam/users/{FAKE_USER}/reset-password",
+                json={"profile": "DEFAULT"})
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("不能重置", resp.json()["error"])
+        mock_reset.assert_not_called()
+
+    def test_reset_password_refuses_console_disabled_user(self):
+        # 目标用户关了控制台登录 -> 拒绝，不调 OCI。
+        disabled = dict(FAKE_USERS[0])
+        disabled["capabilities"] = {"can-use-console-password": False}
+        self.cli.sdk_list_users.return_value = [disabled, FAKE_USERS[1]]
+        with patch.object(iam_routes, "create_or_reset_ui_password",
+                          return_value="TempPass123!") as mock_reset:
+            resp = self.client.post(
+                f"/api/iam/users/{FAKE_USER}/reset-password",
+                json={"profile": "DEFAULT"})
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("已停用控制台登录", resp.json()["error"])
+        mock_reset.assert_not_called()
 
 
 class TestAccountsPageIamSection(IamApiTestCase):
