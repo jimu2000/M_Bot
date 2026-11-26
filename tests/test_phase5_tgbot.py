@@ -127,8 +127,8 @@ class TestOracleMenuItems(Phase5TgbotTestCase):
         self.assertEqual(keys["batch"], "35. 批量操作")
         self.assertEqual(keys["a1health"], "36. A1 配置体检")
 
-    def test_menu_still_two_pages(self):
-        # 42 items, 22 per page, 2 pages in total (two more rows per page, so page 1 reaches item 23; with item 13 deleted, 22 items land exactly on item 23). 42 项，每页 22 项，共 2 页（每页加两行，第一页显示到 23 号；13 号已删，22 项正好排到 23 号）。
+    def test_menu_three_pages(self):
+        # 45 items, 22 per page, 3 pages in total (two more rows per page, so page 1 reaches item 23; with item 13 deleted, 22 items land exactly on item 23; items 45-46 added in v2.14.1). 45 项，每页 22 项，共 3 页（每页加两行，第一页显示到 23 号；13 号已删，22 项正好排到 23 号；v2.14.1 新增 45/46 号）。
         keyboard = oracle_menu_keyboard(1)
         labels = [b.text for row in keyboard.inline_keyboard for b in row]
         self.assertIn("35. 批量操作", labels)

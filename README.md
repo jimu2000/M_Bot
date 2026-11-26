@@ -16,7 +16,7 @@ M_Bot 是一个开源的 Oracle Cloud 管理面板：Telegram 机器人 + Web �
 
 **核心亮点：**
 
-- **安全与独立**：纯自研代码、3025 个单元测试；OCI 私钥只在本地做请求签名，不外传；免费功能全开，无付费墙。
+- **安全与独立**：纯自研代码、3250 个单元测试；OCI 私钥只在本地做请求签名，不外传；免费功能全开，无付费墙。
 - **多端协同**：Telegram 机器人 + FastAPI Web 面板 + MCP 协议接入，配置与通知（Telegram + Bark 加密推送）打通。
 - **省心运维**：终止实例默认连带删引导卷防扣费；RIPE Atlas 探针自动换被墙 IP；Let's Encrypt 域名与 IP 证书自动签发/续期。
 
@@ -190,9 +190,10 @@ key_file 如果已经在 `/root` 下，机器人保留原路径；否则自动�
   配额不足检测（停机并通知，不无限重试）、CPU 型号筛选（如只留 AMD EPYC 7J13）
 
 **Telegram 机器人（`tgbot/`，python-telegram-bot）**
-- `/oracle` 菜单 42 项：开机抢机、IP 管理、实例管理、磁盘管理、云账户、
+- `/oracle` 菜单 45 项：开机抢机、IP 管理、实例管理、磁盘管理、云账户、
   监控通知、配额、流量、费用、批量操作、A1 体检、流量守护、停机保活、
-  SSL 到期提醒、对象存储、Email 发件人、抢机计划……
+  SSL 到期提醒、对象存储、Email 发件人、抢机计划、Oracle 全球区域测速、
+  Cloudflare 优选 IP……
 - GFW 自动换 IP（菜单 16）：每 30 分钟从中国大陆探针（RIPE Atlas）
   ping 已开启的实例公网 IP，被墙自动换 IP 再检测，直到换到可用的为止；
   每次换 IP 发双通道通知（TG + Bark，没设 Bark 就只发 TG）
@@ -219,6 +220,11 @@ key_file 如果已经在 `/root` 下，机器人保留原路径；否则自动�
   直接上传（内容校验必须是私钥、600 权限保存、路径强制在 home 下），
   不经过 Telegram；配置里的 [cloudflare] 段一并保存；compartment 环境变量
   自动补写；新账号重启机器人与面板后生效
+- IAM 用户管理（云账户页，机器人菜单 8 同步）：列出 IAM 用户、新增普通用户、
+  创建 Bot 专用 API 用户（自动建组与策略）、新增 API Key（私钥只显示一次）、
+  重置控制台临时密码、删除用户；新建用户/新增 API Key 后生成可直接用的 OCI
+  配置文件（可下载 oci_config.txt，粘贴到“添加租户”即用）；删除保护：禁删
+  当前 API 用户、禁删最后一个管理员
 - 创建实例：可用域与子网按所选账号自动填充（来自部署配置），SSH 公钥文件
   有上传就填、没有就留空（可选项，只靠 root 密码登录也能开机）
 - 多区订阅二级菜单：实例 / 启动盘 / 配额 / 创建 / GFW 页的账号下拉旁有
@@ -348,10 +354,10 @@ python3 mcp_server.py
 
 ```bash
 python3 -m unittest discover -s tests -t .
-# Ran 3025 tests ... OK
+# Ran 3250 tests ... OK
 ```
 
-3025 个单元测试（mock 为主，写操作零次碰生产）。真实 API 验证记录见
+3250 个单元测试（mock 为主，写操作零次碰生产）。真实 API 验证记录见
 `docs/verification*.md`：只读操作对真实 OCI / Cloudflare API 实测通过；
 写操作（创建 / 换 IP / 升降配 / 扩容 / 释放等）在测试实例上真实跑通过。
 
@@ -365,7 +371,7 @@ M_Bot/
   clouds/       Cloudflare 客户端 + 其他云抽象接口与 stub
   mcp_server.py MCP 服务器（JSON-RPC over stdio）
   scripts/      部署脚本（原子升级）
-  tests/        单元测试（3025 个）
+  tests/        单元测试（3250 个）
   docs/         设计与验证文档
 ```
 
@@ -390,7 +396,7 @@ server. All code here is independently written, fully visible and auditable.
 
 **Highlights:**
 
-- **Secure and independent**: independently written code, 3025 unit tests; the OCI private key only signs requests locally and is never sent out; every free feature is open, no paywall.
+- **Secure and independent**: independently written code, 3250 unit tests; the OCI private key only signs requests locally and is never sent out; every free feature is open, no paywall.
 - **Multi-client**: Telegram bot + FastAPI web panel + MCP server, with shared config and notifications (Telegram + encrypted Bark push).
 - **Low-maintenance**: terminating an instance deletes its boot volume by default (no surprise charges); RIPE Atlas probes auto-swap a firewalled IP; Let's Encrypt domain and IP certificates are issued and renewed automatically.
 
@@ -585,10 +591,11 @@ Live demo (no login, simulated data): https://demo.youu.eu.org
   instead of retrying forever), CPU model filtering (e.g. keep only AMD EPYC 7J13)
 
 **Telegram bot (`tgbot/`, python-telegram-bot)**
-- `/oracle` menu with 42 items: launch/grab, IP management, instance
+- `/oracle` menu with 45 items: launch/grab, IP management, instance
   management, disk management, cloud accounts, monitoring, quotas, traffic,
   costs, batch operations, A1 health check, traffic guard, keep-alive,
-  SSL expiry alerts, object storage, email senders, grabber plans…
+  SSL expiry alerts, object storage, email senders, grabber plans,
+  Oracle global region speed test, Cloudflare preferred IP…
 - GFW auto IP change (menu 16): every 30 minutes, pings enabled instances'
   public IPs from mainland China probes (RIPE Atlas); if blocked, changes
   the IP and re-checks until one works; notifies on every change via
@@ -621,6 +628,13 @@ Live demo (no login, simulated data): https://demo.youu.eu.org
   Telegram); a [cloudflare] section in the config is saved too, and
   compartment env vars are added automatically; new accounts take effect
   after restarting the bot and the panel
+- IAM user management (accounts page, synced with bot menu 8): list IAM
+  users, add users, create a Bot API user (group and policy created
+  automatically), add API keys (private key shown once), reset console
+  passwords, delete users; creating a user or adding a key also generates
+  a ready-to-use OCI config file (downloadable as oci_config.txt, paste it
+  into "Add tenant"); deletion guards block removing the current API user
+  and the last administrator
 - Create instance: the availability domain and subnet auto-fill from the
   deployment config for the selected account, and the SSH key file is
   prefilled when one exists on the server (optional — root password login
@@ -772,10 +786,10 @@ For production, run both services under systemd — see `docs/deployment.md`
 
 ```bash
 python3 -m unittest discover -s tests -t .
-# Ran 3025 tests ... OK
+# Ran 3250 tests ... OK
 ```
 
-3025 unit tests (mostly mocked; write operations never touch production).
+3250 unit tests (mostly mocked; write operations never touch production).
 Real-API verification notes live in `docs/verification*.md`: read-only calls
 verified against the real OCI / Cloudflare APIs; write operations (create /
 change IP / resize / extend / terminate) verified for real on test instances.
