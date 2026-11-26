@@ -298,5 +298,39 @@ class TestBotRegistryMemoryMode(unittest.TestCase):
         self.assertEqual(len(registry.list_all()), 1)
 
 
+class TestRegistryResilientToMissingStore(unittest.TestCase):
+    """共享文件/目录被删后，任务更新不能抛异常杀死后台线程。
+
+    回归测试：_run_grabber 在任务结束后往 tasks.json 写完成日志；
+    若此时目录已被删（如测试清理临时目录），append_log / set_status
+    原先抛 FileNotFoundError，线程死掉、任务卡在 running。
+    现在写盘失败只记 warning，更新返回 False，线程继续收尾。
+    """
+
+    def test_web_registry_update_after_dir_deleted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "tasks.json")
+            registry = WebRegistry(tasks_file=path)
+            task_id = registry.create("grab", "抢机")
+            self.assertEqual(registry.get(task_id)["status"], "pending")
+        # 临时目录已删：共享文件不在了。
+        self.assertFalse(registry.append_log(task_id, "完成"))
+        self.assertFalse(registry.set_status(task_id, "done"))
+        self.assertFalse(registry.set_result(
+            task_id, {"instance_id": "i-1"}))
+
+    def test_bot_registry_update_after_dir_deleted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "tasks.json")
+            registry = BotRegistry(tasks_file=path)
+            task_id = registry.register("grab", "抢机")
+            self.assertEqual(registry.get(task_id)["status"], "running")
+        # 临时目录已删：内存状态照常更新，文件写盘失败不抛异常。
+        self.assertTrue(registry.update(task_id, status="done",
+                                        detail="完成"))
+        self.assertEqual(registry.get(task_id)["status"], "done")
+        self.assertTrue(registry.append_log(task_id, "完成"))
+
+
 if __name__ == "__main__":
     unittest.main()

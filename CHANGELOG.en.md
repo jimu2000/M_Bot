@@ -9,6 +9,12 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [2.10] - 2026-11-27
+
+- Forced-refresh slimming: every forced refresh rebuilt the OCI client, and private-key parsing (~0.39s per refresh, 61%) plus TLS/CA rebuild (~0.14s, 22%) dominated CPU. The web layer now caches and reuses OCIClient per profile+region (cleared for an account when that account is deleted), and fetches the instance list and VNIC attachment list in parallel. Forced-refresh CPU drops from ~1.01s to ~0.34s (-66%), wall time from ~2.69s to ~1.8s; everyday menu taps (cache hits) stay at ~0s
+- Core fix: when a grabber background thread wrote its completion log and the shared file's directory had been deleted (e.g. a test cleaning up its temp dir), the write raised FileNotFoundError, killing the thread and leaving the task stuck in "running". TaskRegistry updates (web and bot) now only log a warning on write failure instead of raising, so the thread finishes cleanly; test tearDown waits for grabber threads before deleting the temp dir. 2 regression tests added; full suite 3195 tests pass
+- Multi-worker not done: session store, login lockout, Telegram codes, and magic-login tokens are 4 in-memory stores that must move to SQLite together before workers can be enabled — migrating only sessions would count lockouts per worker (a security regression) and break cross-worker code verification; deferred to the next round
+
 ## [2.09] - 2026-11-26
 
 - Telegram bot speedup: updates are now processed concurrently (concurrent_updates(4), rapid taps no longer queue up); instance list gains a 30-second cache so repeat taps return instantly; public-IP lookup switches to the bulk API (3 SDK calls per instance down to 1+N); the quota button answers immediately so the spinner stops at once; the detail page fetches instance and IP in parallel and moves CPU-model SSH detection to the background (shows "Detecting…" first); OCIClient is cached per profile+region. Measured: list 2.8–3.2s → ~0.3s on cache hit, detail ~1.2s, quota ~1.5s

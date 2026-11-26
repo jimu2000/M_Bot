@@ -161,26 +161,39 @@ class TaskRegistry:
 
     # ---------------- 更新 ----------------
 
+    def _update(self, task_id, **fields):
+        """写一条任务更新；磁盘不可用时只记 warning，不抛异常。
+
+        抢机等后台线程在任务进行中持续调 append_log / set_status；
+        若共享文件所在的目录被删（如测试清理临时目录）或磁盘出
+        问题，写盘失败不能杀死线程、也不能让任务卡在 running。
+        返回更新后的记录；任务不存在或写盘失败时返回 None。
+        """
+        try:
+            return task_store.update_record(
+                self.tasks_file, task_id, **fields)
+        except OSError as exc:
+            logger.warning("任务 %s 更新写盘失败（%s），更新丢失：%s",
+                           task_id, type(exc).__name__, exc)
+            return None
+
     def append_log(self, task_id, message):
         """往任务日志里追加一条消息（带时间前缀），同时刷新详情为
         最新消息（机器人端任务列表只显示详情）。任务不存在返回 False。"""
         with self._lock:
-            record = task_store.update_record(
-                self.tasks_file, task_id, detail=message, log=message)
+            record = self._update(task_id, detail=message, log=message)
             return record is not None
 
     def set_status(self, task_id, status):
         """更新任务状态。任务不存在返回 False。"""
         with self._lock:
-            record = task_store.update_record(
-                self.tasks_file, task_id, status=status)
+            record = self._update(task_id, status=status)
             return record is not None
 
     def set_result(self, task_id, result):
         """更新任务结果（JSON 可序列化字典）。任务不存在返回 False。"""
         with self._lock:
-            record = task_store.update_record(
-                self.tasks_file, task_id, result=result)
+            record = self._update(task_id, result=result)
             return record is not None
 
     def cancel(self, task_id):
@@ -196,9 +209,8 @@ class TaskRegistry:
                                                           "running"):
                     return False
                 self._stop_events[task_id].set()
-                task_store.update_record(
-                    self.tasks_file, task_id, status="cancelled",
-                    log="任务已取消。")
+                self._update(task_id, status="cancelled",
+                             log="任务已取消。")
                 return True
             return task_store.request_cancel(self.tasks_file, task_id)
 

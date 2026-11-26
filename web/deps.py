@@ -11,6 +11,7 @@
     OCIError 按 client.py 的错误分类映射到合适状态码。
 """
 
+import threading
 import time
 
 from fastapi import HTTPException, Request
@@ -106,6 +107,17 @@ def get_oci_client(profile=None, region=None):
 
     region 不传时用该 profile 的主区；传了则校验必须在该账号的订阅
     区域里（订阅列表查不到时放行，与机器人端一致）。
+
+    客户端按 (profile, region) 缓存复用（第 2 轮性能修复）：新建
+    OCIClient 本身很便宜，但第一次调 SDK 时要建 service client，
+    SDK 会重读私钥文件并解析（load_pem_private_key，约 0.08 秒/次
+    调用；每次强制刷新约 5 次调用，合计约 0.39 秒）还要建 TLS
+    连接、加载 CA；每请求新建客户端等于每次强制刷新都重付这笔账。
+    复用后私钥只解析一次、TLS 连接池也跨请求复用。
+    代理仍每次调用时重解析（见 OCIClient._sdk_service_client），
+    改代理无需重启。配置变更（删账号）时调
+    clear_oci_client_cache() 清掉，见 web/routes/profiles.py。
+    与机器人端 tgbot/config.py 的 get_oci_client 缓存同源。
     """
     cfg = config.get_profile_config(profile)
     name = profile or config.DEFAULT_PROFILE
@@ -113,7 +125,33 @@ def get_oci_client(profile=None, region=None):
         subs = get_profile_regions().get(name) or []
         if subs and region not in subs:
             raise ValueError(f"账号 {name} 未订阅该区域：{region}")
-    return OCIClient(profile=name, region=region or cfg["region"])
+    key = (name, region or cfg["region"])
+    with _OCI_CLIENTS_LOCK:
+        client = _OCI_CLIENTS.get(key)
+        if client is None:
+            client = OCIClient(profile=name, region=key[1])
+            _OCI_CLIENTS[key] = client
+        return client
+
+
+# OCIClient 缓存：按 (profile, region) 复用，避免每请求重建 service
+# client 并重读私钥。见 get_oci_client。
+_OCI_CLIENTS = {}
+_OCI_CLIENTS_LOCK = threading.Lock()
+
+
+def clear_oci_client_cache(profile=None):
+    """清 OCIClient 缓存：不传 profile 时全清；传了只清该账号。
+
+    账号删除后调用（见 web/routes/profiles.py），避免删掉的账号
+    的旧客户端被复用；新账号要重启面板才生效，重启即清空缓存。
+    """
+    with _OCI_CLIENTS_LOCK:
+        if profile is None:
+            _OCI_CLIENTS.clear()
+        else:
+            for key in [k for k in _OCI_CLIENTS if k[0] == profile]:
+                del _OCI_CLIENTS[key]
 
 
 def resolve_profile(profile=None, region=None):

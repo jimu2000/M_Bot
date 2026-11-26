@@ -14,6 +14,7 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import ANY, MagicMock, patch
@@ -39,7 +40,7 @@ from web.routes.boot_backups import clear_boot_backups_cache
 from web.routes.objectstorage import clear_objectstorage_cache
 from web.routes.quota import clear_quota_cache
 from web import tasks as tasks_mod
-from web.tasks import TASKS
+from web.tasks import TASKS, _run_grabber
 
 # Placeholders (no real OCIDs / IPs appear in tests). 占位符（测试里不出现真实 OCID / IP）。
 FAKE_INSTANCE = "ocid1.instance.oc1..testxxxx"
@@ -132,6 +133,14 @@ class WebApiTestCase(unittest.TestCase):
         self.anon = TestClient(self.app)
 
     def tearDown(self):
+        # 等后台抢机线程收尾再删临时目录：_run_grabber 在任务结束后
+        # 还要往 tasks.json 写完成日志；不等它就删目录，线程写盘时
+        # 会撞上已删的目录（曾致 tearDown OSError: Directory not
+        # empty）。等 5 秒，超时也不阻塞（写盘失败已被 TaskRegistry
+        # 兜底，不再杀线程）。
+        for thread in threading.enumerate():
+            if getattr(thread, "_target", None) is _run_grabber:
+                thread.join(timeout=5.0)
         self._data_dir_patcher.stop()
         self._tmp.cleanup()
 
@@ -249,6 +258,25 @@ class TestInstancesApi(WebApiTestCase):
         _args, kwargs = mock_ip.call_args
         self.assertEqual(kwargs.get("attachments"), [])
         self.assertEqual(kwargs.get("ip_map"), {})
+
+    @patch("web.routes.instances.attach_public_ips_bulk", return_value=[FAKE_IP])
+    @patch("web.routes.instances.cached_raw_vnic_attachments",
+           return_value=[])
+    @patch("web.routes.instances.cached_raw_instances",
+           return_value=FAKE_INSTANCES)
+    def test_list_refresh_passes_refresh_to_both_sources(
+            self, mock_list, mock_att, mock_ip):
+        """第 2 轮：refresh=true 时实例列表与挂载列表都强制重取。
+
+        两者并行取（ThreadPoolExecutor），refresh 标志必须透传给
+        两边，否则并行化会悄悄把强制刷新降级成缓存命中。"""
+        r = self.client.get("/api/instances?refresh=true")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(len(r.json()["instances"]), 1)
+        _args, kwargs = mock_list.call_args
+        self.assertTrue(kwargs.get("refresh"))
+        _args, kwargs = mock_att.call_args
+        self.assertTrue(kwargs.get("refresh"))
 
     @patch("web.routes.instances.attach_public_ips_bulk", return_value=[FAKE_IP])
     @patch("web.routes.instances.cached_raw_instances", return_value=FAKE_INSTANCES)

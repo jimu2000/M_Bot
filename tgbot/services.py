@@ -14,6 +14,7 @@ Telegram 网络，单元测试直接用 mock 的 update/context 就能跑。
 
 import asyncio
 import functools
+import logging
 import threading
 import time
 from datetime import datetime
@@ -32,6 +33,8 @@ from oci.client import (
     QuotaExceededError,
     RateLimitError,
 )
+
+logger = logging.getLogger(__name__)
 
 # ================= 配置区（改这里） =================
 # In instance details, only the last 4 chars of the OCID are shown (so a full OCID never leaks into chat history). 实例详情里 OCID 只显示后 4 位（防聊天记录泄露完整 OCID）。
@@ -483,7 +486,11 @@ class TaskRegistry:
             return task_id
 
     def update(self, task_id, status=None, detail=None):
-        """更新任务状态与详情（共享模式下详情同时追加进任务日志）。"""
+        """更新任务状态与详情（共享模式下详情同时追加进任务日志）。
+
+        内存副本先更新；共享文件写盘失败时只记 warning，不抛异常
+        （目录被删或磁盘出问题时不能杀死抢机线程）。
+        """
         with self._lock:
             task = self._tasks.get(task_id)
             if task is None:
@@ -493,24 +500,35 @@ class TaskRegistry:
             if detail is not None:
                 task["detail"] = detail
             if self.tasks_file:
-                task_store.update_record(
-                    self.tasks_file, task_id, status=status,
-                    detail=detail, log=detail)
+                try:
+                    task_store.update_record(
+                        self.tasks_file, task_id, status=status,
+                        detail=detail, log=detail)
+                except OSError as exc:
+                    logger.warning(
+                        "任务 %s 更新写盘失败（%s），内存状态已更新：%s",
+                        task_id, type(exc).__name__, exc)
             return True
 
     def append_log(self, task_id, message):
         """往任务日志追加一条消息（不改详情与状态）。
 
         共享模式下写进共享文件；纯内存模式下记进内存任务的
-        logs 列表。任务不存在返回 False。
+        logs 列表。任务不存在返回 False。共享文件写盘失败时只记
+        warning，不抛异常（不能杀死抢机线程）。
         """
         with self._lock:
             task = self._tasks.get(task_id)
             if task is None:
                 return False
             if self.tasks_file:
-                task_store.update_record(
-                    self.tasks_file, task_id, log=message)
+                try:
+                    task_store.update_record(
+                        self.tasks_file, task_id, log=message)
+                except OSError as exc:
+                    logger.warning(
+                        "任务 %s 日志写盘失败（%s），日志丢失：%s",
+                        task_id, type(exc).__name__, exc)
             else:
                 task.setdefault("logs", []).append(message)
             return True

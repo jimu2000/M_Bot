@@ -57,6 +57,7 @@ from tgbot.handlers_client import (
 from web import config
 from web import demo_data
 from web.deps import (
+    clear_oci_client_cache,
     error_response,
     get_current_user,
     get_profile_regions,
@@ -283,6 +284,8 @@ def delete_profile(profile: str,
             key_removed = False
     os.environ.pop(f"MBOT_COMPARTMENT_{profile}", None)
     config.reload_profiles()
+    # 删账号后清掉该账号缓存的 OCIClient，避免旧客户端被复用。
+    clear_oci_client_cache(profile)
     return {"ok": True, "profile": profile,
             "config_removed": config_removed,
             "env_removed": bool(env_removed),

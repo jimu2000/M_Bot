@@ -50,6 +50,7 @@ profile 与 region 通过查询参数传（如 ?profile=ACCOUNT2&region=us-sanjo
 import logging
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
@@ -424,9 +425,19 @@ def list_all(profile: str = Query(default=None),
                 entry = _LIST_CACHE.get(cache_key)
             if entry and time.monotonic() < entry["expires"]:
                 return entry["payload"]
-        raw = slim_instances(
-            cached_raw_instances(cli, compartment_id, refresh=refresh),
-            include_shape_config=True)
+        # 实例列表与 VNIC 挂载列表相互独立（都只依赖 compartment），
+        # 强制刷新时并行取，省一次网络往返的墙钟（第 2 轮）。两者
+        # 都走单飞缓存；任一失败时异常按原样抛给外层 OCIError 处理。
+        # 注意：无运行中实例时也会多取一次挂载列表（结果进 30 秒
+        # 共享缓存，下次复用），换一次并行省下的墙钟。
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            fut_raw = pool.submit(cached_raw_instances,
+                                  cli, compartment_id, refresh=refresh)
+            fut_att = pool.submit(cached_raw_vnic_attachments,
+                                  cli, compartment_id, refresh=refresh)
+            raw = slim_instances(fut_raw.result(),
+                                 include_shape_config=True)
+            attachments = fut_att.result()
         filtered = []
         for inst in raw:
             inst_state = inst.get("lifecycle-state") or ""
@@ -436,14 +447,13 @@ def list_all(profile: str = Query(default=None),
             elif inst_state != "RUNNING":
                 continue
             filtered.append(inst)
-        # 批量取各实例的公网 IP。挂载列表与 VNIC 公网 IP 映射走共享
-        # 缓存（第 7 轮）：命中时 0 次 SDK 调用；缓存路径本身失败
+        # 批量取各实例的公网 IP。VNIC 公网 IP 映射走共享缓存
+        # （第 7 轮）：命中时 0 次 SDK 调用；缓存路径本身失败
         # （OCI 报错等）时回退到直调 SDK 的旧路径（其内部仍有逐台
-        # 回退），列表页不因此报错。
+        # 回退），列表页不因此报错。挂载列表上面已并行取过，这里
+        # 直接复用，不再重复调 cached_raw_vnic_attachments。
         if filtered:
             try:
-                attachments = cached_raw_vnic_attachments(
-                    cli, compartment_id, refresh=refresh)
                 ip_map = cached_vnic_public_ips(
                     cli, compartment_id, refresh=refresh)
                 ips = attach_public_ips_bulk(
