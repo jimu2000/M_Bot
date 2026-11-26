@@ -364,50 +364,34 @@
         box.textContent = "该账号下暂无 IAM 用户。";
         return;
       }
-      var table = el("table", null, "table");
-      var head = document.createElement("thead");
-      var headRow = document.createElement("tr");
-      ["用户名", "邮箱", "状态", "操作"].forEach(function (h) {
-        headRow.appendChild(el("th", h, null));
-      });
-      head.appendChild(headRow);
-      table.appendChild(head);
-      var body = document.createElement("tbody");
-      var currentApiUserId = data.current_api_user_id || "";
+      // Mobile-first IAM user cards: avoid a wide table whose action buttons
+      // collapse into a vertical column on narrow screens.
+      var list = el("div", null, "iam-user-list");
       users.forEach(function (u) {
-        var row = document.createElement("tr");
-        row.appendChild(el("td", u.name || "?", null));
-        row.appendChild(el("td", u.email || "—", null));
-        row.appendChild(el("td", u["lifecycle-state"] || u.lifecycle_state || "—", null));
-        var opCell = document.createElement("td");
-        var keyBtn = el("button", "密钥", "btn");
+        var card = el("article", null, "iam-user-card");
+        var identity = el("div", null, "iam-user-identity");
+        identity.appendChild(el("div", u.name || "未知用户", "iam-user-name"));
+        identity.appendChild(el("div", u.email || "未设置邮箱", "iam-user-email"));
+        var state = (u["lifecycle-state"] || u.lifecycle_state || "UNKNOWN").toUpperCase();
+        identity.appendChild(el("span", state, "iam-user-state" + (state === "ACTIVE" ? " is-active" : "")));
+        card.appendChild(identity);
+        var actions = el("div", null, "iam-user-actions");
+        var keyBtn = el("button", "密钥", "btn btn-sm");
         keyBtn.type = "button";
         keyBtn.addEventListener("click", function () { showUserKeys(u.id, u.name); });
-        opCell.appendChild(keyBtn);
-        /* 不能重置密码的用户不显示按钮：关了控制台登录的（rbot-test、
-           api_user）与当前 API 用户自己（OCI 不许用 API 重置自己的密码）。
-           后端重置接口同样会预检拒绝，这里只是不展示做不到的操作。 */
-        var caps = u.capabilities || {};
-        var canReset = caps["can-use-console-password"] !== false
-          && u.id !== currentApiUserId;
-        if (canReset) {
-          var pwdBtn = el("button", "重置密码", "btn");
-          pwdBtn.type = "button";
-          pwdBtn.addEventListener("click", function () { resetIamPassword(u.id, u.name); });
-          opCell.appendChild(pwdBtn);
-        }
-        var delBtn = el("button", "删除", "btn");
+        actions.appendChild(keyBtn);
+        var pwdBtn = el("button", "重置密码", "btn btn-sm btn-primary");
+        pwdBtn.type = "button";
+        pwdBtn.addEventListener("click", function () { resetIamPassword(u.id, u.name); });
+        actions.appendChild(pwdBtn);
+        var delBtn = el("button", "删除", "btn btn-sm btn-danger");
         delBtn.type = "button";
         delBtn.addEventListener("click", function () { deleteIamUser(u.id, u.name); });
-        opCell.appendChild(delBtn);
-        row.appendChild(opCell);
-        body.appendChild(row);
+        actions.appendChild(delBtn);
+        card.appendChild(actions);
+        list.appendChild(card);
       });
-      table.appendChild(body);
-      var wrap = document.createElement("div");
-      wrap.className = "table-wrap";
-      wrap.appendChild(table);
-      box.appendChild(wrap);
+      box.appendChild(list);
     } catch (err) {
       box.textContent = "加载失败：" + (err.message || err);
     }
@@ -440,7 +424,7 @@
   }
 
   async function createBotUser() {
-    if (!window.confirm("将在账号 " + iamProfile + " 创建专用 Bot API 用户：\n\n用户名：api_user\n邮箱：api@example.com\n组：Group_for_Api_used\n策略：Api_User_Policy\n\n权限：manage instance-family、volume-family、virtual-network-family。\n将自动生成 RSA API Key，私钥只显示一次。")) {
+    if (!window.confirm("将在账号 " + iamProfile + " 创建专用 Bot API 用户：\n\n用户名：api_user\n邮箱：api@example.com\n组：Group_for_Api_used\n策略：Api_User_Policy\n\n权限：管理实例、卷、虚拟网络，以及 `manage users in tenancy`（可管理租户内所有 IAM 用户及其凭据，属于高权限）。\n将自动生成 RSA API Key，私钥只显示一次。")) {
       return;
     }
     try {

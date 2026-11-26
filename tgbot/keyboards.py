@@ -147,6 +147,8 @@ ORACLE_MENU_ITEMS = [
     ("plans", "42. 抢机计划"),
     ("bark", "43. Bark 通知设置"),
     ("rescue", "44. 救机"),
+    ("oracleping", "45. Oracle 全球区域测速"),
+    ("cfip", "46. Cloudflare 优选 IP"),
 ]
 # Menu items per page (2 columns, auto-paginated; total pages follow the item count). 每页显示的菜单项数（2 列，自动分页；总页数随菜单项数变化）。
 MENU_PAGE_SIZE = 22

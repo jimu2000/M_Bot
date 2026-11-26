@@ -9,6 +9,13 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [2.14.1] - 2026-11-27
+
+- Show the reset-password action for every IAM user; remove UI-side filtering by current API identity and console-password capability. The web reset endpoint no longer pre-filters users — OCI IAM is the authority, and failures are mapped to friendly Chinese messages without exposing the raw ServiceError JSON. The Telegram reset flow carries the same guidance; see docs/iam-password-reset-troubleshooting.md.
+- The Bot API user policy gains `Allow group Group_for_Api_used to manage users in tenancy` (tenancy-wide IAM user administration, a high privilege covering all IAM users and their credentials; an existing policy is merged on the next Bot user creation), supporting user creation, deletion, API keys, and console password management from the panel and bot.
+- Add Telegram menu shortcuts for Oracle global region latency testing and Cloudflare IP optimization guidance.
+- Polish rounded surfaces, focus states, touch targets, and narrow-screen account-management layouts; the IAM user list is now mobile-first cards.
+
 ## [2.13.1] - 2026-11-27
 
 - Fixed IAM password-reset errors: none of the three users could be reset, for a reason — rbot-test and api_user have console login disabled (can-use-console-password=false), and the admin account is the current API user itself, which OCI does not allow resetting via API; the reset now pre-checks both cases and explains why instead of waiting for OCI to fail; OCI errors are translated into Chinese instead of dumping the raw ServiceError JSON into the toast; users whose password cannot be reset no longer show a "Reset password" button (the list endpoint returns current_api_user_id, and the frontend checks capabilities and the current API user)
@@ -743,3 +750,11 @@ First complete release. Telegram bot /oracle menu with 42 items, web panel + web
 - Write operations need a second confirmation; terminating an instance permanently deletes its boot volume by default
 - Dangerous-command blocklist (rm -rf /, mkfs, dd, etc.)
 - Login failure lockout (from 5 failures, doubling duration, 30-minute cap)
+
+## 2.14.1 (2026-11-27)
+
+- Replaced the squeezed IAM users table with responsive user cards; mobile actions now fit a three-column layout.
+- Added `manage users in tenancy` to the dedicated Bot API user's policy so the panel/bot can manage IAM users and reset console passwords. This tenancy-wide user/credential permission is disclosed as a high privilege.
+- Sanitized OCI console-password reset failures so the Web panel and Telegram bot no longer expose raw ServiceError JSON, request IDs, or endpoints.
+- Added actionable guidance for `NotAuthorizedOrNotFound`, including tenancy-level IAM permissions, user lifecycle state, and Identity Domains.
+- Added unit tests for the official OCI CLI reset command and error sanitization.

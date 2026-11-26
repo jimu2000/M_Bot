@@ -139,7 +139,7 @@ class TestOracleMenuItems(Phase5TgbotTestCase):
         keys = dict(ORACLE_MENU_ITEMS)
         self.assertNotIn("profiles", keys)
         self.assertNotIn("13. profile管理", keys.values())
-        self.assertEqual(len(ORACLE_MENU_ITEMS), 43)
+        self.assertEqual(len(ORACLE_MENU_ITEMS), 45)
         self.assertEqual(keys["clients"], "14. 客户端管理")
         self.assertEqual(keys["traffic"], "19. 本月流量")
         self.assertEqual(keys["bark"], "43. Bark 通知设置")

@@ -6764,6 +6764,8 @@ async def _handle_confirm_inner(action, idx, update, context):
             await _reply(update, context, "用户列表已过期，请重新打开云账户管理。")
             return True
         try:
+            # 不按“当前 API 用户”或控制台能力过滤；所有列表用户均可发起，
+            # OCI 若有策略/Identity Domain 限制，会返回真实错误或邮件重置流程。
             password = await run_sync(create_or_reset_ui_password,
                                       _get_iam_cli(context), user["id"])
         except Exception as exc:  # noqa: BLE001
@@ -6878,7 +6880,9 @@ async def _handle_confirm_inner(action, idx, update, context):
                      "```text\n"
                      "Allow group Group_for_Api_used to manage instance-family in tenancy\n"
                      "Allow group Group_for_Api_used to manage volume-family in tenancy\n"
-                     "Allow group Group_for_Api_used to manage virtual-network-family in tenancy\n```\n"
+                     "Allow group Group_for_Api_used to manage virtual-network-family in tenancy\n"
+                     "Allow group Group_for_Api_used to manage users in tenancy\n```\n"
+                     "⚠️ `manage users in tenancy` 可管理租户内所有 IAM 用户及其凭据，属于高权限。\n"
                      "OCI config 片段（建议单独保存为 ~/.oci/api_user_config，"
                      "不要覆盖 M_Bot 主配置）：\n"
                      "```ini\n[DEFAULT]\n"
@@ -8315,6 +8319,44 @@ async def handle_upgrade(update, context):
                  reply_markup=confirm_keyboard("upgrade", 0, "⬆️ 确认升级"))
 
 
+@require_allowed
+async def handle_oracleping(update, context):
+    """打开浏览器端 OCI 区域延迟测试（43 个商业区域）。"""
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🌐 开始 Oracle 全球测速",
+                              url="https://regionping.cloud/oracle-ping-test")],
+        [InlineKeyboardButton("◀ Oracle 菜单", callback_data="o:menu")],
+    ])
+    await _reply(update, context,
+                 "🌍 Oracle Cloud 全球区域测速\n\n"
+                 "在浏览器中测量你当前网络到 43 个 OCI 区域 Object Storage HTTPS 端点的延迟。"
+                 "每个区域会预热连接并进行多次采样，适合比较从当前设备访问各区域的网络表现。\n\n"
+                 "提示：这是 HTTPS 往返延迟，不是 ICMP Ping；请在实际使用代理/网络环境下打开。",
+                 reply_markup=keyboard)
+
+
+@require_allowed
+async def handle_cfip(update, context):
+    """Cloudflare 优选 IP 工具入口与安全使用说明。"""
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⚡ CloudflareSpeedTest 项目",
+                              url="https://github.com/XIU2/CloudflareSpeedTest")],
+        [InlineKeyboardButton("📡 Cloudflare 官方测速",
+                              url="https://speed.cloudflare.com/")],
+        [InlineKeyboardButton("◀ Oracle 菜单", callback_data="o:menu")],
+    ])
+    await _reply(update, context,
+                 "⚡ Cloudflare 优选 IP\n\n"
+                 "推荐使用 CloudflareSpeedTest 对 Cloudflare Anycast IPv4/IPv6 地址进行本地 TCP/HTTPS 延迟、下载速度与丢包测试。\n\n"
+                 "建议流程：\n"
+                 "1. 在运行代理客户端的同一网络/设备上测速；\n"
+                 "2. 先测延迟与丢包，再用下载测速筛选；\n"
+                 "3. 保留多个低延迟、低丢包 IP，分运营商/网络环境记录；\n"
+                 "4. 将结果手动导入客户端的节点/地址配置，先备份原配置。\n\n"
+                 "安全说明：本入口不会自动改 DNS、代理节点或服务器配置；优选结果因运营商、时段和线路而异。",
+                 reply_markup=keyboard)
+
+
 # ================= /oracle 菜单分发 =================
 
 # Menu keys implemented by this module -> handlers ("changeip"/"rename"/"reinstall"/"console"/"bootswap" are not menu items but forwards for instance actions "i:<act>:<idx>"). 本模块实现的菜单项 key -> handler（"changeip"/"rename"/"reinstall"/"console"/"bootswap" 不是菜单项，是实例操作 "i:<act>:<idx>" 的转发项）。
@@ -8363,6 +8405,8 @@ _DISPATCH = {
     "plans": handle_plans,
     "bark": handle_bark,
     "rescue": handle_rescue,
+    "oracleping": handle_oracleping,
+    "cfip": handle_cfip,
     "rename": handle_rename_prompt,
     "reinstall": handle_reinstall_prompt,
     "console": handle_console,

@@ -5,6 +5,7 @@
   - POST /api/iam/users：新增普通用户 {profile, name, email, description?}。
   - POST /api/iam/users/bot：创建专用 Bot API 用户 {profile, email?}：
     api_user + Group_for_Api_used + Api_User_Policy，幂等复用已存在资源；
+    策略包含 manage users in tenancy（租户级 IAM 用户/凭据管理高权限）；
     成功后自动生成 RSA API Key，私钥只在本次响应里返回一次（前端提供下载，
     刷新后不再可查）。
   - DELETE /api/iam/users/{user_id}?profile=X：删除用户。两重保护与机器人
@@ -279,25 +280,13 @@ def reset_user_password(user_id: str, body: ProfileBody,
                         _user: str = Depends(get_current_user)):
     """重置控制台临时密码（只返回一次）。
 
-    先预检两种 OCI 一定会拒绝的情况，给出明确原因而不是等 OCI 报错：
-      - 目标用户就是当前 profile 的 API 用户：OCI 不允许通过 API
-        重置自己的控制台密码。
-      - 目标用户已停用控制台登录（can-use-console-password 为 false）。
+    管理员对列表中任意用户发起重置；是否允许由 OCI IAM 实际策略、
+    身份域与用户能力决定，失败时把 OCI 错误映射为友好提示。
     """
     try:
         cli, tenancy_id = _iam_cli(body.profile)
-        if _is_current_api_user(body.profile, user_id):
-            return error_response(
-                "不能重置该用户的控制台密码：它就是当前账号正在使用的 "
-                "API 用户，OCI 不允许通过 API 重置自己的密码。请用控制台"
-                "的忘记密码流程，或换一个管理员账号操作。", 400)
-        users = cli.sdk_list_users(tenancy_id) or []
-        target = next((u for u in users if u.get("id") == user_id), None)
-        if target is not None:
-            caps = target.get("capabilities") or {}
-            if caps.get("can-use-console-password") is False:
-                return error_response(
-                    "该用户已停用控制台登录，不能重置密码。", 400)
+        # 不在面板层按 API 用户身份或 capabilities 隐藏/拦截重置。
+        # 管理员可以对列表中的任意用户发起重置；最终权限与限制由 OCI 返回。
         password = create_or_reset_ui_password(cli, user_id)
     except ValueError as exc:
         return error_response(str(exc) or "重置密码失败", 400)

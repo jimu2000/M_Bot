@@ -15,7 +15,7 @@
   <div id="accounts-list" style="margin-top: 12px; color: var(--text-muted);">加载中…</div>
 </div>
 
-<div class="card" style="margin-bottom: 16px;">
+<div class="card iam-card" style="margin-bottom: 16px;">
   <strong>IAM 用户管理</strong>
   <p style="color: var(--text-muted); margin: 8px 0 0;">管理该账号租户下的 IAM 用户（与机器人菜单 8 相同功能）：新增用户、创建 Bot 专用 API 用户、新增 API Key、重置控制台密码、删除用户。删用户时禁删当前账号正在用的 API 用户与 Administrators 组最后一个管理员。</p>
   <div style="margin-top: 12px; display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end;">
@@ -25,7 +25,7 @@
     <button type="button" class="btn" id="btn-refresh-iam">↻ 刷新用户</button>
   </div>
   <div id="iam-users" style="margin-top: 12px; color: var(--text-muted);">加载中…</div>
-  <div style="margin-top: 12px; display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end;">
+  <div class="iam-create-row" style="margin-top: 12px; display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end;">
     <label style="color: var(--text-muted);">用户名
       <input type="text" id="iam-new-name" placeholder="如 alice" autocomplete="off" style="width: 140px;">
     </label>

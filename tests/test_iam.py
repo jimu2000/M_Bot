@@ -19,6 +19,7 @@ from oci.iam import (
     MAX_DESCRIPTION_LEN,
     add_user_to_group,
     create_user,
+    create_or_reset_ui_password,
     delete_api_key,
     delete_user,
     get_group_id_by_name,
@@ -260,3 +261,32 @@ class TestGroupHelpers(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestResetConsolePassword(unittest.TestCase):
+    def test_uses_official_oci_cli_command(self):
+        cli = _mock_cli({"data": {"password": "TempPass123!"}})
+        self.assertEqual(create_or_reset_ui_password(cli, FAKE_USER),
+                         "TempPass123!")
+        cli.run.assert_called_once_with([
+            "iam", "user", "ui-password", "create-or-reset",
+            "--user-id", FAKE_USER])
+
+    def test_maps_not_authorized_without_leaking_service_json(self):
+        cli = _mock_cli(None)
+        cli.run.side_effect = RuntimeError(
+            'ServiceError: {"code":"NotAuthorizedOrNotFound",'
+            '"message":"PATCH request failed", "opc-request-id":"secret-id"}')
+        with self.assertRaises(RuntimeError) as caught:
+            create_or_reset_ui_password(cli, FAKE_USER)
+        message = str(caught.exception)
+        self.assertIn("Administrators", message)
+        self.assertIn("Identity Domains", message)
+        self.assertNotIn("secret-id", message)
+        self.assertNotIn("ServiceError", message)
+
+    def test_rejects_empty_user_id_before_call(self):
+        cli = _mock_cli(None)
+        with self.assertRaises(ValueError):
+            create_or_reset_ui_password(cli, "")
+        cli.run.assert_not_called()

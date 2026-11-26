@@ -168,7 +168,7 @@ class TestBootBackupKeyboard(unittest.TestCase):
 
 
 class TestMenuPageSize(unittest.TestCase):
-    """菜单每页 22 项（用户要求 2026-11-24：每页加两行，第一页到 23 号）。"""
+    """菜单每页 22 项（用户要求 2026-01-01：每页加两行，第一页到 23 号）。"""
 
     def test_page_size_is_22(self):
         self.assertEqual(MENU_PAGE_SIZE, 22)
@@ -179,12 +179,16 @@ class TestMenuPageSize(unittest.TestCase):
         self.assertIn("23. 占用25%内存", texts)
         self.assertNotIn("24. 清除缓存和占用", texts)
 
-    def test_two_pages_total(self):
-        self.assertEqual(len(ORACLE_MENU_ITEMS), 43)
-        # Page 2 contains the last item; an out-of-range page is clamped to the last page. 第 2 页含最后一项；越界页码钳制到最后一页。
-        texts = [b.text for row in oracle_menu_keyboard(1).inline_keyboard
+    def test_three_pages_total(self):
+        self.assertEqual(len(ORACLE_MENU_ITEMS), 45)
+        # 45 项（13 号已删，新增 45/46 号），每页 22 项共 3 页：第 2 页末尾是
+        # 45 号，第 3 页只剩 46 号；越界页码钳制到最后一页。
+        page2 = [b.text for row in oracle_menu_keyboard(1).inline_keyboard
                  for b in row]
-        self.assertIn("43. Bark 通知设置", texts)
+        self.assertIn("45. Oracle 全球区域测速", page2)
+        texts = [b.text for row in oracle_menu_keyboard(2).inline_keyboard
+                 for b in row]
+        self.assertIn("46. Cloudflare 优选 IP", texts)
         clamped = [b.text
                    for row in oracle_menu_keyboard(5).inline_keyboard
                    for b in row]

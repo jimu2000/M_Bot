@@ -115,7 +115,7 @@ class TestListUsers(IamApiTestCase):
         self.assertTrue(data["ok"])
         self.assertEqual(len(data["users"]), 2)
         self.assertEqual(data["users"][0]["name"], "alice")
-        # 列表带当前 API 用户 OCID，前端据此隐藏“重置密码”按钮。
+        # 返回当前 API 用户信息供审计使用；前端不据此隐藏重置按钮。
         self.assertEqual(data["current_api_user_id"], FAKE_USER_2)
         self.cli.sdk_list_users.assert_called_once_with(FAKE_TENANCY)
 
@@ -284,8 +284,8 @@ class TestResetPassword(IamApiTestCase):
         self.assertEqual(data["password"], "TempPass123!")
         mock_reset.assert_called_once_with(self.cli, FAKE_USER)
 
-    def test_reset_password_refuses_current_api_user(self):
-        # 目标用户就是当前 profile 的 API 用户 -> 拒绝，不调 OCI。
+    def test_reset_password_allows_current_api_user_to_reach_oci(self):
+        # 面板不再按当前 API 用户身份过滤；实际结果交给 OCI。
         with patch.object(iam_routes, "get_profile_user_id",
                           return_value=FAKE_USER), \
              patch.object(iam_routes, "create_or_reset_ui_password",
@@ -293,12 +293,12 @@ class TestResetPassword(IamApiTestCase):
             resp = self.client.post(
                 f"/api/iam/users/{FAKE_USER}/reset-password",
                 json={"profile": "DEFAULT"})
-        self.assertEqual(resp.status_code, 400)
-        self.assertIn("不能重置", resp.json()["error"])
-        mock_reset.assert_not_called()
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["password"], "TempPass123!")
+        mock_reset.assert_called_once_with(self.cli, FAKE_USER)
 
-    def test_reset_password_refuses_console_disabled_user(self):
-        # 目标用户关了控制台登录 -> 拒绝，不调 OCI。
+    def test_reset_password_allows_console_disabled_user_to_reach_oci(self):
+        # 面板不预检 capabilities；OCI 返回成功/失败由实际服务决定。
         disabled = dict(FAKE_USERS[0])
         disabled["capabilities"] = {"can-use-console-password": False}
         self.cli.sdk_list_users.return_value = [disabled, FAKE_USERS[1]]
@@ -307,9 +307,8 @@ class TestResetPassword(IamApiTestCase):
             resp = self.client.post(
                 f"/api/iam/users/{FAKE_USER}/reset-password",
                 json={"profile": "DEFAULT"})
-        self.assertEqual(resp.status_code, 400)
-        self.assertIn("已停用控制台登录", resp.json()["error"])
-        mock_reset.assert_not_called()
+        self.assertEqual(resp.status_code, 200)
+        mock_reset.assert_called_once_with(self.cli, FAKE_USER)
 
 
 class TestAccountsPageIamSection(IamApiTestCase):
@@ -318,7 +317,7 @@ class TestAccountsPageIamSection(IamApiTestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertIn("IAM 用户管理", resp.text)
         self.assertIn("iam-profile", resp.text)
-        self.assertIn("table-wrap", resp.text)
+        self.assertIn("iam-users", resp.text)
 
 
 if __name__ == "__main__":

@@ -235,6 +235,10 @@ STRINGS = {
     "menu.plans": {"zh": "42. 抢机计划", "en": "42. Grab Plans"},
     "menu.bark": {"zh": "43. Bark 通知设置", "en": "43. Bark Notifications"},
     "menu.rescue": {"zh": "44. 救机", "en": "44. Rescue"},
+    "menu.oracleping": {"zh": "45. Oracle 全球区域测速",
+                        "en": "45. Oracle Global Region Speed Test"},
+    "menu.cfip": {"zh": "46. Cloudflare 优选 IP",
+                  "en": "46. Cloudflare Preferred IP"},
     # ---- 实例列表 / 详情 ----
     "instances.list_title": {"zh": "[{profile}] 实例列表（{count} 台）：",
                              "en": "[{profile}] Instances ({count}):"},

@@ -29,6 +29,7 @@ class FakeOCI:
         self.api_keys = []
         self.groups = []
         self.group_users = {}
+        self.policies = []
 
     def sdk_list_group_users(self, group_id):
         return list(self.group_users.get(group_id, []))
@@ -54,8 +55,10 @@ class FakeOCI:
             return {"data": {"id": "user-ocid", "name": "api_user",
                              "email": "api@example.com"}}
         if cmd == ["iam", "policy", "list"]:
-            return {"data": []}
+            return {"data": list(self.policies)}
         if cmd == ["iam", "policy", "create"]:
+            return {"data": {"id": "policy-ocid"}}
+        if cmd == ["iam", "policy", "update"]:
             return {"data": {"id": "policy-ocid"}}
         if cmd == ["iam", "user", "list-groups"]:
             return {"data": []}
@@ -95,12 +98,12 @@ class TestIamFeatures(unittest.TestCase):
             create_or_reset_ui_password(
                 FailingOCI("ServiceError: NotAuthorizedOrNotFound"),
                 "user-ocid")
-        self.assertIn("不能通过 API 重置自己的", str(ctx.exception))
+        self.assertIn("manage users in tenancy", str(ctx.exception))
         with self.assertRaises(RuntimeError) as ctx:
             create_or_reset_ui_password(
                 FailingOCI("ServiceError: IdcsConversionError"),
                 "user-ocid")
-        self.assertIn("已停用控制台登录", str(ctx.exception))
+        self.assertIn("ACTIVE", str(ctx.exception))
 
     def test_build_oci_config(self):
         config = build_oci_config(
@@ -128,6 +131,30 @@ class TestIamFeatures(unittest.TestCase):
         self.assertTrue(bot["policy_created"])
         self.assertTrue(
             any(c[:3] == ["iam", "group", "add-user"] for c in cli.calls))
+        policy_call = next(c for c in cli.calls
+                           if c[:3] == ["iam", "policy", "create"])
+        policy_json = policy_call[policy_call.index("--statements") + 1]
+        self.assertIn("manage users in tenancy", policy_json)
+
+    def test_existing_policy_is_extended_without_losing_old_statements(self):
+        cli = FakeOCI()
+        cli.policies = [{
+            "id": "policy-ocid", "name": "Api_User_Policy",
+            "statements": [
+                "Allow group Group_for_Api_used to manage instance-family in tenancy",
+                "Allow group Group_for_Api_used to manage volume-family in tenancy",
+                "Allow group Group_for_Api_used to manage virtual-network-family in tenancy",
+            ],
+        }]
+        create_bot_permission_user(
+            cli, "tenancy-ocid", "Group_for_Api_used", "api_user",
+            "api@example.com", "Api_User_Policy")
+        update_call = next(c for c in cli.calls
+                           if c[:3] == ["iam", "policy", "update"])
+        statements = update_call[update_call.index("--statements") + 1]
+        self.assertIn("manage users in tenancy", statements)
+        self.assertIn("manage instance-family", statements)
+        self.assertIn("--force", update_call)
 
     def test_api_key_generation_and_limit(self):
         cli = FakeOCI()

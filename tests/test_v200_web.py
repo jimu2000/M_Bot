@@ -500,11 +500,11 @@ class TestVersion200(unittest.TestCase):
     """A4：版本号 2.10。"""
 
     def test_version_file(self):
-        self.assertEqual(read("VERSION").strip(), "2.13.1")
+        self.assertEqual(read("VERSION").strip(), "2.14.1")
 
     def test_readme_top_version(self):
         readme = read("README.md")
-        self.assertIn("**当前版本：v2.13.1**", readme)
+        self.assertIn("**当前版本：v2.14.1**", readme)
 
     def test_changelogs_cover_v200(self):
         for rel, needles in (

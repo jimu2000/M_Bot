@@ -160,7 +160,7 @@ class TestRescueWiring(unittest.TestCase):
     def test_oracle_menu_has_rescue_44(self):
         labels = dict(ORACLE_MENU_ITEMS)
         self.assertEqual(labels["rescue"], "44. 救机")
-        self.assertEqual(len(ORACLE_MENU_ITEMS), 43)
+        self.assertEqual(len(ORACLE_MENU_ITEMS), 45)
 
     def test_dispatch_has_rescue(self):
         self.assertIn("rescue", he._DISPATCH)

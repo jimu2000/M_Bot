@@ -9,6 +9,13 @@
 
 ## [Unreleased]
 
+## [2.14.1] - 2026-11-27
+
+- IAM 用户列表对所有用户统一显示“重置密码”，移除前端按当前 API 用户和控制台能力隐藏按钮的逻辑；Web 面板重置密码接口不再预先过滤用户，最终以 OCI IAM 响应为准，失败时把 OCI 错误映射为中文友好提示（不暴露原始 ServiceError JSON）；Telegram 重置流程同步明确提示；新增排查文档 docs/iam-password-reset-troubleshooting.md
+- Bot 专用 API 用户策略新增 `Allow group Group_for_Api_used to manage users in tenancy`（租户级 IAM 用户管理高权限，可管理租户内所有 IAM 用户及其凭据；已存在策略时下次创建 Bot 用户会合并补齐），用于面板/机器人中的用户创建、删除、API Key 与控制台密码管理
+- Telegram Oracle 菜单新增 Oracle 全球区域测速与 Cloudflare 优选 IP 入口
+- 面板统一圆角、焦点态、触控尺寸与窄屏布局细节，IAM 用户列表改为手机端卡片式，改善手机端表格和 IAM 表单滚动/排列
+
 ## [2.13.1] - 2026-11-27
 
 - 修 IAM 重置密码报错：三个用户都重置不了是有原因的——rbot-test 与 api_user 关了控制台登录（can-use-console-password=false），管理员账号就是当前 API 用户自己、OCI 不许用 API 重置自己的密码；现在重置前先预检这两种情况并直接说明原因，不再等 OCI 报错；OCI 报错时也不再把原始 ServiceError JSON 甩到提示框里，翻译成中文；不能重置密码的用户不显示“重置密码”按钮（列表接口返回 current_api_user_id，前端按 capabilities 与当前 API 用户判断）
@@ -743,3 +750,11 @@
 - 写操作二次确认；终止实例默认永久删除引导卷
 - 危险命令黑名单（rm -rf /、mkfs、dd 等）
 - 登录失败锁定（5 次起，时长翻倍，30 分钟封顶）
+
+## 2.14.1 (2026-11-27)
+
+- 修复 IAM 用户管理在窄屏下表格挤压、操作按钮纵向堆叠的问题：用户列表改为响应式卡片布局，手机端操作按钮三列自适应。
+- Bot API 专用用户策略新增 `manage users in tenancy`，支持面板/机器人管理 IAM 用户和重置控制台密码；该权限可管理租户内所有 IAM 用户及其凭据，创建前明确提示高权限范围。
+- 修复控制台密码重置失败时把 OCI 原始 ServiceError JSON、请求 ID 和 endpoint 直接显示给用户的问题；Web 面板与 Telegram 共用的重置函数现在返回可操作的中文诊断提示。
+- 完善 `NotAuthorizedOrNotFound` 的排查指引：检查 API 用户 tenancy 级管理用户凭据权限、目标用户状态及 Identity Domains 类型。OCI 权限拒绝仍由 Oracle 服务端执行，应用不会尝试绕过。
+- 增加 IAM 密码重置命令及错误脱敏单元测试。

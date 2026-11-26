@@ -231,10 +231,11 @@ def get_profile_user_id(profile="DEFAULT", config_path=None):
 def create_or_reset_ui_password(cli, user_id):
     """为 IAM 用户生成/重置 OCI 控制台临时密码。只返回密码，不记录日志。
 
-    已知 OCI 拒绝场景（翻译成中文，不把原始 ServiceError JSON 甩给调用方）：
-      - NotAuthorizedOrNotFound：OCI 不允许通过 API 重置自己的控制台密码
-        （目标用户就是当前 API 用户时），或目标用户无控制台登录权限。
-      - IdcsConversionError（含“用户已停用”）：目标用户已停用控制台登录。
+    OCI 的 NotAuthorizedOrNotFound 是刻意模糊化的响应，常见原因包括：
+      - 当前 API 签名用户没有 tenancy 级管理用户凭据的权限；
+      - 目标用户不存在、已停用，或不属于经典 IAM 控制台密码流程；
+      - 租户使用 Identity Domains，密码重置应由身份域邮件流程完成。
+    不把原始 ServiceError JSON、请求签名细节或请求 ID暴露给面板/机器人。
     """
     if not user_id or not isinstance(user_id, str):
         raise ValueError("user_id 不能为空")
@@ -246,14 +247,27 @@ def create_or_reset_ui_password(cli, user_id):
         text = str(exc)
         if "NotAuthorizedOrNotFound" in text:
             raise RuntimeError(
-                "OCI 拒绝重置该用户的控制台密码：不能通过 API 重置自己的"
-                "控制台密码（目标用户就是当前 API 用户时），或该用户没有"
-                "控制台登录权限。请用控制台的忘记密码流程，或换一个管理"
-                "员账号操作。") from exc
+                "Oracle 拒绝了密码重置请求（NotAuthorizedOrNotFound）。"
+                "请确认当前 API 用户属于 Administrators 组，或其所在组在根租户"
+                "策略中具有 `Allow group <组名> to manage users in tenancy` 权限；"
+                "仅有 compartment 权限不够。目标用户必须是 ACTIVE 且支持经典 "
+                "IAM 控制台密码。若租户启用了 Identity Domains，请改用身份域"
+                "中的“重置密码”，系统会向用户邮箱发送重置链接。"
+                "此错误不能通过面板绕过 OCI 权限校验。") from exc
         if "IdcsConversionError" in text or "用户已停用" in text:
             raise RuntimeError(
-                "该用户已停用控制台登录，不能重置密码。") from exc
-        raise
+                "Oracle 无法为该用户创建控制台临时密码。请检查用户是否为 "
+                "ACTIVE，以及该用户是否由 Identity Domains 管理；身份域用户"
+                "应通过身份域邮件重置流程处理。") from exc
+        if "PATCH request failed" in text or "request failed" in text.lower():
+            raise RuntimeError(
+                "Oracle 身份服务未能完成密码重置请求。请检查账号主区域、"
+                "API 签名密钥和网络代理；若其他 IAM 操作正常，请在 OCI 控制台"
+                "检查该用户的登录类型/身份域，并稍后重试。") from exc
+        raise RuntimeError(
+            "OCI 控制台密码重置失败。请检查该用户状态、当前 API 用户的 "
+            "tenancy 级 IAM 权限和账号主区域；服务器日志中保留了诊断信息。"
+        ) from exc
     data = _extract_data(result) or {}
     if isinstance(data, dict):
         password = (data.get("password") or data.get("temporary-password")
@@ -381,6 +395,10 @@ def create_bot_permission_user(cli, tenancy_id, group_name, user_name,
         f"Allow group {group_name} to manage instance-family in tenancy",
         f"Allow group {group_name} to manage volume-family in tenancy",
         f"Allow group {group_name} to manage virtual-network-family in tenancy",
+        # Required by the panel/bot IAM user-management features, including
+        # CreateOrResetUIPassword for other users. This is tenancy-wide IAM
+        # user administration and must be clearly disclosed to the operator.
+        f"Allow group {group_name} to manage users in tenancy",
     ]
     policies = _extract_list(cli.run([
         "iam", "policy", "list", "--compartment-id", tenancy_id, "--all"]))

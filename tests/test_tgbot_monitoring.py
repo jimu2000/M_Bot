@@ -184,13 +184,16 @@ class TestOracleMenuDynamicStates(MonitoringBotTestCase):
     def test_guard_keepalive_states_on_last_page(self):
         states = {"monitor": False, "autostart": False,
                   "traffic_guard": True, "keepalive": True}
-        # 42 items (No. 13 was deleted), 22 per page over 2 pages: page 2 holds Nos. 24-43, so Nos. 37/38/39 are all on page 2; an out-of-range page clamps to the last page. 42 项（13 号已删），每页 22 项共 2 页：第 2 页是 24–43 号，37/38/39 号都在第 2 页；越界页码钳制到最后一页。
+        # 45 项（13 号已删，新增 45/46 号），每页 22 项共 3 页：第 2 页是 23–44 号，37/38/39 号都在第 2 页；第 3 页只剩 46 号；越界页码钳制到最后一页。
         texts1 = button_texts(oracle_menu_keyboard(1, states=states))
         self.assertIn("37. 流量守护 (开启)", texts1)
         self.assertIn("38. 停机保活 (开启)", texts1)
         self.assertIn("39. SSL 监控", texts1)
+        self.assertIn("45. Oracle 全球区域测速", texts1)
         texts = button_texts(oracle_menu_keyboard(2, states=states))
-        self.assertIn("38. 停机保活 (开启)", texts)
+        self.assertIn("46. Cloudflare 优选 IP", texts)
+        clamped = button_texts(oracle_menu_keyboard(5, states=states))
+        self.assertEqual(texts, clamped)
 
     def test_non_dict_states_ignored(self):
         texts = button_texts(oracle_menu_keyboard(0, states="bogus"))
