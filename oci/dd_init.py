@@ -53,6 +53,12 @@ def build_dd_script(root_password):
 
     与用户给的命令一致：下载 InstallNET.sh，重装 Debian 13，
     SSH 端口 14422，swap 1024MB，root 密码用调用方生成的 UUID。
+    另外在最后无条件 sleep 5 再 reboot：InstallNET.sh 上游结尾
+    只打印 "Input 'reboot' ..." 就 exit 1，不会自动重启（上游把
+    sleep 5 && reboot 注释掉了），不加这句 DD 会一直等不到新系统
+    而 30 分钟超时。reboot 必须另起一行，不能接在 && 链里
+    （InstallNET.sh 正常走完也 exit 1，接链里永远跑不到）；
+    装失败时 reboot 只是原地重启回原系统，不会丢机器。
     返回带 #!/bin/bash 头的脚本字符串。
     """
     return (
@@ -63,6 +69,8 @@ def build_dd_script(root_password):
         f" && bash InstallNET.sh -{DD_OS} {DD_VERSION}"
         f' -port "{DD_SSH_PORT}" -pwd \'{root_password}\''
         f' -swap "{DD_SWAP_MB}"\n'
+        "sleep 5\n"
+        "reboot\n"
     )
 
 

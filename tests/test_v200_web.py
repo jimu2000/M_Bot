@@ -497,14 +497,14 @@ class TestFollowBrowserLanguage(unittest.TestCase):
 
 
 class TestVersion200(unittest.TestCase):
-    """A4：版本号 2.07。"""
+    """A4：版本号 2.08。"""
 
     def test_version_file(self):
-        self.assertEqual(read("VERSION").strip(), "2.07")
+        self.assertEqual(read("VERSION").strip(), "2.08")
 
     def test_readme_top_version(self):
         readme = read("README.md")
-        self.assertIn("**当前版本：v2.07**", readme)
+        self.assertIn("**当前版本：v2.08**", readme)
 
     def test_changelogs_cover_v200(self):
         for rel, needles in (

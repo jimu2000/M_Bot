@@ -9,6 +9,10 @@
 
 ## [Unreleased]
 
+## [2.08] - 2026-11-26
+
+- DD 流程修复：InstallNET.sh 上游结尾只打印“Input 'reboot' …”就 exit 1，不会自动重启（上游把 sleep 5 && reboot 注释掉了），DD 会一直等不到新系统而 30 分钟超时；生成脚本现在不管 InstallNET.sh 退出码是什么都在后面 sleep 5 再 reboot（成功时进安装器，失败时原地重启回原系统）。哨兵测试机的 DD 就是这么卡住的（串口日志显示还在原 Ubuntu 内核）
+
 ## [2.07] - 2026-11-26
 
 - 统一配置文件 M_bot_config.conf 改放家目录：默认位置从安装目录改成 ~/M_bot_config.conf（root 安装时是 /root/M_bot_config.conf），安装器新装直接写那里，systemd 的 MBOT_CONFIG_FILE 也指过去；旧部署升级时启动自动把安装目录那份搬到家目录（只搬一次，不留软链），显式配了 MBOT_CONFIG_FILE 的部署不动；.env、管理员密码、oci_config 仍在安装目录
@@ -122,7 +126,7 @@
 **验证**：全量测试 2650 个全过（新增 74 个：tests/test_cpu_policy.py 24 个、tests/test_task_store.py 27 个、tests/test_web_grab_cpu.py 4 个，其余在 test_grabber.py、test_notify.py、test_v1220_cpu_tasks.py、test_tgbot_instance_list.py、test_web_api.py、test_phase5e_shapes.py；另修 3 处测试抢跑：POST 后立即读 Grabber call_args 的测试加等待、Grabber patch 提前退出的测试把等待留在 patch 里）。真机验证：.160 上 /api/instances 与 /api/volumes 各接口耗时实测后定方案；部署后复测冷加载耗时。
 
 ## [1.40.1] - 2026-11-24
-- 修复点了"开始抢机"后收不到"抢机已启动"确认的问题：有 root 密码时启动回复整条走 Markdown 解析，实例名里的下划线（AMD_2026-11-25）被当成斜体标记、Telegram 拒绝发送（Can't parse entities）；动态的实例名现在先经 escape_markdown 转义再拼进消息，任务列表里的名字保持原样不转义
+- 修复点了"开始抢机"后收不到"抢机已启动"确认的问题：有 root 密码时启动回复整条走 Markdown 解析，实例名里的下划线（AMD_2026-01-02）被当成斜体标记、Telegram 拒绝发送（Can't parse entities）；动态的实例名现在先经 escape_markdown 转义再拼进消息，任务列表里的名字保持原样不转义
 
 **验证**：全量测试 2576 个全过（新增 1 个回归测试 tests/test_boot_form_handlers.py 的 test_start_reply_escapes_underscore_in_name）。
 

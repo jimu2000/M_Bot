@@ -125,6 +125,20 @@ class TestBuildDdScript(unittest.TestCase):
         self.assertIn("another-password-456", script2)
         self.assertNotIn("test-password-123", script2)
 
+    def test_dd_script_reboots_unconditionally(self):
+        """InstallNET.sh 上游结尾只打印让手动输 reboot 就 exit 1，
+        不自动重启；生成的脚本必须在它后面无条件 reboot，否则 DD
+        永远等不到新系统而 30 分钟超时。"""
+        pwd = "d" * 32
+        script = build_dd_script(pwd)
+        # reboot 另起一行，不在 && 链里（InstallNET.sh 正常走完
+        # 也 exit 1，接链里永远跑不到）。
+        self.assertIn("\nreboot\n", script)
+        installnet_pos = script.index("bash InstallNET.sh")
+        reboot_pos = script.index("\nreboot\n")
+        self.assertGreater(reboot_pos, installnet_pos)
+        self.assertNotIn("&& reboot", script[installnet_pos:reboot_pos])
+
 
 class TestBuildUserDataDd(unittest.TestCase):
     def test_dd_returns_dd_script_not_startup_script(self):
