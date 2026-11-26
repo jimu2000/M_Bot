@@ -502,7 +502,7 @@ class TestInstanceFlowsEn(HandlersI18nTestCase):
         with patch("tgbot.handlers.list_instances",
                    return_value=list(FAKE_INSTANCES)), \
                 patch("tgbot.handlers.attach_public_ips_bulk",
-                      side_effect=lambda cli, insts, compartment: [
+                      side_effect=lambda cli, insts, compartment, **kwargs: [
                           None, None]):
             await handlers.instances_command(update, context)
         text = reply_text_of(update)

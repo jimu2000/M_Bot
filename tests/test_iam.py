@@ -198,7 +198,11 @@ class TestCreateUser(unittest.TestCase):
             ["iam", "user", "create",
              "--compartment-id", "ocid1.tenancy.oc1..xxxx",
              "--name", "newadmin", "--email", "a@example.com",
-             "--description", "admin user"])
+             "--description", "admin user",
+             "--wait-for-state", "ACTIVE",
+             "--wait-interval-seconds", "2",
+             "--max-wait-seconds", "60"],
+            timeout=90)
 
     def test_email_only_no_description(self):
         cli = _mock_cli({"data": {"id": FAKE_USER}})
@@ -207,7 +211,12 @@ class TestCreateUser(unittest.TestCase):
         cli.run.assert_called_once_with(
             ["iam", "user", "create",
              "--compartment-id", "ocid1.tenancy.oc1..xxxx",
-             "--name", "newadmin", "--email", "a@example.com"])
+             "--name", "newadmin", "--email", "a@example.com",
+             "--description", "",
+             "--wait-for-state", "ACTIVE",
+             "--wait-interval-seconds", "2",
+             "--max-wait-seconds", "60"],
+            timeout=90)
 
 
 class TestGroupHelpers(unittest.TestCase):

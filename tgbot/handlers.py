@@ -186,57 +186,137 @@ def _unwrap(data):
 INSTANCE_LIST_CACHE_TTL = 30
 _INSTANCE_LIST_CACHE = {}
 _INSTANCE_LIST_CACHE_LOCK = threading.Lock()
+_INSTANCE_LIST_INFLIGHT = {}
+_INSTANCE_LIST_CACHE_GENERATION = 0
 
 
 def clear_instance_list_cache():
-    """清机器人实例列表缓存（写操作成功后调，避免列表显示旧状态；
-    单元测试在 setUp 里调，避免缓存跨测试串数据）。"""
+    """清实例列表缓存并使旧的在途加载结果失效。"""
+    global _INSTANCE_LIST_CACHE_GENERATION
     with _INSTANCE_LIST_CACHE_LOCK:
         _INSTANCE_LIST_CACHE.clear()
+        _INSTANCE_LIST_INFLIGHT.clear()
+        _INSTANCE_LIST_CACHE_GENERATION += 1
 
 
-async def _load_instance_list(context, lang="zh", refresh=False):
-    """拉实例列表并格式化，返回 (文本, 键盘)。
-
-    成功时把精简列表存进 user_data 供回调按下标取回；
-    失败时返回 fmt_error 文本 + 返回菜单键盘。
-    列表里的实例会先批量补公网 IP（1 次 compartment 级挂载列表
-    + 每台 1 次 get-vnic；单台失败记 None，TERMINATED 的不查），
-    再存、再格式化。refresh=True 时绕过缓存（刷新按钮用）。
-    """
-    cache_key = (get_current_profile(context),
-                 get_current_region(context), lang)
-    if not refresh:
-        with _INSTANCE_LIST_CACHE_LOCK:
-            entry = _INSTANCE_LIST_CACHE.get(cache_key)
-        if entry and time.monotonic() < entry["expires"]:
-            store_instances(context, entry["instances"])
-            return entry["text"], entry["keyboard"]
+async def _fetch_instance_list(context, cache_key, lang, generation):
+    """实际执行一次 OCI 列表加载；同一 key 的并发请求共享此任务。"""
     try:
         cli = get_cli(context)
         compartment = get_compartment(context)
-        instances = await run_sync(
-            list_instances, cli, compartment)
+        instances = await run_sync(list_instances, cli, compartment)
+        # 1 核/低内存 VPS 上把 VNIC 查询并发压到 2，避免一次列表刷新
+        # 同时启动 5 个 SDK 请求造成 CPU/TLS 突刺；同 key 冷请求已单飞。
         ips = await run_sync(attach_public_ips_bulk, cli, instances,
-                             compartment)
+                             compartment, max_workers=2)
         for inst, ip in zip(instances, ips):
             inst["public-ip"] = ip
     except Exception as exc:  # noqa: BLE001 - OCI 异常统一转提示
         logger.warning("列实例失败：%s", exc)
-        return fmt_error(exc, lang=lang), back_to_oracle_keyboard(lang=lang)
-    store_instances(context, instances)
+        return None, fmt_error(exc, lang=lang), back_to_oracle_keyboard(lang=lang)
+
     text = fmt_instance_list(instances, _current_account_label(context),
                              lang=lang)
     keyboard = instance_list_keyboard(instances, lang=lang)
-    if not refresh:
-        with _INSTANCE_LIST_CACHE_LOCK:
+    with _INSTANCE_LIST_CACHE_LOCK:
+        # 写操作清缓存后，较早启动的请求不能把旧状态重新写回来。
+        if generation == _INSTANCE_LIST_CACHE_GENERATION:
             _INSTANCE_LIST_CACHE[cache_key] = {
                 "expires": time.monotonic() + INSTANCE_LIST_CACHE_TTL,
                 "instances": instances,
                 "text": text,
                 "keyboard": keyboard,
             }
+    return instances, text, keyboard
+
+
+async def _load_instance_list(context, lang="zh", refresh=False):
+    """拉实例列表并格式化；缓存未命中时同一账号/区域/语言只加载一次。
+
+    refresh=True 会绕过已缓存结果，但仍与同 key 的并发刷新合并；
+    成功刷新后更新缓存，避免刷新完成后下一次点击又立即冷加载。
+    """
+    cache_key = (get_current_profile(context),
+                 get_current_region(context), lang)
+    with _INSTANCE_LIST_CACHE_LOCK:
+        entry = _INSTANCE_LIST_CACHE.get(cache_key)
+        if (not refresh and entry
+                and time.monotonic() < entry["expires"]):
+            store_instances(context, entry["instances"])
+            return entry["text"], entry["keyboard"]
+
+        task = _INSTANCE_LIST_INFLIGHT.get(cache_key)
+        if task is None:
+            generation = _INSTANCE_LIST_CACHE_GENERATION
+            task = asyncio.create_task(
+                _fetch_instance_list(context, cache_key, lang, generation))
+            _INSTANCE_LIST_INFLIGHT[cache_key] = task
+
+            def _cleanup(done_task, key=cache_key):
+                with _INSTANCE_LIST_CACHE_LOCK:
+                    if _INSTANCE_LIST_INFLIGHT.get(key) is done_task:
+                        _INSTANCE_LIST_INFLIGHT.pop(key, None)
+            task.add_done_callback(_cleanup)
+
+    # shield 防止某个用户取消/离开请求时，把共享加载任务一并取消。
+    result = await asyncio.shield(task)
+    instances, text, keyboard = result
+    if instances is not None:
+        store_instances(context, instances)
     return text, keyboard
+
+
+# Instance detail cache: (profile, region, instance OCID) -> (expiry, detail, IP).
+INSTANCE_DETAIL_CACHE_TTL = 12
+_INSTANCE_DETAIL_CACHE = {}
+_INSTANCE_DETAIL_INFLIGHT = {}
+_INSTANCE_DETAIL_CACHE_GENERATION = 0
+
+
+def clear_instance_detail_cache(instance_id=None):
+    """清详情缓存；instance_id 暂保留接口，当前按账号切换/操作统一清空。"""
+    global _INSTANCE_DETAIL_CACHE_GENERATION
+    with _INSTANCE_LIST_CACHE_LOCK:
+        _INSTANCE_DETAIL_CACHE.clear()
+        _INSTANCE_DETAIL_INFLIGHT.clear()
+        _INSTANCE_DETAIL_CACHE_GENERATION += 1
+
+
+async def _fetch_instance_detail_pair(cli, instance_id, compartment,
+                                      cache_key, generation):
+    detail_result, ip_result = await asyncio.gather(
+        run_sync(get_instance, cli, instance_id),
+        run_sync(get_public_ip, cli, instance_id, compartment),
+        return_exceptions=True)
+    if not isinstance(detail_result, Exception):
+        with _INSTANCE_LIST_CACHE_LOCK:
+            if generation == _INSTANCE_DETAIL_CACHE_GENERATION:
+                _INSTANCE_DETAIL_CACHE[cache_key] = (
+                    time.monotonic() + INSTANCE_DETAIL_CACHE_TTL,
+                    detail_result, ip_result)
+    return detail_result, ip_result
+
+
+async def _get_instance_detail_pair(context, cli, instance_id, compartment):
+    key = (get_current_profile(context), get_current_region(context),
+           instance_id)
+    with _INSTANCE_LIST_CACHE_LOCK:
+        entry = _INSTANCE_DETAIL_CACHE.get(key)
+        if entry and time.monotonic() < entry[0]:
+            return entry[1], entry[2]
+        task = _INSTANCE_DETAIL_INFLIGHT.get(key)
+        if task is None:
+            generation = _INSTANCE_DETAIL_CACHE_GENERATION
+            task = asyncio.create_task(_fetch_instance_detail_pair(
+                cli, instance_id, compartment, key, generation))
+            _INSTANCE_DETAIL_INFLIGHT[key] = task
+
+            def _cleanup(done_task, cache_key=key):
+                with _INSTANCE_LIST_CACHE_LOCK:
+                    if _INSTANCE_DETAIL_INFLIGHT.get(cache_key) is done_task:
+                        _INSTANCE_DETAIL_INFLIGHT.pop(cache_key, None)
+            task.add_done_callback(_cleanup)
+    return await asyncio.shield(task)
 
 
 # ---------------- 命令 ----------------
@@ -412,6 +492,44 @@ async def noop_callback(update: Update,
 # clears the marker so a late SSH result never clobbers the new
 # content (e.g. a start/stop confirm dialog).
 _CPU_PENDING_KEY = "_cpu_pending_msg"
+_CPU_MODEL_TASKS = {}
+_CPU_MODEL_COOLDOWN = {}
+_CPU_MODEL_SEMAPHORE = asyncio.Semaphore(2)
+CPU_MODEL_RETRY_COOLDOWN = 60
+
+
+async def _get_cpu_model_deduped(instance_id, host):
+    """同一实例 CPU 型号 SSH 检测单飞，最多同时检测两台实例。"""
+    if not instance_id:
+        return None
+    task = _CPU_MODEL_TASKS.get(instance_id)
+    if task is None:
+        if time.monotonic() < _CPU_MODEL_COOLDOWN.get(instance_id, 0):
+            return cached_cpu_model(instance_id)
+
+        async def _detect():
+            try:
+                async with _CPU_MODEL_SEMAPHORE:
+                    model = await run_sync(get_cpu_model, instance_id, host,
+                                           run_remote_command)
+            except Exception as exc:  # noqa: BLE001 - SSH 失败不影响详情
+                logger.warning("后台查 CPU 型号失败：%s", exc)
+                model = None
+            if not model:
+                _CPU_MODEL_COOLDOWN[instance_id] = (
+                    time.monotonic() + CPU_MODEL_RETRY_COOLDOWN)
+            else:
+                _CPU_MODEL_COOLDOWN.pop(instance_id, None)
+            return model
+
+        task = asyncio.create_task(_detect())
+        _CPU_MODEL_TASKS[instance_id] = task
+
+        def _cleanup(done_task, iid=instance_id):
+            if _CPU_MODEL_TASKS.get(iid) is done_task:
+                _CPU_MODEL_TASKS.pop(iid, None)
+        task.add_done_callback(_cleanup)
+    return await asyncio.shield(task)
 
 
 def _clear_cpu_pending(context):
@@ -428,8 +546,7 @@ async def _refresh_cpu_model_later(context, query, instance_id, host,
     检测失败时该行刷成“未知”（与原来同步检测失败的显示一致）。
     """
     try:
-        model = await run_sync(get_cpu_model, instance_id, host,
-                               run_remote_command)
+        model = await _get_cpu_model_deduped(instance_id, host)
     except Exception as exc:  # noqa: BLE001 - 检测失败只记日志
         logger.warning("后台查 CPU 型号失败：%s", exc)
         model = None
@@ -481,10 +598,8 @@ async def instance_detail_callback(update: Update,
     cli = get_cli(context)
     instance_id = inst.get("id")
     compartment = get_compartment(context)
-    detail_result, ip_result = await asyncio.gather(
-        run_sync(get_instance, cli, instance_id),
-        run_sync(get_public_ip, cli, instance_id, compartment),
-        return_exceptions=True)
+    detail_result, ip_result = await _get_instance_detail_pair(
+        context, cli, instance_id, compartment)
     if isinstance(detail_result, Exception):
         logger.warning("查实例详情失败：%s", detail_result)
         await menu_tracker.safe_edit(query,
@@ -649,6 +764,7 @@ async def confirm_callback(update: Update,
     # 写操作成功：缓存的实例列表可能已过期（如已停的实例还显示
     # 运行中），清掉，下次点列表重新查。
     clear_instance_list_cache()
+    clear_instance_detail_cache(instance_id)
     if action == "terminate":
         delete_cpu_model(instance_id)
         text = bot_i18n.t(lang, "instances.done_terminate", name=name)

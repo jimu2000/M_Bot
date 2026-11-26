@@ -221,7 +221,7 @@ class TestCommands(HandlersTestCase):
         with patch("tgbot.handlers.list_instances",
                    return_value=list(FAKE_INSTANCES)) as mock_list, \
                 patch("tgbot.handlers.attach_public_ips_bulk",
-                      side_effect=lambda cli, insts, compartment: [
+                      side_effect=lambda cli, insts, compartment, **kwargs: [
                           None, None]):
             await handlers.instances_command(update, context)
         mock_list.assert_called_once_with(self.cli, FAKE_COMPARTMENT)
@@ -249,7 +249,7 @@ class TestCommands(HandlersTestCase):
                       return_value=[FAKE_IP, None]) as mock_attach:
             await handlers.instances_command(update, context)
         mock_attach.assert_called_once_with(self.cli, FAKE_INSTANCES,
-                                            FAKE_COMPARTMENT)
+                                            FAKE_COMPARTMENT, max_workers=2)
         self.assertEqual(context.user_data["instances"], enriched)
         text = update.effective_message.reply_text.call_args.args[0]
         self.assertIn("🟢 运行中 1 台 · 🟡 已停止 1 台", text)
@@ -314,7 +314,7 @@ class TestOracleMenuCallback(HandlersTestCase):
         with patch("tgbot.handlers.list_instances",
                    return_value=list(FAKE_INSTANCES)), \
                 patch("tgbot.handlers.attach_public_ips_bulk",
-                      side_effect=lambda cli, insts, compartment: [
+                      side_effect=lambda cli, insts, compartment, **kwargs: [
                           None, None]):
             await handlers.oracle_menu_callback(update, context)
         text = update.callback_query.edit_message_text.call_args.args[0]
@@ -361,7 +361,7 @@ class TestInstanceListCallback(HandlersTestCase):
         with patch("tgbot.handlers.list_instances",
                    return_value=list(FAKE_INSTANCES)), \
                 patch("tgbot.handlers.attach_public_ips_bulk",
-                      side_effect=lambda cli, insts, compartment: [
+                      side_effect=lambda cli, insts, compartment, **kwargs: [
                           None, None]):
             await handlers.instance_list_callback(update, context)
         text = update.callback_query.edit_message_text.call_args.args[0]
@@ -400,6 +400,12 @@ class TestInstanceListCallback(HandlersTestCase):
 
 class TestInstanceDetailCallback(HandlersTestCase):
     """i:detail:<idx> 回调。"""
+
+    def setUp(self):
+        super().setUp()
+        # 详情单飞缓存是模块级状态，跨测试会串数据（v2.11 补丁新增）。
+        handlers.clear_instance_detail_cache()
+        handlers.clear_instance_list_cache()
 
     def _context_with_instances(self):
         context = make_context()

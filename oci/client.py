@@ -778,6 +778,13 @@ class OCIClient:
             lambda: client.get_instance_console_connection(connection_id))
         return _model_to_dict(resp.data)
 
+    def sdk_list_group_users(self, group_id, region=None):
+        """列出某 IAM 组里的用户（SDK 直调）。"""
+        client = self._sdk_service_client("identity", region)
+        items = self._sdk_paginate("iam group user list",
+                                   client.list_users_in_group, group_id)
+        return [_model_to_dict(item) for item in items]
+
     def sdk_list_groups(self, compartment_id, region=None):
         """列出 compartment 下的 IAM 组（SDK 直调）。"""
         client = self._sdk_service_client("identity", region)

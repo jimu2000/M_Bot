@@ -9,6 +9,19 @@
 
 ## [Unreleased]
 
+## [2.12] - 2026-11-27
+
+- TG 机器人提速（补丁集成）：实例列表单飞（同一账号/区域/语言的并发请求只加载一次）+ VNIC 查询并发压到 2；实例详情 12 秒缓存 + 单飞；CPU 型号 SSH 检测单飞（同实例只测一次）+ 最多 2 并发 + 失败后 60 秒冷却；写操作清缓存时旧的在途加载不再把旧状态写回来
+- IAM 云账户管理增强：新增 oci/iam.py（IAM 用户/API 密钥管理、RSA 密钥生成、Bot 专用 API 用户一键创建）；菜单 8 可增加普通用户、创建 Bot API 权限用户（api_user + Group_for_Api_used + Api_User_Policy）、给用户新增 API Key（私钥只发一次 TG 文件）、重置控制台临时密码；删用户/删 API Key 时仍禁删机器人当前在用的 API 用户/密钥
+- 管理员保护（新增）：OCI 本身不拦删最后一个管理员，M_Bot 现在拦——删用户时先查 Administrators 组，目标是组里最后一个成员时拒绝删除并提示先加另一个管理员；删除确认页与最终确认两处都查
+- 补丁集成说明：ChatGPT  overlay 补丁（tgbot/handlers.py、tgbot/handlers_extra.py、oci/iam.py）已合入并适配——修了补丁自带测试对 sys.modules['telegram'] 的覆盖（会拖垮全量测试发现）、attach_public_ips_bulk 的 max_workers 参数、CLI 改 SDK 后 list_users/list_api_keys 的测试 mock、create_user 的等待参数；全量 3223 测试全过
+
+## [2.11] - 2026-11-27
+
+- 多 worker 前置打通：会话、登录锁定、TG 验证码、一键登录共 4 个内存存储一起迁到 SQLite（web/data/mbot_sessions.db，WAL 模式，权限 600），多 worker 下登录态、锁定、验证码、一键登录全部跨 worker 一致；公开方法签名不变，17 处调用点零改动；验证码一次性消费与锁定计数用 BEGIN IMMEDIATE 事务保证原子性（两 worker 同时验同一码只能一人成功）。新增 web/auth_store.py（AuthDB）与 21 个跨 worker 测试；全量 3216 测试全过；双进程实测：worker 1 登录后 worker 2 的 /api/auth/me 返回 200，worker 2 登出后 worker 1 立即 401，worker 1 上 5 次错误密码后 worker 2 登录报 429
+- 行为变化：登录会话重启后保留（以前内存存储重启即失效），仍按有效期过期（默认 12 小时，“记住我” 30 天），登出立即失效；多 worker 下各 worker 启动时不能互相清会话，所以启动时不再清会话
+- 多 worker 开启方式：.160 的 rbot-clone-web.service 的 ExecStart 末尾加 --workers 4（服务文件只在 .160 上，不在仓库里）；4 worker 下 100/1000/10000 人压测待部署后实测
+
 ## [2.10] - 2026-11-27
 
 - 强制刷新减负：面板每次强制刷新都重建 OCI 客户端，私钥解析（约 0.39 秒/次，61%）与 TLS/CA 重建（约 0.14 秒/次，22%）是 CPU 大头；现在 Web 层按账号+区域缓存复用 OCIClient（删账号时清掉该账号缓存），实例列表与 VNIC 挂载列表并行取。强制刷新 CPU 约 1.01 秒→约 0.34 秒（降 66%），墙钟约 2.69 秒→约 1.8 秒；日常点菜单（缓存命中）仍约 0 秒

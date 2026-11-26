@@ -2146,7 +2146,8 @@ class TestUserManagement(HandlersExtraTestCase):
                       text)
         self.assertIn("11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11",
                       text)
-        self.assertIn("暂不支持上传", text)
+        self.assertIn("可点用户详情中的“新增 API Key”自动生成并上传新密钥",
+                      text)
         callbacks = reply_callback_data_of(update)
         self.assertIn("u:keydel:0", callbacks)
         self.assertIn("u:keydel:1", callbacks)
@@ -2154,7 +2155,9 @@ class TestUserManagement(HandlersExtraTestCase):
         self.assertIn("u:list", callbacks)
         self.assertEqual(len(context.user_data["iam_keys"]), 2)
         self.assertEqual(context.user_data["iam_keys_user"],
-                         {"id": "ocid1.user.oc1..u1", "name": "alice"})
+                         {"id": "ocid1.user.oc1..u1", "name": "alice",
+                          "profile": "DEFAULT",
+                          "region": "ap-singapore-1"})
 
     async def test_user_keys_empty(self):
         update = make_update(callback_data="u:keys:1")
@@ -2275,6 +2278,21 @@ class TestUserManagement(HandlersExtraTestCase):
         mock_delete.assert_not_called()
         self.assertIn("不能删除", reply_text_of(update))
 
+    async def test_confirm_deluser_refuses_last_admin(self):
+        update = make_update(callback_data="c:deluser:0")
+        context = self._users_context()
+        with patch.object(he, "get_profile_user_id",
+                          return_value="ocid1.user.oc1..u2"), \
+             patch.object(he, "is_last_admin",
+                          return_value=True), \
+             patch.object(he, "delete_user",
+                          return_value=None) as mock_delete:
+            handled = await he.handle_confirm("deluser", "0",
+                                              update, context)
+        self.assertTrue(handled)
+        mock_delete.assert_not_called()
+        self.assertIn("最后一个管理员", reply_text_of(update))
+
     async def test_user_list_back_button(self):
         update = make_update(callback_data="u:list")
         context = make_context()
@@ -2292,12 +2310,12 @@ class TestUserManagement(HandlersExtraTestCase):
 class TestUsersWorkflowsRegionsSubscriptionMfa(HandlersExtraTestCase):
 
     async def test_handle_users(self):
-        self.cli.run.return_value = {"data": [
+        self.cli.sdk_list_users.return_value = [
             {"name": "alice", "email": "alice@example.com",
              "lifecycle-state": "ACTIVE", "id": "ocid1.user.oc1..u1"},
             {"name": "bob", "email": None,
              "lifecycle-state": "ACTIVE", "id": "ocid1.user.oc1..u2"},
-        ]}
+        ]
         update = make_update()
         context = make_context()
         await he.handle_users(update, context)
@@ -2310,11 +2328,11 @@ class TestUsersWorkflowsRegionsSubscriptionMfa(HandlersExtraTestCase):
         self.assertIn("👤 bob", buttons)
 
     async def test_handle_emails(self):
-        self.cli.run.return_value = {"data": [
+        self.cli.sdk_list_users.return_value = [
             {"name": "alice", "email": "alice@example.com",
              "id": "ocid1.user.oc1..u1"},
             {"name": "bob", "email": None, "id": "ocid1.user.oc1..u2"},
-        ]}
+        ]
         update = make_update()
         context = make_context()
         await he.handle_emails(update, context)
@@ -2386,10 +2404,10 @@ class TestUsersWorkflowsRegionsSubscriptionMfa(HandlersExtraTestCase):
         self.assertIn("SJC", text)
 
     async def test_handle_mfa_lists_devices(self):
+        self.cli.sdk_list_users.return_value = [
+            {"name": "alice", "id": "ocid1.user.oc1..u1"}]
+
         def fake_run(args, **kwargs):
-            if args[:2] == ["iam", "user"]:
-                return {"data": [
-                    {"name": "alice", "id": "ocid1.user.oc1..u1"}]}
             if args[:2] == ["iam", "mfa-totp-device"]:
                 return {"data": [
                     {"id": "ocid1.mfatotpdevice.oc1..d1",

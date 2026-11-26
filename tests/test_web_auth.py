@@ -5,7 +5,9 @@
 """
 
 import os
+import sqlite3
 import sys
+import tempfile
 import time
 import unittest
 
@@ -19,6 +21,23 @@ from web.auth import (
     hash_password,
     verify_password,
 )
+
+
+def _sql(db_path, query, params=()):
+    """在测试用的 SQLite 文件上跑一条 SQL，返回全部行。"""
+    conn = sqlite3.connect(db_path)
+    try:
+        rows = conn.execute(query, params).fetchall()
+        conn.commit()
+        return rows
+    finally:
+        conn.close()
+
+
+def _tmp_db():
+    """新建一个临时目录并返回 (TemporaryDirectory, db 文件路径)。"""
+    tmp = tempfile.TemporaryDirectory()
+    return tmp, os.path.join(tmp.name, "auth.db")
 
 
 class TestHashPassword(unittest.TestCase):
@@ -64,7 +83,12 @@ class TestLoginGuard(unittest.TestCase):
     """登录失败锁定。"""
 
     def setUp(self):
-        self.guard = LoginGuard(threshold=5, base_minutes=1, max_minutes=30)
+        self._tmp, self._db_path = _tmp_db()
+        self.guard = LoginGuard(threshold=5, base_minutes=1, max_minutes=30,
+                                db_path=self._db_path)
+
+    def tearDown(self):
+        self._tmp.cleanup()
 
     def _fail_times(self, username, n):
         for _ in range(n):
@@ -72,7 +96,9 @@ class TestLoginGuard(unittest.TestCase):
 
     def _expire_lock(self, username):
         """把锁定到期时间改到过去（模拟锁定期已过）。"""
-        self.guard._records[username]["locked_until"] = time.time() - 1
+        _sql(self._db_path,
+             "UPDATE login_guard SET locked_until=? WHERE username=?",
+             (time.time() - 1, username))
 
     def test_not_locked_initially(self):
         self.assertFalse(self.guard.is_locked("admin"))
@@ -151,7 +177,11 @@ class TestSessionStore(unittest.TestCase):
     """会话创建 / 获取 / 过期 / 注销。"""
 
     def setUp(self):
-        self.store = SessionStore(expire_hours=12)
+        self._tmp, self._db_path = _tmp_db()
+        self.store = SessionStore(expire_hours=12, db_path=self._db_path)
+
+    def tearDown(self):
+        self._tmp.cleanup()
 
     def test_create_and_get(self):
         token = self.store.create("admin")
@@ -173,16 +203,21 @@ class TestSessionStore(unittest.TestCase):
         self.store.revoke("no-such-token")
 
     def test_expired_session_invalid(self):
-        """过期会话自动失效（直接改过期时间模拟）。"""
+        """过期会话自动失效（把过期时间改到过去模拟）。"""
         token = self.store.create("admin")
-        self.store._sessions[token]["expires"] = time.time() - 1
+        _sql(self._db_path,
+             "UPDATE sessions SET expires=? WHERE token=?",
+             (time.time() - 1, token))
         self.assertIsNone(self.store.get(token))
-        # The expired session has been removed from the dict. 过期会话已从字典里删除。
-        self.assertNotIn(token, self.store._sessions)
+        # The expired session has been removed from the store. 过期会话已从存储里删除。
+        self.assertEqual(
+            _sql(self._db_path,
+                 "SELECT COUNT(*) FROM sessions WHERE token=?", (token,)),
+            [(0,)])
 
     def test_short_expiry_really_expires(self):
         """真实短有效期：1 秒后会话失效。"""
-        store = SessionStore(expire_hours=1 / 3600)
+        store = SessionStore(expire_hours=1 / 3600, db_path=self._db_path)
         token = store.create("admin")
         self.assertEqual(store.get(token), "admin")
         time.sleep(1.2)
@@ -195,7 +230,10 @@ class TestSessionStore(unittest.TestCase):
     def test_create_with_custom_expiry(self):
         """create() 可传自定义有效期（记住我登录用 30 天）。"""
         token = self.store.create("admin", expire_seconds=30 * 24 * 3600)
-        remaining = self.store._sessions[token]["expires"] - time.time()
+        rows = _sql(self._db_path,
+                    "SELECT expires FROM sessions WHERE token=?", (token,))
+        self.assertEqual(len(rows), 1)
+        remaining = rows[0][0] - time.time()
         self.assertGreater(remaining, 29 * 24 * 3600)
         self.assertLessEqual(remaining, 30 * 24 * 3600)
         self.assertEqual(self.store.get(token), "admin")
@@ -205,7 +243,11 @@ class TestMagicLoginStore(unittest.TestCase):
     """v1.25.0：一键登录 token 存储（一次性、5 分钟过期）。"""
 
     def setUp(self):
-        self.store = MagicLoginStore()
+        self._tmp, self._db_path = _tmp_db()
+        self.store = MagicLoginStore(db_path=self._db_path)
+
+    def tearDown(self):
+        self._tmp.cleanup()
 
     def test_create_and_consume(self):
         token = self.store.create()
@@ -224,10 +266,16 @@ class TestMagicLoginStore(unittest.TestCase):
 
     def test_expired_token_rejected(self):
         token = self.store.create()
-        self.store._tokens[token] = time.time() - 1
+        _sql(self._db_path,
+             "UPDATE magic_tokens SET expires=? WHERE token=?",
+             (time.time() - 1, token))
         self.assertFalse(self.store.consume(token))
-        # The expired token has been removed from the dict. 过期 token 已从字典里删除。
-        self.assertNotIn(token, self.store._tokens)
+        # The expired token has been removed from the store. 过期 token 已从存储里删除。
+        self.assertEqual(
+            _sql(self._db_path,
+                 "SELECT COUNT(*) FROM magic_tokens WHERE token=?",
+                 (token,)),
+            [(0,)])
 
     def test_revoke(self):
         token = self.store.create()

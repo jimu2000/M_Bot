@@ -256,11 +256,17 @@ from oci.grabber import TARGET_CPU, Grabber, GrabCancelledError, GrabResult
 from oci.iam import (
     MAX_DESCRIPTION_LEN,
     add_user_to_group,
+    create_api_key,
+    create_bot_permission_user,
+    create_or_reset_ui_password,
     create_user,
     delete_api_key,
     delete_user,
     get_group_id_by_name,
+    get_profile_api_fingerprint,
+    get_profile_tenancy_id,
     get_profile_user_id,
+    is_last_admin,
     list_api_keys,
     update_user,
 )
@@ -851,10 +857,8 @@ def fmt_tenancies(entries, lang="zh"):
 
 
 def list_users(cli, compartment_id):
-    """只读列出租户下的 IAM 用户（iam user list）。"""
-    result = cli.run(["iam", "user", "list",
-                      "--compartment-id", compartment_id])
-    return _unwrap(result) or []
+    """只读列出租户下的 IAM 用户（SDK 直调，避免启动 OCI CLI 子进程）。"""
+    return cli.sdk_list_users(compartment_id) or []
 
 
 def fmt_user_list(users):
@@ -4033,6 +4037,20 @@ async def boot_backup_mscancel_callback(update, context):
 
 # ---- 8. 云账户管理 / 30. 批量查询邮箱 ----
 
+def _get_iam_cli(context):
+    """IAM 是租户级服务，固定使用当前 profile 配置的主区域。"""
+    profile = get_current_profile(context)
+    return bot_config.get_oci_client(
+        profile=profile, region=bot_config.get_region(profile))
+
+
+def _get_iam_tenancy_id(context):
+    """读取当前 profile 的 tenancy OCID，不能误用 compute 子 compartment。"""
+    profile = get_current_profile(context)
+    return (get_profile_tenancy_id(profile)
+            or get_compartment(context))
+
+
 @require_allowed
 async def handle_users(update, context):
     """菜单 8：列出 IAM 用户，每个用户挂详情按钮，详情页可修改。
@@ -4042,16 +4060,22 @@ async def handle_users(update, context):
     """
     try:
         users = await run_sync(list_users,
-                               get_cli(context), get_compartment(context))
+                               _get_iam_cli(context), _get_iam_tenancy_id(context))
     except Exception as exc:  # noqa: BLE001
         await _reply(update, context, fmt_error(exc))
         return
     context.user_data["iam_users"] = users
+    context.user_data["iam_users_profile"] = get_current_profile(context)
+    context.user_data["iam_users_region"] = get_current_region(context)
     rows = [[InlineKeyboardButton(_user_button_text(u),
                                   callback_data=f"u:detail:{idx}")]
             for idx, u in enumerate(users)]
+    rows.append([InlineKeyboardButton("➕ 增加普通用户",
+                                      callback_data="u:adduser")])
     rows.append([InlineKeyboardButton("➕ 增加管理员账号",
                                       callback_data="u:add")])
+    rows.append([InlineKeyboardButton("🤖 创建 Bot API 权限用户",
+                                      callback_data="u:botuser")])
     rows.append([InlineKeyboardButton("◀ Oracle 菜单",
                                       callback_data="o:menu")])
     await _reply(update, context, fmt_user_list(users),
@@ -4059,7 +4083,12 @@ async def handle_users(update, context):
 
 
 def _resolve_iam_user(context, idx):
-    """按下标取 user_data["iam_users"] 里的用户 dict；越界/过期返回 None。"""
+    """按下标取用户；列表属于其他 profile/region 时视为过期。"""
+    if (context.user_data.get("iam_users_profile") not in
+            (None, get_current_profile(context))
+            or context.user_data.get("iam_users_region") not in
+            (None, get_current_region(context))):
+        return None
     try:
         idx_int = int(idx)
     except (TypeError, ValueError):
@@ -4080,6 +4109,14 @@ def _is_current_api_user(context, user_id):
         return False
     current = get_profile_user_id(get_current_profile(context))
     return current is not None and current == user_id
+
+
+def _is_current_api_key(context, user_id, fingerprint):
+    """目标 API Key 是否正是当前 profile 正在签名使用的密钥。"""
+    if not user_id or not fingerprint or not _is_current_api_user(context, user_id):
+        return False
+    current_fp = get_profile_api_fingerprint(get_current_profile(context))
+    return bool(current_fp and current_fp == fingerprint.strip().lower())
 
 
 def fmt_user_detail(user):
@@ -4108,6 +4145,8 @@ def _user_detail_keyboard(idx):
         [InlineKeyboardButton("✏️ 改描述", callback_data=f"u:desc:{idx}"),
          InlineKeyboardButton("📧 改邮箱", callback_data=f"u:email:{idx}")],
         [InlineKeyboardButton("🔑 API 密钥", callback_data=f"u:keys:{idx}"),
+         InlineKeyboardButton("➕ 新增 API Key", callback_data=f"u:addkey:{idx}")],
+        [InlineKeyboardButton("🔐 重置控制台密码", callback_data=f"u:resetpwd:{idx}"),
          InlineKeyboardButton("🗑️ 删除用户", callback_data=f"u:del:{idx}")],
         [InlineKeyboardButton("◀ 返回云账户", callback_data="u:list")],
     ])
@@ -4120,14 +4159,37 @@ async def user_callback(update, context):
     u:detail:<idx> 用户详情；u:desc:<idx> 改描述（文字输入）；
     u:email:<idx> 改邮箱（文字输入）；u:keys:<idx> API 密钥列表；
     u:del:<idx> 删除用户（输入用户名确认）；u:keydel:<idx> 删 API
-    密钥（二次确认）；u:add 增加管理员账号（用户名+邮箱两步输入）；
-    u:list 返回云账户列表。
+    密钥（二次确认）；u:addkey:<idx> 创建 API Key；
+    u:resetpwd:<idx> 重置控制台临时密码；u:adduser 增加普通用户；
+    u:add 增加管理员账号；u:botuser 创建 Bot 权限用户；u:list 返回列表。
     """
     parts = _callback_data(update).split(":")
     action = parts[1] if len(parts) >= 2 else ""
     idx = parts[2] if len(parts) >= 3 else ""
     if action == "list":
         await handle_users(update, context)
+        return
+    if action == "adduser":
+        context.user_data["iam_add_user_target"] = (
+            get_current_profile(context), get_current_region(context))
+        context.user_data["pending_input"] = {"kind": "add_user_name"}
+        context.user_data.pop("add_iam_user", None)
+        await _reply_prompt(update, context,
+                            "➕ 增加普通 IAM 用户：请输入用户名（不能带空格）：")
+        return
+    if action == "botuser":
+        context.user_data["iam_bot_target"] = (
+            get_current_profile(context), get_current_region(context))
+        await _reply(update, context,
+                     "🤖 将在当前 Oracle 账号创建专用 Bot API 用户：\n\n"
+                     "用户名：api_user\n邮箱：api@example.com\n"
+                     "组：Group_for_Api_used\n策略：Api_User_Policy\n\n"
+                     "权限：manage instance-family、volume-family、"
+                     "virtual-network-family（tenancy 级）。\n"
+                     "将自动生成 RSA API Key，并把私钥作为文件发送给你。\n"
+                     "确认后会在当前账号创建/复用这些 IAM 资源。",
+                     reply_markup=confirm_keyboard("createbotuser", 0,
+                                                   "🤖 确认创建 Bot 用户"))
         return
     if action == "add":
         context.user_data["pending_input"] = {"kind": "add_admin_name"}
@@ -4145,6 +4207,20 @@ async def user_callback(update, context):
     if user is None:
         await _reply(update, context, "用户不存在或已过期，请重新打开云账户管理。",
                      reply_markup=back_to_oracle_keyboard())
+        return
+    if action == "addkey":
+        await _reply(update, context,
+                     f"确认给用户「{user.get('name', '?')}」新增 OCI API Key？\n"
+                     "会生成新的 RSA 私钥并上传公钥；旧密钥不会删除。",
+                     reply_markup=confirm_keyboard("createapikey", idx,
+                                                   "🔑 确认新增 API Key"))
+        return
+    if action == "resetpwd":
+        await _reply(update, context,
+                     f"确认重置用户「{user.get('name', '?')}」的 OCI 控制台密码？\n"
+                     "旧密码/登录状态可能失效；OCI 会生成一次性密码，或向用户邮箱发送重置链接。",
+                     reply_markup=confirm_keyboard("resetpwd", idx,
+                                                   "🔐 确认重置密码"))
         return
     if action == "detail":
         await _reply(update, context, fmt_user_detail(user),
@@ -4177,19 +4253,21 @@ async def _user_keys_list(update, context, user, idx):
 
     密钥列表存 user_data["iam_keys"]，所属用户存
     user_data["iam_keys_user"]（{id, name}），删除确认时取回。
-    上传新密钥暂不支持（留待办）：上传要用户贴公钥，交互流程
-    与 /uploadapi 类似，后续版本再接。
+    可从用户详情页新增 API Key；新密钥只返回指纹，私钥在创建时一次性交付。
     """
     name = user.get("name") or "?"
     try:
-        keys = await run_sync(list_api_keys, get_cli(context), user["id"])
+        keys = await run_sync(list_api_keys, _get_iam_cli(context), user["id"])
     except Exception as exc:  # noqa: BLE001
         await _reply(update, context, fmt_error(exc),
                      reply_markup=back_to_oracle_keyboard())
         return
     context.user_data["iam_keys"] = keys
-    context.user_data["iam_keys_user"] = {"id": user.get("id"),
-                                          "name": name}
+    context.user_data["iam_keys_user"] = {
+        "id": user.get("id"), "name": name,
+        "profile": get_current_profile(context),
+        "region": get_current_region(context),
+    }
     if not keys:
         lines = [f"🔑 {name} 没有 API 密钥。"]
     else:
@@ -4200,7 +4278,7 @@ async def _user_keys_list(update, context, user, idx):
                          f"（{key.get('lifecycle-state', '?')}"
                          f"{'，' + created if created else ''}）")
     lines.append("")
-    lines.append("上传新密钥请到 OCI 控制台操作（机器人暂不支持上传）。")
+    lines.append("可点用户详情中的“新增 API Key”自动生成并上传新密钥。")
     rows = []
     for key_idx, key in enumerate(keys):
         fp = key.get("fingerprint") or "?"
@@ -4225,11 +4303,21 @@ async def _user_key_delete_prompt(update, context, idx):
         idx_int = -1
     keys = context.user_data.get("iam_keys") or []
     owner = context.user_data.get("iam_keys_user") or {}
+    if (owner.get("profile") not in (None, get_current_profile(context))
+            or owner.get("region") not in (None, get_current_region(context))):
+        await _reply(update, context,
+                     "API Key 列表属于其他 Oracle 账号/区域，请重新打开对应账号的用户详情。")
+        return
     if idx_int < 0 or idx_int >= len(keys):
         await _reply(update, context, "密钥不存在或已过期，请重新打开 API 密钥列表。",
                      reply_markup=back_to_oracle_keyboard())
         return
     key = keys[idx_int]
+    if _is_current_api_key(context, owner.get("id"),
+                           key.get("fingerprint")):
+        await _reply(update, context,
+                     "❌ 不能删除当前 M_Bot 正在使用的 API Key；删除后机器人将无法再访问该 Oracle 账号。")
+        return
     await _reply(update, context,
                  f"🗑️ 确认删除用户「{owner.get('name', '?')}」的 API 密钥？\n\n"
                  f"指纹：{key.get('fingerprint', '?')}\n"
@@ -4250,6 +4338,19 @@ async def _user_delete_prompt(update, context, user, idx):
                      "删了机器人会立刻失联。请先换 profile 或换 API 密钥。",
                      reply_markup=back_to_oracle_keyboard())
         return
+    try:
+        last_admin = await run_sync(
+            is_last_admin, _get_iam_cli(context),
+            _get_iam_tenancy_id(context), user.get("id"))
+    except Exception:  # noqa: BLE001 - 查不到管理员状态时不拦，放行到确认页再查
+        last_admin = False
+    if last_admin:
+        await _reply(update, context,
+                     f"❌ 不能删除用户「{name}」：它是租户里最后一个管理员 "
+                     "（Administrators 组只剩它一人），删了整个租户就没人能管了。"
+                     "请先把另一个用户加进 Administrators 组，再删除它。",
+                     reply_markup=back_to_oracle_keyboard())
+        return
     context.user_data["pending_input"] = {"kind": "deluser", "idx": idx}
     await _reply_prompt(update, context,
                         f"⚠️ 删除用户「{name}」将同时删除它的全部 API 密钥与 "
@@ -4262,7 +4363,7 @@ async def handle_emails(update, context):
     """菜单 30：列出全部用户的邮箱。"""
     try:
         users = await run_sync(list_users,
-                               get_cli(context), get_compartment(context))
+                               _get_iam_cli(context), _get_iam_tenancy_id(context))
     except Exception as exc:  # noqa: BLE001
         await _reply(update, context, fmt_error(exc))
         return
@@ -5724,6 +5825,32 @@ async def text_input_callback(update, context):
         else:
             await _handle_dns_add_content_input(update, context, text)
         return
+    if kind in ("add_user_name", "add_user_email"):
+        context.user_data.pop("pending_input", None)
+        if kind == "add_user_name":
+            if not text or not re.fullmatch(r"[A-Za-z0-9._+@-]+", text):
+                await _reply(update, context,
+                             "❌ 用户名只能包含字母、数字、点、下划线、加号、@ 或连字符，已取消。")
+                return
+            context.user_data["add_iam_user"] = {"name": text}
+            context.user_data["pending_input"] = {"kind": "add_user_email"}
+            await _reply_prompt(update, context,
+                                f"用户名「{text}」已记录，请输入邮箱：")
+            return
+        if not is_valid_email(text):
+            context.user_data.pop("add_iam_user", None)
+            await _reply(update, context, "❌ 邮箱格式不正确，创建用户已取消。")
+            return
+        draft = context.user_data.get("add_iam_user") or {}
+        draft["email"] = text
+        context.user_data["add_iam_user"] = draft
+        await _reply(update, context,
+                     f"确认在当前 Oracle 账号创建普通 IAM 用户？\n"
+                     f"用户名：{draft.get('name')}\n邮箱：{text}\n"
+                     "不会自动加入 Administrators 组。",
+                     reply_markup=confirm_keyboard("addiamuser", 0,
+                                                   "➕ 确认创建普通用户"))
+        return
     if kind in ("add_admin_name", "add_admin_email"):
         context.user_data.pop("pending_input", None)
         if kind == "add_admin_name":
@@ -5928,9 +6055,11 @@ async def _handle_confirm_inner(action, idx, update, context):
         所属用户在 user_data["iam_keys_user"]）。
       - deluser：删除 IAM 用户（idx 是 user_data["iam_users"] 的下标；
         执行前再次检查目标不是当前 profile 的 API 用户）。
-      - addadmin：增加管理员账号（用户名+邮箱在
-        user_data["add_admin"]，idx 无用，传 0；创建用户后加进
-        Administrators 组）。
+      - addadmin：增加管理员账号（用户名+邮箱在 user_data["add_admin"]）。
+      - addiamuser：增加普通 IAM 用户（用户名+邮箱在 user_data["add_iam_user"]）。
+      - resetpwd：重置 IAM 用户控制台临时密码。
+      - createapikey：为已有 IAM 用户生成并上传 API Key。
+      - createbotuser：创建专用 Bot IAM 用户、组、策略并生成 API Key。
     """
     if action == "changeip":
         inst = resolve_instance(context, idx)
@@ -6512,7 +6641,7 @@ async def _handle_confirm_inner(action, idx, update, context):
             await _reply(update, context, "用户或新描述已过期，请重新操作。")
             return True
         try:
-            await run_sync(update_user, get_cli(context), user["id"],
+            await run_sync(update_user, _get_iam_cli(context), user["id"],
                            description=new_desc)
         except Exception as exc:  # noqa: BLE001
             await _reply(update, context, fmt_error(exc))
@@ -6529,7 +6658,7 @@ async def _handle_confirm_inner(action, idx, update, context):
             await _reply(update, context, "用户或新邮箱已过期，请重新操作。")
             return True
         try:
-            await run_sync(update_user, get_cli(context), user["id"],
+            await run_sync(update_user, _get_iam_cli(context), user["id"],
                            email=new_email)
         except Exception as exc:  # noqa: BLE001
             await _reply(update, context, fmt_error(exc))
@@ -6542,6 +6671,11 @@ async def _handle_confirm_inner(action, idx, update, context):
     if action == "delapikey":
         keys = context.user_data.get("iam_keys") or []
         owner = context.user_data.get("iam_keys_user") or {}
+        if (owner.get("profile") not in (None, get_current_profile(context))
+                or owner.get("region") not in (None, get_current_region(context))):
+            await _reply(update, context,
+                         "API Key 列表属于其他 Oracle 账号/区域，已取消删除。")
+            return True
         try:
             idx_int = int(idx)
         except (TypeError, ValueError):
@@ -6550,8 +6684,13 @@ async def _handle_confirm_inner(action, idx, update, context):
             await _reply(update, context, "密钥不存在或已过期，请重新打开 API 密钥列表。")
             return True
         key = keys[idx_int]
+        if _is_current_api_key(context, owner.get("id"),
+                               key.get("fingerprint")):
+            await _reply(update, context,
+                         "❌ 不能删除当前 M_Bot 正在使用的 API Key。")
+            return True
         try:
-            await run_sync(delete_api_key, get_cli(context),
+            await run_sync(delete_api_key, _get_iam_cli(context),
                            owner["id"], key.get("fingerprint"))
         except Exception as exc:  # noqa: BLE001
             await _reply(update, context, fmt_error(exc))
@@ -6573,12 +6712,182 @@ async def _handle_confirm_inner(action, idx, update, context):
                          "正在使用的 API 用户，删了机器人会立刻失联。")
             return True
         try:
-            await run_sync(delete_user, get_cli(context), user["id"])
+            last_admin = await run_sync(
+                is_last_admin, _get_iam_cli(context),
+                _get_iam_tenancy_id(context), user.get("id"))
+        except Exception:  # noqa: BLE001 - 查不到时不拦，让删除继续走 OCI 报错
+            last_admin = False
+        if last_admin:
+            await _reply(update, context,
+                         f"❌ 不能删除用户「{user.get('name', '?')}」：它是租户里"
+                         "最后一个管理员（Administrators 组只剩它一人），"
+                         "删了整个租户就没人能管了。请先把另一个用户加进 "
+                         "Administrators 组，再删除它。")
+            return True
+        try:
+            await run_sync(delete_user, _get_iam_cli(context), user["id"])
         except Exception as exc:  # noqa: BLE001
             await _reply(update, context, fmt_error(exc))
             return True
         await _reply(update, context,
                      f"✅ 用户「{user.get('name', '?')}」已删除。")
+        return True
+
+    if action == "addiamuser":
+        target = context.user_data.pop("iam_add_user_target", None)
+        if target is None or target != (get_current_profile(context),
+                                        get_current_region(context)):
+            context.user_data.pop("add_iam_user", None)
+            await _reply(update, context,
+                         "当前 Oracle 账号/区域已切换，已取消创建。请在目标账号重新操作。")
+            return True
+        draft = context.user_data.pop("add_iam_user", None) or {}
+        name, email = draft.get("name"), draft.get("email")
+        if not name or not email:
+            await _reply(update, context, "普通用户创建信息已过期，请重新操作。")
+            return True
+        try:
+            user = await run_sync(create_user, _get_iam_cli(context),
+                                  _get_iam_tenancy_id(context), name, email,
+                                  "Created by M_Bot")
+        except Exception as exc:  # noqa: BLE001
+            await _reply(update, context, fmt_error(exc))
+            return True
+        await _reply(update, context,
+                     f"✅ 普通 IAM 用户「{name}」已创建。\n邮箱：{email}\n"
+                     "该用户尚未加入任何管理组，也未设置控制台密码。")
+        return True
+
+    if action == "resetpwd":
+        user = _resolve_iam_user(context, idx)
+        if user is None:
+            await _reply(update, context, "用户列表已过期，请重新打开云账户管理。")
+            return True
+        try:
+            password = await run_sync(create_or_reset_ui_password,
+                                      _get_iam_cli(context), user["id"])
+        except Exception as exc:  # noqa: BLE001
+            await _reply(update, context, fmt_error(exc))
+            return True
+        if password:
+            await _reply(update, context,
+                         f"🔐 用户「{user.get('name', '?')}」的 OCI 控制台一次性密码已生成：\n\n"
+                         f"{password}\n\n"
+                         "⚠️ 这是敏感凭据，请立即复制并安全保存；首次登录时 OCI 会要求修改。")
+        else:
+            await _reply(update, context,
+                         f"✅ 已为用户「{user.get('name', '?')}」发起控制台密码重置。\n"
+                         "该租户可能启用了 Identity Domains，OCI 会向用户邮箱发送重置链接；"
+                         "请让用户检查邮箱（包括垃圾邮件）。")
+        return True
+
+    if action == "createapikey":
+        user = _resolve_iam_user(context, idx)
+        if user is None:
+            await _reply(update, context, "用户列表已过期，请重新打开云账户管理。")
+            return True
+        key_data = None
+        try:
+            key_data = await run_sync(create_api_key, _get_iam_cli(context),
+                                      user["id"])
+            pem = key_data["private_key_pem"]
+            doc = BytesIO(pem)
+            doc.name = "oci_api_key.pem"
+            chat_id = update.effective_chat.id
+            await context.bot.send_document(
+                chat_id=chat_id, document=doc,
+                filename="oci_api_key.pem",
+                caption="OCI API 私钥。仅此一次发送，请下载后妥善保管，"
+                        "不要转发或上传到公开仓库。")
+        except Exception as exc:  # noqa: BLE001
+            if key_data and key_data.get("fingerprint"):
+                try:
+                    await run_sync(delete_api_key, _get_iam_cli(context),
+                                   user["id"], key_data["fingerprint"])
+                except Exception:
+                    logger.exception("API Key 交付失败后回滚密钥失败")
+            await _reply(update, context,
+                         "❌ API Key 创建或私钥文件交付失败。"
+                         "如上传已成功，系统已尝试删除该 Key。\n"
+                         + fmt_error(exc))
+            return True
+        region = get_current_region(context)
+        await _reply(update, context,
+                     f"✅ 已为用户「{user.get('name', '?')}」新增 API Key。\n"
+                     f"Fingerprint：`{key_data['fingerprint']}`\n"
+                     f"API Key 状态：{key_data.get('lifecycle_state', 'CREATING')}\n\n"
+                     "OCI config 片段（建议单独保存为 ~/.oci/api_user_config，"
+                     "不要覆盖 M_Bot 主配置）：\n"
+                     "```ini\n[DEFAULT]\n"
+                     f"user={user['id']}\n"
+                     f"fingerprint={key_data['fingerprint']}\n"
+                     "key_file=~/.oci/oci_api_key.pem\n"
+                     f"tenancy={_get_iam_tenancy_id(context)}\n"
+                     f"region={region}\n```\n"
+                     "注意：如果该 profile 已有 DEFAULT 段，请合并字段，"
+                     "不要覆盖其他账号配置。",
+                     parse_mode="Markdown")
+        return True
+
+    if action == "createbotuser":
+        target = context.user_data.pop("iam_bot_target", None)
+        profile = get_current_profile(context)
+        region = get_current_region(context)
+        if target is None or target != (profile, region):
+            await _reply(update, context,
+                         "当前 Oracle 账号/区域已切换，已取消创建。请在目标账号重新操作。")
+            return True
+        tenancy_id = _get_iam_tenancy_id(context)
+        cli = _get_iam_cli(context)
+        try:
+            result = await run_sync(
+                create_bot_permission_user, cli, tenancy_id,
+                "Group_for_Api_used", "api_user", "api@example.com",
+                "Api_User_Policy")
+            key_data = await run_sync(create_api_key, cli, result["user_id"])
+        except Exception as exc:  # noqa: BLE001
+            await _reply(update, context,
+                         "❌ Bot 权限用户创建/配置失败。可能已创建部分 IAM 资源，"
+                         "请重新执行（流程支持复用已存在资源）。\n" + fmt_error(exc))
+            return True
+        try:
+            doc = BytesIO(key_data["private_key_pem"])
+            doc.name = "oci_api_key.pem"
+            await context.bot.send_document(
+                chat_id=update.effective_chat.id, document=doc,
+                filename="oci_api_key.pem",
+                caption="Bot API 用户私钥。请立即下载并妥善保管，"
+                        "不要发送给他人或提交到 GitHub。")
+        except Exception as exc:  # noqa: BLE001
+            try:
+                await run_sync(delete_api_key, cli, result["user_id"],
+                               key_data["fingerprint"])
+            except Exception:
+                logger.exception("Bot API Key 交付失败后回滚密钥失败")
+            await _reply(update, context,
+                         "❌ 私钥文件发送失败，已尝试撤销刚创建的 API Key。\n"
+                         + fmt_error(exc))
+            return True
+        await _reply(update, context,
+                     "✅ Bot API 权限用户已配置。\n"
+                     f"账号：{profile}\n用户名：api_user\n"
+                     "组：Group_for_Api_used\n策略：Api_User_Policy\n"
+                     f"Fingerprint：`{key_data['fingerprint']}`\n"
+                     f"API Key 状态：{key_data.get('lifecycle_state', 'CREATING')}\n\n"
+                     "权限语句：\n"
+                     "```text\n"
+                     "Allow group Group_for_Api_used to manage instance-family in tenancy\n"
+                     "Allow group Group_for_Api_used to manage volume-family in tenancy\n"
+                     "Allow group Group_for_Api_used to manage virtual-network-family in tenancy\n```\n"
+                     "OCI config 片段（建议单独保存为 ~/.oci/api_user_config，"
+                     "不要覆盖 M_Bot 主配置）：\n"
+                     "```ini\n[DEFAULT]\n"
+                     f"user={result['user_id']}\n"
+                     f"fingerprint={key_data['fingerprint']}\n"
+                     "key_file=~/.oci/oci_api_key.pem\n"
+                     f"tenancy={tenancy_id}\nregion={region}\n```\n"
+                     "⚠️ 新建用户没有控制台密码；如需登录控制台，请在用户详情页重置临时密码。",
+                     parse_mode="Markdown")
         return True
 
     if action == "addadmin":
@@ -6592,8 +6901,8 @@ async def _handle_confirm_inner(action, idx, update, context):
                          "增加管理员账号的信息已过期，请重新点"
                          "“增加管理员账号”。")
             return True
-        cli = get_cli(context)
-        compartment = get_compartment(context)
+        cli = _get_iam_cli(context)
+        compartment = _get_iam_tenancy_id(context)
         try:
             user = await run_sync(create_user, cli, compartment, name,
                                   email)

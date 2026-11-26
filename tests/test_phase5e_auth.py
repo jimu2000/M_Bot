@@ -17,6 +17,7 @@ import base64
 import os
 import re
 import secrets
+import sqlite3
 import sys
 import tempfile
 import time
@@ -37,12 +38,28 @@ from web.auth import (
     TelegramCodeStore,
 )
 from web.auth import hash_password
+from web.auth_store import default_db_path
 from web.captcha import (
     CAPTCHAS,
     CaptchaStore,
     generate_captcha,
     render_captcha_image,
 )
+
+
+def _sql(query, params=()):
+    """在单例共用的 SQLite 文件（当前 DATA_DIR 下）跑一条 SQL。
+
+    Phase5eAuthTestCase 把 DATA_DIR patch 到临时目录，所以这里
+    读到的是该测试的临时库，不碰真实库。
+    """
+    conn = sqlite3.connect(default_db_path())
+    try:
+        rows = conn.execute(query, params).fetchall()
+        conn.commit()
+        return rows
+    finally:
+        conn.close()
 
 # Test password: generated randomly at runtime (no fixed password is ever written in code). 测试密码：运行时随机生成（不在代码里写任何固定口令）。
 TEST_PASSWORD = secrets.token_urlsafe(16)
@@ -132,10 +149,19 @@ class TelegramCodeStoreTest(unittest.TestCase):
         self.assertFalse(store.verify(code_id, code))
 
     def test_verify_expired(self):
-        store = TelegramCodeStore()
-        code_id, code = store.create()
-        store._codes[code_id]["expires"] = time.time() - 1
-        self.assertFalse(store.verify(code_id, code))
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "auth.db")
+            store = TelegramCodeStore(db_path=db_path)
+            code_id, code = store.create()
+            conn = sqlite3.connect(db_path)
+            try:
+                conn.execute(
+                    "UPDATE telegram_codes SET expires=? WHERE code_id=?",
+                    (time.time() - 1, code_id))
+                conn.commit()
+            finally:
+                conn.close()
+            self.assertFalse(store.verify(code_id, code))
 
     def test_cooldown(self):
         store = TelegramCodeStore(cooldown_seconds=60)
@@ -260,9 +286,9 @@ class TestRememberMe(Phase5eAuthTestCase):
         cookie = r.headers.get("set-cookie", "")
         self.assertIn(f"Max-Age={30 * 24 * 3600}", cookie)
         # The server-side session expiry is also about 30 days out (not the default 12 hours). 服务端会话过期时间也在约 30 天后（不是默认 12 小时）。
-        self.assertEqual(len(SESSIONS._sessions), 1)
-        session = next(iter(SESSIONS._sessions.values()))
-        remaining = session["expires"] - time.time()
+        rows = _sql("SELECT expires FROM sessions")
+        self.assertEqual(len(rows), 1)
+        remaining = rows[0][0] - time.time()
         self.assertGreater(remaining, 29 * 24 * 3600)
         self.assertLessEqual(remaining, 30 * 24 * 3600)
 
@@ -272,8 +298,9 @@ class TestRememberMe(Phase5eAuthTestCase):
         self.assertEqual(r.status_code, 200)
         cookie = r.headers.get("set-cookie", "")
         self.assertIn(f"Max-Age={12 * 3600}", cookie)
-        session = next(iter(SESSIONS._sessions.values()))
-        remaining = session["expires"] - time.time()
+        rows = _sql("SELECT expires FROM sessions")
+        self.assertEqual(len(rows), 1)
+        remaining = rows[0][0] - time.time()
         self.assertGreater(remaining, 11 * 3600)
         self.assertLessEqual(remaining, 12 * 3600)
 
@@ -369,7 +396,8 @@ class TestTelegramLoginApi(Phase5eAuthTestCase):
 
     def test_verify_expired_401(self):
         code_id, code = TELEGRAM_CODES.create()
-        TELEGRAM_CODES._codes[code_id]["expires"] = time.time() - 1
+        _sql("UPDATE telegram_codes SET expires=? WHERE code_id=?",
+             (time.time() - 1, code_id))
         r = self.client.post("/api/auth/telegram/verify",
                              json={"code_id": code_id, "code": code})
         self.assertEqual(r.status_code, 401)
@@ -417,7 +445,8 @@ class TestMagicLoginApi(Phase5eAuthTestCase):
         """发码失败时 token 随验证码一起作废（不留可用链接）。"""
         r = self.client.post("/api/auth/telegram/send-code", json={})
         self.assertEqual(r.status_code, 503)
-        self.assertEqual(MAGIC_LOGIN_TOKENS._tokens, {})
+        self.assertEqual(_sql("SELECT COUNT(*) FROM magic_tokens"),
+                         [(0,)])
 
     def test_magic_login_ok_creates_session(self):
         token = MAGIC_LOGIN_TOKENS.create()
@@ -445,7 +474,8 @@ class TestMagicLoginApi(Phase5eAuthTestCase):
 
     def test_magic_login_expired_401(self):
         token = MAGIC_LOGIN_TOKENS.create()
-        MAGIC_LOGIN_TOKENS._tokens[token] = time.time() - 1
+        _sql("UPDATE magic_tokens SET expires=? WHERE token=?",
+             (time.time() - 1, token))
         r = self.client.post("/api/auth/telegram/magic-login",
                              json={"token": token})
         self.assertEqual(r.status_code, 401)

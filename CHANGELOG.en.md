@@ -9,6 +9,19 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [2.12] - 2026-11-27
+
+- Telegram bot speedup (patch integration): instance-list single-flight (concurrent requests for the same account/region/language share one load) + VNIC query concurrency capped at 2; instance-detail 12s cache + single-flight; CPU-model SSH detection single-flight (one probe per instance) + max 2 concurrent + 60s cooldown after failure; in-flight loads started before a cache clear no longer write stale state back
+- IAM cloud-account management: new oci/iam.py (IAM user/API-key management, RSA key generation, one-click Bot API user creation); menu 8 can add ordinary users, create a Bot API user (api_user + Group_for_Api_used + Api_User_Policy), add an API key to a user (private key delivered once as a Telegram file), and reset a console password; deleting a user/key still blocks the API user/key the bot itself is using
+- Admin protection (new): OCI itself does not stop you deleting the last admin, so M_Bot now does — before deleting a user it checks the Administrators group and refuses when the target is its only member, telling you to add another admin first; checked both on the delete prompt and at final confirmation
+- Patch integration notes: the ChatGPT overlay patch (tgbot/handlers.py, tgbot/handlers_extra.py, oci/iam.py) was merged and adapted — fixed the patch's own test overwriting sys.modules['telegram'] (which broke full-suite discovery), the max_workers argument for attach_public_ips_bulk, test mocks for list_users/list_api_keys after the CLI-to-SDK switch, and the wait parameters in create_user; full suite 3223 tests pass
+
+## [2.11] - 2026-11-27
+
+- Multi-worker prerequisite unblocked: the 4 in-memory stores — sessions, login lockout, Telegram codes, and magic-login tokens — move together to SQLite (web/data/mbot_sessions.db, WAL mode, 0600), so login state, lockout, codes, and magic tokens are consistent across workers; public method signatures are unchanged and all 17 call sites are untouched; one-time code consumption and lockout counting use BEGIN IMMEDIATE transactions for atomicity (two workers verifying the same code at once: only one succeeds). New web/auth_store.py (AuthDB) plus 21 cross-worker tests; full suite 3216 tests pass; two-process live check: login on worker 1, then /api/auth/me on worker 2 returns 200; logout on worker 2, then worker 1 immediately returns 401; 5 wrong passwords on worker 1, then login on worker 2 returns 429
+- Behavior change: login sessions now survive a restart (previously in-memory and lost on restart); they still expire by TTL (default 12 hours, "remember me" 30 days) and logout revokes immediately; workers no longer clear sessions at startup because they would delete each other's live sessions
+- Enabling multi-worker: add --workers 4 to the ExecStart line of rbot-clone-web.service on .160 (the service file lives only on .160, not in the repo); 100/1000/10000-user load tests under 4 workers to be measured after deploy
+
 ## [2.10] - 2026-11-27
 
 - Forced-refresh slimming: every forced refresh rebuilt the OCI client, and private-key parsing (~0.39s per refresh, 61%) plus TLS/CA rebuild (~0.14s, 22%) dominated CPU. The web layer now caches and reuses OCIClient per profile+region (cleared for an account when that account is deleted), and fetches the instance list and VNIC attachment list in parallel. Forced-refresh CPU drops from ~1.01s to ~0.34s (-66%), wall time from ~2.69s to ~1.8s; everyday menu taps (cache hits) stay at ~0s
