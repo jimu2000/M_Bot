@@ -1,6 +1,6 @@
 # M_Bot Oracle开源管理面板
 
-> **当前版本：v2.14.5** · 更新记录见 [CHANGELOG.md](CHANGELOG.md)（[英文版 / English](CHANGELOG.en.md)）
+> **当前版本：v2.15.0** · 更新记录见 [CHANGELOG.md](CHANGELOG.md)（[英文版 / English](CHANGELOG.en.md)）
 
 [中文](#中文) | [English](#english)
 
@@ -16,7 +16,7 @@ M_Bot 是一个开源的 Oracle Cloud 管理面板：Telegram 机器人 + Web �
 
 **核心亮点：**
 
-- **安全与独立**：纯自研代码、3255 个单元测试；OCI 私钥只在本地做请求签名，不外传；免费功能全开，无付费墙。
+- **安全与独立**：纯自研代码、3268 个单元测试；OCI 私钥只在本地做请求签名，不外传；免费功能全开，无付费墙。
 - **多端协同**：Telegram 机器人 + FastAPI Web 面板 + MCP 协议接入，配置与通知（Telegram + Bark 加密推送）打通。
 - **省心运维**：终止实例默认连带删引导卷防扣费；RIPE Atlas 探针自动换被墙 IP；Let's Encrypt 域名与 IP 证书自动签发/续期。
 
@@ -354,10 +354,10 @@ python3 mcp_server.py
 
 ```bash
 python3 -m unittest discover -s tests -t .
-# Ran 3255 tests ... OK
+# Ran 3268 tests ... OK
 ```
 
-3255 个单元测试（mock 为主，写操作零次碰生产）。真实 API 验证记录见
+3268 个单元测试（mock 为主，写操作零次碰生产）。真实 API 验证记录见
 `docs/verification*.md`：只读操作对真实 OCI / Cloudflare API 实测通过；
 写操作（创建 / 换 IP / 升降配 / 扩容 / 释放等）在测试实例上真实跑通过。
 
@@ -371,7 +371,7 @@ M_Bot/
   clouds/       Cloudflare 客户端 + 其他云抽象接口与 stub
   mcp_server.py MCP 服务器（JSON-RPC over stdio）
   scripts/      部署脚本（原子升级）
-  tests/        单元测试（3255 个）
+  tests/        单元测试（3268 个）
   docs/         设计与验证文档
 ```
 
@@ -396,7 +396,7 @@ server. All code here is independently written, fully visible and auditable.
 
 **Highlights:**
 
-- **Secure and independent**: independently written code, 3255 unit tests; the OCI private key only signs requests locally and is never sent out; every free feature is open, no paywall.
+- **Secure and independent**: independently written code, 3268 unit tests; the OCI private key only signs requests locally and is never sent out; every free feature is open, no paywall.
 - **Multi-client**: Telegram bot + FastAPI web panel + MCP server, with shared config and notifications (Telegram + encrypted Bark push).
 - **Low-maintenance**: terminating an instance deletes its boot volume by default (no surprise charges); RIPE Atlas probes auto-swap a firewalled IP; Let's Encrypt domain and IP certificates are issued and renewed automatically.
 
@@ -786,10 +786,10 @@ For production, run both services under systemd — see `docs/deployment.md`
 
 ```bash
 python3 -m unittest discover -s tests -t .
-# Ran 3255 tests ... OK
+# Ran 3268 tests ... OK
 ```
 
-3255 unit tests (mostly mocked; write operations never touch production).
+3268 unit tests (mostly mocked; write operations never touch production).
 Real-API verification notes live in `docs/verification*.md`: read-only calls
 verified against the real OCI / Cloudflare APIs; write operations (create /
 change IP / resize / extend / terminate) verified for real on test instances.

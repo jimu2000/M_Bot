@@ -334,6 +334,7 @@ async def parse_profiles(config_text: str = Form(default=""),
                               status_code=400)
     pending_id = PENDING_PROFILES.create(new_profiles, cloudflare)
     items = []
+    renamed = []
     for entry in new_profiles:
         fields = entry["fields"]
         key_file = fields.get("key_file", "")
@@ -345,6 +346,9 @@ async def parse_profiles(config_text: str = Form(default=""),
             "key_file": key_file,
             "key_ready": bool(key_file) and os.path.exists(key_file),
         })
+        if entry.get("renamed_from"):
+            renamed.append({"from": entry["renamed_from"],
+                            "to": entry["profile"]})
     cf_info = None
     if cloudflare:
         email = cloudflare.get("email") or ""
@@ -354,7 +358,8 @@ async def parse_profiles(config_text: str = Form(default=""),
             "email_masked": mask_cf_email(email) if email else None,
         }
     return {"ok": True, "pending_id": pending_id, "profiles": items,
-            "skipped": skipped, "cloudflare": cf_info}
+            "skipped": skipped, "renamed": renamed,
+            "cloudflare": cf_info}
 
 
 @router.post("/api/profiles/commit")

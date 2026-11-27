@@ -13,8 +13,9 @@
   try {
     var t = localStorage.getItem("mbot-theme") || "classic";
     var m = localStorage.getItem("mbot-mode") || "light";
+    var fixed = { starry: "dark", forest: "dark", ocean: "dark", obsidian: "dark", sunset: "light", sakura: "light", mint: "light", ice: "light", desert: "light" };
     document.documentElement.setAttribute("data-theme", t);
-    document.documentElement.setAttribute("data-mode", t === "starry" ? "dark" : m);
+    document.documentElement.setAttribute("data-mode", fixed[t] || m);
   } catch (e) { /* 隐私模式下 localStorage 不可用时用默认主题 */ }
 })();
 </script>
@@ -72,8 +73,16 @@
   <select id="theme-select" data-i18n-title="app.theme" data-i18n-aria="app.theme" title="主题" aria-label="主题">
     <option value="classic" data-i18n="app.theme_classic">经典</option>
     <option value="starry" data-i18n="app.theme_starry">星夜</option>
+    <option value="forest" data-i18n="app.theme_forest">森林</option>
+    <option value="ocean" data-i18n="app.theme_ocean">海洋</option>
+    <option value="obsidian" data-i18n="app.theme_obsidian">曜石</option>
+    <option value="sunset" data-i18n="app.theme_sunset">落日</option>
+    <option value="sakura" data-i18n="app.theme_sakura">樱花</option>
+    <option value="mint" data-i18n="app.theme_mint">薄荷</option>
+    <option value="ice" data-i18n="app.theme_ice">冰蓝</option>
+    <option value="desert" data-i18n="app.theme_desert">沙漠</option>
   </select>
-  {# Light/dark switch (the starry theme is fixed dark; this button does nothing to it). 明暗切换（星夜主题固定暗色，此按钮对其不生效）。 #}
+  {# Light/dark switch (only the classic theme follows it; starry/forest/ocean/obsidian are fixed dark and sunset/sakura/mint/ice/desert fixed light). 明暗切换（只有经典主题跟随；星夜/森林/海洋/曜石固定暗色，落日/樱花/薄荷/冰蓝/沙漠固定亮色）。 #}
   <button type="button" class="icon-btn" id="mode-toggle" data-i18n-title="app.toggle_mode" data-i18n-aria="app.toggle_mode" title="切换明暗" aria-label="切换明暗">
     <svg id="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
     <svg id="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" hidden><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>

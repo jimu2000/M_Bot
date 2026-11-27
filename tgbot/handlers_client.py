@@ -918,6 +918,53 @@ def parse_oci_config_text(text):
     return result
 
 
+def _read_oci_config_sections(path):
+    """读一个 OCI config 文件，返回 {profile: {key: value}}。"""
+    if not path or not os.path.exists(path):
+        return {}
+    parser = configparser.ConfigParser(
+        default_section="__oci_no_defaults__", interpolation=None)
+    try:
+        parser.read(path, encoding="utf-8")
+    except configparser.Error:
+        return {}
+    return {section: {key: value.strip()
+                      for key, value in parser.items(section)}
+            for section in parser.sections()}
+
+
+def _existing_profile_identities():
+    """已配置账号的身份集合、名字集合与身份已知的名字集合。
+
+    身份是 (tenancy, user)——同一个租户/用户即使换了 profile 名
+    也是同一个账号；名字是 profile 名；身份已知指该段同时有
+    tenancy 与 user（缺其一时算不出身份）。三个配置文件都查。
+    """
+    identities = set()
+    names = set()
+    known_names = set()
+    for path in (OCI_CONFIG_PATH, OCI_CONFIG_LEGACY_PATH,
+                 OCI_CONFIG_SDK_PATH):
+        for profile, fields in _read_oci_config_sections(path).items():
+            names.add(profile)
+            tenancy = (fields.get("tenancy") or "").strip()
+            user = (fields.get("user") or "").strip()
+            if tenancy and user:
+                identities.add((tenancy, user))
+                known_names.add(profile)
+    return identities, names, known_names
+
+
+def _free_profile_name(base, taken):
+    """给已占用的 profile 名找一个空闲的新名：BASE_2、BASE_3……。"""
+    n = 2
+    while True:
+        candidate = f"{base}_{n}"
+        if candidate not in taken and PROFILE_NAME_RE.match(candidate):
+            return candidate
+        n += 1
+
+
 def profile_exists_in_config(profile, path=None):
     """OCI 配置文件里是否已有同名 profile。
 
@@ -954,7 +1001,7 @@ def _is_default_oci_config_target():
     用读结果比会误判为“不是默认 INI”而跳过同步，下次启动就从 conf
     重生成 INI、把刚加的账号丢掉。
     测试把 OCI_CONFIG_PATH 指到临时文件时不同步，避免测试数据写进
-    真实家目录或项目根目录的 M_bot_config.conf（2026-01-03 全量测试
+    真实家目录或项目根目录的 M_bot_config.conf（2026-11-26 全量测试
     曾因此把 ~/.oci/config 与 ~/M_bot_config.txt 写成假数据）。
     """
     try:
@@ -1195,26 +1242,49 @@ def maybe_copy_key_file(original, new_path):
 def prepare_oci_profiles(parsed):
     """把解析结果整理成待导入列表：过滤已存在、归一化 key_file。
 
+    去重按账号身份 (tenancy, user) 判：同一身份即使换了 profile 名
+    也是同一个账号，跳过；新账号撞了已有的 profile 名时自动改名
+    （BASE_2、BASE_3……），不丢账号，改名记录在 entry 的
+    renamed_from 里。
+
     返回 (new_profiles, skipped_existing, error_text)：
-    new_profiles 是 [{"profile", "fields", "original_key_file"}]；
-    skipped_existing 是已存在而跳过的 profile 名列表；
-    error_text 非空时表示整体失败（任一 profile 缺必填键）。
+    new_profiles 是 [{"profile", "fields", "original_key_file",
+    "renamed_from"}]；skipped_existing 是已存在而跳过的 profile
+    名列表；error_text 非空时表示整体失败（任一 profile 缺必填键）。
     """
     for entry in parsed["profiles"]:
         if entry["missing"]:
             missing = "、".join(entry["missing"])
             return [], [], (f"profile「{entry['profile']}」缺少必填键："
                             f"{missing}\n请补全后重新发送。")
+    identities, names, known_names = _existing_profile_identities()
+    taken = set(names)
     new_profiles = []
     skipped = []
     for entry in parsed["profiles"]:
         profile = entry["profile"]
-        if profile_exists_in_config(profile):
+        fields = entry["fields"]
+        tenancy = (fields.get("tenancy") or "").strip()
+        user = (fields.get("user") or "").strip()
+        if tenancy and user and (tenancy, user) in identities:
             skipped.append(profile)
             continue
-        fields, original = normalize_oci_key_file(profile, entry["fields"])
+        renamed_from = ""
+        if profile_exists_in_config(profile):
+            if profile in known_names:
+                # 已有同名账号且身份已知不同：是新账号，自动改名导入。
+                renamed_from = profile
+                profile = _free_profile_name(profile, taken)
+            else:
+                # 已有同名账号但算不出它是不是同一个（段不完整）：
+                # 保守起见按旧逻辑跳过，不造重复账号。
+                skipped.append(profile)
+                continue
+        taken.add(profile)
+        fields, original = normalize_oci_key_file(profile, fields)
         new_profiles.append({"profile": profile, "fields": fields,
-                             "original_key_file": original})
+                             "original_key_file": original,
+                             "renamed_from": renamed_from})
     return new_profiles, skipped, ""
 
 
@@ -1317,6 +1387,9 @@ def build_oci_profiles_confirm_text(profiles, skipped=None, cloudflare=None,
             user_tail = (fields.get("user") or "")[-4:]
             lines.append(f"{i}. {entry['profile']}"
                          f"（{fields.get('region')}）")
+            if entry.get("renamed_from"):
+                lines.append(f"   （原名「{entry['renamed_from']}」已存在，"
+                             f"已改名为「{entry['profile']}」）")
             lines.append(f"   用户：…{user_tail}")
             lines.append(f"   key_file：{fields.get('key_file')}")
             original = entry.get("original_key_file") or ""

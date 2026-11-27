@@ -345,10 +345,12 @@
   }
 
   /* ---------- 主题切换 ---------- */
+  /* Fixed themes and their forced mode (only classic follows the light/dark switch). 固定明暗的主题（只有经典主题跟随明暗切换）。 */
+  var FIXED_THEME_MODE = { starry: "dark", forest: "dark", ocean: "dark", obsidian: "dark", sunset: "light", sakura: "light", mint: "light", ice: "light", desert: "light" };
   function applyTheme(theme, mode) {
     var root = document.documentElement;
     root.setAttribute("data-theme", theme);
-    root.setAttribute("data-mode", theme === "starry" ? "dark" : mode);
+    root.setAttribute("data-mode", FIXED_THEME_MODE[theme] || mode);
     try {
       localStorage.setItem("mbot-theme", theme);
       localStorage.setItem("mbot-mode", mode);
@@ -448,8 +450,9 @@
     if (modeBtn) {
       updateModeIcon();
       modeBtn.addEventListener("click", function () {
-        if (currentTheme() === "starry") {
-          toast("星夜主题固定为暗色", "info");
+        var fixed = FIXED_THEME_MODE[currentTheme()];
+        if (fixed) {
+          toast(fixed === "dark" ? "该主题固定为暗色" : "该主题固定为亮色", "info");
           return;
         }
         applyTheme(currentTheme(), currentMode() === "dark" ? "light" : "dark");

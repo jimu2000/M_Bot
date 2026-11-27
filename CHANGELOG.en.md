@@ -9,6 +9,12 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [2.15.0] - 2026-11-27
+- Eight new panel themes: Forest (dark green), Ocean (dark blue), Obsidian (near-black dark), Sunset (warm light), Sakura (soft pink light), Mint (fresh green light), Ice (cool blue light), Desert (warm sand light). The classic theme stays and remains the default; switch from the theme dropdown in the top bar, and the choice is saved in localStorage across refreshes.
+- Only the classic theme follows the light/dark toggle; Starry / Forest / Ocean / Obsidian are fixed dark and Sunset / Sakura / Mint / Ice / Desert fixed light, and the toggle shows a "this theme is always dark / light" hint on those themes. Each new theme has a soft ambient glow (pure CSS gradients, no images).
+- Theme names are bilingual (Forest / Ocean / Obsidian / Sunset / Sakura / Mint / Ice / Desert); the login page stays on the classic dark look.
+- Fixed "uploading an API config is not recognized": when a pasted config used an already-taken profile name (e.g. [DEFAULT]), the old logic deduplicated by name only and dropped the new account as "all already exist". Deduplication now uses the account identity (tenancy + user): a different identity is a new account, auto-renamed (DEFAULT → DEFAULT_2) and imported, with the rename shown in both the panel and the bot; pasting the same identity under a different name is still skipped, so nothing is imported twice.
+
 ## [2.14.5] - 2026-11-27
 - IAM user list mobile UI rework: cards now use a header (username + status badge side by side) / email / three-button grid layout, with subtle tinted buttons (grey for key management, light blue for reset password, light red for delete), so nothing crowds together on narrow screens; toasts now float top-center instead of covering the bottom form and buttons.
 - **Bot user loses the manage users permission (operator's decision)**: `Allow group Group_for_Api_used to manage users in tenancy` was removed from Api_User_Policy on the real tenancy. api_user now has only instance / volume / virtual-network management and can no longer reset other users' passwords, delete users, or manage API keys; `create_bot_permission_user` no longer adds that statement (clicking "Create Bot User" again will not bring it back). IAM user management now goes through the admin profile only (panel DEFAULT). The permission notes in the bot and web panel were updated to match.

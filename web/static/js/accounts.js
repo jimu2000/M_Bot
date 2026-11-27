@@ -151,6 +151,11 @@
     if (data.skipped && data.skipped.length > 0) {
       notes.appendChild(el("div", "已存在，已跳过：" + data.skipped.join("、"), null));
     }
+    if (data.renamed && data.renamed.length > 0) {
+      data.renamed.forEach(function (r) {
+        notes.appendChild(el("div", "「" + r.from + "」已存在，已改名为「" + r.to + "」导入。", null));
+      });
+    }
     if (data.cloudflare && data.cloudflare.present) {
       var cfText = "配置含 [cloudflare] 段，将一并保存"
         + (data.cloudflare.has_token ? "（API Token）" : "")

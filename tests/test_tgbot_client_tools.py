@@ -767,6 +767,65 @@ class TestPrepareAndCommitProfiles(unittest.TestCase):
         self.assertEqual([p["profile"] for p in new], ["sg2"])
         self.assertEqual(new[0]["fields"]["key_file"], "/root/2.pem")
 
+    def _write_existing(self, profile, tenancy, user):
+        with open(self.target, "a", encoding="utf-8") as f:
+            f.write(f"[{profile}]\nuser = {user}\n"
+                    f"fingerprint = aa:bb\ntenancy = {tenancy}\n"
+                    "region = ap-singapore-1\nkey_file = /root/old.pem\n")
+
+    def _profile_text(self, profile, tenancy, user):
+        return (f"[{profile}]\nuser = {user}\nfingerprint = cc:dd\n"
+                f"tenancy = {tenancy}\nregion = ap-singapore-1\n"
+                "key_file = /root/new.pem\n")
+
+    def test_prepare_renames_new_account_with_colliding_name(self):
+        """新账号撞了已有的 profile 名时自动改名导入，不丢账号。"""
+        self._write_existing("DEFAULT",
+                             "ocid1.tenancy.oc1..tenancyA",
+                             "ocid1.user.oc1..userA")
+        with patch.dict(os.environ, {"HOME": "/root"}):
+            parsed = hc.parse_oci_config_text(self._profile_text(
+                "DEFAULT", "ocid1.tenancy.oc1..tenancyB",
+                "ocid1.user.oc1..userB"))
+            new, skipped, error = hc.prepare_oci_profiles(parsed)
+        self.assertEqual(error, "")
+        self.assertEqual(skipped, [])
+        self.assertEqual([p["profile"] for p in new], ["DEFAULT_2"])
+        self.assertEqual(new[0]["renamed_from"], "DEFAULT")
+        # key_file 已在家目录下时按原样保留（不随改名而改）。
+        self.assertEqual(new[0]["fields"]["key_file"], "/root/new.pem")
+
+    def test_prepare_rename_picks_next_free_suffix(self):
+        """DEFAULT 与 DEFAULT_2 都被占时，新账号改名为 DEFAULT_3。"""
+        self._write_existing("DEFAULT",
+                             "ocid1.tenancy.oc1..tenancyA",
+                             "ocid1.user.oc1..userA")
+        self._write_existing("DEFAULT_2",
+                             "ocid1.tenancy.oc1..tenancyC",
+                             "ocid1.user.oc1..userC")
+        with patch.dict(os.environ, {"HOME": "/root"}):
+            parsed = hc.parse_oci_config_text(self._profile_text(
+                "DEFAULT", "ocid1.tenancy.oc1..tenancyB",
+                "ocid1.user.oc1..userB"))
+            new, skipped, error = hc.prepare_oci_profiles(parsed)
+        self.assertEqual(error, "")
+        self.assertEqual([p["profile"] for p in new], ["DEFAULT_3"])
+        self.assertEqual(new[0]["renamed_from"], "DEFAULT")
+
+    def test_prepare_skips_same_identity_under_different_name(self):
+        """同一租户+用户换了 profile 名仍是同一个账号，跳过不重复导入。"""
+        self._write_existing("DEFAULT",
+                             "ocid1.tenancy.oc1..tenancyA",
+                             "ocid1.user.oc1..userA")
+        with patch.dict(os.environ, {"HOME": "/root"}):
+            parsed = hc.parse_oci_config_text(self._profile_text(
+                "OTHER", "ocid1.tenancy.oc1..tenancyA",
+                "ocid1.user.oc1..userA"))
+            new, skipped, error = hc.prepare_oci_profiles(parsed)
+        self.assertEqual(error, "")
+        self.assertEqual(new, [])
+        self.assertEqual(skipped, ["OTHER"])
+
     def test_prepare_missing_keys_error_names_profile(self):
         text = ("[GOOD]\nuser = ocid1.user.oc1..fake\n"
                 "fingerprint = aa:bb\ntenancy = ocid1.tenancy.oc1..fake\n"
@@ -822,7 +881,7 @@ class TestPrepareAndCommitProfiles(unittest.TestCase):
         self.assertTrue(hc.profile_exists_in_config("ZZ1", self.target))
 
     def test_append_skips_txt_sync_when_ini_target_is_temp(self):
-        """回归（2026-01-03）：INI 目标是临时文件时，append 不得同步
+        """回归（2026-11-26）：INI 目标是临时文件时，append 不得同步
         写统一配置文件（门控只在写默认 INI 时才同步）。"""
         tmp_conf = os.path.join(self._tmp.name, "M_bot_config.conf")
         with patch.dict(os.environ, {"HOME": self._tmp.name,
