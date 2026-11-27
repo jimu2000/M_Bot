@@ -167,24 +167,61 @@ def _resolve_compartment(profile_name, file_profiles, env_value=""):
     return (file_profiles.get(profile_name, {}) or {}).get("tenancy", "") or ""
 
 
+def _env_file_compartments():
+    """从 env 文件读 MBOT_COMPARTMENT_*（持久化状态，各 worker 一致）。
+
+    面板以多 worker 运行，各 worker 的 os.environ 是启动时的快照：
+    删账号只改了 env 文件 + 当次 worker 的 os.environ，其余 worker
+    的 os.environ 里还留着已删账号的 MBOT_COMPARTMENT_*，于是
+    _build_profiles() 会把已删账号加回来，列表里删不掉。
+    所以 compartment 一律以 env 文件为准；文件不存在/读不出时
+    返回 None，调用方回落到 os.environ（开发环境）。
+    返回 dict：profile 名 -> compartment OCID。
+    """
+    try:
+        with open(ENV_FILE, encoding="utf-8") as handle:
+            lines = handle.readlines()
+    except OSError:
+        return None
+    out = {}
+    for raw in lines:
+        line = raw.strip()
+        if not line.startswith("MBOT_COMPARTMENT_"):
+            continue
+        key, sep, value = line.partition("=")
+        if not sep:
+            continue
+        name = key[len("MBOT_COMPARTMENT_"):]
+        value = value.strip().strip("\"'")
+        if name and value:
+            out[name] = value
+    return out
+
+
 def _build_profiles():
     from oci.client import read_oci_config_profiles
     file_profiles = read_oci_config_profiles()
+    # compartment 来源：优先读 env 文件（持久化，各 worker 一致）；
+    # 文件不存在时回落到进程环境变量（开发环境）。
+    env_compartments = _env_file_compartments()
+    if env_compartments is None:
+        env_compartments = {
+            key[len("MBOT_COMPARTMENT_"):]: value
+            for key, value in os.environ.items()
+            if key.startswith("MBOT_COMPARTMENT_") and value
+        }
     profiles = {}
     # DEFAULT is always present: env first (a placeholder is invalid), otherwise derive from the config file's tenancy; when neither works, keep the placeholder (same as the old behavior; the caller reports a config error). DEFAULT 一定在：env 优先（占位符无效），否则从配置文件 tenancy 推导；都推不出来时留占位符（与旧行为一致，调用方会报配置错误）。
     default_comp = _resolve_compartment(
         "DEFAULT", file_profiles,
-        os.environ.get("MBOT_COMPARTMENT_DEFAULT", ""))
+        env_compartments.get("DEFAULT", ""))
     profiles["DEFAULT"] = {
         "region": file_profiles.get("DEFAULT", {}).get("region")
                   or LEGACY_PROFILE_REGIONS["DEFAULT"],
         "compartment_id": default_comp or PLACEHOLDER_COMPARTMENT_ID,
     }
     # Other accounts with an explicitly configured compartment in env. env 显式配了 compartment 的其他账号。
-    for key, value in sorted(os.environ.items()):
-        if not key.startswith("MBOT_COMPARTMENT_") or not value:
-            continue
-        name = key[len("MBOT_COMPARTMENT_"):]
+    for name, value in sorted(env_compartments.items()):
         if name == "DEFAULT":
             continue
         comp = _resolve_compartment(name, file_profiles, value)
@@ -216,8 +253,8 @@ PROFILES = _build_profiles()
 def reload_profiles():
     """重新读取账号表（删除账号后让面板列表立即更新，不用重启）。
 
-    只重读当前进程的环境变量与配置文件；机器人是独立进程，
-    仍需重启才生效。
+    从磁盘重读（oci_config + env 文件），各 worker 读到同一份
+    状态；机器人是独立进程，仍需重启才生效。
     """
     PROFILES.clear()
     PROFILES.update(_build_profiles())
@@ -293,7 +330,7 @@ def profile_display_name(name, region_count=None):
     """账号（profile）的显示名：主区中文名；订阅了多个区域时后缀（N 个区）。
 
     与 tgbot/config.py 的同名函数保持一致（机器人切换菜单与面板
-    下拉用同一套显示名；用户要求 2026-01-01：bot 改完的网页版也要
+    下拉用同一套显示名；用户要求 2026-11-24：bot 改完的网页版也要
     相应调整）。region_count 为 None 或 <=1 时不加后缀。
     同主区有多个账号时，非第一个加“·profile”后缀区分（如“新加坡·sg1”）。
     """

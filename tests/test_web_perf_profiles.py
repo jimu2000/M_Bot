@@ -148,7 +148,27 @@ class TestProfilesApi(_Base):
     """GET /api/profiles：账号列表接口。"""
 
     def test_list_profiles(self):
-        with patch("web.config.PROFILES", FAKE_PROFILES), \
+        # 列表每次从磁盘重读账号表（多 worker 下删账号不残留），所以
+        # 这里写临时 oci_config + env 文件，而不是 patch PROFILES。
+        config_path = os.path.join(self._tmp.name, "oci_config")
+        env_path = os.path.join(self._tmp.name, "test.env")
+        sections = []
+        env_lines = []
+        for name, cfg in FAKE_PROFILES.items():
+            sections.append(
+                "[%s]\nuser=ocid1.user.oc1..testuser\n"
+                "fingerprint=aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:"
+                "88:99\nkey_file=/tmp/fake-key.pem\ntenancy=%s\nregion=%s\n"
+                % (name, cfg["compartment_id"], cfg["region"]))
+            env_lines.append("MBOT_COMPARTMENT_%s=%s\n"
+                             % (name, cfg["compartment_id"]))
+        with open(config_path, "w", encoding="utf-8") as handle:
+            handle.write("\n".join(sections))
+        with open(env_path, "w", encoding="utf-8") as handle:
+            handle.write("".join(env_lines))
+        with patch.dict(os.environ,
+                        {"MBOT_OCI_CONFIG_FILE": config_path}), \
+                patch.object(config, "ENV_FILE", env_path), \
                 patch("web.routes.profiles.get_region_counts",
                       return_value={"DEFAULT": 3, "ACCOUNT2": 1}):
             resp = self.client.get("/api/profiles")
@@ -179,7 +199,7 @@ class TestProfilesApi(_Base):
 
     def test_profile_display_name(self):
         """账号显示名：主区中文名；多区账号后缀（N 个区），与机器人一致。"""
-        with patch("web.config.PROFILES", FAKE_PROFILES):
+        with patch("web.config.PROFILES", dict(FAKE_PROFILES)):
             self.assertEqual(config.profile_display_name("DEFAULT", 3),
                              "新加坡（3 个区）")
             self.assertEqual(config.profile_display_name("ACCOUNT2", 1),

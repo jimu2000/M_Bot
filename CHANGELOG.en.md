@@ -9,6 +9,9 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [2.16.1] - 2026-11-27
+- Fixed "account deleted from the config still shows in the list": the panel runs 4 workers, and each worker's in-memory account table and process environment are snapshots from startup — deleting an account only updated the env file plus the one worker that handled the request, while the other workers still kept the deleted account's `MBOT_COMPARTMENT_*`, so the list added it back on the next load. The account table now takes the env file as the source of truth (`_build_profiles` reads the env file instead of leftover process environment variables; it falls back to the environment when the file is absent), and the account-list endpoint re-reads from disk on every call instead of using a possibly stale worker's memory. The list updates right after a delete, no panel restart needed.
+
 ## [2.16.0] - 2026-11-27
 - The Refresh button on the Cloud Accounts page now actually reloads the config: one click re-reads /root/M_bot_config.conf, regenerates the OCI config and refreshes the account list, no panel restart needed; when accounts were added or removed it notes "the bot needs a restart to take effect" (the bot is a separate process and still needs a restart to see new accounts). After editing .conf to add a tenant, just hit Refresh instead of restarting the service.
 - Private-key upload was already in the account list: every account row has an "Upload key" button (showing "missing, upload needed" when the key is absent); pick a .pem and it is written to that account's key_file path; keys can also be uploaded per profile in the parse-confirm step.

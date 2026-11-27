@@ -108,7 +108,12 @@ class WebOciProfilesTestCase(unittest.TestCase):
         self._legacy_path = os.path.join(self._tmp.name, "legacy_config")
         self._env_path = os.path.join(self._tmp.name, "test.env")
         self._patchers = [
-            patch.dict(os.environ, {"HOME": self._home}),
+            patch.dict(os.environ, {
+                "HOME": self._home,
+                # list_profiles() 每次从磁盘重读账号表；让
+                # oci.client.resolve_oci_config_path() 也指到临时配置，
+                # 否则它会读到仓库真实的 oci_config。
+                "MBOT_OCI_CONFIG_FILE": self._config_path}),
             patch.object(hc, "OCI_CONFIG_PATH", self._config_path),
             patch.object(hc, "OCI_CONFIG_LEGACY_PATH", self._legacy_path),
             patch.object(hc, "OCI_CONFIG_SDK_PATH",
@@ -510,6 +515,32 @@ class WebOciProfilesTestCase(unittest.TestCase):
         self.assertNotIn("SECOND", names)
         self.assertIn("DEFAULT", names)
 
+    def test_list_profiles_ignores_stale_environ_after_delete(self):
+        """回归：删账号后列表不再出现（多 worker 下 os.environ 残留）。
+
+        删账号改了 env 文件 + oci_config，但别的 worker 的
+        os.environ 里还留着 MBOT_COMPARTMENT_SECOND；列表每次都
+        从磁盘重读，不应再出现 SECOND。
+        """
+        key_a = os.path.join(self._home, "a.pem")
+        key_b = os.path.join(self._home, "b.pem")
+        for key_path in (key_a, key_b):
+            with open(key_path, "wb") as handle:
+                handle.write(FAKE_PEM)
+        self._setup_profiles_for_delete([
+            ("DEFAULT", key_a, "ap-singapore-1"),
+            ("SECOND", key_b, "us-chicago-1")])
+        resp = self.client.delete("/api/profiles/SECOND")
+        self.assertEqual(resp.status_code, 200, resp.json())
+        # 模拟另一个 stale worker：os.environ 里又出现 SECOND
+        #（别的 worker 没 pop），但 env 文件与 oci_config 里已没有它。
+        with patch.dict(os.environ,
+                        {"MBOT_COMPARTMENT_SECOND": FAKE_TENANCY}):
+            listed = self.client.get("/api/profiles").json()
+        names = [p["name"] for p in listed["profiles"]]
+        self.assertNotIn("SECOND", names)
+        self.assertIn("DEFAULT", names)
+
     def test_delete_profile_shared_key_kept(self):
         shared = os.path.join(self._home, "shared.pem")
         with open(shared, "wb") as handle:
@@ -604,17 +635,30 @@ class WebOciProfilesTestCase(unittest.TestCase):
         fake_mbot = MagicMock()
         before = {"DEFAULT": {"region": "ap-singapore-1",
                               "compartment_id": FAKE_TENANCY}}
-        after = dict(before)
-        after["NEWACC"] = {"region": "ap-singapore-1",
-                           "compartment_id": FAKE_TENANCY_2}
         saved = dict(web_config.PROFILES)
         web_config.PROFILES.clear()
         web_config.PROFILES.update(before)
         self.addCleanup(lambda: (web_config.PROFILES.clear(),
                                  web_config.PROFILES.update(saved)))
-        with patch.object(web_config, "mbot_config", fake_mbot), \
-                patch.object(web_config, "_build_profiles",
-                             return_value=after):
+        # 列表每次从磁盘重读，所以新增账号要写进临时配置文件 + env
+        # 文件（模拟 bootstrap 已重生成 oci_config），而不是 mock
+        # _build_profiles。
+        config_text = (
+            "[DEFAULT]\nuser=%s\nfingerprint=%s\n"
+            "key_file=/root/default.pem\ntenancy=%s\n"
+            "region=ap-singapore-1\n"
+            "[NEWACC]\nuser=%s\nfingerprint=%s\n"
+            "key_file=/root/newacc.pem\ntenancy=%s\n"
+            "region=ap-singapore-1\n"
+            % (FAKE_USER, FAKE_FINGERPRINT, FAKE_TENANCY,
+               FAKE_USER, FAKE_FINGERPRINT, FAKE_TENANCY_2))
+        with open(self._config_path, "w", encoding="utf-8") as handle:
+            handle.write(config_text)
+        with open(self._env_path, "w", encoding="utf-8") as handle:
+            handle.write("MBOT_COMPARTMENT_DEFAULT=%s\n"
+                         "MBOT_COMPARTMENT_NEWACC=%s\n"
+                         % (FAKE_TENANCY, FAKE_TENANCY_2))
+        with patch.object(web_config, "mbot_config", fake_mbot):
             resp = self.client.post("/api/profiles/refresh")
         data = resp.json()
         self.assertEqual(resp.status_code, 200, data)

@@ -176,12 +176,18 @@ def _ordered_regions(name, home_region, codes):
 @router.get("/api/profiles")
 def list_profiles(username: str = Depends(get_current_user)):
     """列出已配置的账号（profile）：名字、区域、区域中文名、订阅区数、
-    订阅区域列表、显示名、私钥路径与私钥是否就位。"""
+    订阅区域列表、显示名、私钥路径与私钥是否就位。
+
+    每次都先从磁盘重读账号表：面板多 worker 运行，各 worker 的
+    内存账号表可能过期（删账号只更新了当次 worker），不重读会
+    把已删账号又显示出来。
+    """
     if demo_data.is_demo():
         # Demo mode: simulated tenants, no OCI calls (no region-subscription
         # lookup, no key_file check). 演示模式：模拟租户，不调 OCI
         # （不查订阅区域、不查私钥）。
         return demo_data.demo_profile_list()
+    config.reload_profiles()
     counts = get_region_counts()
     regions = get_profile_regions()
     key_files = _configured_key_files()

@@ -7,6 +7,7 @@ bot 端（tgbot/config.py）与网页端（web/config.py）行为一致。
 
 import os
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -121,6 +122,67 @@ class TestBotProfiles(ProfilesTestMixin, unittest.TestCase):
 
 class TestWebProfiles(ProfilesTestMixin, unittest.TestCase):
     module = web_config
+
+
+class TestWebProfilesEnvFile(unittest.TestCase):
+    """网页端 _build_profiles 以 env 文件为准（多 worker 一致）。
+
+    回归：删账号只改了 env 文件 + 当次 worker 的 os.environ，其余
+    worker 的 os.environ 里还留着已删账号的 MBOT_COMPARTMENT_*，
+    于是 _build_profiles() 会把已删账号加回来，列表里删不掉。
+    """
+
+    def _build_with_env_file(self, env_file_text, environ,
+                             file_profiles):
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8",
+                                       delete=False) as handle:
+            handle.write(env_file_text)
+            env_path = handle.name
+        try:
+            with patch.object(web_config, "ENV_FILE", env_path), \
+                    patch.dict(os.environ, environ, clear=True), \
+                    patch("oci.client.read_oci_config_profiles",
+                          return_value=file_profiles):
+                return web_config._build_profiles()
+        finally:
+            os.unlink(env_path)
+
+    def test_stale_environ_var_ignored_when_not_in_env_file(self):
+        # env 文件里只有 DEFAULT；os.environ 里还留着 SECOND
+        #（stale worker）。SECOND 不应出现。
+        profiles = self._build_with_env_file(
+            "MBOT_COMPARTMENT_DEFAULT=ocid1.tenancy.oc1..fake-default\n",
+            {"MBOT_COMPARTMENT_DEFAULT":
+                "ocid1.tenancy.oc1..fake-default",
+             "MBOT_COMPARTMENT_SECOND": "ocid1.tenancy.oc1..fake2"},
+            FAKE_FILE_PROFILES)
+        self.assertIn("DEFAULT", profiles)
+        self.assertNotIn("SECOND", profiles)
+
+    def test_env_file_profile_present_without_environ(self):
+        # env 文件里有 SECOND，os.environ 里没有：应出现（文件为准）。
+        profiles = self._build_with_env_file(
+            "MBOT_COMPARTMENT_DEFAULT=ocid1.tenancy.oc1..fake-default\n"
+            "MBOT_COMPARTMENT_SECOND=ocid1.tenancy.oc1..fake2\n",
+            {"MBOT_COMPARTMENT_DEFAULT":
+                "ocid1.tenancy.oc1..fake-default"},
+            FAKE_FILE_PROFILES)
+        self.assertIn("SECOND", profiles)
+        self.assertEqual(profiles["SECOND"]["compartment_id"],
+                         "ocid1.tenancy.oc1..fake2")
+
+    def test_missing_env_file_falls_back_to_environ(self):
+        # env 文件不存在时回落到 os.environ（开发环境）。
+        with patch.object(web_config, "ENV_FILE",
+                          "/nonexistent-dir-xyz/test.env"), \
+                patch.dict(os.environ,
+                           {"MBOT_COMPARTMENT_SECOND":
+                               "ocid1.tenancy.oc1..fake2"},
+                           clear=True), \
+                patch("oci.client.read_oci_config_profiles",
+                      return_value=FAKE_FILE_PROFILES):
+            profiles = web_config._build_profiles()
+        self.assertIn("SECOND", profiles)
 
 
 class DisplayNameTestMixin:
