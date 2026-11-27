@@ -11,7 +11,7 @@ import os
 import sys
 import tempfile
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -20,18 +20,23 @@ from oci.iam import (
     add_user_to_group,
     create_user,
     create_or_reset_ui_password,
+    create_user_in_admin_group,
     delete_api_key,
     delete_user,
     get_group_id_by_name,
     get_profile_user_id,
     list_api_keys,
     update_user,
+    upload_api_key,
 )
 
 # Placeholders (no real OCID in tests). 占位符（测试里不出现真实 OCID）。
 FAKE_USER = "ocid1.user.oc1..xxxxxxxx"
 FAKE_USER2 = "ocid1.user.oc1..yyyyyyyy"
 FAKE_FP = "aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99"
+FAKE_PUBLIC_PEM = ("-----BEGIN PUBLIC KEY-----\n"
+                   "ZmFrZS1wdWJsaWMta2V5LWNvbnRlbnQ=\n"
+                   "-----END PUBLIC KEY-----\n")
 
 
 def _mock_cli(return_value):
@@ -143,6 +148,81 @@ class TestDeleteApiKey(unittest.TestCase):
         cli = _mock_cli(None)
         with self.assertRaises(ValueError):
             delete_api_key(cli, FAKE_USER, "")
+        cli.run.assert_not_called()
+
+
+class TestUploadApiKey(unittest.TestCase):
+    def _mock_cli_ok(self):
+        cli = _mock_cli({"data": {"fingerprint": FAKE_FP,
+                                  "lifecycle-state": "ACTIVE"}})
+        cli.sdk_list_api_keys.return_value = []
+        return cli
+
+    def test_upload_success(self):
+        cli = self._mock_cli_ok()
+        with patch("oci.iam.subprocess") as mock_subprocess:
+            mock_subprocess.run.return_value = MagicMock(returncode=0)
+            result = upload_api_key(cli, FAKE_USER, FAKE_PUBLIC_PEM)
+        self.assertEqual(result["fingerprint"], FAKE_FP)
+        self.assertEqual(result["lifecycle_state"], "ACTIVE")
+        cli.sdk_list_api_keys.assert_called_once_with(FAKE_USER)
+        mock_subprocess.run.assert_called_once()
+        openssl_args = mock_subprocess.run.call_args[0][0]
+        self.assertEqual(openssl_args[:3], ["openssl", "pkey", "-pubin"])
+        cli.run.assert_called_once()
+        cmd = cli.run.call_args[0][0]
+        self.assertEqual(cmd[:4],
+                         ["iam", "user", "api-key", "upload"])
+        self.assertIn("--user-id", cmd)
+        self.assertIn(FAKE_USER, cmd)
+        self.assertIn("--key-file", cmd)
+        key_file = cmd[cmd.index("--key-file") + 1]
+        self.assertTrue(key_file.endswith(".pem"))
+
+    def test_rejects_non_pem(self):
+        cli = self._mock_cli_ok()
+        with self.assertRaises(ValueError):
+            upload_api_key(cli, FAKE_USER, "not a pem")
+        cli.run.assert_not_called()
+        cli.sdk_list_api_keys.assert_not_called()
+
+    def test_rejects_missing_end(self):
+        cli = self._mock_cli_ok()
+        pem = ("-----BEGIN PUBLIC KEY-----\n"
+               "ZmFrZS1wdWJsaWMta2V5LWNvbnRlbnQ=\n")
+        with self.assertRaises(ValueError):
+            upload_api_key(cli, FAKE_USER, pem)
+        cli.run.assert_not_called()
+
+    def test_rejects_key_limit(self):
+        cli = _mock_cli(None)
+        cli.sdk_list_api_keys.return_value = [
+            {"fingerprint": "aa:11"}, {"fingerprint": "bb:22"},
+            {"fingerprint": "cc:33"}]
+        with self.assertRaises(ValueError):
+            upload_api_key(cli, FAKE_USER, FAKE_PUBLIC_PEM)
+        cli.run.assert_not_called()
+
+    def test_rejects_invalid_public_key(self):
+        cli = self._mock_cli_ok()
+        with patch("oci.iam.subprocess") as mock_subprocess:
+            mock_subprocess.run.return_value = MagicMock(returncode=1)
+            with self.assertRaises(ValueError):
+                upload_api_key(cli, FAKE_USER, FAKE_PUBLIC_PEM)
+        cli.run.assert_not_called()
+
+    def test_missing_fingerprint_raises(self):
+        cli = _mock_cli({"data": {"lifecycle-state": "ACTIVE"}})
+        cli.sdk_list_api_keys.return_value = []
+        with patch("oci.iam.subprocess") as mock_subprocess:
+            mock_subprocess.run.return_value = MagicMock(returncode=0)
+            with self.assertRaises(RuntimeError):
+                upload_api_key(cli, FAKE_USER, FAKE_PUBLIC_PEM)
+
+    def test_empty_user_id_rejected(self):
+        cli = self._mock_cli_ok()
+        with self.assertRaises(ValueError):
+            upload_api_key(cli, "", FAKE_PUBLIC_PEM)
         cli.run.assert_not_called()
 
 
@@ -259,6 +339,66 @@ class TestGroupHelpers(unittest.TestCase):
         cli.run.assert_called_once_with(
             ["iam", "group", "add-user", "--user-id", FAKE_USER,
              "--group-id", "ocid1.group.oc1..bbbb"])
+
+
+class TestCreateUserInAdminGroup(unittest.TestCase):
+    """create_user_in_admin_group：建用户并加进 Administrators 组。"""
+
+    def _cli_with_groups(self, groups, create_result=None):
+        cli = _mock_cli(create_result or
+                        {"data": {"id": FAKE_USER, "name": "alice",
+                                  "email": "alice@example.com"}})
+        cli.sdk_list_groups.return_value = groups
+        return cli
+
+    def test_creates_user_and_adds_to_admin_group(self):
+        cli = self._cli_with_groups([
+            {"id": "ocid1.group.oc1..bbbb", "name": "Administrators"},
+        ])
+        cli.run.side_effect = [
+            {"data": {"id": FAKE_USER, "name": "alice",
+                      "email": "alice@example.com"}},
+            {"data": {}},
+        ]
+        result = create_user_in_admin_group(
+            cli, "ocid1.tenancy.oc1..xxxx", "alice", "alice@example.com")
+        self.assertEqual(result["user"]["name"], "alice")
+        self.assertEqual(result["group_id"], "ocid1.group.oc1..bbbb")
+        self.assertIsNone(result["group_error"])
+        # 两次 cli.run：先建用户，再加进 Administrators 组。
+        self.assertEqual(cli.run.call_count, 2)
+        add_call = cli.run.call_args_list[1]
+        self.assertEqual(add_call.args[0],
+                         ["iam", "group", "add-user",
+                          "--user-id", FAKE_USER,
+                          "--group-id", "ocid1.group.oc1..bbbb"])
+
+    def test_group_not_found_user_still_created(self):
+        cli = self._cli_with_groups([
+            {"id": "ocid1.group.oc1..aaaa", "name": "Other"},
+        ])
+        result = create_user_in_admin_group(
+            cli, "ocid1.tenancy.oc1..xxxx", "alice", "alice@example.com")
+        self.assertEqual(result["user"]["name"], "alice")
+        self.assertIsNone(result["group_id"])
+        self.assertIn("Administrators", result["group_error"])
+        # 只调了一次 cli.run（建用户），没调加组。
+        self.assertEqual(cli.run.call_count, 1)
+
+    def test_group_add_failure_user_still_created(self):
+        cli = self._cli_with_groups([
+            {"id": "ocid1.group.oc1..bbbb", "name": "Administrators"},
+        ])
+        cli.run.side_effect = [
+            {"data": {"id": FAKE_USER, "name": "alice",
+                      "email": "alice@example.com"}},
+            RuntimeError("group add failed"),
+        ]
+        result = create_user_in_admin_group(
+            cli, "ocid1.tenancy.oc1..xxxx", "alice", "alice@example.com")
+        self.assertEqual(result["user"]["name"], "alice")
+        self.assertIsNone(result["group_id"])
+        self.assertIn("group add failed", result["group_error"])
 
 
 if __name__ == "__main__":

@@ -20,6 +20,37 @@
 
   /* ---------- 已配置账号 ---------- */
 
+  /* 刷新：重读 /root/M_bot_config.conf 并重生成 OCI 配置，不用重启面板；
+   * 账号有增减时机器人仍需重启才生效（响应里会提示）。 */
+  async function refreshAccounts() {
+    var btn = document.getElementById("btn-refresh-accounts");
+    btn.disabled = true;
+    try {
+      var res = await fetch("/api/profiles/refresh",
+        { method: "POST", credentials: "same-origin" });
+      var data = await res.json();
+      if (!data.ok) throw new Error(apiError(data, "刷新失败"));
+      loadAccounts();
+      var msg = "已重新读取配置，共 " + data.count + " 个账号";
+      if (data.added && data.added.length > 0) {
+        msg += "，新增：" + data.added.join("、");
+      }
+      if (data.removed && data.removed.length > 0) {
+        msg += "，移除：" + data.removed.join("、");
+      }
+      if (data.bot_restart_needed) {
+        msg += "；机器人需重启后生效。";
+      } else {
+        msg += "。";
+      }
+      MBot.toast(msg);
+    } catch (err) {
+      MBot.toast("刷新失败：" + (err.message || err));
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
   async function loadAccounts() {
     var box = document.getElementById("accounts-list");
     box.textContent = "加载中…";
@@ -448,7 +479,12 @@
       });
       var data = await res.json();
       if (!data.ok) throw new Error(apiError(data, "新增用户失败"));
-      MBot.toast("用户 " + name + " 已创建。");
+      if (data.group_error) {
+        MBot.toast("用户 " + name + " 已创建，但加进 Administrators 组失败："
+          + data.group_error + "。请在控制台手动加组。", "error");
+      } else {
+        MBot.toast("用户 " + name + " 已创建并加进 Administrators 组（最高管理权限）。");
+      }
       document.getElementById("iam-new-name").value = "";
       document.getElementById("iam-new-email").value = "";
       document.getElementById("iam-new-desc").value = "";
@@ -520,9 +556,69 @@
       addBtn.style.marginTop = "12px";
       addBtn.addEventListener("click", function () { addUserKey(userId, userName); });
       box.appendChild(addBtn);
+      var uploadBtn = el("button", "粘贴公钥添加", "btn");
+      uploadBtn.type = "button";
+      uploadBtn.style.marginTop = "12px";
+      uploadBtn.style.marginLeft = "8px";
+      uploadBtn.addEventListener("click", function () { uploadUserKey(userId, userName); });
+      box.appendChild(uploadBtn);
     } catch (err) {
       box.appendChild(el("div", "加载失败：" + (err.message || err), null));
     }
+  }
+
+  /* 粘贴公钥 / 选择公钥文件添加 API Key（不生成新密钥对）。 */
+  function uploadUserKey(userId, userName) {
+    var box = iamOnceHtml();
+    box.appendChild(el("div", "给用户「" + userName + "」添加已有公钥的 API Key（对应控制台“粘贴公共密钥 / 选择公共密钥文件”）：", null));
+    var ta = document.createElement("textarea");
+    ta.rows = 6;
+    ta.style.width = "100%";
+    ta.style.marginTop = "8px";
+    ta.style.fontFamily = "monospace";
+    ta.placeholder = "-----BEGIN PUBLIC KEY-----\n……\n-----END PUBLIC KEY-----";
+    box.appendChild(ta);
+    var fileRow = document.createElement("div");
+    fileRow.style.marginTop = "8px";
+    var fileLabel = el("span", "或选择公钥文件：", null);
+    fileRow.appendChild(fileLabel);
+    var fileInput = document.createElement("input");
+    fileInput.type = "file";
+    fileInput.accept = ".pem,.pub,.txt";
+    fileInput.style.marginLeft = "8px";
+    fileInput.addEventListener("change", function () {
+      var f = fileInput.files && fileInput.files[0];
+      if (!f) return;
+      var reader = new FileReader();
+      reader.onload = function () { ta.value = reader.result || ""; };
+      reader.readAsText(f);
+    });
+    fileRow.appendChild(fileInput);
+    box.appendChild(fileRow);
+    var okBtn = el("button", "上传公钥", "btn btn-primary");
+    okBtn.type = "button";
+    okBtn.style.marginTop = "12px";
+    okBtn.addEventListener("click", async function () {
+      var pem = ta.value.trim();
+      if (!pem) {
+        MBot.toast("请先粘贴公钥或选择一个公钥文件。");
+        return;
+      }
+      try {
+        var res = await fetch("/api/iam/users/" + encodeURIComponent(userId) + "/keys/upload", {
+          method: "POST", credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ profile: iamProfile, public_key: pem }),
+        });
+        var data = await res.json();
+        if (!data.ok) throw new Error(apiError(data, "添加 API Key 失败"));
+        MBot.toast("API Key 已添加，指纹：" + (data.key && data.key.fingerprint || "?") + "。");
+        showUserKeys(userId, userName);
+      } catch (err) {
+        MBot.toast(err.message || err, "error");
+      }
+    });
+    box.appendChild(okBtn);
   }
 
   async function addUserKey(userId, userName) {
@@ -608,7 +704,7 @@
 
   /* ---------- 初始化 ---------- */
 
-  document.getElementById("btn-refresh-accounts").addEventListener("click", loadAccounts);
+  document.getElementById("btn-refresh-accounts").addEventListener("click", refreshAccounts);
   document.getElementById("iam-profile").addEventListener("change", function (e) {
     iamProfile = e.target.value;
     loadIamUsers();

@@ -260,6 +260,7 @@ from oci.iam import (
     create_bot_permission_user,
     create_or_reset_ui_password,
     create_user,
+    create_user_in_admin_group,
     delete_api_key,
     delete_user,
     get_group_id_by_name,
@@ -269,6 +270,7 @@ from oci.iam import (
     is_last_admin,
     list_api_keys,
     update_user,
+    upload_api_key,
 )
 from oci.instance import (
     MAX_DISPLAY_NAME_LEN,
@@ -4146,9 +4148,10 @@ def _user_detail_keyboard(idx):
          InlineKeyboardButton("📧 改邮箱", callback_data=f"u:email:{idx}")],
         [InlineKeyboardButton("🔑 API 密钥", callback_data=f"u:keys:{idx}"),
          InlineKeyboardButton("➕ 新增 API Key", callback_data=f"u:addkey:{idx}")],
-        [InlineKeyboardButton("🔐 重置控制台密码", callback_data=f"u:resetpwd:{idx}"),
-         InlineKeyboardButton("🗑️ 删除用户", callback_data=f"u:del:{idx}")],
-        [InlineKeyboardButton("◀ 返回云账户", callback_data="u:list")],
+        [InlineKeyboardButton("📋 粘贴公钥添加", callback_data=f"u:uploadkey:{idx}"),
+         InlineKeyboardButton("🔐 重置控制台密码", callback_data=f"u:resetpwd:{idx}")],
+        [InlineKeyboardButton("🗑️ 删除用户", callback_data=f"u:del:{idx}"),
+         InlineKeyboardButton("◀ 返回云账户", callback_data="u:list")],
     ])
 
 
@@ -4214,6 +4217,16 @@ async def user_callback(update, context):
                      "会生成新的 RSA 私钥并上传公钥；旧密钥不会删除。",
                      reply_markup=confirm_keyboard("createapikey", idx,
                                                    "🔑 确认新增 API Key"))
+        return
+    if action == "uploadkey":
+        context.user_data["pending_input"] = {"kind": "upload_key",
+                                              "idx": idx}
+        await _reply_prompt(
+            update, context,
+            f"📋 请回复这条消息，粘贴用户「{user.get('name', '?')}」的 RSA 公钥"
+            "（PEM 格式，以 -----BEGIN PUBLIC KEY----- 开头）：\n"
+            "（直接发文字即可，不用加任何命令；已有密钥对的公钥可直接粘贴，"
+            "不会生成新私钥）")
         return
     if action == "resetpwd":
         await _reply(update, context,
@@ -5739,6 +5752,26 @@ async def text_input_callback(update, context):
                          reply_markup=confirm_keyboard(
                              "useremail", pending.get("idx"), "✅ 确认修改"))
             return
+        if kind == "upload_key":
+            # 粘贴公钥添加 API Key：直接上传已有 RSA 公钥，不生成新私钥。
+            pem = (text or "").strip()
+            if not pem.startswith("-----BEGIN PUBLIC KEY-----"):
+                await _reply(update, context,
+                             "❌ 公钥格式不对：必须是 PEM 格式的 RSA 公钥，"
+                             "以 -----BEGIN PUBLIC KEY----- 开头。添加已取消，"
+                             "请重新点“粘贴公钥添加”并发送正确的公钥。")
+                return
+            try:
+                key = await run_sync(upload_api_key, _get_iam_cli(context),
+                                     user.get("id"), pem)
+            except Exception as exc:  # noqa: BLE001
+                await _reply(update, context, fmt_error(exc))
+                return
+            await _reply(update, context,
+                         f"✅ 已为用户「{name}」添加 API Key（已有公钥）。\n"
+                         f"Fingerprint：`{key.get('fingerprint', '?')}`\n"
+                         f"API Key 状态：{key.get('lifecycle_state', 'CREATING')}")
+            return
         # deluser: the input must match the username exactly, otherwise cancel. deluser：输入必须与用户名完全一致，否则取消。
         if text != name:
             await _reply(update, context,
@@ -6747,15 +6780,26 @@ async def _handle_confirm_inner(action, idx, update, context):
             await _reply(update, context, "普通用户创建信息已过期，请重新操作。")
             return True
         try:
-            user = await run_sync(create_user, _get_iam_cli(context),
-                                  _get_iam_tenancy_id(context), name, email,
-                                  "Created by M_Bot")
+            result = await run_sync(create_user_in_admin_group,
+                                    _get_iam_cli(context),
+                                    _get_iam_tenancy_id(context), name,
+                                    email, "Created by M_Bot")
         except Exception as exc:  # noqa: BLE001
             await _reply(update, context, fmt_error(exc))
             return True
-        await _reply(update, context,
-                     f"✅ 普通 IAM 用户「{name}」已创建。\n邮箱：{email}\n"
-                     "该用户尚未加入任何管理组，也未设置控制台密码。")
+        user = (result or {}).get("user") or {}
+        group_error = (result or {}).get("group_error")
+        if group_error:
+            await _reply(update, context,
+                         f"⚠️ 用户「{name}」已创建，但加进 Administrators 组"
+                         f"失败（{group_error}），目前无权限。请在控制台"
+                         "手动加组。")
+        else:
+            await _reply(update, context,
+                         f"✅ 用户「{name}」已创建并加进 Administrators 组，"
+                         "拥有最高管理权限。\n邮箱："
+                         f"{email}\n该用户尚未设置控制台密码，如需登录请"
+                         "重置临时密码。")
         return True
 
     if action == "resetpwd":

@@ -6,18 +6,18 @@
 <div class="page-head">
   <h1>云账户</h1>
   <div class="spacer"></div>
-  <button type="button" class="btn" id="btn-refresh-accounts">↻ 刷新</button>
+  <button type="button" class="btn" id="btn-refresh-accounts" title="重新读取 /root/M_bot_config.conf 并刷新账号列表，不用重启面板">↻ 刷新</button>
 </div>
 
 <div class="card" style="margin-bottom: 16px;">
   <strong>已配置账号</strong>
-  <p style="color: var(--text-muted); margin: 8px 0 0;">私钥缺失的账号可直接在这里上传 .pem（写到配置里的 key_file 路径）；多账号共用同一私钥时，传一次就全好了。</p>
+  <p style="color: var(--text-muted); margin: 8px 0 0;">私钥缺失的账号可直接在这里上传 .pem（写到配置里的 key_file 路径）；多账号共用同一私钥时，传一次就全好了。直接改了 /root/M_bot_config.conf 后点右上角“刷新”即可认到新账号，不用重启面板（机器人需重启后生效）。</p>
   <div id="accounts-list" style="margin-top: 12px; color: var(--text-muted);">加载中…</div>
 </div>
 
 <div class="card iam-card" style="margin-bottom: 16px;">
   <strong>IAM 用户管理</strong>
-  <p style="color: var(--text-muted); margin: 8px 0 0;">管理该账号租户下的 IAM 用户（与机器人菜单 8 相同功能）：新增用户、创建 Bot 专用 API 用户、新增 API Key、重置控制台密码、删除用户。删用户时禁删当前账号正在用的 API 用户与 Administrators 组最后一个管理员。</p>
+  <p style="color: var(--text-muted); margin: 8px 0 0;">管理该账号租户下的 IAM 用户（与机器人菜单 8 相同功能）：新增用户、创建 Bot 专用 API 用户、新增 API Key、重置控制台密码、删除用户。新增用户会直接加进 Administrators 组（最高管理权限），不再是无权限的空账号。删用户时禁删当前账号正在用的 API 用户与 Administrators 组最后一个管理员。</p>
   <div style="margin-top: 12px; display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end;">
     <label style="color: var(--text-muted);">账号
       <select id="iam-profile" style="min-width: 160px;"></select>

@@ -50,6 +50,10 @@ FAKE_PEM = ("-----BEGIN PRIVATE KEY-----\n"
             "ZmFrZS1rZXktY29udGVudA==\n"
             "-----END PRIVATE KEY-----\n")
 
+FAKE_PUBLIC_PEM = ("-----BEGIN PUBLIC KEY-----\n"
+                   "ZmFrZS1wdWJsaWMta2V5LWNvbnRlbnQ=\n"
+                   "-----END PUBLIC KEY-----\n")
+
 
 class IamApiTestCase(unittest.TestCase):
     """IAM API 测试基类：建 app、登录、mock OCI/IAM。"""
@@ -128,16 +132,37 @@ class TestCreateUser(IamApiTestCase):
     def test_create_user(self):
         created = dict(FAKE_USERS[0], name="carol",
                        email="carol@example.com")
-        with patch.object(iam_routes, "create_user",
-                          return_value=created) as mock_create:
+        with patch.object(
+                iam_routes, "create_user_in_admin_group",
+                return_value={"user": created,
+                              "group_id": "ocid1.group.oc1..bbbb",
+                              "group_error": None}) as mock_create:
             resp = self.client.post("/api/iam/users", json={
                 "profile": "DEFAULT", "name": "carol",
                 "email": "carol@example.com", "description": "test"})
         self.assertEqual(resp.status_code, 200)
         self.assertTrue(resp.json()["ok"])
         self.assertEqual(resp.json()["user"]["name"], "carol")
+        # 新用户加进 Administrators 组（最高管理权限）。
+        self.assertTrue(resp.json()["admin_group"])
         mock_create.assert_called_once_with(
             self.cli, FAKE_TENANCY, "carol", "carol@example.com", "test")
+
+    def test_create_user_group_add_failed_still_returns_user(self):
+        """加组失败时用户已创建，响应带 group_error 如实说明。"""
+        created = dict(FAKE_USERS[0], name="carol",
+                       email="carol@example.com")
+        with patch.object(
+                iam_routes, "create_user_in_admin_group",
+                return_value={"user": created, "group_id": None,
+                              "group_error": "租户下找不到 Administrators 组"}):
+            resp = self.client.post("/api/iam/users", json={
+                "profile": "DEFAULT", "name": "carol",
+                "email": "carol@example.com", "description": "test"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.json()["ok"])
+        self.assertFalse(resp.json()["admin_group"])
+        self.assertIn("Administrators", resp.json()["group_error"])
 
     def test_create_user_missing_fields(self):
         resp = self.client.post("/api/iam/users", json={
@@ -269,6 +294,46 @@ class TestApiKeys(IamApiTestCase):
         self.assertEqual(resp.status_code, 400)
         self.assertIn("API Key", resp.json()["error"])
         mock_delete.assert_not_called()
+
+
+class TestUploadUserKey(IamApiTestCase):
+    def test_upload_key_success(self):
+        key_result = {"fingerprint": FAKE_FINGERPRINT,
+                      "lifecycle_state": "ACTIVE"}
+        with patch.object(iam_routes, "upload_api_key",
+                          return_value=key_result) as mock_upload:
+            resp = self.client.post(
+                f"/api/iam/users/{FAKE_USER}/keys/upload",
+                json={"profile": "DEFAULT",
+                      "public_key": FAKE_PUBLIC_PEM})
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["key"]["fingerprint"], FAKE_FINGERPRINT)
+        # 端点先 strip 再传给 upload_api_key，末尾换行已被去掉。
+        mock_upload.assert_called_once_with(
+            self.cli, FAKE_USER, FAKE_PUBLIC_PEM.strip())
+
+    def test_upload_key_empty_rejected(self):
+        resp = self.client.post(
+            f"/api/iam/users/{FAKE_USER}/keys/upload",
+            json={"profile": "DEFAULT", "public_key": "  "})
+        self.assertEqual(resp.status_code, 400)
+
+    def test_upload_key_invalid_pem_rejected(self):
+        with patch.object(iam_routes, "upload_api_key",
+                          side_effect=ValueError("公钥必须是 PEM 格式")):
+            resp = self.client.post(
+                f"/api/iam/users/{FAKE_USER}/keys/upload",
+                json={"profile": "DEFAULT", "public_key": "not a pem"})
+        self.assertEqual(resp.status_code, 400)
+
+    def test_upload_key_requires_login(self):
+        resp = self.anon.post(
+            f"/api/iam/users/{FAKE_USER}/keys/upload",
+            json={"profile": "DEFAULT", "public_key": FAKE_PUBLIC_PEM},
+            follow_redirects=False)
+        self.assertEqual(resp.status_code, 401)
 
 
 class TestResetPassword(IamApiTestCase):

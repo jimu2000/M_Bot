@@ -41,6 +41,7 @@ from oci.iam import (
     create_bot_permission_user,
     create_or_reset_ui_password,
     create_user,
+    create_user_in_admin_group,
     delete_api_key,
     delete_user,
     get_profile_api_fingerprint,
@@ -48,6 +49,7 @@ from oci.iam import (
     get_profile_user_id,
     is_last_admin,
     list_api_keys,
+    upload_api_key,
 )
 from web import config
 from web.deps import (
@@ -163,21 +165,30 @@ def list_iam_users(profile: str = Query(""),
 @router.post("/api/iam/users")
 def create_iam_user(body: CreateUserBody,
                     _user: str = Depends(get_current_user)):
-    """新增普通用户。"""
+    """新增用户并加进 Administrators 组（最高管理权限）。
+
+    新用户不再是无权限的空账号：创建后立即加进 Administrators 组，
+    拥有租户最高管理权限。加组失败时用户已创建，响应里带 group_error
+    如实说明（用户在列表可见，可手动加组或删除）。
+    """
     name = (body.name or "").strip()
     email = (body.email or "").strip()
     if not name or not email:
         return error_response("用户名与邮箱不能为空", 400)
     try:
         cli, tenancy_id = _iam_cli(body.profile)
-        user = create_user(cli, tenancy_id, name, email,
-                           body.description or None)
+        result = create_user_in_admin_group(cli, tenancy_id, name, email,
+                                            body.description or None)
     except ValueError as exc:
         return error_response(str(exc) or "创建用户失败", 400)
     except Exception as exc:  # noqa: BLE001
         return error_response(f"创建用户失败：{_oci_short_message(exc)}",
                               oci_status(exc))
-    return {"ok": True, "user": user}
+    response = {"ok": True, "user": result["user"],
+                "admin_group": bool(result["group_id"])}
+    if result["group_error"]:
+        response["group_error"] = result["group_error"]
+    return response
 
 
 @router.post("/api/iam/users/bot")
@@ -251,6 +262,33 @@ def list_user_keys(user_id: str, profile: str = Query(""),
         return error_response(f"列出 API Key 失败：{exc}",
                               oci_status(exc))
     return {"ok": True, "keys": keys}
+
+
+class UploadKeyBody(BaseModel):
+    profile: str = ""
+    public_key: str = ""
+
+
+@router.post("/api/iam/users/{user_id}/keys/upload")
+def upload_user_key(user_id: str, body: UploadKeyBody,
+                    _user: str = Depends(get_current_user)):
+    """给用户添加已有公钥的 API Key（粘贴公钥 / 选择公钥文件）。
+
+    不生成新密钥对：直接把传入的 RSA 公钥上传为该用户的 API Key。
+    返回新 Key 的指纹与状态。
+    """
+    public_key = (body.public_key or "").strip()
+    if not public_key:
+        return error_response("请粘贴或选择一个 RSA 公钥（PEM 格式）", 400)
+    try:
+        cli, _tenancy_id = _iam_cli(body.profile)
+        key = upload_api_key(cli, user_id, public_key)
+    except ValueError as exc:
+        return error_response(str(exc) or "添加 API Key 失败", 400)
+    except Exception as exc:  # noqa: BLE001
+        return error_response(f"添加 API Key 失败：{exc}",
+                              oci_status(exc))
+    return {"ok": True, "key": key}
 
 
 @router.post("/api/iam/users/{user_id}/keys")

@@ -139,6 +139,33 @@ def add_user_to_group(cli, user_id, group_id):
                     "--user-id", user_id, "--group-id", group_id])
 
 
+def create_user_in_admin_group(cli, tenancy_id, name, email,
+                               description=None):
+    """创建用户并加进 Administrators 组（最高管理权限）。
+
+    返回 {"user": 用户字典, "group_id": 组 OCID|None,
+          "group_error": str|None}。组不存在或加组失败时用户已创建，
+    group_id 为 None 且 group_error 说明原因；调用方应如实汇报
+    （用户在列表可见，可手动加组或删除），不要静默吞掉、也不要
+    回滚删用户。
+    """
+    user = create_user(cli, tenancy_id, name, email, description)
+    user_id = (user or {}).get("id") or ""
+    group_id = None
+    group_error = None
+    try:
+        group_id = get_group_id_by_name(cli, tenancy_id, ADMIN_GROUP_NAME)
+        if not group_id:
+            group_error = "租户下找不到 Administrators 组"
+        else:
+            add_user_to_group(cli, user_id, group_id)
+    except Exception as exc:  # noqa: BLE001 - 加组失败不回滚用户
+        group_id = None
+        group_error = str(exc)
+    return {"user": user, "group_id": group_id,
+            "group_error": group_error}
+
+
 def update_user(cli, user_id, description=None, email=None):
     """更新 IAM 用户的描述 / 邮箱。
 
@@ -359,6 +386,50 @@ def create_api_key(cli, user_id, bits=2048):
     lifecycle_state = (data.get("lifecycle-state") or "CREATING"
                        if isinstance(data, dict) else "CREATING")
     return {"fingerprint": fingerprint, "private_key_pem": private_key_pem,
+            "lifecycle_state": lifecycle_state}
+
+
+def upload_api_key(cli, user_id, public_key_pem):
+    """上传已有的 RSA 公钥作为 API Key（对应控制台“粘贴公共密钥 /
+    选择公共密钥文件”）。
+
+    不生成新密钥对：校验传入的公钥是有效 RSA 公钥后，直接上传。
+    返回 {"fingerprint": 指纹, "lifecycle_state": 状态}。
+    """
+    if not user_id or not isinstance(user_id, str):
+        raise ValueError("user_id 不能为空")
+    pem = (public_key_pem or "").strip()
+    if not pem.startswith("-----BEGIN PUBLIC KEY-----"):
+        raise ValueError("公钥必须是 PEM 格式的 RSA 公钥，"
+                         "以 -----BEGIN PUBLIC KEY----- 开头")
+    if "-----END PUBLIC KEY-----" not in pem:
+        raise ValueError("公钥不完整，缺少 -----END PUBLIC KEY----- 结束行")
+    existing_keys = cli.sdk_list_api_keys(user_id) or []
+    if len(existing_keys) >= 3:
+        raise ValueError("该 OCI 用户已达到最多 3 个 API signing key 的上限，请先删除旧 Key。")
+    with tempfile.TemporaryDirectory(prefix="mbot-oci-key-") as tmp:
+        os.chmod(tmp, 0o700)
+        public_path = os.path.join(tmp, "oci_api_key_public.pem")
+        with open(public_path, "w", encoding="utf-8") as handle:
+            handle.write(pem + "\n")
+        os.chmod(public_path, 0o600)
+        # 先校验是有效 RSA 公钥，避免把无效内容传给 OCI。
+        check = subprocess.run(
+            ["openssl", "pkey", "-pubin", "-in", public_path,
+             "-noout"], capture_output=True, text=True, timeout=30)
+        if check.returncode != 0:
+            raise ValueError("公钥无效：不是有效的 RSA 公钥，"
+                             "请检查粘贴/选择的内容。")
+        result = cli.run(["iam", "user", "api-key", "upload",
+                          "--user-id", user_id,
+                          "--key-file", public_path])
+        data = _extract_data(result) or {}
+        fingerprint = data.get("fingerprint") if isinstance(data, dict) else None
+        if not fingerprint:
+            raise RuntimeError("OCI 未返回 API Key fingerprint，密钥上传状态需检查。")
+    lifecycle_state = (data.get("lifecycle-state") or "CREATING"
+                       if isinstance(data, dict) else "CREATING")
+    return {"fingerprint": fingerprint,
             "lifecycle_state": lifecycle_state}
 
 

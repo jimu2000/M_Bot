@@ -205,6 +205,40 @@ def list_profiles(username: str = Depends(get_current_user)):
             "profiles": profiles}
 
 
+@router.post("/api/profiles/refresh")
+def refresh_profiles(username: str = Depends(get_current_user)):
+    """重新读取统一配置并刷新账号列表（不用重启面板）。
+
+    改了 /root/M_bot_config.conf 后点“刷新”即可认到新账号：先调
+    mbot_config.bootstrap() 重读 conf 并重生成 OCI INI，再重读
+    本进程的账号表、清掉 OCIClient 缓存。机器人是独立进程，账号
+    有变化时仍需重启 bot 才生效（响应里 bot_restart_needed）。
+    """
+    blocked = _demo_blocked()
+    if blocked is not None:
+        return blocked
+    if config.mbot_config is None:
+        return error_response("统一配置加载失败，无法刷新",
+                              status_code=500)
+    before = set(config.PROFILES.keys())
+    try:
+        config.mbot_config.bootstrap()
+    except Exception as exc:  # noqa: BLE001 - 刷新失败时报出来，不崩
+        return error_response(f"重新读取配置失败：{exc}",
+                              status_code=500)
+    config.reload_profiles()
+    clear_oci_client_cache()
+    after = set(config.PROFILES.keys())
+    added = sorted(after - before)
+    removed = sorted(before - after)
+    return {"ok": True,
+            "profiles": sorted(after),
+            "count": len(after),
+            "added": added,
+            "removed": removed,
+            "bot_restart_needed": bool(added or removed)}
+
+
 @router.post("/api/profiles/{profile}/key")
 async def upload_profile_key(profile: str,
                              key_file: UploadFile = File(...),

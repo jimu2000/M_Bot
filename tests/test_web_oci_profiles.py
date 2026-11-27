@@ -596,5 +596,65 @@ class WebOciProfilesTestCase(unittest.TestCase):
         self.assertEqual(self._read_config(), original)
 
 
+    # ---------- 刷新 ----------
+
+    def test_refresh_reloads_config_without_restart(self):
+        """刷新：重读配置并返回新增账号，机器人需重启。"""
+        from unittest.mock import MagicMock
+        fake_mbot = MagicMock()
+        before = {"DEFAULT": {"region": "ap-singapore-1",
+                              "compartment_id": FAKE_TENANCY}}
+        after = dict(before)
+        after["NEWACC"] = {"region": "ap-singapore-1",
+                           "compartment_id": FAKE_TENANCY_2}
+        saved = dict(web_config.PROFILES)
+        web_config.PROFILES.clear()
+        web_config.PROFILES.update(before)
+        self.addCleanup(lambda: (web_config.PROFILES.clear(),
+                                 web_config.PROFILES.update(saved)))
+        with patch.object(web_config, "mbot_config", fake_mbot), \
+                patch.object(web_config, "_build_profiles",
+                             return_value=after):
+            resp = self.client.post("/api/profiles/refresh")
+        data = resp.json()
+        self.assertEqual(resp.status_code, 200, data)
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["profiles"], ["DEFAULT", "NEWACC"])
+        self.assertEqual(data["count"], 2)
+        self.assertEqual(data["added"], ["NEWACC"])
+        self.assertEqual(data["removed"], [])
+        self.assertTrue(data["bot_restart_needed"])
+        fake_mbot.bootstrap.assert_called_once()
+        listed = self.client.get("/api/profiles").json()
+        names = [p["name"] for p in listed["profiles"]]
+        self.assertIn("NEWACC", names)
+
+    def test_refresh_no_change_no_bot_restart(self):
+        """刷新且账号无变化：不提示机器人重启。"""
+        from unittest.mock import MagicMock
+        fake_mbot = MagicMock()
+        before = {"DEFAULT": {"region": "ap-singapore-1",
+                              "compartment_id": FAKE_TENANCY}}
+        saved = dict(web_config.PROFILES)
+        web_config.PROFILES.clear()
+        web_config.PROFILES.update(before)
+        self.addCleanup(lambda: (web_config.PROFILES.clear(),
+                                 web_config.PROFILES.update(saved)))
+        with patch.object(web_config, "mbot_config", fake_mbot), \
+                patch.object(web_config, "_build_profiles",
+                             return_value=dict(before)):
+            resp = self.client.post("/api/profiles/refresh")
+        data = resp.json()
+        self.assertEqual(resp.status_code, 200, data)
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["added"], [])
+        self.assertFalse(data["bot_restart_needed"])
+
+    def test_refresh_requires_login(self):
+        """刷新要登录。"""
+        resp = self.anon.post("/api/profiles/refresh")
+        self.assertEqual(resp.status_code, 401)
+
+
 if __name__ == "__main__":
     unittest.main()

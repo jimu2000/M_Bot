@@ -9,6 +9,12 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [2.16.0] - 2026-11-27
+- The Refresh button on the Cloud Accounts page now actually reloads the config: one click re-reads /root/M_bot_config.conf, regenerates the OCI config and refreshes the account list, no panel restart needed; when accounts were added or removed it notes "the bot needs a restart to take effect" (the bot is a separate process and still needs a restart to see new accounts). After editing .conf to add a tenant, just hit Refresh instead of restarting the service.
+- Private-key upload was already in the account list: every account row has an "Upload key" button (showing "missing, upload needed" when the key is absent); pick a .pem and it is written to that account's key_file path; keys can also be uploaded per profile in the parse-confirm step.
+- **New users are now created with the highest admin permission**: "Add user" in the panel's IAM management and in bot menu 8 now adds the new user to the Administrators group right after creation (full admin permission), instead of a permission-less empty account; if adding to the group fails the user is already created and the page/bot says so honestly (you can add the group or delete the user manually). A new user still needs a console password reset before they can sign in.
+- **Add an API key (paste a public key / pick a public key file)**: besides generating a new key pair, you can now paste an existing RSA public key (PEM) or pick a public key file in the panel's IAM key management and in the bot's user details to upload it as that user's API key; the key is validated as a proper RSA public key before upload, and the 3-key limit is still enforced; the fingerprint and status are returned on success.
+
 ## [2.15.0] - 2026-11-27
 - Eight new panel themes: Forest (dark green), Ocean (dark blue), Obsidian (near-black dark), Sunset (warm light), Sakura (soft pink light), Mint (fresh green light), Ice (cool blue light), Desert (warm sand light). The classic theme stays and remains the default; switch from the theme dropdown in the top bar, and the choice is saved in localStorage across refreshes.
 - Only the classic theme follows the light/dark toggle; Starry / Forest / Ocean / Obsidian are fixed dark and Sunset / Sakura / Mint / Ice / Desert fixed light, and the toggle shows a "this theme is always dark / light" hint on those themes. Each new theme has a soft ambient glow (pure CSS gradients, no images).
