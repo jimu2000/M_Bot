@@ -36,6 +36,11 @@
 #     自带的旧版；仓库加不上时回落发行版版本，安装不中断。
 #   - 防火墙自动识别：ufw / firewalld / nftables / iptables，哪个在跑
 #     就用哪个放行 SSH + 80 + 443 + 9527；都没在跑时优先启用 ufw。
+#     UFW 默认策略显式收紧（入站拒绝/出站放行），不做 ufw reset（升级重跑会清空已有规则）。
+#   - 网络优化：TCP 缓冲调大（rmem/wmem 最大 64MB，跨太平洋单流从 120 涨到约 830 Mbps）
+#     + BBR（有 tcp_bbr 模块时切 BBR + fq，没有则保持 cubic）；全部持久化，装机与升级都跑。
+#   - Fail2Ban 防 SSH 爆破：端口自动识别（sshd 实际监听端口 > sshd_config > 22），
+#     封禁动作跟防火墙走（ufw 在就用 ufw，否则 iptables-multiport）。
 #   - OCI 实例还会经 OCI API 自动放行云端安全列表（80/443/9527）；
 #     没配 API 认证时只警告，安装不中断。
 #   - Telegram Token 可留空：留空则只装面板，不装机器人。
@@ -241,7 +246,7 @@ install_deps() {
     until apt-get install -y -qq -o Dpkg::Options::="--force-confdef" \
         -o Dpkg::Options::="--force-confold" \
         python3 python3-venv python3-pip git nginx \
-        ufw curl wget openssl iproute2 procps psmisc >/dev/null; do
+        ufw fail2ban curl wget openssl iproute2 procps psmisc >/dev/null; do
         attempt=$((attempt + 1))
         [ "$attempt" -ge 3 ] && die "apt 安装依赖失败，请检查网络与 apt 源。"
         warn "apt 安装失败（可能锁被占），15 秒后重试…"
@@ -1355,7 +1360,11 @@ setup_firewall() {
 }
 
 # UFW: open the SSH port first (actual sshd listening port > sshd_config > 22), or ufw enable locks us out. UFW：开启前先放行 SSH 端口（sshd 实际监听端口 > sshd_config > 22），否则 ufw enable 会把自己锁在外面。
+# Explicit default policies (matches the user's VPS init script): deny incoming, allow outgoing. 显式收紧默认策略（与用户 VPS 初始化脚本一致）：入站默认拒绝、出站默认放行。
+# No ufw reset here: it would wipe existing rules on a re-run/upgrade; only ensure the defaults and the allow rules exist (idempotent). 这里不做 ufw reset（会清空已有规则，升级重跑时危险）；只确保默认策略与放行规则存在（幂等）。
 _firewall_ufw() {
+    ufw default deny incoming >/dev/null 2>&1 || true
+    ufw default allow outgoing >/dev/null 2>&1 || true
     local port
     for port in $(firewall_ports); do
         ufw allow "$port/tcp" >/dev/null 2>&1 || true
@@ -1432,6 +1441,82 @@ _firewall_iptables() {
     done
     ok "iptables 规则已添加。"
     warn "iptables 规则只在当前生效，重启后会丢（除非装了 iptables-persistent 或写进 /etc/iptables/rules.v4）；建议改用 ufw 或 firewalld 管理。"
+}
+
+# ---------- 网络优化（TCP 缓冲 + BBR） ----------
+# 2026-11-27 实测：跨太平洋 166ms 延迟下单流只有 120–140 Mbps，根因是 TCP 窗口太小
+# （跑满 1Gbps 需约 20MB 窗口，系统默认最大仅约 6MB）。调大缓冲后单流 iperf3 从 141 → 832 Mbps。
+# BBR：有 tcp_bbr 模块时切到 BBR + fq；模块不存在时保持 cubic（缓冲优化仍生效，
+# 实测 BBR 与 cubic + 大缓冲在裸链路上基本相同，约 825 Mbps）。
+# 全部写 /etc/sysctl.conf 与 /etc/modules 持久化；重复跑不重复写（幂等），装机与升级都跑。
+persist_sysctl() {
+    local key="$1" val="$2"
+    local esc_key="${key//./\\.}"
+    if grep -q "^${esc_key}=" /etc/sysctl.conf 2>/dev/null; then
+        sed -i "s|^${esc_key}=.*|${key}=${val}|" /etc/sysctl.conf
+    else
+        echo "${key}=${val}" >> /etc/sysctl.conf
+    fi
+}
+
+setup_bbr() {
+    info "网络优化（TCP 缓冲 + BBR）…"
+    local kv key val
+    for kv in "net.core.rmem_max=67108864" "net.core.wmem_max=67108864" \
+              "net.ipv4.tcp_rmem=4096 87380 67108864" "net.ipv4.tcp_wmem=4096 65536 67108864" \
+              "net.core.netdev_max_backlog=250000"; do
+        key="${kv%%=*}"; val="${kv#*=}"
+        sysctl -w "$key=$val" >/dev/null 2>&1 || true
+        persist_sysctl "$key" "$val"
+    done
+    if modprobe tcp_bbr 2>/dev/null && sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -qw bbr; then
+        sysctl -w net.core.default_qdisc=fq >/dev/null 2>&1 || true
+        sysctl -w net.ipv4.tcp_congestion_control=bbr >/dev/null 2>&1 || true
+        persist_sysctl "net.core.default_qdisc" "fq"
+        persist_sysctl "net.ipv4.tcp_congestion_control" "bbr"
+        grep -qx "tcp_bbr" /etc/modules 2>/dev/null || echo "tcp_bbr" >> /etc/modules
+        ok "网络优化完成：TCP 缓冲已调大，已切 BBR + fq。"
+    else
+        info "无 tcp_bbr 模块，保持 cubic（TCP 缓冲优化仍生效）。"
+    fi
+}
+
+# ---------- Fail2Ban（SSH 防爆破，端口自动识别） ----------
+# SSH 端口自动识别：sshd 实际监听端口 > sshd_config > 22（与防火墙共用 detect_ssh_port）。
+# 配置照用户 VPS 初始化脚本：默认 bantime 60000 / findtime 600 / maxretry 1，
+# sshd 段 bantime 864000 / findtime 60000 / maxretry 2，backend systemd，
+# 封禁动作跟防火墙走（ufw 在就用 ufw，否则 iptables-multiport）。
+# fail2ban 由 install_deps 装好；这里只写配置并启用。失败只警告，不中断安装。
+setup_fail2ban() {
+    command_exists fail2ban-server || { info "未装 fail2ban，跳过 Fail2Ban 配置。"; return 0; }
+    local ssh_port banaction
+    ssh_port="$(detect_ssh_port)"
+    banaction="iptables-multiport"
+    command_exists ufw && banaction="ufw"
+    mkdir -p /etc/fail2ban
+    printf '%s\n' \
+        "[DEFAULT]" \
+        "ignoreip = 127.0.0.1/8" \
+        "bantime = 60000" \
+        "findtime = 600" \
+        "maxretry = 1" \
+        "backend = systemd" \
+        "banaction = $banaction" \
+        "action = %(action_)s" \
+        "" \
+        "[sshd]" \
+        "enabled = true" \
+        "port = $ssh_port" \
+        "bantime = 864000" \
+        "findtime = 60000" \
+        "maxretry = 2" \
+        > /etc/fail2ban/jail.local
+    systemctl enable fail2ban >/dev/null 2>&1 || true
+    if systemctl restart fail2ban >/dev/null 2>&1; then
+        ok "Fail2Ban 已配置并启动（sshd 端口 $ssh_port，封禁动作 $banaction）。"
+    else
+        warn "Fail2Ban 启动失败，请手动检查（systemctl status fail2ban）。"
+    fi
 }
 
 # ---------- 云端安全列表（OCI） ----------
@@ -1813,6 +1898,9 @@ cmd_install() {
     detect_os
     # Install deps before prompting: random password generation needs openssl, which minimal images may not preinstall. 先装依赖再提问：提问里的随机密码生成要用到 openssl，精简镜像上 openssl 未必预装。
     install_deps
+    # 系统加固（装机与升级都跑，幂等）：TCP 缓冲 + BBR 网络优化、Fail2Ban 防 SSH 爆破（端口自动识别）。
+    setup_bbr
+    setup_fail2ban
     prompt_config
     install_code
     setup_venv

@@ -9,6 +9,11 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [2.17.0] - 2026-11-27
+- Installer hardening: UFW default policies are now explicitly tightened to deny incoming / allow outgoing (`ufw default deny incoming` / `ufw default allow outgoing`, done at the start of `_firewall_ufw`; no `ufw reset`, so re-running on upgrade never wipes existing rules).
+- Installer network optimization: TCP buffers enlarged (rmem/wmem max 64MB, `net.ipv4.tcp_rmem` / `tcp_wmem` max 64MB) plus BBR + fq when the `tcp_bbr` module is available; single-stream throughput across the Pacific rose from 120–140 Mbps to about 830 Mbps. Everything is persisted in `/etc/sysctl.conf` and `/etc/modules`, and runs on both fresh install and upgrade (idempotent).
+- Installer Fail2Ban SSH brute-force protection: `fail2ban` added to the install dependencies; jail.local follows the VPS init script (default bantime 60000 / sshd section 864000). The SSH port is auto-detected (actual sshd listening port > sshd_config > 22, reusing the existing `detect_ssh_port`), and the ban action follows the firewall (ufw when present, otherwise iptables-multiport).
+
 ## [2.16.3] - 2026-11-27
 - Fixed the false "restart bot service failed" report: the restart actually succeeded (the service did restart), but the bot runs `systemctl restart rbot-clone-bot` as its own child process in the same cgroup, so systemd kills that systemctl child when stopping the service and it never returns 0, making the code think the restart failed. Restarting the bot itself now uses `--no-block`, so systemctl returns 0 right after queuing the job and systemd then stops the service and starts a new process. Restarting the panel service is unaffected (it is not in the bot's own cgroup) and still waits for the job to finish so success can be confirmed.
 - The boot root password now goes in a triple-backtick code block (same as the /raninfo reset password): in the grab-started message the "root password" can be tapped to copy the bare password with no trailing space or newline. Grab tasks survive restarts: on startup both the bot and the panel resume still-running grab tasks from the grab_spec stored in the task record (remaining count = total − already grabbed); bot-g5 (E2.1.Micro · AMD_2026-11-27) has a complete spec and will auto-resume after the deploy restart.

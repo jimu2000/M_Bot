@@ -9,6 +9,11 @@
 
 ## [Unreleased]
 
+## [2.17.0] - 2026-11-27
+- 安装器加固：UFW 默认策略显式收紧为入站拒绝 / 出站放行（`ufw default deny incoming` / `ufw default allow outgoing`，在 `_firewall_ufw` 开头做；不做 `ufw reset`，升级重跑不会清空已有规则）。
+- 安装器加入网络优化：TCP 缓冲调大（rmem/wmem 最大 64MB，`net.ipv4.tcp_rmem` / `tcp_wmem` 最大 64MB）+ 有 `tcp_bbr` 模块时切 BBR + fq，跨太平洋单流从 120–140 Mbps 涨到约 830 Mbps，全部写 `/etc/sysctl.conf` 与 `/etc/modules` 持久化，装机与升级都跑（幂等）。
+- 安装器加入 Fail2Ban 防 SSH 爆破：`fail2ban` 已加进安装依赖；jail.local 照 VPS 初始化脚本（默认 bantime 60000 / sshd 段 864000），SSH 端口自动识别（sshd 实际监听端口 > sshd_config > 22，复用现成的 `detect_ssh_port`），封禁动作跟防火墙走（ufw 在就用 ufw，否则 iptables-multiport）。
+
 ## [2.16.3] - 2026-11-27
 - 修复“重启机器人服务失败”误报：重启其实成功了（服务已重启），但机器人调 `systemctl restart rbot-clone-bot` 时，那个 systemctl 进程是机器人的子进程、落在同一个 cgroup 里，systemd 停服务会把它一起杀掉，它永远回不了 0，代码就以为重启失败。现重启机器人自身时加 `--no-block`，让 systemctl 下发任务就立即返回 0，之后 systemd 再停服务、起新进程。重启面板服务不受影响（不在机器人自己的 cgroup 里），照常等任务完成再确认。
 - 开机 root 密码改放三重反引号代码块（和 /raninfo 重置密码一样）：抢机启动消息里“root 登录密码”点一下就能复制纯密码，不带尾空格/换行。重启不丢抢机任务：机器人与面板启动时都会按任务记录里的 grab_spec 把还在跑的抢机任务恢复重跑（剩余台数 = 总数 − 已抢到），bot-g5（E2.1.Micro·AMD_2026-11-27）规格完整，部署重启后会自动续跑。
