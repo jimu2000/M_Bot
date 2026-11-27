@@ -13,9 +13,11 @@ from oci.dd_init import (
     INIT_DONE_PATH,
     INIT_LOG_PATH,
     INIT_SCRIPT_PATH,
+    ROOT_LOGIN_CONF,
     build_dd_script,
     run_dd_init,
     run_init_script,
+    verify_password_login,
     wait_for_dd,
 )
 from tgbot.boot_form import (
@@ -199,7 +201,7 @@ class TestWaitForDd(unittest.TestCase):
             {"cat /etc/os-release": (DEBIAN13_OS_RELEASE, "")})
         with mock.patch("oci.dd_init._ssh_connect",
                         return_value=client):
-            self.assertTrue(wait_for_dd("203.0.113.4", "pw",
+            self.assertTrue(wait_for_dd("1.2.3.4", "pw",
                                         sleep=lambda s: None))
 
     def test_ubuntu_not_counted_as_dd_done(self):
@@ -207,14 +209,14 @@ class TestWaitForDd(unittest.TestCase):
             {"cat /etc/os-release": (UBUNTU_OS_RELEASE, "")})
         with mock.patch("oci.dd_init._ssh_connect",
                         return_value=client):
-            self.assertFalse(wait_for_dd("203.0.113.4", "pw", timeout=0.05,
+            self.assertFalse(wait_for_dd("1.2.3.4", "pw", timeout=0.05,
                                          poll_interval=0.01,
                                          sleep=lambda s: None))
 
     def test_ssh_unreachable_times_out(self):
         with mock.patch("oci.dd_init._ssh_connect",
                         side_effect=Exception("no route")):
-            self.assertFalse(wait_for_dd("203.0.113.4", "pw", timeout=0.05,
+            self.assertFalse(wait_for_dd("1.2.3.4", "pw", timeout=0.05,
                                          poll_interval=0.01,
                                          sleep=lambda s: None))
 
@@ -229,7 +231,7 @@ class TestRunInitScript(unittest.TestCase):
         with mock.patch("oci.dd_init._ssh_connect",
                         return_value=client):
             ok, code, log = run_init_script(
-                "203.0.113.4", "pw", "#!/bin/bash\necho init\n",
+                "1.2.3.4", "pw", "#!/bin/bash\necho init\n",
                 sleep=lambda s: None)
         self.assertTrue(ok)
         self.assertEqual(code, 0)
@@ -240,6 +242,27 @@ class TestRunInitScript(unittest.TestCase):
         # 以 nohup 后台跑
         self.assertTrue(any("nohup" in c for c in client.commands))
 
+    def test_init_script_reenables_password_login(self):
+        # 脚本跑完后强制开回密码登录（不管用户脚本是否关了它），
+        # 完成标记仍取用户脚本的退出码。
+        store = {}
+        client = _FakeSSHClient({
+            f"test -f {INIT_DONE_PATH}": ("0\n", ""),
+            f"tail -n 50 {INIT_LOG_PATH}": ("done ok\n", ""),
+        }, sftp_store=store)
+        with mock.patch("oci.dd_init._ssh_connect",
+                        return_value=client):
+            ok, code, log = run_init_script(
+                "1.2.3.4", "pw", "#!/bin/bash\necho init\n",
+                sleep=lambda s: None)
+        self.assertTrue(ok)
+        self.assertEqual(code, 0)
+        cmd = "\n".join(client.commands)
+        self.assertIn("PasswordAuthentication yes", cmd)
+        self.assertIn("PermitRootLogin yes", cmd)
+        self.assertIn(ROOT_LOGIN_CONF, cmd)
+        self.assertIn(f"echo $CODE > {INIT_DONE_PATH}", cmd)
+
     def test_init_script_nonzero_exit(self):
         client = _FakeSSHClient({
             f"test -f {INIT_DONE_PATH}": ("3\n", ""),
@@ -248,7 +271,7 @@ class TestRunInitScript(unittest.TestCase):
         with mock.patch("oci.dd_init._ssh_connect",
                         return_value=client):
             ok, code, log = run_init_script(
-                "203.0.113.4", "pw", "#!/bin/bash\nexit 3\n",
+                "1.2.3.4", "pw", "#!/bin/bash\nexit 3\n",
                 sleep=lambda s: None)
         self.assertFalse(ok)
         self.assertEqual(code, 3)
@@ -260,11 +283,42 @@ class TestRunInitScript(unittest.TestCase):
         with mock.patch("oci.dd_init._ssh_connect",
                         return_value=client):
             ok, code, log = run_init_script(
-                "203.0.113.4", "pw", "#!/bin/bash\necho x\n",
+                "1.2.3.4", "pw", "#!/bin/bash\necho x\n",
                 timeout=0.05, poll_interval=0.01,
                 sleep=lambda s: None)
         self.assertFalse(ok)
         self.assertIsNone(code)
+
+
+class TestVerifyPasswordLogin(unittest.TestCase):
+    def test_verify_ok(self):
+        client = _FakeSSHClient({
+            "grep -E": ("ID=debian\nVERSION_ID=\"13\"\nactive\n"
+                        "PasswordAuthentication yes\n", ""),
+        })
+        with mock.patch("oci.dd_init._ssh_connect",
+                        return_value=client):
+            ok, detail = verify_password_login("1.2.3.4", "pw")
+        self.assertTrue(ok)
+        self.assertIn("已验证可用", detail)
+
+    def test_verify_ssh_login_fails(self):
+        with mock.patch("oci.dd_init._ssh_connect",
+                        side_effect=Exception("no route")):
+            ok, detail = verify_password_login("1.2.3.4", "pw")
+        self.assertFalse(ok)
+        self.assertIn("登录失败", detail)
+
+    def test_verify_status_mismatch(self):
+        # 密码能登，但 drop-in 里没有 PasswordAuthentication yes。
+        client = _FakeSSHClient({
+            "grep -E": ("ID=debian\nVERSION_ID=\"13\"\nactive\n", ""),
+        })
+        with mock.patch("oci.dd_init._ssh_connect",
+                        return_value=client):
+            ok, detail = verify_password_login("1.2.3.4", "pw")
+        self.assertFalse(ok)
+        self.assertIn("状态不符", detail)
 
 
 class TestRunDdInit(unittest.TestCase):
@@ -273,20 +327,41 @@ class TestRunDdInit(unittest.TestCase):
         with mock.patch("oci.dd_init.wait_for_dd",
                         return_value=True), \
                 mock.patch("oci.dd_init.run_init_script",
-                           return_value=(True, 0, "ok")):
-            result = run_dd_init("203.0.113.4", "pw", "#!/bin/bash\necho x\n",
-                                 instance_name="AMD_2026-01-03",
+                           return_value=(True, 0, "ok")), \
+                mock.patch("oci.dd_init.verify_password_login",
+                           return_value=(True, "root 密码登录已验证可用，"
+                                               "sshd 运行中。")):
+            result = run_dd_init("1.2.3.4", "pw", "#!/bin/bash\necho x\n",
+                                 instance_name="AMD_2026-11-26",
                                  on_event=lambda t, m: events.append(t))
         self.assertTrue(result)
         self.assertIn("dd_done", events)
         self.assertIn("init_done", events)
 
+    def test_full_flow_verify_failed_still_init_done(self):
+        # 脚本已成功，验证失败不改 init 结果，但 init_done 里要带提醒。
+        events = []
+        messages = []
+        with mock.patch("oci.dd_init.wait_for_dd",
+                        return_value=True), \
+                mock.patch("oci.dd_init.run_init_script",
+                           return_value=(True, 0, "ok")), \
+                mock.patch("oci.dd_init.verify_password_login",
+                           return_value=(False, "密码 SSH 登录失败：no route")):
+            result = run_dd_init("1.2.3.4", "pw", "#!/bin/bash\necho x\n",
+                                 instance_name="AMD_2026-11-26",
+                                 on_event=lambda t, m: (events.append(t),
+                                                        messages.append(m)))
+        self.assertTrue(result)
+        self.assertIn("init_done", events)
+        self.assertIn("验证失败", " ".join(messages))
+
     def test_dd_timeout_reports_failure(self):
         events = []
         with mock.patch("oci.dd_init.wait_for_dd",
                         return_value=False):
-            result = run_dd_init("203.0.113.4", "pw", "#!/bin/bash\necho x\n",
-                                 instance_name="AMD_2026-01-03",
+            result = run_dd_init("1.2.3.4", "pw", "#!/bin/bash\necho x\n",
+                                 instance_name="AMD_2026-11-26",
                                  on_event=lambda t, m: events.append(t))
         self.assertFalse(result)
         self.assertIn("dd_timeout", events)

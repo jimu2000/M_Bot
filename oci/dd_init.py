@@ -9,12 +9,14 @@
     传上去执行。
   阶段二（本模块）：等 DD 完成（14422 能用 DD 密码 SSH 登录且
     /etc/os-release 是 Debian 13），再把初始化脚本传到实例上后台
-    执行，轮询完成标记，回调通知调用方。
+    执行，轮询完成标记，回调通知调用方。脚本跑完后强制把密码登录
+    开回来（公开版人人都要用 root 密码登录），再用密码 SSH 进去
+    验证状态（密码登录可用、sshd 运行中），验证结果随 init_done
+    回调交给调用方发双通道通知。
 
 本模块不依赖 tgbot / web：进度与结果经 on_event 回调交给调用方
 （Telegram / Bark 通知由调用方发），模块本身只做 SSH 与等待。
-SSH 用 Paramiko 密码认证（DD 阶段只有密码可用，初始化脚本跑完
-才装密钥并关掉密码登录）。
+SSH 用 Paramiko 密码认证（DD 阶段只有密码可用）。
 """
 
 import logging
@@ -37,6 +39,9 @@ DD_INSTALLNET_URL = ("https://raw.githubusercontent.com/leitbogioro/"
 INIT_SCRIPT_PATH = "/root/mbot-init.sh"
 INIT_LOG_PATH = "/root/mbot-init.log"
 INIT_DONE_PATH = "/root/mbot-init.done"
+# root 登录的 sshd drop-in（与 build_user_data 用的同一路径）：
+# 初始化脚本跑完后强制写回这里，把密码登录开回来。
+ROOT_LOGIN_CONF = "/etc/ssh/sshd_config.d/60-mbot-root-login.conf"
 
 # 等待参数。DD 约 6-10 分钟，初始化脚本装一堆包常要 15-30 分钟，
 # 超时放得宽；轮询间隔 30 秒。Timeouts and poll intervals.
@@ -167,11 +172,22 @@ def run_init_script(public_ip, password, script_content,
         finally:
             sftp.close()
         # 后台跑：日志与退出码落盘，调用方轮询完成标记。
+        # 用户的初始化脚本通常会在最后关掉密码登录（只留密钥），那样
+        # 开机时给的 root 密码就没用了，而且轮询完成标记的 SSH 也会断
+        # （误报超时）。所以脚本跑完后强制把密码登录开回来
+        # （PermitRootLogin yes + PasswordAuthentication yes，reload
+        # sshd），退出码仍取用户脚本的，失败上报不受影响。
+        inner = (
+            f"bash {INIT_SCRIPT_PATH} > {INIT_LOG_PATH} 2>&1; "
+            "CODE=$?; "
+            "printf \"PermitRootLogin yes\\nPasswordAuthentication yes\\n\" "
+            f"> {ROOT_LOGIN_CONF}; "
+            "systemctl reload ssh || systemctl reload sshd || true; "
+            f"echo $CODE > {INIT_DONE_PATH}"
+        )
         _run_ssh_command(
             client,
-            "nohup bash -c 'bash "
-            f"{INIT_SCRIPT_PATH} > {INIT_LOG_PATH} 2>&1; "
-            f"echo $? > {INIT_DONE_PATH}' >/dev/null 2>&1 &")
+            f"nohup bash -c '{inner}' >/dev/null 2>&1 &")
     finally:
         client.close()
     deadline = time.monotonic() + timeout
@@ -195,6 +211,36 @@ def run_init_script(public_ip, password, script_content,
         if time.monotonic() >= deadline:
             return False, None, ""
         sleep(poll_interval)
+
+
+def verify_password_login(public_ip, password, port=DD_SSH_PORT):
+    """初始化完成后验证：用 root 密码 SSH 登录，确认密码登录可用且系统就绪。
+
+    登录本身即证明密码可用；再读状态（Debian 13、sshd 运行中、
+    drop-in 含 PasswordAuthentication yes）。返回 (ok, detail)，
+    detail 是给通知用的状态说明。登录失败或状态不符都返回 False
+    （脚本本身已跑完，验证失败只影响通知里的提醒，不改 init 结果）。
+    """
+    try:
+        client = _ssh_connect(public_ip, port, password)
+    except Exception as exc:  # noqa: BLE001 - 登录失败即验证不通过
+        return False, f"密码 SSH 登录失败：{exc}"
+    try:
+        out, _ = _run_ssh_command(
+            client,
+            "grep -E '^(ID|VERSION_ID)=' /etc/os-release; "
+            "systemctl is-active ssh || systemctl is-active sshd; "
+            f"grep -h PasswordAuthentication {ROOT_LOGIN_CONF}")
+    except Exception as exc:  # noqa: BLE001 - 读状态失败即验证不通过
+        return False, f"读实例状态失败：{exc}"
+    finally:
+        client.close()
+    ok = ("ID=debian" in out and "VERSION_ID=\"13\"" in out
+          and "active" in out
+          and "PasswordAuthentication yes" in out)
+    if ok:
+        return True, "root 密码登录已验证可用，sshd 运行中。"
+    return False, f"状态不符：{out.strip()}"
 
 
 def run_dd_init(public_ip, password, init_script, instance_name="",
@@ -224,8 +270,17 @@ def run_dd_init(public_ip, password, init_script, instance_name="",
     ok, code, log_tail = run_init_script(
         public_ip, password, init_script, port=port, stop_event=stop_event)
     if ok:
-        _emit("init_done", f"实例 {instance_name}（{public_ip}）初始化"
-                           "脚本执行完成。")
+        # 脚本跑完了：M_Bot 再用 root 密码 SSH 进去验一下状态（密码
+        # 登录可用、sshd 运行中），验证结果写进 init_done 通知里。
+        # 脚本本身已成功，验证失败不改 init 结果，只提醒用户检查。
+        verified, detail = verify_password_login(
+            public_ip, password, port=port)
+        if verified:
+            _emit("init_done", f"实例 {instance_name}（{public_ip}）初始化"
+                               f"脚本执行完成。{detail}")
+        else:
+            _emit("init_done", f"实例 {instance_name}（{public_ip}）初始化"
+                               f"脚本执行完成，但密码登录验证失败：{detail}")
         return True
     if code is None:
         _emit("init_timeout", f"实例 {instance_name}（{public_ip}）初始化"

@@ -1985,9 +1985,9 @@ def _start_dd_init(preset, instances, notify, task_id=None):
                             f"实例 {_name}（{_ip}）DD 完成，Debian 13 已就绪，"
                             "开始执行初始化脚本。")
             elif event_type == "init_done":
-                notify_dual(token, chat_id, "✅ 初始化完成",
-                            f"实例 {_name}（{_ip}）初始化脚本执行完成。\n"
-                            "初始化脚本已关掉密码登录，之后请用 SSH 密钥登录。")
+                # init_done 的 message 已含验证结果（密码登录可用与否），
+                # 直接发双通道通知（Telegram + Bark）。
+                notify_dual(token, chat_id, "✅ 初始化完成", message)
             elif event_type in ("dd_timeout", "init_timeout", "init_failed"):
                 notify_dual(token, chat_id, "❌ DD 初始化失败",
                             f"实例 {_name}（{_ip}）{message}")

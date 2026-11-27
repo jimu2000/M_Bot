@@ -387,6 +387,88 @@ class TestREST(_AuthPatchedTestCase):
         self.assertEqual(resp.status_code, 404)
 
 
+class TestConnectInstance(_AuthPatchedTestCase):
+    """POST /api/ssh/connect-instance：实例卡片 SSH 一键直连。"""
+
+    def _mock_oci(self, public_ip=TEST_HOST):
+        cli = MagicMock()
+        resolve_patch = patch("web.deps.resolve_profile",
+                              return_value=(cli, "ocid1.compartment.oc1..test"))
+        ip_patch = patch("oci.network.get_public_ip", return_value=public_ip)
+        resolve_patch.start()
+        ip_patch.start()
+        self.addCleanup(resolve_patch.stop)
+        self.addCleanup(ip_patch.stop)
+        return cli
+
+    def _post(self, **body):
+        payload = {"instance_id": "ocid1.instance.oc1..test"}
+        payload.update(body)
+        return self.client.post("/api/ssh/connect-instance", json=payload,
+                                cookies=self._auth_cookies())
+
+    def test_success_first_port(self):
+        self._mock_oci()
+        self.mock_manager.create_session.return_value = "sid-9"
+        with patch.dict(os.environ,
+                        {"MBOT_FIXED_ROOT_PASSWORD": "fixed-pw-test"}):
+            resp = self._post()
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["session_id"], "sid-9")
+        self.assertEqual(resp.json()["port"], 14422)
+        # 密码只在服务端用，绝不返回给前端。
+        self.assertNotIn("fixed-pw-test", resp.text)
+        self.mock_manager.create_session.assert_called_once_with(
+            TEST_HOST, 14422, "root", password="fixed-pw-test")
+
+    def test_fallback_to_port_22(self):
+        self._mock_oci()
+        self.mock_manager.create_session.side_effect = [
+            paramiko.SSHException("refused"), "sid-9"]
+        with patch.dict(os.environ,
+                        {"MBOT_FIXED_ROOT_PASSWORD": "fixed-pw-test"}):
+            resp = self._post()
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["port"], 22)
+        calls = self.mock_manager.create_session.call_args_list
+        self.assertEqual([c.args[1] for c in calls], [14422, 22])
+
+    def test_no_fixed_password(self):
+        self._mock_oci()
+        with patch.dict(os.environ, {"MBOT_FIXED_ROOT_PASSWORD": ""}):
+            resp = self._post()
+        self.assertEqual(resp.status_code, 400)
+        self.mock_manager.create_session.assert_not_called()
+
+    def test_unknown_profile(self):
+        self._mock_oci()
+        with patch("web.deps.resolve_profile",
+                   side_effect=ValueError("未知 profile：NOPE")), \
+                patch.dict(os.environ,
+                           {"MBOT_FIXED_ROOT_PASSWORD": "fixed-pw-test"}):
+            resp = self._post()
+        self.assertEqual(resp.status_code, 400)
+
+    def test_no_public_ip(self):
+        self._mock_oci(public_ip=None)
+        with patch.dict(os.environ,
+                        {"MBOT_FIXED_ROOT_PASSWORD": "fixed-pw-test"}):
+            resp = self._post()
+        self.assertEqual(resp.status_code, 502)
+        self.mock_manager.create_session.assert_not_called()
+
+    def test_auth_failure_both_ports(self):
+        self._mock_oci()
+        self.mock_manager.create_session.side_effect = \
+            paramiko.AuthenticationException("nope")
+        with patch.dict(os.environ,
+                        {"MBOT_FIXED_ROOT_PASSWORD": "fixed-pw-test"}):
+            resp = self._post()
+        self.assertEqual(resp.status_code, 401)
+        self.assertEqual(
+            self.mock_manager.create_session.call_count, 2)  # 14422 与 22 都试过
+
+
 class TestWebSocket(_AuthPatchedTestCase):
     def _mock_entry(self, recv_side_effect=None):
         mock_session = MagicMock()

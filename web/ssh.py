@@ -52,6 +52,7 @@ IDLE_TIMEOUT_MINUTES = 30  # Session idle timeout (minutes); idle sessions are c
 SESSION_GRACE_MINUTES = 5  # How long a session is kept after its WebSocket disconnects (minutes), for reconnects. WebSocket 断开后会话保留时长（分钟），供重连。
 CLEANUP_INTERVAL_SECONDS = 60  # Idle-cleanup background thread check interval (seconds). 空闲清理后台线程的检查间隔（秒）。
 WS_OUTPUT_POLL_SECONDS = 0.02  # Output pump polling interval for the channel (seconds). 输出泵轮询 channel 的间隔（秒）。
+INSTANCE_SSH_PORTS = (14422, 22)  # Instance one-click login tries these ports in order: 14422 (DD / hardening script) first, then 22 (OCI default). 实例一键登录按顺序试这些端口：先 14422（DD / 加固脚本改的端口），再 22（OCI 默认）。
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 KNOWN_HOSTS_PATH = DATA_DIR / "known_hosts"  # Host keys remembered by AutoAddPolicy. AutoAddPolicy 记住的 host key。
@@ -565,6 +566,69 @@ def api_ssh_connect(body: ConnectRequest, _session=Depends(require_auth)):
     # Logs record only host/username, never passwords. 日志只记 host/username，绝不记密码。
     logger.info("SSH 连接成功：%s@%s:%s -> %s", username, host, port, session_id)
     return {"session_id": session_id, "host": host, "username": username}
+
+
+class ConnectInstanceRequest(BaseModel):
+    """POST /api/ssh/connect-instance 的请求体：实例卡片 SSH 一键直连。"""
+
+    instance_id: str
+    profile: Optional[str] = None
+    region: Optional[str] = None
+
+
+@router.post("/api/ssh/connect-instance")
+def api_ssh_connect_instance(body: ConnectInstanceRequest,
+                             _session=Depends(require_auth)):
+    """实例卡片 SSH 一键直连：查实例公网 IP，用固定 root 密码自动登录 root。
+
+    密码只在服务端内存里用（环境变量 MBOT_FIXED_ROOT_PASSWORD），绝不
+    返回给前端、不记日志。未设固定密码、实例无公网 IP、或自动登录失败
+    时返回明确错误，前端回落到手动连接表单（预填主机）。
+    端口先试 14422（DD / 加固脚本改的端口），再试 22（OCI 默认）。
+    """
+    fixed_password = os.environ.get("MBOT_FIXED_ROOT_PASSWORD", "").strip()
+    if not fixed_password:
+        raise HTTPException(
+            status_code=400,
+            detail="未设置固定 root 密码（MBOT_FIXED_ROOT_PASSWORD），"
+                   "无法自动登录；请在连接表单里手动输入密码")
+    try:
+        # Lazy imports: web.deps pulls in oci + tgbot config; importing at
+        # module top would risk a cycle with the app wiring. 延迟导入：
+        # web.deps 会拉 oci 与 tgbot 配置，模块顶层导入可能与应用装配循环。
+        from web.deps import resolve_profile
+        from oci.network import get_public_ip
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"服务端依赖不可用：{exc}")
+    try:
+        cli, _compartment_id = resolve_profile(body.profile, body.region)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    try:
+        host = get_public_ip(cli, body.instance_id)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"查实例公网 IP 失败：{exc}")
+    if not host:
+        raise HTTPException(status_code=502, detail="实例暂无公网 IP，无法直连")
+    auth_failed = False
+    last_error = None
+    for port in INSTANCE_SSH_PORTS:
+        try:
+            session_id = manager.create_session(
+                host, port, "root", password=fixed_password)
+        except paramiko.AuthenticationException:
+            auth_failed = True
+            last_error = "SSH 认证失败：固定 root 密码不正确"
+            continue
+        except (paramiko.SSHException, OSError, socket.timeout) as exc:
+            last_error = f"SSH 连接失败：{exc}"
+            continue
+        logger.info("实例 SSH 直连成功：root@%s:%s -> %s", host, port, session_id)
+        return {"session_id": session_id, "host": host,
+                "username": "root", "port": port}
+    if auth_failed:
+        raise HTTPException(status_code=401, detail=last_error or "SSH 认证失败")
+    raise HTTPException(status_code=502, detail=last_error or "SSH 连接失败")
 
 
 @router.get("/api/ssh/sessions")

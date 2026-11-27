@@ -116,7 +116,7 @@ class TaskRegistry:
         """注册一个任务，返回 ID（如抢机任务 "web-g1"）。初始状态 pending。
 
         label 是显示用的任务说明（如 "E2.1.Micro（新加坡）·
-        AMD_2026-01-01"），任务页用它当第一列，不再直接暴露
+        AMD_2026-11-24"），任务页用它当第一列，不再直接暴露
         grab 这类内部类型；旧任务没有 label 时前端退回 kind。
         """
         with self._lock:
@@ -313,9 +313,9 @@ def _notify_grab_success(registry, task_id, cli, params, result, notify):
                                 f"实例 {_name}（{_ip}）DD 完成，Debian 13 "
                                 "已就绪，开始执行初始化脚本。")
                 elif event_type == "init_done":
-                    notify_dual(token, chat_id, "✅ 初始化完成",
-                                f"实例 {_name}（{_ip}）初始化脚本执行完成。\n"
-                                "初始化脚本已关掉密码登录，之后请用 SSH 密钥登录。")
+                    # init_done 的 message 已含验证结果（密码登录可用与否），
+                    # 直接发双通道通知（Telegram + Bark）。
+                    notify_dual(token, chat_id, "✅ 初始化完成", message)
                 elif event_type in ("dd_timeout", "init_timeout",
                                     "init_failed"):
                     notify_dual(token, chat_id, "❌ DD 初始化失败",

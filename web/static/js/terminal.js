@@ -222,7 +222,7 @@ class TerminalManager {
     if (tab.reconnects >= MAX_RECONNECT) {
       tab.tabEl.classList.remove('reconnecting');
       tab.tabEl.classList.add('disconnected');
-      tab.term.write('\r\n\x1b[1;31m[重连失败，请点“断开重连”手动重试]\x1b[0m\r\n');
+      tab.term.write('\r\n\x1b[1;31m[重连失败，请关闭本窗口后重新连接]\x1b[0m\r\n');
       return;
     }
     const delay = RECONNECT_DELAYS[tab.reconnects] || 3000;
@@ -238,16 +238,6 @@ class TerminalManager {
       }
     } catch (e) { /* 快照失败也继续重连 WS */ }
     if (!tab.closed) this._connectWS(sessionId);
-  }
-
-  /** 手动断开重连：关掉当前 WS，走重连流程（后端会话保留 5 分钟）。 */
-  manualReconnect() {
-    if (!this.activeId) return;
-    const tab = this.tabs.get(this.activeId);
-    if (!tab) return;
-    tab.reconnects = 0;
-    if (tab.ws) tab.ws.close();
-    else this._reconnect(this.activeId);
   }
 
   /** 向当前终端发送文本（收藏命令用）：execute=true 时末尾加回车直接执行，
@@ -1049,6 +1039,30 @@ const BatchExec = {
 let sftpPanel = null;
 let favPanel = null;
 
+// ---------- 实例卡片 SSH 一键直连 ----------
+// Instance card SSH one-click login: POST /api/ssh/connect-instance auto-logs in as root with the fixed password; on failure, fall back to the manual connect form (host prefilled when known). 实例卡片 SSH 一键直连：调 /api/ssh/connect-instance 用固定密码自动登录 root；失败回落手动连接表单（知道主机就预填）。
+async function autoConnectInstance(mgr, { instanceId, profile, region, host }) {
+  try {
+    const resp = await fetch('/api/ssh/connect-instance', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        instance_id: instanceId, profile, region,
+      }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.detail || '直连失败');
+    mgr.openTab(data.session_id, `${data.username}@${data.host}`);
+  } catch (err) {
+    showToast(`自动登录失败：${err.message}，请手动连接`);
+    if (host) $('conn-host').value = host;
+    if (!$('conn-port').value) $('conn-port').value = '14422';
+    $('connect-error').classList.add('hidden');
+    $('connect-modal').classList.remove('hidden');
+    $('conn-password').focus();
+  }
+}
+
 // ---------- 页面初始化 ----------
 document.addEventListener('DOMContentLoaded', () => {
   const mgr = new TerminalManager();
@@ -1128,5 +1142,20 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  $('btn-reconnect').addEventListener('click', () => mgr.manualReconnect());
+  $('btn-close-tab').addEventListener('click', () => {
+    if (mgr.activeId) mgr.closeTab(mgr.activeId);
+  });
+
+  // Instance card SSH one-click login: /terminal?instance=<id>&profile=&region=&host=
+  // 实例卡片 SSH 一键直连：带 instance 参数打开时自动调后端直连，成功直接开标签；失败回落到手动连接表单（预填主机）。
+  const _params = new URLSearchParams(location.search);
+  const _instanceId = _params.get('instance');
+  if (_instanceId) {
+    autoConnectInstance(mgr, {
+      instanceId: _instanceId,
+      profile: _params.get('profile') || null,
+      region: _params.get('region') || null,
+      host: _params.get('host') || null,
+    });
+  }
 });

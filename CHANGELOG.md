@@ -9,6 +9,11 @@
 
 ## [Unreleased]
 
+## [2.18.0] - 2026-11-27
+- DD 初始化后强制开回 root 密码登录：初始化脚本跑完后（不管脚本是否关了密码登录）写 `/etc/ssh/sshd_config.d/60-mbot-root-login.conf`（PermitRootLogin yes + PasswordAuthentication yes）并 reload sshd，开机时给的 root 密码继续可用；跑完后 M_Bot 再用 root 密码 SSH 进去验证状态（密码登录可用、sshd 运行中、Debian 13），验证结果写进初始化完成通知（Telegram + Bark 双通道）。机器人与网页端的初始化完成通知改成直接发事件消息，原来“初始化脚本已关掉密码登录，之后请用 SSH 密钥登录”的说法已作废；开机成功通知与 DD 完成通知本来就是双通道，未动。
+- 实例卡片 SSH 一键直连：实例卡片点 SSH 直接用固定 root 密码自动登录 root（服务端环境变量 `MBOT_FIXED_ROOT_PASSWORD`，只在服务端内存里用，绝不返回前端、不记日志），端口先试 14422（DD / 加固脚本改的端口）再试 22（OCI 默认）；未设固定密码、实例无公网 IP、或自动登录失败时回落到手动连接表单（预填主机）。注意：固定 root 密码须先在 env 文件里设置并重启服务才生效，未设置时开机密码是随机 UUID、面板无处可读，无法自动登录。
+- 终端顶栏“断开重连”改成“关闭此SSH窗口”：点一下关闭当前 SSH 会话窗口（标签与后端会话一起关），不再是断开重连；断线自动重连仍在（最多 3 次），重连失败的提示同步改成“请关闭本窗口后重新连接”。
+
 ## [2.17.0] - 2026-11-27
 - 安装器加固：UFW 默认策略显式收紧为入站拒绝 / 出站放行（`ufw default deny incoming` / `ufw default allow outgoing`，在 `_firewall_ufw` 开头做；不做 `ufw reset`，升级重跑不会清空已有规则）。
 - 安装器加入网络优化：TCP 缓冲调大（rmem/wmem 最大 64MB，`net.ipv4.tcp_rmem` / `tcp_wmem` 最大 64MB）+ 有 `tcp_bbr` 模块时切 BBR + fq，跨太平洋单流从 120–140 Mbps 涨到约 830 Mbps，全部写 `/etc/sysctl.conf` 与 `/etc/modules` 持久化，装机与升级都跑（幂等）。

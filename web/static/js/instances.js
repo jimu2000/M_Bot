@@ -818,7 +818,13 @@
       else if (act === "restart") instanceAction(instId, "restart", "重启");
       else if (act === "detail") showDetail(instId);
       else if (act === "ssh") {
-        window.location.href = "/terminal";
+        // Instance card SSH one-click login: the terminal page auto-connects as root with the fixed password (see /api/ssh/connect-instance); on failure it falls back to the manual form with the host prefilled. 实例卡片 SSH 一键直连：终端页用固定密码自动登录 root（见 /api/ssh/connect-instance），失败回落手动表单（预填主机）。
+        var n = norm(inst);
+        var q = "instance=" + encodeURIComponent(instId) +
+          "&profile=" + encodeURIComponent(currentProfile || "") +
+          "&region=" + encodeURIComponent(currentRegion || "");
+        if (n.public_ip) q += "&host=" + encodeURIComponent(n.public_ip);
+        window.location.href = "/terminal?" + q;
       } else if (act === "ip-manage") showIpManage(inst);
       else if (act === "boot-volume") showBootVolume(inst);
       else if (act === "resize") {
