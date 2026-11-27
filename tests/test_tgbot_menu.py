@@ -630,6 +630,13 @@ class TestRaninfoCommand(AllowedUserTestCase):
         self.assertIn("Abc1234567890Xyz98765", texts[1])
         self.assertIn("只显示这一次", texts[1])
         self.assertEqual("".join(texts).count("Abc1234567890Xyz98765"), 1)
+        # 密码放代码块里（Telegram 给复制按钮，拷到的就是纯密码、
+        # 后面不带空格）；行内反引号长按选中会把后面的空格也带上。
+        self.assertIn("```\nAbc1234567890Xyz98765\n```", texts[1])
+        # 帐号显示在密码上面。
+        self.assertIn("帐号：", texts[1])
+        self.assertLess(texts[1].index("帐号："),
+                        texts[1].index("Abc1234567890Xyz98765"))
 
     async def test_command_failure(self):
         """重置失败时，回复失败原因，不发密码。"""

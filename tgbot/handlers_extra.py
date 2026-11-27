@@ -2799,8 +2799,13 @@ async def handle_health(update, context):
 
 @require_allowed
 async def handle_tasks(update, context):
-    """菜单 21：任务列表 + 取消按钮。"""
-    tasks = TASKS.list_all()
+    """菜单 21：只列运行中的任务 + 取消按钮。
+
+    标题写的是“运行中的任务”，所以只取 TASKS.running()，
+    不再用 list_all() 把已结束（done/failed/cancelled）的
+    历史任务也列出来（之前列表又长又乱就是这个原因）。
+    """
+    tasks = TASKS.running()
     lang = lang_of(update, context)
     await _reply(update, context, fmt_task_list(tasks, lang=lang),
                  reply_markup=task_list_keyboard(tasks, lang=lang))

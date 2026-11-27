@@ -9,6 +9,11 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [2.16.2] - 2026-11-27
+- Fixed the cluttered "Running Tasks" list: bot menu 21 is called "View Running Tasks" but it was listing all tasks (`list_all()`), including done, failed and cancelled history. It now lists only running tasks (`TASKS.running()`); with nothing running it just shows "No running tasks." The refresh button goes through the same entry point, so it shows running tasks only too.
+- The task list is now one line per task: each row shows only the label (shape · region · instance name); the detail/progress line is gone, so the whole list fits at a glance.
+- After /raninfo resets the password, the new password is now shown in a code block: Telegram adds a copy button to code blocks, so one tap copies exactly the password with no trailing space; the old inline-code form picked up a trailing space when long-pressed to select, which broke pasting it into the login form. The message now shows the account (panel admin username) first, with the password below it.
+
 ## [2.16.1] - 2026-11-27
 - Fixed "account deleted from the config still shows in the list": the panel runs 4 workers, and each worker's in-memory account table and process environment are snapshots from startup — deleting an account only updated the env file plus the one worker that handled the request, while the other workers still kept the deleted account's `MBOT_COMPARTMENT_*`, so the list added it back on the next load. The account table now takes the env file as the source of truth (`_build_profiles` reads the env file instead of leftover process environment variables; it falls back to the environment when the file is absent), and the account-list endpoint re-reads from disk on every call instead of using a possibly stale worker's memory. The list updates right after a delete, no panel restart needed.
 

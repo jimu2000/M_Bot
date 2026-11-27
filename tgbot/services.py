@@ -459,7 +459,7 @@ class TaskRegistry:
         """注册一个任务，返回短 ID（如共享模式 "bot-g1"，内存模式 "g1"）。
 
         label 是显示用的任务说明（如 "E2.1.Micro（新加坡）·
-        AMD_2026-01-01"），菜单 21 与取消按钮用它，不再直接
+        AMD_2026-11-24"），菜单 21 与取消按钮用它，不再直接
         暴露 g1 / grab 这类内部编号与类型。
         """
         with self._lock:
@@ -622,10 +622,12 @@ TASKS = TaskRegistry(tasks_file=task_store.tasks_path())
 
 
 def fmt_task_list(tasks, lang="zh"):
-    """任务列表全文：每条显示在抢什么机器 + 最新进度。
+    """任务列表全文：一行一个任务，只显示 label。
 
-    不再显示 g1（grab, running, …）这种内部编号与英文类型。
-    label 由注册方传入；没有 label 的旧任务退回“任务 <id>”。
+    不再显示 g1（grab, running, …）这种内部编号与英文类型，
+    也不再显示 detail 进度行（一个任务占两行太乱，要的就是
+    一行一个、简单明了）。label 由注册方传入；没有 label 的
+    旧任务退回“任务 <id>”。
     """
     if not tasks:
         return bot_i18n.t(lang, "tasks.none")
@@ -634,6 +636,4 @@ def fmt_task_list(tasks, lang="zh"):
         label = task.get("label") or bot_i18n.t(
             lang, "tasks.old_label", task_id=task['id'])
         lines.append(f"• {label}")
-        if task.get("detail"):
-            lines.append(f"  {task['detail']}")
     return "\n".join(lines)

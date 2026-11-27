@@ -573,7 +573,9 @@ async def raninfo_command(update: Update,
     await _reply(
         update, context,
         "✅ 面板管理员密码已重置，面板服务已重启。\n\n"
-        f"新密码：`{new_password}`\n\n"
+        f"帐号：{web_config.ADMIN_USERNAME}\n"
+        "密码：\n"
+        f"```\n{new_password}\n```\n\n"
         "⚠️ 请立即保存，新密码只显示这一次。",
         parse_mode="Markdown")
 
