@@ -135,7 +135,12 @@ class TestIamFeatures(unittest.TestCase):
         policy_call = next(c for c in cli.calls
                            if c[:3] == ["iam", "policy", "create"])
         policy_json = policy_call[policy_call.index("--statements") + 1]
-        self.assertIn("manage users in tenancy", policy_json)
+        # 2026-11-27 用户决定：Bot 用户不给 manage users（能改别人密码），
+        # 只给实例/卷/网络三项。
+        self.assertNotIn("manage users in tenancy", policy_json)
+        self.assertIn("manage instance-family", policy_json)
+        self.assertIn("manage volume-family", policy_json)
+        self.assertIn("manage virtual-network-family", policy_json)
 
     def test_existing_policy_is_extended_without_losing_old_statements(self):
         cli = FakeOCI()
@@ -145,7 +150,6 @@ class TestIamFeatures(unittest.TestCase):
             "statements": [
                 "Allow group Group_for_Api_used to manage instance-family in tenancy",
                 "Allow group Group_for_Api_used to manage volume-family in tenancy",
-                "Allow group Group_for_Api_used to manage virtual-network-family in tenancy",
             ],
         }]
         create_bot_permission_user(
@@ -154,8 +158,9 @@ class TestIamFeatures(unittest.TestCase):
         update_call = next(c for c in cli.calls
                            if c[:3] == ["iam", "policy", "update"])
         statements = update_call[update_call.index("--statements") + 1]
-        self.assertIn("manage users in tenancy", statements)
+        self.assertNotIn("manage users in tenancy", statements)
         self.assertIn("manage instance-family", statements)
+        self.assertIn("manage virtual-network-family", statements)
         self.assertIn("--force", update_call)
         # OCI 要求改 statements 时必须同时传 --version-date，
         # 只传其一会报 "both parameters must be specified"。
@@ -165,7 +170,7 @@ class TestIamFeatures(unittest.TestCase):
             "2026-01-01")
 
     def test_policy_update_without_version_date_uses_today(self):
-        # 2026-01-04 真机：Api_User_Policy 的 version-date 是 null，
+        # 2026-11-27 真机：Api_User_Policy 的 version-date 是 null，
         # 旧代码只传 --statements，OCI 直接拒绝整个更新。
         cli = FakeOCI()
         cli.policies = [{

@@ -393,27 +393,28 @@
         box.textContent = "该账号下暂无 IAM 用户。";
         return;
       }
-      // Mobile-first IAM user cards: avoid a wide table whose action buttons
-      // collapse into a vertical column on narrow screens.
+      // Mobile-first IAM user cards: header (name + state badge),
+      // email, then a 3-button grid. Subtle tinted buttons keep the
+      // card readable on narrow screens without wrapping.
       var list = el("div", null, "iam-user-list");
       users.forEach(function (u) {
         var card = el("article", null, "iam-user-card");
-        var identity = el("div", null, "iam-user-identity");
-        identity.appendChild(el("div", u.name || "未知用户", "iam-user-name"));
-        identity.appendChild(el("div", u.email || "未设置邮箱", "iam-user-email"));
+        var header = el("div", null, "iam-user-header");
+        header.appendChild(el("div", u.name || "未知用户", "iam-user-name"));
         var state = (u["lifecycle-state"] || u.lifecycle_state || "UNKNOWN").toUpperCase();
-        identity.appendChild(el("span", state, "iam-user-state" + (state === "ACTIVE" ? " is-active" : "")));
-        card.appendChild(identity);
+        header.appendChild(el("span", state, "iam-user-badge" + (state === "ACTIVE" ? " is-active" : "")));
+        card.appendChild(header);
+        card.appendChild(el("div", u.email || "未设置邮箱", "iam-user-email"));
         var actions = el("div", null, "iam-user-actions");
-        var keyBtn = el("button", "密钥", "btn btn-sm");
+        var keyBtn = el("button", "密钥管理", "btn-subtle");
         keyBtn.type = "button";
         keyBtn.addEventListener("click", function () { showUserKeys(u.id, u.name); });
         actions.appendChild(keyBtn);
-        var pwdBtn = el("button", "重置密码", "btn btn-sm btn-primary");
+        var pwdBtn = el("button", "重置密码", "btn-subtle btn-subtle-primary");
         pwdBtn.type = "button";
         pwdBtn.addEventListener("click", function () { resetIamPassword(u.id, u.name); });
         actions.appendChild(pwdBtn);
-        var delBtn = el("button", "删除", "btn btn-sm btn-danger");
+        var delBtn = el("button", "删除", "btn-subtle btn-subtle-danger");
         delBtn.type = "button";
         delBtn.addEventListener("click", function () { deleteIamUser(u.id, u.name); });
         actions.appendChild(delBtn);

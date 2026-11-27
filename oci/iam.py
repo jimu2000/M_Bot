@@ -413,10 +413,11 @@ def create_bot_permission_user(cli, tenancy_id, group_name, user_name,
         f"Allow group {group_name} to manage instance-family in tenancy",
         f"Allow group {group_name} to manage volume-family in tenancy",
         f"Allow group {group_name} to manage virtual-network-family in tenancy",
-        # Required by the panel/bot IAM user-management features, including
-        # CreateOrResetUIPassword for other users. This is tenancy-wide IAM
-        # user administration and must be clearly disclosed to the operator.
-        f"Allow group {group_name} to manage users in tenancy",
+        # 注意（2026-11-27 用户决定）：这里故意不加
+        # `Allow group <组名> to manage users in tenancy`。
+        # manage users 会让 Bot 用户能改别人密码（CreateOrResetUIPassword）、
+        # 删用户、管 API Key，属于租户级高权限；Bot 用户只做实例/卷/网络
+        # 管理，IAM 用户管理只走管理员 profile（面板 DEFAULT）。
     ]
     policies = _extract_list(cli.run([
         "iam", "policy", "list", "--compartment-id", tenancy_id, "--all"]))

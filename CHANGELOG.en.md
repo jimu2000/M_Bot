@@ -9,6 +9,11 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [2.14.5] - 2026-11-27
+- IAM user list mobile UI rework: cards now use a header (username + status badge side by side) / email / three-button grid layout, with subtle tinted buttons (grey for key management, light blue for reset password, light red for delete), so nothing crowds together on narrow screens; toasts now float top-center instead of covering the bottom form and buttons.
+- **Bot user loses the manage users permission (operator's decision)**: `Allow group Group_for_Api_used to manage users in tenancy` was removed from Api_User_Policy on the real tenancy. api_user now has only instance / volume / virtual-network management and can no longer reset other users' passwords, delete users, or manage API keys; `create_bot_permission_user` no longer adds that statement (clicking "Create Bot User" again will not bring it back). IAM user management now goes through the admin profile only (panel DEFAULT). The permission notes in the bot and web panel were updated to match.
+- Note: the backend policy-update fix and the test_iam.py assertion were already fixed in v2.14.4 / v2.14.3 (--version-date falls back to today's date; empty remark defaults to a description). Passing an empty string "" is equivalent to today's date (both mean "evaluate with the current policy language version").
+
 ## [2.14.4] - 2026-11-27
 - Fixed "Create Bot User" failing: when merging statements into an existing IAM policy, `oci iam policy update` was called with `--statements` only, but OCI requires `--version-date` whenever statements are updated (otherwise it reports "both parameters must be specified"). The policy's existing version-date is now reused, falling back to today's date when absent; verified on the real tenancy with a throwaway test policy (the real Api_User_Policy was not touched).
 - Note: when the current API user resets its own password and OCI refuses, the panel shows a diagnostic message. This is an OCI-side limitation (self-reset for the initial admin returns 404), not the panel blocking it.

@@ -5,7 +5,8 @@
   - POST /api/iam/users：新增普通用户 {profile, name, email, description?}。
   - POST /api/iam/users/bot：创建专用 Bot API 用户 {profile, email?}：
     api_user + Group_for_Api_used + Api_User_Policy，幂等复用已存在资源；
-    策略包含 manage users in tenancy（租户级 IAM 用户/凭据管理高权限）；
+    策略只有实例/卷/虚拟网络三项（2026-11-27 用户决定：不给 manage users，
+    Bot 用户不能改别人密码；IAM 用户管理只走管理员 profile）；
     成功后自动生成 RSA API Key，私钥只在本次响应里返回一次（前端提供下载，
     刷新后不再可查）。
   - DELETE /api/iam/users/{user_id}?profile=X：删除用户。两重保护与机器人

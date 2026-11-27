@@ -9,6 +9,11 @@
 
 ## [Unreleased]
 
+## [2.14.5] - 2026-11-27
+- IAM 用户列表移动端 UI 重构：卡片改为头部（用户名 + 状态徽章并排）/ 邮箱 / 三按钮网格结构，按钮改用微质感样式（密钥管理灰、重置密码浅蓝、删除浅红），窄屏不再挤成一团；Toast 改为顶部居中悬浮，不再遮挡底部表单与按钮。
+- **Bot 用户收回 manage users 权限（用户决定）**：Api_User_Policy 已从真实租户上删掉 `Allow group Group_for_Api_used to manage users in tenancy`，api_user 现在只有实例/卷/虚拟网络三项，不能再改别人密码、删用户、管 API Key；`create_bot_permission_user` 也不再补这条（以后点“创建 Bot 用户”不会再加回来）。IAM 用户管理只走管理员 profile（面板 DEFAULT）。机器人端与网页版的权限说明同步改掉。
+- 说明：后端 Policy 更新与 test_iam.py 断言在 v2.14.4 / v2.14.3 已修好（--version-date 补当天日期、空备注默认描述），本次不再改动；传入空串 "" 与当天日期效果等价（都表示按当前策略语言版本评估）。
+
 ## [2.14.4] - 2026-11-27
 - 修复“创建 Bot 用户”失败：已存在的 IAM 策略补语句时，`oci iam policy update` 只传了 `--statements`，OCI 要求改 statements 时必须同时传 `--version-date`（否则报 "both parameters must be specified"）。现沿用策略现有的 version-date，没有时用当天日期；Api_User_Policy 的 version-date 是 null，已用一次性测试策略在真实租户验证通过（不碰真实策略）。
 - 补充说明：面板上点“重置密码”时，若当前 API 用户就是被重置的用户本人且 OCI 拒绝，属于 OCI 侧限制（初始管理员自重置返回 404），面板会给出诊断提示，不是面板主动拦截。
