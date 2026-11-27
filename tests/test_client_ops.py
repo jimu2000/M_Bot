@@ -76,7 +76,16 @@ class TestRestartService(unittest.TestCase):
         mock_run.return_value = _completed(0, "")
         self.assertIsNone(restart_service(BOT_SERVICE))
         mock_run.assert_called_once_with(
-            ["systemctl", "restart", BOT_SERVICE],
+            ["systemctl", "restart", "--no-block", BOT_SERVICE],
+            timeout=client_ops.SYSTEMCTL_TIMEOUT)
+
+    @patch.object(client_ops, "_run")
+    def test_web_restart_blocks_without_no_block(self, mock_run):
+        """面板服务不在机器人自己的 cgroup 里，照常等任务完成。"""
+        mock_run.return_value = _completed(0, "")
+        self.assertIsNone(restart_service(WEB_SERVICE))
+        mock_run.assert_called_once_with(
+            ["systemctl", "restart", WEB_SERVICE],
             timeout=client_ops.SYSTEMCTL_TIMEOUT)
 
     @patch.object(client_ops, "_run")

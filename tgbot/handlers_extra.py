@@ -2334,10 +2334,11 @@ async def boot_go_callback(update, context):
                        label=label_text)
     parse_mode = None
     if root_password:
-        # The password charset has no backticks, so it is safe inside a Markdown code span. 密码字符集不含反引号，可安全放进 Markdown 代码段。
+        # Password in a triple-backtick code block (Telegram shows a copy button; tapping it copies the bare password with no trailing space/newline — same as the /raninfo reset password). 密码放三重反引号代码块（Telegram 给复制按钮，点一下拷到的就是纯密码，不带尾空格/换行——和 /raninfo 重置密码一样）。
+        # The password charset has no backticks, so it is safe inside a code block. 密码字符集不含反引号，可安全放进代码块。
         text += ("\n\n" + bot_i18n.tr(update, context,
                                       "boot.root_password_once") + "\n"
-                 f"`{root_password}`\n"
+                 f"```\n{root_password}\n```\n"
                  + bot_i18n.tr(update, context,
                                "boot.root_password_after"))
         parse_mode = "Markdown"

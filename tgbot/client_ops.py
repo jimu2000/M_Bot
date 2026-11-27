@@ -87,12 +87,22 @@ def restart_service(service):
     成功返回 None；失败抛 RuntimeError（带 stderr 摘要）。
     注意：重启 rbot-clone-bot 会杀掉当前机器人进程，调用方必须先
     把“正在重启”消息发给用户。
+
+    机器人重启自身时必须加 --no-block：systemctl 是机器人进程的
+    子进程，落在同一个 cgroup 里；不加时 systemd 停服务会把这个
+    systemctl 子进程一起杀掉，它永远回不了 0，调用方就会误报
+    “重启失败”（实际服务已经重启了）。--no-block 让 systemctl
+    下发任务就立即返回 0，之后 systemd 再停服务、起新进程。
+    面板服务不在机器人自己的 cgroup 里，不用加，照常等任务完成
+    以便确认重启真的成功了。
     """
     if service not in SERVICES:
         raise ValueError(f"未知的服务名：{service}（只允许 {SERVICES}）")
+    cmd = ["systemctl", "restart", service]
+    if service == BOT_SERVICE:
+        cmd = ["systemctl", "restart", "--no-block", service]
     try:
-        result = _run(["systemctl", "restart", service],
-                      timeout=SYSTEMCTL_TIMEOUT)
+        result = _run(cmd, timeout=SYSTEMCTL_TIMEOUT)
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(f"重启 {service} 超时（{SYSTEMCTL_TIMEOUT} 秒）") from exc
     except OSError as exc:

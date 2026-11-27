@@ -9,6 +9,10 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [2.16.3] - 2026-11-27
+- Fixed the false "restart bot service failed" report: the restart actually succeeded (the service did restart), but the bot runs `systemctl restart rbot-clone-bot` as its own child process in the same cgroup, so systemd kills that systemctl child when stopping the service and it never returns 0, making the code think the restart failed. Restarting the bot itself now uses `--no-block`, so systemctl returns 0 right after queuing the job and systemd then stops the service and starts a new process. Restarting the panel service is unaffected (it is not in the bot's own cgroup) and still waits for the job to finish so success can be confirmed.
+- The boot root password now goes in a triple-backtick code block (same as the /raninfo reset password): in the grab-started message the "root password" can be tapped to copy the bare password with no trailing space or newline. Grab tasks survive restarts: on startup both the bot and the panel resume still-running grab tasks from the grab_spec stored in the task record (remaining count = total − already grabbed); bot-g5 (E2.1.Micro · AMD_2026-11-27) has a complete spec and will auto-resume after the deploy restart.
+
 ## [2.16.2] - 2026-11-27
 - Fixed the cluttered "Running Tasks" list: bot menu 21 is called "View Running Tasks" but it was listing all tasks (`list_all()`), including done, failed and cancelled history. It now lists only running tasks (`TASKS.running()`); with nothing running it just shows "No running tasks." The refresh button goes through the same entry point, so it shows running tasks only too.
 - The task list is now one line per task: each row shows only the label (shape · region · instance name); the detail/progress line is gone, so the whole list fits at a glance.

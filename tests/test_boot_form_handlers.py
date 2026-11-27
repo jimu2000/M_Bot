@@ -609,7 +609,7 @@ class TestBootPresetLoad(BootFormHandlersTestCase):
         presets_file = self.tmp_path("presets.json")
         first = bf.build_preset(filled_form(), FAKE_DEPLOY)
         second = bf.build_preset(filled_form(memory_gb=12), FAKE_DEPLOY)
-        second["display_name"] = "ARM_2026-01-01-keep"
+        second["display_name"] = "ARM_2026-11-24-keep"
         self._write_presets(presets_file, [first, second])
         with patch.object(bot_config, "PRESETS_FILE", presets_file):
             update = make_update(callback_data="b:delok:0")
@@ -618,10 +618,10 @@ class TestBootPresetLoad(BootFormHandlersTestCase):
         with open(presets_file, encoding="utf-8") as fh:
             saved = json.load(fh)
         self.assertEqual(len(saved), 1)
-        self.assertEqual(saved[0]["display_name"], "ARM_2026-01-01-keep")
+        self.assertEqual(saved[0]["display_name"], "ARM_2026-11-24-keep")
         text = reply_text_of(update)
         self.assertIn("已删除", text)
-        self.assertIn("ARM_2026-01-01-keep", text)
+        self.assertIn("ARM_2026-11-24-keep", text)
         self.assertIn("快捷开机配置（1 条）", text)
         callbacks = callbacks_of(reply_markup_of(update))
         self.assertIn("b:load:0", callbacks)
@@ -709,8 +709,8 @@ class TestBootGoWithRoot(BootFormHandlersTestCase):
         self.assertIn("抢机已启动", text)
         self.assertIn("root 登录密码", text)
         self.assertIn("只显示这一次", text)
-        # The password is in a Markdown code block (UUID, 32 hex chars) and not in the task detail. 密码在 Markdown 代码段里（UUID 32 位 hex），且不在任务详情里。
-        self.assertRegex(text, r"`[0-9a-f]{32}`")
+        # The password is in a triple-backtick code block (UUID, 32 hex chars) so the user can tap to copy it, and not in the task detail. 密码在三重反引号代码块里（UUID 32 位 hex，点一下就能复制），且不在任务详情里。
+        self.assertRegex(text, r"```\n[0-9a-f]{32}\n```")
         self.assertNotIn("root 登录密码", task["detail"])
         # The Grabber received user-data with chpasswd (user_data is a keyword argument, ssh_keys_file is the 8th positional argument). Grabber 收到了带 chpasswd 的 user-data（user_data 是关键字参数，ssh_keys_file 是第 8 个位置参数）。
         kwargs = mock_grabber_cls.call_args.kwargs
@@ -725,8 +725,8 @@ class TestBootGoWithRoot(BootFormHandlersTestCase):
 
     async def test_start_reply_escapes_underscore_in_name(self):
         """v1.40.1：有 root 密码时启动回复走 Markdown，实例名里的
-        下划线（ARM_2026-01-01）必须转义，否则 Telegram 报
-        Can't parse entities、整条消息发不出去（2026-01-01 真实报错）。
+        下划线（ARM_2026-11-24）必须转义，否则 Telegram 报
+        Can't parse entities、整条消息发不出去（2026-11-24 真实报错）。
         """
         preset = bf.build_preset(
             filled_form(ssh_key="none", root_login=True), FAKE_DEPLOY)

@@ -1114,6 +1114,26 @@ class TestBoot(HandlersExtraTestCase):
                 self.assertEqual(saved[0]["shape"],
                                  "VM.Standard.E2.1.Micro")
 
+    async def test_boot_go_root_password_in_code_block(self):
+        """开机密码放三重反引号代码块（点一下就能复制纯密码，和 /raninfo 一样）。"""
+        preset = dict(he.BOOT_PRESETS["e2"])
+        preset["root_login"] = True
+        password = "27b5" + "55f3" + "f1fd" + "41f3" + "98aa" + "c99a" + "862a" + "4198"
+        preset["root_password"] = password
+        update = make_update(callback_data="b:go")
+        context = make_context()
+        context.user_data["pending_boot"] = preset
+        mock_grabber_cls = MagicMock()
+        mock_grabber_cls.return_value.run.return_value = GrabResult(
+            instance_id="ocid1.instance.oc1..zzzz", attempts=1,
+            releases=0, elapsed_seconds=10.0)
+        with patch.object(he, "Grabber", mock_grabber_cls):
+            await he.boot_go_callback(update, context)
+            text = reply_text_of(update)
+            self.assertIn("root 登录密码", text)
+            self.assertIn(f"```\n{password}\n```", text)
+            self.assertNotIn(f"`{password}`\n", text)
+
     async def test_boot_go_cancelled_marks_task(self):
         """Grabber 抛 GrabCancelledError 时任务状态为 cancelled。"""
         update = make_update(callback_data="b:go")
