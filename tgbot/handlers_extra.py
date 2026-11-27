@@ -1958,17 +1958,18 @@ def _run_grabber_thread(task_id, cli, compartment_id, preset, notify=None,
 def _start_dd_init(preset, instances, notify, task_id=None):
     """DD 重装开时，为每台有公网 IP 的实例起 DD 初始化后台任务。
 
-    preset 须含 dd=True、startup_script（初始化脚本原文）、
-    root_password（DD 密码，确认页生成的 UUID）。DD 完成 / 初始化
-    完成 / 失败时经 notify_dual 双通道推送。无公网 IP 的实例起不了
-    任务（SSH 没地址可连），记日志提示人工处理。
+    preset 须含 dd=True、root_password（DD 密码，确认页生成的 UUID）。
+    startup_script（初始化脚本原文）可空：没脚本也跟踪 DD 完成并通知
+    （2026-11-28 用户要求“立即改”——没脚本就不跟踪、不通知是个缺口）。
+    DD 完成 / 初始化完成 / 失败时经 notify_dual 双通道推送。无公网 IP
+    的实例起不了任务（SSH 没地址可连），记日志提示人工处理。
     """
     if not preset.get("dd"):
         return
     init_script = preset.get("startup_script")
     password = preset.get("root_password")
-    if not init_script or not password:
-        logger.warning("DD 已开但缺初始化脚本或 root 密码，未起 DD 初始化。")
+    if not password:
+        logger.warning("DD 已开但缺 root 密码，未起 DD 初始化。")
         return
     token = notify.get("token")
     chat_id = notify.get("chat_id")
@@ -1982,9 +1983,8 @@ def _start_dd_init(preset, instances, notify, task_id=None):
         def _on_event(event_type, message, _name=name, _ip=public_ip):
             # 只在关键节点双通道推送；等待过程不刷屏。
             if event_type == "dd_done":
-                notify_dual(token, chat_id, "🔄 DD 完成",
-                            f"实例 {_name}（{_ip}）DD 完成，Debian 13 已就绪，"
-                            "开始执行初始化脚本。")
+                # dd_done 的 message 已含“有/无初始化脚本”的说明，直接发。
+                notify_dual(token, chat_id, "🔄 DD 完成", message)
             elif event_type == "init_done":
                 # init_done 的 message 已含验证结果（密码登录可用与否），
                 # 直接发双通道通知（Telegram + Bark）。

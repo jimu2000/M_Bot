@@ -300,18 +300,16 @@ def _notify_grab_success(registry, task_id, cli, params, result, notify):
                     task_id,
                     "付费实例提醒部分失败：" + "; ".join(paid["errors"]))
         # DD 重装开时：开机成功通知已发，接着起 DD 初始化后台任务
-        # （等 DD 完成再经 SSH 跑初始化脚本）。
-        if params.get("dd") and params.get("init_script") \
-                and notify.get("root_password") and public_ip:
+        # （等 DD 完成再经 SSH 跑初始化脚本；没脚本也跟踪 DD 完成并通知）。
+        if params.get("dd") and notify.get("root_password") and public_ip:
             name = params.get("display_name") or "?"
             token = notify.get("token")
             chat_id = notify.get("chat_id")
 
             def _on_event(event_type, message, _name=name, _ip=public_ip):
                 if event_type == "dd_done":
-                    notify_dual(token, chat_id, "🔄 DD 完成",
-                                f"实例 {_name}（{_ip}）DD 完成，Debian 13 "
-                                "已就绪，开始执行初始化脚本。")
+                    # dd_done 的 message 已含“有/无初始化脚本”的说明，直接发。
+                    notify_dual(token, chat_id, "🔄 DD 完成", message)
                 elif event_type == "init_done":
                     # init_done 的 message 已含验证结果（密码登录可用与否），
                     # 直接发双通道通知（Telegram + Bark）。
@@ -323,11 +321,11 @@ def _notify_grab_success(registry, task_id, cli, params, result, notify):
                 registry.append_log(task_id, message)
 
             start_dd_init(public_ip, notify["root_password"],
-                          params["init_script"], instance_name=name,
+                          params.get("init_script"), instance_name=name,
                           port=DD_SSH_PORT, on_event=_on_event)
             registry.append_log(task_id, f"已起 DD 初始化任务：{name}（{public_ip}）")
         elif params.get("dd"):
-            registry.append_log(task_id, "DD 已开但缺初始化脚本、root 密码或公网 IP，未起 DD 初始化。")
+            registry.append_log(task_id, "DD 已开但缺 root 密码或公网 IP，未起 DD 初始化。")
     except Exception as exc:  # noqa: BLE001 - 通知绝不拖垮任务
         registry.append_log(task_id, f"开机成功通知失败：{exc}")
 

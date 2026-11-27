@@ -320,6 +320,19 @@ class TestVerifyPasswordLogin(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("状态不符", detail)
 
+    def test_verify_no_dropin_ok_when_not_required(self):
+        # 没跑初始化脚本时 DD 后的系统里没有 drop-in，但密码登录本身
+        # 可用：require_dropin=False 时只看系统与 sshd 状态，照样通过。
+        client = _FakeSSHClient({
+            "grep -E": ("ID=debian\nVERSION_ID=\"13\"\nactive\n", ""),
+        })
+        with mock.patch("oci.dd_init._ssh_connect",
+                        return_value=client):
+            ok, detail = verify_password_login(
+                "1.2.3.4", "pw", require_dropin=False)
+        self.assertTrue(ok)
+        self.assertIn("已验证可用", detail)
+
 
 class TestRunDdInit(unittest.TestCase):
     def test_full_flow_emits_events(self):
@@ -365,6 +378,51 @@ class TestRunDdInit(unittest.TestCase):
                                  on_event=lambda t, m: events.append(t))
         self.assertFalse(result)
         self.assertIn("dd_timeout", events)
+
+    def test_no_script_still_tracks_dd_and_notifies(self):
+        # 没初始化脚本也要跟踪 DD 完成并通知（2026-11-28 用户要求）：
+        # DD 完成后不跑脚本，只验证系统就绪，同样发 dd_done 与 init_done。
+        events = []
+        messages = []
+        with mock.patch("oci.dd_init.wait_for_dd",
+                        return_value=True), \
+                mock.patch("oci.dd_init.run_init_script") as run_script, \
+                mock.patch("oci.dd_init.verify_password_login",
+                           return_value=(True, "root 密码登录已验证可用，"
+                                               "sshd 运行中。")):
+            result = run_dd_init("1.2.3.4", "pw", None,
+                                 instance_name="ARM_2026-11-28",
+                                 on_event=lambda t, m: (events.append(t),
+                                                        messages.append(m)))
+        self.assertTrue(result)
+        run_script.assert_not_called()
+        self.assertIn("dd_done", events)
+        self.assertIn("init_done", events)
+        self.assertIn("无初始化脚本", " ".join(messages))
+
+    def test_no_script_dd_done_message_differs(self):
+        # 有脚本时 dd_done 说“开始执行初始化脚本”，没脚本时说“无初始化脚本”。
+        messages = []
+        with mock.patch("oci.dd_init.wait_for_dd",
+                        return_value=True), \
+                mock.patch("oci.dd_init.run_init_script",
+                           return_value=(True, 0, "ok")), \
+                mock.patch("oci.dd_init.verify_password_login",
+                           return_value=(True, "ok")):
+            run_dd_init("1.2.3.4", "pw", "#!/bin/bash\necho x\n",
+                        instance_name="AMD_2026-11-26",
+                        on_event=lambda t, m: messages.append(m))
+        self.assertIn("开始执行初始化脚本", " ".join(messages))
+        messages.clear()
+        with mock.patch("oci.dd_init.wait_for_dd",
+                        return_value=True), \
+                mock.patch("oci.dd_init.verify_password_login",
+                           return_value=(True, "ok")):
+            run_dd_init("1.2.3.4", "pw", "",
+                        instance_name="ARM_2026-11-28",
+                        on_event=lambda t, m: messages.append(m))
+        self.assertIn("无初始化脚本", " ".join(messages))
+        self.assertNotIn("开始执行初始化脚本", " ".join(messages))
 
 
 if __name__ == "__main__":

@@ -9,6 +9,9 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [2.20.0] - 2026-11-28
+- DD completion is now tracked and notified even without a startup script: DD init tracking used to start only when a startup script was provided; without one it never tracked the DD and never sent a DD-done notification (the user's new ARM_2026-11-28 got no DD-done Bark for this reason). Now tracking starts whenever DD is on and a root password is available: after the DD finishes, no script runs — M_Bot only verifies the system is ready (root password login works, sshd running) and still sends the DD-done and init-done dual-channel notifications. The DD-done wording differs by whether a script exists ("starting init script" vs "no init script"). The DD gate on the bot and web boot/grab success paths is relaxed the same way.
+
 ## [2.19.0] - 2026-11-28
 - Boot form defaults now follow the user's preference: delay defaults to 20 seconds, IPv6 defaults to on, and DD reinstall defaults to on (previously no delay default, IPv6 off, DD off). This only affects the interactive boot form and one-click boot (new `new_user_form()`); `new_form()` stays neutral (DD off, IPv6 off, no delay), so presets and grab tasks are unaffected.
 - DD reinstall option renamed: the old "On (Debian 13)" had parentheses that were too long; it is now "On Debian13", and the summary text uses Debian13 too.

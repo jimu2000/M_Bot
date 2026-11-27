@@ -213,31 +213,37 @@ def run_init_script(public_ip, password, script_content,
         sleep(poll_interval)
 
 
-def verify_password_login(public_ip, password, port=DD_SSH_PORT):
+def verify_password_login(public_ip, password, port=DD_SSH_PORT,
+                          require_dropin=True):
     """初始化完成后验证：用 root 密码 SSH 登录，确认密码登录可用且系统就绪。
 
     登录本身即证明密码可用；再读状态（Debian 13、sshd 运行中、
     drop-in 含 PasswordAuthentication yes）。返回 (ok, detail)，
     detail 是给通知用的状态说明。登录失败或状态不符都返回 False
     （脚本本身已跑完，验证失败只影响通知里的提醒，不改 init 结果）。
+
+    require_dropin=False 时不要求 drop-in 存在：没跑初始化脚本时
+    DD 后的系统里没有这份 drop-in，但 InstallNET 装好的系统本身已
+    开密码登录，SSH 登录成功即证明可用。
     """
     try:
         client = _ssh_connect(public_ip, port, password)
     except Exception as exc:  # noqa: BLE001 - 登录失败即验证不通过
         return False, f"密码 SSH 登录失败：{exc}"
     try:
-        out, _ = _run_ssh_command(
-            client,
-            "grep -E '^(ID|VERSION_ID)=' /etc/os-release; "
-            "systemctl is-active ssh || systemctl is-active sshd; "
-            f"grep -h PasswordAuthentication {ROOT_LOGIN_CONF}")
+        cmd = ("grep -E '^(ID|VERSION_ID)=' /etc/os-release; "
+               "systemctl is-active ssh || systemctl is-active sshd")
+        if require_dropin:
+            cmd += f"; grep -h PasswordAuthentication {ROOT_LOGIN_CONF}"
+        out, _ = _run_ssh_command(client, cmd)
     except Exception as exc:  # noqa: BLE001 - 读状态失败即验证不通过
         return False, f"读实例状态失败：{exc}"
     finally:
         client.close()
     ok = ("ID=debian" in out and "VERSION_ID=\"13\"" in out
-          and "active" in out
-          and "PasswordAuthentication yes" in out)
+          and "active" in out)
+    if require_dropin:
+        ok = ok and "PasswordAuthentication yes" in out
     if ok:
         return True, "root 密码登录已验证可用，sshd 运行中。"
     return False, f"状态不符：{out.strip()}"
@@ -247,9 +253,11 @@ def run_dd_init(public_ip, password, init_script, instance_name="",
                 port=DD_SSH_PORT, on_event=None, stop_event=None):
     """DD 等待 + 初始化执行的完整流程（同步，会阻塞到结束）。
 
-    on_event(event_type, message)：进度回调，event_type 为
-    "dd_done" / "init_started" / "init_done" / "init_failed" /
-    "dd_timeout" / "init_timeout"。返回 True（初始化成功）或 False。
+    init_script 为空时只等 DD 完成并验证系统就绪（不跑脚本），同样
+    发 DD 完成与初始化完成通知。on_event(event_type, message)：进度
+    回调，event_type 为 "dd_done" / "init_started" / "init_done" /
+    "init_failed" / "dd_timeout" / "init_timeout"。返回 True（初始化
+    成功）或 False。
     """
     def _emit(event_type, message):
         if on_event is not None:
@@ -265,6 +273,21 @@ def run_dd_init(public_ip, password, init_script, instance_name="",
         _emit("dd_timeout", f"实例 {instance_name}（{public_ip}）DD 等待"
                             "超时（30 分钟），未检测到 Debian 13。")
         return False
+    if not init_script:
+        # 无初始化脚本：DD 已完成，只验证系统就绪（密码登录可用、sshd
+        # 运行中），同样发完成通知。No init script: DD is done; verify
+        # the system is ready and notify.
+        _emit("dd_done", f"实例 {instance_name}（{public_ip}）DD 完成，"
+                         "Debian 13 已就绪，无初始化脚本。")
+        verified, detail = verify_password_login(
+            public_ip, password, port=port, require_dropin=False)
+        if verified:
+            _emit("init_done", f"实例 {instance_name}（{public_ip}）DD 完成，"
+                               f"无初始化脚本。{detail}")
+        else:
+            _emit("init_done", f"实例 {instance_name}（{public_ip}）DD 完成，"
+                               f"无初始化脚本，但密码登录验证失败：{detail}")
+        return True
     _emit("dd_done", f"实例 {instance_name}（{public_ip}）DD 完成，"
                      "Debian 13 已就绪，开始执行初始化脚本。")
     ok, code, log_tail = run_init_script(
