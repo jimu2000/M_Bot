@@ -98,6 +98,7 @@ from tgbot.boot_form import (
     generate_root_password,
     get_deploy_defaults,
     new_form,
+    new_user_form,
     set_custom,
     set_script,
     toggle_option,
@@ -1365,7 +1366,7 @@ async def handle_boot(update, context):
     仅供旧消息上的按钮回退使用；菜单 1 入口已改成表单。
     """
     context.user_data.pop("editing_preset_idx", None)
-    context.user_data["boot_form"] = new_form()
+    context.user_data["boot_form"] = new_user_form()
     form = context.user_data["boot_form"]
     await _reply(update, context, fmt_form_text(form, lang=lang_of(update, context)),
                  reply_markup=boot_form_keyboard(form, lang=lang_of(update, context)))

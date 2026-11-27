@@ -81,6 +81,23 @@ class TestNewForm(unittest.TestCase):
         self.assertFalse(form["ipv6"])
         self.assertIsNone(form["script"])
 
+    def test_user_form_defaults(self):
+        """用户偏好默认值（2026-11-28 定）：交互式开机表单与一键开机
+        用 new_user_form()，延迟 20 秒、IPv6 开、DD 重装开；new_form()
+        本身保持中性，不影响预设与抢机。"""
+        form = bf.new_user_form()
+        self.assertEqual(form["delays"], [20])
+        self.assertTrue(form["ipv6"])
+        self.assertTrue(form["dd"])
+        self.assertTrue(form["root_login"])
+        self.assertTrue(form["public_ip"])
+        self.assertEqual(form["ssh_key"], "use")
+        self.assertIsNone(form["script"])
+        # Neutral base is unchanged: presets built from new_form() still default DD off. 中性底子不变：new_form() 建的预设 DD 仍默认关。
+        self.assertFalse(bf.new_form()["dd"])
+        self.assertFalse(bf.new_form()["ipv6"])
+        self.assertEqual(bf.new_form()["delays"], [])
+
 
 class TestToggleOption(unittest.TestCase):
     def test_single_select_and_deselect(self):
@@ -761,7 +778,9 @@ class TestDefaultAmdForm(unittest.TestCase):
         self.assertEqual(form["ssh_key"], "use")
         self.assertTrue(form["root_login"])
         self.assertTrue(form["public_ip"])
-        self.assertFalse(form["ipv6"])
+        self.assertTrue(form["ipv6"])
+        self.assertTrue(form["dd"])
+        self.assertEqual(form["delays"], [20])
 
     def test_oneclick_amd_builds_valid_preset(self):
         _patched_images(self)

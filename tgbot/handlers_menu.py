@@ -93,7 +93,7 @@ BOT_COMMANDS = [
     ("uploadapi", "添加 api"),
     ("oproxy", "添加代理"),
     ("clearlock", "清除密码错误过多导致的锁定"),
-    ("raninfo", "重置随机用户信息"),
+    ("raninfo", "重置Web管理密码"),
     ("me", "查看我的信息"),
     ("admin", "管理员指令"),
 ]

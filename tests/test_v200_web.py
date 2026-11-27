@@ -97,6 +97,23 @@ class TestCloudReportChineseStates(unittest.TestCase):
         self.assertIn("instanceStateLabel(state)", inst)
         self.assertIn("MBotI18n", inst)
 
+    def test_cpu_model_label_a1_free_tier_and_e2_full_model(self):
+        """CPU 型号显示：A1 一律显示“A1配额内免费”，E2 未检测到时回落到
+        完整型号 "AMD EPYC 7J13"，不再出现光秃秃的 "AMD"；补拉与详情
+        重测两处都走同一 cpuModelLabel，不绕过它直接写原始值。"""
+        inst = read("web/static/js/instances.js")
+        self.assertIn("instances.cpu_a1_free", inst)
+        self.assertIn('"AMD EPYC 7J13"', inst)
+        self.assertNotIn('return "AMD";', inst)
+        self.assertNotIn('return "ARM";', inst)
+        self.assertIn("cell.textContent = cpuModelLabel(fresh.cpuModel, fresh.shape)",
+                      inst)
+        self.assertIn("cell.textContent = cpuModelLabel(res.cpu_model, detailTarget.shape)",
+                      inst)
+        i18n = read("web/static/js/i18n.js")
+        self.assertIn('"instances.cpu_a1_free": { zh: "A1配额内免费", en: "A1 free-tier" }',
+                      i18n)
+
     def test_instances_list_uses_state_all(self):
         """实例列表拉取 state=all：STOPPED 的实例也在列表里，能点启动。
 
@@ -500,11 +517,11 @@ class TestVersion200(unittest.TestCase):
     """A4：版本号 2.10。"""
 
     def test_version_file(self):
-        self.assertEqual(read("VERSION").strip(), "2.18.0")
+        self.assertEqual(read("VERSION").strip(), "2.19.0")
 
     def test_readme_top_version(self):
         readme = read("README.md")
-        self.assertIn("**当前版本：v2.18.0**", readme)
+        self.assertIn("**当前版本：v2.19.0**", readme)
 
     def test_changelogs_cover_v200(self):
         for rel, needles in (

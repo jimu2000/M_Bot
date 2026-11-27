@@ -441,10 +441,10 @@ STRINGS = {
     "boot.label_ipv6": {"zh": "IPv6", "en": "IPv6"},
     "boot.label_script": {"zh": "开机脚本", "en": "Startup script"},
     "boot.label_dd": {"zh": "DD重装", "en": "DD reinstall"},
-    "boot.dd_on": {"zh": "开（Debian 13）", "en": "On (Debian 13)"},
+    "boot.dd_on": {"zh": "开 Debian13", "en": "On Debian13"},
     "boot.dd_off": {"zh": "不开", "en": "Off"},
-    "boot.dd_summary": {"zh": "DD重装：开（Debian 13，SSH 14422，装完跑初始化脚本）",
-                        "en": "DD reinstall: on (Debian 13, SSH 14422, "
+    "boot.dd_summary": {"zh": "DD重装：开（Debian13，SSH 14422，装完跑初始化脚本）",
+                        "en": "DD reinstall: on (Debian13, SSH 14422, "
                               "then run init script)"},
     "boot.dd_requires_root": {"zh": "开 DD 重装时必须开 root 登录（DD 后的 "
                                "SSH 靠 root 密码进）",

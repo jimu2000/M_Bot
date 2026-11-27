@@ -145,6 +145,7 @@
     "instances.resize": { zh: "升 / 降配", en: "Resize" },
     "instances.repair": { zh: "尝试修复", en: "Try Repair" },
     "instances.detail": { zh: "实例详情", en: "Instance Details" },
+    "instances.cpu_a1_free": { zh: "A1配额内免费", en: "A1 free-tier" },
     "instances.bootswap": { zh: "引导卷恢复", en: "Restore Boot Volume" },
     "instances.bootbackup_del": { zh: "删除历史备份", en: "Delete Old Backups" },
     /* ---- 绑定域名（实例详情，v2.01） ---- */

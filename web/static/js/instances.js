@@ -69,12 +69,16 @@
     return shape;
   }
 
-  // CPU model display: show the detected model when available; otherwise fall back to the architecture implied by the shape (A1.Flex is ARM, E2 is AMD), so a known shape never shows "not detected". CPU 型号显示：检测到了显示具体型号；没检测到时按 Shape 推断架构（A1.Flex 是 ARM，E2 是 AMD），已知形状不再显示“未检测”。
+  // CPU model display: A1 always shows the free-tier label (the chip is Ampere Altra on every A1, so the quota note is what matters); E2 shows the detected model, and falls back to the full "AMD EPYC 7J13" (M_Bot only keeps 7J13 E2s, so a bare "AMD" never appears). Unknown shapes show "未检测". CPU 型号显示：A1 一律显示免费额度标注（A1 的芯片都是 Ampere Altra，重要的是配额信息）；E2 显示检测到的型号，未检测到时回落到完整型号 "AMD EPYC 7J13"（M_Bot 只留 7J13 的 E2，不再出现光秃秃的 "AMD"）。未知形状显示“未检测”。
   function cpuModelLabel(model, shape) {
-    if (model) return model;
     var s = shape || "";
-    if (s.indexOf("A1") !== -1) return "ARM";
-    if (s.indexOf("E2") !== -1) return "AMD";
+    if (s.indexOf("A1") !== -1) {
+      return window.MBotI18n
+        ? window.MBotI18n.t("instances.cpu_a1_free")
+        : "A1配额内免费";
+    }
+    if (model) return model;
+    if (s.indexOf("E2") !== -1) return "AMD EPYC 7J13";
     return "未检测";
   }
 
@@ -275,7 +279,7 @@
         var card = document.querySelector('[data-instance-id="' + fresh.id + '"]');
         if (!card) return;
         var cell = card.querySelector("[data-cpu-model]");
-        if (cell) cell.textContent = fresh.cpuModel;
+        if (cell) cell.textContent = cpuModelLabel(fresh.cpuModel, fresh.shape);
       });
     } catch (err) {
     }
@@ -402,12 +406,12 @@
       var res = await MBot.api(MBot.withProfile(
         "/api/instances/" + encodeURIComponent(detailTarget.id) + "/cpu-model",
         currentProfile, currentRegion), { method: "POST" });
-      cell.textContent = res.cpu_model || "未检测";
+      cell.textContent = cpuModelLabel(res.cpu_model, detailTarget.shape);
       MBot.toast(res.message || "操作完成",
         res.cpu_model ? "success" : "error");
       if (res.cpu_model) loadInstances(false);
     } catch (err) {
-      cell.textContent = "未检测";
+      cell.textContent = cpuModelLabel(null, detailTarget.shape);
       MBot.toast("CPU 检测失败：" + err.message, "error");
     } finally {
       btn.disabled = false;

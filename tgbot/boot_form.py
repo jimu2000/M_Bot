@@ -24,7 +24,7 @@ async handler 在 tgbot/handlers_extra.py 里（boot_form_callback 等），
   ipv6: bool（默认 False）
   script: None | {"name": str, "content": str}
 
-实例名（用户 2026-01-01 定）：E2（AMD 免费）-> AMD_YYYY-MM-DD，
+实例名（用户 2026-11-24 定）：E2（AMD 免费）-> AMD_YYYY-MM-DD，
 A1（ARM）-> ARM_YYYY-MM-DD（北京时间日期）；其他形状沿用旧格式。
 表单顶部有一键开机（默认 AMD）按钮（bf:oneclick:amd），点后进确认页。
 
@@ -190,13 +190,25 @@ def new_form():
     }
 
 
+# User's preferred boot defaults (set 2026-11-28, from the user's screenshot of the boot form): delay 20s, IPv6 on, DD reinstall on. These apply only to the interactive boot form and the one-click boot; new_form() stays neutral (DD off, IPv6 off, no delay) so presets and the grabber are unaffected. 用户偏好的开机默认值（2026-11-28，用户开机表单截图定）：延迟 20 秒、IPv6 开、DD 重装开。只用于交互式开机表单与一键开机；new_form() 保持中性（DD 关、IPv6 关、无延迟），不影响预设与抢机。
+USER_BOOT_DEFAULTS = {"delays": [20], "ipv6": True, "dd": True}
+
+
+def new_user_form():
+    """新建一个带用户偏好默认值的表单（交互式开机表单与一键开机用）。"""
+    form = new_form()
+    form.update(USER_BOOT_DEFAULTS)
+    return form
+
+
 def default_amd_form():
     """一键开机（默认 AMD）的预填表单：E2.1.Micro + Ubuntu + 1 台 +
 
-    镜像默认盘（47GB）+ 公钥 + root 登录开 + 公网 IP 有 + IPv6 关。
+    镜像默认盘（47GB）+ 公钥 + root 登录开 + 公网 IP 有 + IPv6 开 +
+    延迟 20 秒 + DD 重装开（用户偏好默认值）。
     名字由 build_preset 按规则生成（AMD_YYYY-MM-DD）。
     """
-    form = new_form()
+    form = new_user_form()
     form.update({"cpu": "amd", "os": "ubuntu"})
     return form
 
@@ -428,7 +440,7 @@ def deploy_region_mismatch(deploy, region, profile=None):
 
     get_deploy_defaults 对没有 region plan 的账号+区域会回落到主区
     （新加坡）默认值；直接拿它去别的区开机，OCI 会报
-    CannotParseRequest（2026-01-01 用户在 ACCOUNT2/ACCOUNT3 上
+    CannotParseRequest（2026-11-24 用户在 ACCOUNT2/ACCOUNT3 上
     一键开机实测复现）。开机入口必须先调这个拦住。
     """
     if not region:
@@ -512,7 +524,7 @@ def validate_form(form, deploy=None, region=None, profile=None):
 
 
 def generate_display_name(shape, ocpus, memory_gb, now=None):
-    """生成实例显示名（用户 2026-01-01 定：免费实例按类型 + 北京时间日期）。
+    """生成实例显示名（用户 2026-11-24 定：免费实例按类型 + 北京时间日期）。
 
     E2（AMD 免费）-> AMD_YYYY-MM-DD；A1（ARM）-> ARM_YYYY-MM-DD；
     其他形状沿用旧格式 bot-<短名>-<核>c<内存>g-<UTC 时间戳>。
@@ -681,7 +693,7 @@ def build_user_data(root_password=None, startup_script=None, dd=False):
     脚本本身已是 #cloud-config 时不能与 root 密码共存（两份
     cloud-config 无法合并），抛 ValueError。
 
-    有 root 密码时还必须加两样（2026-01-01 实测：Ubuntu 24.04 镜像
+    有 root 密码时还必须加两样（2026-11-24 实测：Ubuntu 24.04 镜像
     默认 disable_root: true，root 的 key 会被加强制命令，只能看到
     "Please login as the user ubuntu"；且 PermitRootLogin 默认
     prohibit-password，密码也登不进）：

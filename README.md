@@ -1,6 +1,6 @@
 # M_Bot Oracle开源管理面板
 
-> **当前版本：v2.18.0** · 更新记录见 [CHANGELOG.md](CHANGELOG.md)（[英文版 / English](CHANGELOG.en.md)）
+> **当前版本：v2.19.0** · 更新记录见 [CHANGELOG.md](CHANGELOG.md)（[英文版 / English](CHANGELOG.en.md)）
 
 [中文](#中文) | [English](#english)
 
@@ -354,7 +354,7 @@ python3 mcp_server.py
 
 ```bash
 python3 -m unittest discover -s tests -t .
-# Ran 3304 tests ... OK
+# Ran 3306 tests ... OK
 ```
 
 3293 个单元测试（mock 为主，写操作零次碰生产）。真实 API 验证记录见
@@ -786,7 +786,7 @@ For production, run both services under systemd — see `docs/deployment.md`
 
 ```bash
 python3 -m unittest discover -s tests -t .
-# Ran 3304 tests ... OK
+# Ran 3306 tests ... OK
 ```
 
 3293 unit tests (mostly mocked; write operations never touch production).
