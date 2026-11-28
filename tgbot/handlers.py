@@ -37,7 +37,7 @@ from tgbot import i18n as bot_i18n
 from tgbot import menu_tracker
 from tgbot.cpu_model import (cached_cpu_model, delete_cpu_model,
                              get_cpu_model, host_for_ip)
-from tgbot.instance_credentials import delete_credential
+from tgbot.instance_credentials import delete_credential, get_root_password
 from tgbot.handlers_client import run_remote_command
 from tgbot.i18n import lang_of, set_lang_context, toggle_user_lang
 from tgbot.keyboards import (ORACLE_MENU_ITEMS, back_to_oracle_keyboard,
@@ -559,9 +559,11 @@ async def _refresh_cpu_model_later(context, query, instance_id, host,
     context.user_data.pop(_CPU_PENDING_KEY, None)
     try:
         await query.edit_message_text(
-            fmt_instance_detail(detail, public_ip, model, lang=lang),
+            fmt_instance_detail(detail, public_ip, model, lang=lang,
+                                root_password=get_root_password(instance_id)),
             reply_markup=instance_actions_keyboard(int(idx), state,
-                                                   lang=lang))
+                                                   lang=lang),
+            parse_mode="HTML")
     except BadRequest as exc:
         err = str(exc)
         if ("Message is not modified" in err
@@ -631,9 +633,11 @@ async def instance_detail_callback(update: Update,
     display_model = (bot_i18n.t(lang, "common.detecting")
                      if pending_cpu else cpu_model)
     await menu_tracker.safe_edit(query,
-        fmt_instance_detail(detail, public_ip, display_model, lang=lang),
+        fmt_instance_detail(detail, public_ip, display_model, lang=lang,
+                            root_password=get_root_password(instance_id)),
         reply_markup=instance_actions_keyboard(int(idx), state,
-                                               lang=lang))
+                                               lang=lang),
+        parse_mode="HTML")
     if pending_cpu:
         message = getattr(query, "message", None)
         message_id = getattr(message, "message_id", None)

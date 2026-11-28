@@ -345,7 +345,7 @@ def create_instance(body: CreateBody,
         return error_response(str(exc), status_code=400)
     except OCIError as exc:
         return oci_error_response(exc)
-    # The root password is returned with the response once (shown once in the frontend modal); the server also keeps it in the per-instance credential store for later SSH / DD logins (tgbot/instance_credentials.py), but the panel never shows it again. root 密码随响应返回一次（前端弹窗展示一次）；服务端还会把它按实例存进凭据库，供之后 SSH / DD 登录用，但面板不再展示。
+    # The root password is returned with the response once (shown once in the frontend modal); the server also keeps it in the per-instance credential store for later SSH / DD logins (tgbot/instance_credentials.py), and it can be viewed masked (click to copy) in the instance detail. root 密码随响应返回一次（前端弹窗展示一次）；服务端还会把它按实例存进凭据库，供之后 SSH / DD 登录用，实例详情里可查看（已隐藏，点击可复制）。
     return {"ok": True, "task_id": task_id,
             "root_password": root_password}
 

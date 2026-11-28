@@ -514,25 +514,23 @@ FAKE_CONSOLE_STRING_SIMPLE = (
 
 
 class TestParseConsoleConnectionString(unittest.TestCase):
-    """parse_console_connection_string：连接命令 -> (host, port, username)。"""
+    """parse_console_connection_string：连接命令 -> (host, port, username, instance_id)。"""
 
     def test_proxycommand_form(self):
-        host, port, username = parse_console_connection_string(
-            FAKE_CONSOLE_STRING)
+        host, port, username, instance_id = \
+            parse_console_connection_string(FAKE_CONSOLE_STRING)
         self.assertEqual(
             host, "instance-console.ap-singapore-1.oci.oraclecloud.com")
         self.assertEqual(port, 443)
         self.assertEqual(
             username, "ocid1.instanceconsoleconnection.oc1..consoletest")
+        self.assertEqual(instance_id, "ocid1.instance.oc1..consoletest")
 
-    def test_simple_form(self):
-        host, port, username = parse_console_connection_string(
-            FAKE_CONSOLE_STRING_SIMPLE)
-        self.assertEqual(
-            host, "instance-console.ap-singapore-1.oci.oraclecloud.com")
-        self.assertEqual(port, 443)
-        self.assertEqual(
-            username, "ocid1.instanceconsoleconnection.oc1..consoletest")
+    def test_simple_form_without_instance_id_rejected(self):
+        # 简单形式里没有实例 OCID，直连无法确定 direct-tcpip 目的地，
+        # 明确拒绝（而不是静默连错地方）。
+        with self.assertRaises(ValueError):
+            parse_console_connection_string(FAKE_CONSOLE_STRING_SIMPLE)
 
     def test_rejects_non_console_host(self):
         with self.assertRaises(ValueError):
@@ -553,7 +551,7 @@ class TestConnectConsole(_AuthPatchedTestCase):
                                 cookies=self._auth_cookies())
 
     def test_success(self):
-        self.mock_manager.create_session.return_value = "sid-9"
+        self.mock_manager.create_console_session.return_value = "sid-9"
         with patch("web.ssh._console_private_key_path",
                    return_value=None):
             resp = self._post()
@@ -563,18 +561,21 @@ class TestConnectConsole(_AuthPatchedTestCase):
             resp.json()["host"],
             "instance-console.ap-singapore-1.oci.oraclecloud.com")
         self.assertEqual(resp.json()["port"], 443)
-        self.mock_manager.create_session.assert_called_once_with(
+        self.assertEqual(resp.json()["instance_id"],
+                         "ocid1.instance.oc1..consoletest")
+        self.mock_manager.create_console_session.assert_called_once_with(
             "instance-console.ap-singapore-1.oci.oraclecloud.com", 443,
             "ocid1.instanceconsoleconnection.oc1..consoletest",
+            "ocid1.instance.oc1..consoletest",
             key_path=None)
 
     def test_bad_connection_string(self):
         resp = self._post(connection_string="ssh root@203.0.113.10")
         self.assertEqual(resp.status_code, 400)
-        self.mock_manager.create_session.assert_not_called()
+        self.mock_manager.create_console_session.assert_not_called()
 
     def test_auth_failure(self):
-        self.mock_manager.create_session.side_effect = \
+        self.mock_manager.create_console_session.side_effect = \
             paramiko.AuthenticationException("nope")
         with patch("web.ssh._console_private_key_path",
                    return_value=None):
@@ -594,6 +595,106 @@ class TestConnectConsole(_AuthPatchedTestCase):
                             {"MBOT_CONSOLE_SSH_KEY_FILE": pub}):
                 self.assertEqual(ssh_module._console_private_key_path(),
                                  priv)
+
+
+CONSOLE_HOST = "instance-console.ap-singapore-1.oci.oraclecloud.com"
+CONSOLE_CONN_OCID = "ocid1.instanceconsoleconnection.oc1..consoletest"
+CONSOLE_INSTANCE_OCID = "ocid1.instance.oc1..consoletest"
+
+
+class TestConsoleTwoStageFlow(unittest.TestCase):
+    """串行控制台两阶段直连（SSHSession.connect_console）：内层 Transport
+    开 direct-tcpip 通道，外层 SSHClient 以通道作 socket 再开 shell。
+    控制台端点不接受直接的 "session" channel（旧代码的 bug），这里断言
+    代理 Transport 上永远只开 direct-tcpip 通道。"""
+
+    def _mocks(self):
+        proxy = MagicMock()
+        proxy.is_active.return_value = True
+        forward = MagicMock()
+        forward.closed = False
+        proxy.open_channel.return_value = forward
+        client = MagicMock()
+        shell = MagicMock()
+        shell.closed = False
+        client.invoke_shell.return_value = shell
+        transport = MagicMock()
+        transport.is_active.return_value = True
+        client.get_transport.return_value = transport
+        return proxy, forward, client, shell
+
+    def test_two_stage_flow(self):
+        proxy, forward, client, shell = self._mocks()
+        fake_pkey = MagicMock()
+        with patch.object(ssh_module.paramiko, "Transport",
+                          return_value=proxy) as mock_transport, \
+                patch.object(ssh_module.paramiko, "SSHClient",
+                             return_value=client), \
+                patch("web.ssh._load_console_private_key",
+                      return_value=fake_pkey):
+            session = SSHSession()
+            banner = session.connect_console(
+                CONSOLE_HOST, 443, CONSOLE_CONN_OCID, CONSOLE_INSTANCE_OCID)
+        # Stage 1: inner Transport to the console endpoint, authenticated
+        # as the connection OCID. 内层 Transport 连控制台端点，用连接 OCID 认证。
+        mock_transport.assert_called_once_with((CONSOLE_HOST, 443))
+        proxy.start_client.assert_called_once()
+        proxy.auth_publickey.assert_called_once_with(CONSOLE_CONN_OCID,
+                                                     fake_pkey)
+        # Stage 1 channel: exactly one direct-tcpip channel to the
+        # instance OCID:22 — never a "session" channel on the proxy.
+        # 内层只开一个 direct-tcpip 转发通道（目的地实例 OCID:22），
+        # 绝不在代理 Transport 上开 "session" 通道。
+        proxy.open_channel.assert_called_once_with(
+            "direct-tcpip", (CONSOLE_INSTANCE_OCID, 22), ("127.0.0.1", 0))
+        proxy.invoke_shell.assert_not_called()
+        # Stage 2: outer SSHClient uses the forwarded channel as its
+        # socket, then opens the shell on the OUTER transport.
+        # 外层 SSHClient 以转发通道作 socket，再在外层开 shell。
+        client.connect.assert_called_once()
+        kwargs = client.connect.call_args.kwargs
+        self.assertIs(kwargs["sock"], forward)
+        self.assertIs(kwargs["pkey"], fake_pkey)
+        self.assertEqual(client.connect.call_args.args[0],
+                         CONSOLE_INSTANCE_OCID)
+        client.invoke_shell.assert_called_once()
+        self.assertIs(session.channel, shell)
+        self.assertIs(session.proxy_transport, proxy)
+        self.assertTrue(session.is_active())
+        self.assertIn("串行控制台", banner)
+        # Closing the session closes the proxy transport too.
+        # 关会话时一并关掉代理 Transport。
+        session.close()
+        proxy.close.assert_called_once()
+        client.close.assert_called_once()
+
+    def test_no_key_raises_auth(self):
+        with patch("web.ssh._load_console_private_key",
+                   return_value=None), \
+                patch.object(ssh_module.paramiko, "Transport") as transport:
+            session = SSHSession()
+            with self.assertRaises(paramiko.AuthenticationException):
+                session.connect_console(CONSOLE_HOST, 443, CONSOLE_CONN_OCID,
+                                        CONSOLE_INSTANCE_OCID)
+        transport.assert_not_called()
+
+    def test_proxy_auth_failure_closes_proxy(self):
+        proxy, _forward, client, _shell = self._mocks()
+        proxy.auth_publickey.side_effect = \
+            paramiko.AuthenticationException("bad key")
+        with patch.object(ssh_module.paramiko, "Transport",
+                          return_value=proxy), \
+                patch.object(ssh_module.paramiko, "SSHClient",
+                             return_value=client), \
+                patch("web.ssh._load_console_private_key",
+                      return_value=MagicMock()):
+            session = SSHSession()
+            with self.assertRaises(paramiko.AuthenticationException):
+                session.connect_console(CONSOLE_HOST, 443, CONSOLE_CONN_OCID,
+                                        CONSOLE_INSTANCE_OCID)
+        proxy.close.assert_called_once()
+        client.connect.assert_not_called()
+        self.assertFalse(session.is_active())
 
 
 class TestWebSocket(_AuthPatchedTestCase):

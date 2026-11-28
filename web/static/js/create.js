@@ -182,12 +182,12 @@
       var result = await MBot.api("/api/create", { method: "POST", body: payload });
       MBot.toast("创建任务已提交", "success");
       if (result.root_password) {
-        // The root password is shown only this once (the backend does not store it and it cannot be looked up again; after a successful grab it also appears in the Telegram / Bark notice). root 密码只显示这一次（后端不保存、不再可查；抢机成功后还会在 Telegram / Bark 通知里带上）。
+        // The root password is shown here once; it is also saved server-side (per-instance credential store) and can be viewed masked (click to copy) in the instance detail after the instance boots; on a successful grab it is also included in the Telegram / Bark notice. root 密码这里显示一次；它也已保存，开机成功后可在实例详情里查看（已隐藏，点击可复制），抢机成功后还会在 Telegram / Bark 通知里带上。
         await MBot.confirmDialog(
-          "🔑 root 登录密码（只显示这一次）",
-          "<p>请立即记下，面板不会再显示它：</p>" +
+          "🔑 root 登录密码",
+          "<p>请立即记下：</p>" +
           "<p><code>" + MBot.escapeHtml(result.root_password) + "</code></p>" +
-          "<p>实例创建完成后用 root + 该密码登录。抢机成功后，密码也会随 Telegram / Bark 通知推送。</p>",
+          "<p>密码已保存，开机成功后可在实例详情里查看（已隐藏，点击可复制）。实例创建完成后用 root + 该密码登录。抢机成功后，密码也会随 Telegram / Bark 通知推送。</p>",
           "已记下");
       }
       window.location.href = "/tasks";

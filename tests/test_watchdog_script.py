@@ -73,10 +73,17 @@ class TestDetectSshPort(unittest.TestCase):
             self.assertEqual(self.mod.detect_ssh_port(), 2222)
 
     def test_sshd_config_fallback(self):
+        # The run_cmd mock must stay active while detect_ssh_port() runs:
+        # it used to be scoped to the temp-file creation block only, so
+        # the real `ss` ran on hosts with a live sshd (e.g. .160 on
+        # 14422) and its port overrode the fake config's 2222.
+        # run_cmd 的 mock 必须在 detect_ssh_port() 执行期间保持生效：
+        # 原先它只包在创建临时文件的 with 块里，真正调用时已失效，
+        # 有真实 sshd 的机器（如 .160 的 14422）上真实 ss 结果会盖掉
+        # 假配置里的 2222。
         real_open = open
-        with patch.object(self.mod, "run_cmd", return_value=(1, "", "")), \
-                tempfile.NamedTemporaryFile(
-                    "w", suffix=".conf", delete=False) as f:
+        with tempfile.NamedTemporaryFile(
+                "w", suffix=".conf", delete=False) as f:
             f.write("# comment\nPort 2222\n")
             conf = f.name
         try:
@@ -85,7 +92,9 @@ class TestDetectSshPort(unittest.TestCase):
                     return real_open(conf, **kw)
                 return real_open(path, **kw)
 
-            with patch("builtins.open", side_effect=fake_open):
+            with patch.object(self.mod, "run_cmd",
+                              return_value=(1, "", "")), \
+                    patch("builtins.open", side_effect=fake_open):
                 self.assertEqual(self.mod.detect_ssh_port(), 2222)
         finally:
             os.unlink(conf)

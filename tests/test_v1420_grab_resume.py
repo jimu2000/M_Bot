@@ -11,6 +11,7 @@
 """
 
 import os
+import shutil
 import stat
 import sys
 import tempfile
@@ -58,7 +59,20 @@ class _TempTasksFile(unittest.TestCase):
         self.addCleanup(self._cred_patch.stop)
 
     def tearDown(self):
-        self._tmp.cleanup()
+        # The resume path runs a background thread that can still be
+        # flushing the task file when tearDown runs; plain cleanup()
+        # then fails spuriously with OSError: Directory not empty.
+        # Retry briefly, and never fail the test on cleanup.
+        # 恢复流程会起后台线程，tearDown 时它可能还在写任务文件，
+        # 直接 cleanup() 会偶发 OSError: Directory not empty；重试
+        # 几次，实在删不掉就尽力删，绝不因此让测试失败。
+        for _ in range(20):
+            try:
+                self._tmp.cleanup()
+                return
+            except OSError:
+                time.sleep(0.05)
+        shutil.rmtree(self._tmp.name, ignore_errors=True)
 
 
 class TestFmtNotifyOutcome(unittest.TestCase):
@@ -87,6 +101,18 @@ class TestFmtNotifyOutcome(unittest.TestCase):
             fmt_notify_outcome({"telegram": False, "bark": True,
                                 "errors": ["Telegram：bad request"]}),
             "通知：Telegram 发送失败，Bark 已发送")
+
+    def test_telegram_unconfigured_is_skip_not_error(self):
+        self.assertEqual(
+            fmt_notify_outcome({"telegram": False, "bark": True,
+                                "errors": []}),
+            "通知：Telegram 未配置，已跳过，Bark 已发送")
+
+    def test_both_unconfigured_is_skip(self):
+        self.assertEqual(
+            fmt_notify_outcome({"telegram": False, "bark": False,
+                                "errors": []}),
+            "通知：Telegram 未配置，已跳过，Bark 未配置，已跳过")
 
 
 class TestNotifyOutcomeLoggedWeb(_TempTasksFile):

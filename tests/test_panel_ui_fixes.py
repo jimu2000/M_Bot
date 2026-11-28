@@ -226,6 +226,63 @@ class TestBug2DetailOpensImmediately(unittest.TestCase):
         self.assertEqual(op_value(run, "errors"), [])
 
 
+class TestDetailRootPassword(unittest.TestCase):
+    """v2.24.0：实例详情“初始开机密码”行——默认隐藏、点击复制；没存密码时显示“未保存”。"""
+
+    def _fetch(self, password_response):
+        fetch = dict(INSTANCES_FETCH)
+        fetch["GET /api/instances/" + RUNNING_ID] = INSTANCE_DETAIL
+        fetch["GET /api/instances/" + RUNNING_ID + "/password"] = \
+            password_response
+        return fetch
+
+    def _open_detail_steps(self):
+        return [{"op": "domContentLoaded"},
+                {"op": "wait", "ms": 100},
+                {"op": "tbodyClick", "tbody": "instance-grid",
+                 "act": "detail", "rowId": RUNNING_ID,
+                 "rowAttr": "data-instance-id"},
+                {"op": "wait", "ms": 150},
+                {"op": "read", "id": "detail-root-password",
+                 "prop": "textContent"},
+                {"op": "fireClick", "id": "detail-root-password"},
+                {"op": "wait", "ms": 50},
+                {"op": "copied"},
+                {"op": "fetchCalls"},
+                {"op": "errors"}]
+
+    def test_detail_shows_masked_password_and_click_copies(self):
+        run = run_scenario({
+            "page": "instances",
+            "fetch": self._fetch({"ok": True,
+                                  "root_password": "pw-test-123"}),
+            "steps": self._open_detail_steps(),
+        })
+        reads = op_results(run, "read")
+        # Masked by default; the real password is never rendered in the DOM. 默认只显示掩码，真密码不进 DOM。
+        self.assertEqual(reads[0]["value"], "••••••••")
+        self.assertEqual(op_value(run, "copied"), "pw-test-123")
+        # The password endpoint is fetched only for this one instance.
+        # 密码接口只为这一台实例拉一次。
+        self.assertTrue(fetch_calls(run, "GET", "/password"))
+        self.assertEqual(op_value(run, "errors"), [])
+
+    def test_detail_shows_not_saved_when_no_password(self):
+        run = run_scenario({
+            "page": "instances",
+            "fetch": self._fetch({"__status": 404,
+                                  "__body": {"ok": False,
+                                             "error": "该实例未保存初始开机密码"}}),
+            "steps": self._open_detail_steps(),
+        })
+        reads = op_results(run, "read")
+        self.assertEqual(reads[0]["value"], "未保存")
+        # Clicking with no stored password copies nothing.
+        # 没存密码时点了也不复制。
+        self.assertIsNone(op_value(run, "copied"))
+        self.assertEqual(op_value(run, "errors"), [])
+
+
 class TestBug4BackupButton(unittest.TestCase):
     """Bug 4：启动卷“备份”按钮点了没反应（findVolume 只认 id，不认 volumeId）。"""
 

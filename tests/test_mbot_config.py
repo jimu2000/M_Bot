@@ -278,7 +278,22 @@ class TestOciIniPaths(MbotConfigTestCase):
         fake_ini = os.path.join(self.home, "oci_config")
         with open(fake_ini, "w", encoding="utf-8") as f:
             f.write("[DEFAULT]\n")
-        self.assertEqual(mbot_config._resolve_oci_ini_path(), fake_ini)
+        # Point _PROJECT_ROOT at an empty temp dir for this test:
+        # a full-suite run can leave a real project-root oci_config
+        # behind (module-level bootstrap() writes the generated INI
+        # there), and _resolve_oci_ini_path() prefers it over the
+        # patched-HOME file. Patching the root away keeps this test
+        # independent of suite ordering WITHOUT deleting the file
+        # that later tests (quota / read-cache) need to exist for the
+        # OCI client to load.
+        # 把 _PROJECT_ROOT 指到空临时目录：全量运行时项目根目录可能
+        # 留有一个 oci_config（模块级 bootstrap() 生成的 INI），读解
+        # 析会优先取它而盖掉打了补丁的 HOME；这样改既让本测试不依赖
+        # 套件顺序，又不删掉后面 quota/缓存测试要用的那个文件。
+        empty_root = os.path.join(self._tmp.name, "empty_root")
+        os.makedirs(empty_root)
+        with patch.object(mbot_config, "_PROJECT_ROOT", empty_root):
+            self.assertEqual(mbot_config._resolve_oci_ini_path(), fake_ini)
 
     def test_key_file_arbitrary_path_round_trip(self):
         """key_file 写什么路径就读什么路径：/root/1.pem（用户自己放的

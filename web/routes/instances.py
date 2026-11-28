@@ -12,6 +12,8 @@
     另含 cpu_model，无缓存且运行中时同步 SSH 检测一次）。
   - POST /api/instances/{id}/cpu-model：强制重新检测 CPU 型号。
   - GET /api/instances/{id}/console：串行控制台连接信息。
+  - GET /api/instances/{id}/password：该实例保存的初始开机密码
+    （仅显式请求返回；列表与详情接口都不带密码；没存时 404）。
   - POST /api/instances/batch：批量开机/关机/重启/删除
     （body {action, instance_ids, confirm}，删除必须 confirm=true）。
   - POST /api/instances/{id}/start|stop|restart。
@@ -106,7 +108,7 @@ from tgbot.cpu_model import (
     host_for_ip,
     load_cpu_models,
 )
-from tgbot.instance_credentials import delete_credential
+from tgbot.instance_credentials import delete_credential, get_root_password
 from tgbot.handlers_client import (
     RemoteCommandError,
     put_remote_file,
@@ -615,6 +617,27 @@ def detail(instance_id: str,
                 extras["boot_volume_attachment_state"]}
 
 
+@router.get("/api/instances/{instance_id}/password")
+def instance_root_password(instance_id: str,
+                           username: str = Depends(get_current_user)):
+    """取一台实例保存的初始开机密码（仅对该实例显式请求才返回）。
+
+    密码只存在服务端凭据库（开机成功后按实例存的，见
+    tgbot/instance_credentials.py）；列表与详情接口都不带密码，
+    必须调这个接口才返回。没存密码时返回 404（前端显示“未保存”）。
+    固定密码 MBOT_FIXED_ROOT_PASSWORD 不在这里返回（只返回按实例
+    存的那份）。演示模式无真实凭据，一律 404。
+    """
+    if demo_data.is_demo():
+        return error_response("该实例未保存初始开机密码",
+                              status_code=404)
+    password = get_root_password(instance_id)
+    if not password:
+        return error_response("该实例未保存初始开机密码",
+                              status_code=404)
+    return {"ok": True, "root_password": password}
+
+
 def _action(instance_id, profile, func, action_name, region=None):
     """启动/停止/重启的公共逻辑。"""
     if demo_data.is_demo():
@@ -685,7 +708,8 @@ def console(instance_id: str,
                             "message": "演示模式：无真实串行控制台"}}
     try:
         cli, _compartment_id = resolve_profile(profile, region)
-        connection = get_serial_console(cli, instance_id)
+        connection = get_serial_console(cli, instance_id,
+                                        compartment_id=_compartment_id)
     except ValueError as exc:
         return error_response(str(exc), status_code=400)
     except OCIError as exc:

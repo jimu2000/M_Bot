@@ -224,6 +224,8 @@ class SSHSession:
     def __init__(self):
         self.client: Optional[paramiko.SSHClient] = None
         self.channel = None
+        # Console sessions hold a proxy Transport (the direct-tcpip forwarding channel lives on it; closing it kills the session). 控制台会话的代理 Transport（转发通道挂在它上面，关了会话就断）。
+        self.proxy_transport = None
         self.banner = ""
         self._active = False
 
@@ -279,6 +281,66 @@ class SSHSession:
         except Exception:
             try:
                 client.close()
+            except Exception:
+                pass
+            raise
+
+    def connect_console(self, host: str, port: int, connection_ocid: str,
+                        instance_id: str, key_path: Optional[str] = None,
+                        cols: int = 80, rows: int = 24) -> str:
+        """串行控制台两阶段直连，返回欢迎横幅文本。
+
+        OCI 控制台端点（instance-console.<region>.oci.oraclecloud.com:443）
+        不接受直接的 "session" channel（会报 ChannelException(3,
+        'Unknown channel type')）；正确的接法与 ssh 连接命令的
+        ProxyCommand 等价，分两阶段：
+          1. 内层 Transport 连控制台端点（用户名是连接 OCID，注册的
+             密钥认证），在其上开一个 "direct-tcpip" 转发通道，目的地
+             是 (instance_id, 22)；
+          2. 外层 SSHClient 以该通道作 socket（sock=channel），再正常
+             认证并开交互 shell——shell 通道开在外层 Transport 上，控制
+             台服务接受。
+        内层 Transport 必须随会话一直活着（关了转发通道就断），存在
+        self.proxy_transport 里，close() 时一并关闭。系统信息横幅不取
+        （串口控制台不是 shell，exec 通道不适用），用固定横幅。
+        """
+        pkey = _load_console_private_key(key_path)
+        if pkey is None:
+            raise paramiko.AuthenticationException(
+                "串行控制台密钥未找到：服务端没有注册连接时那把密钥对应"
+                "的私钥（MBOT_CONSOLE_SSH_KEY_FILE 或 ~/.ssh/id_ed25519），"
+                "请检查后重试")
+        proxy = paramiko.Transport((host, port))
+        client = None
+        try:
+            proxy.start_client(timeout=SSH_CONNECT_TIMEOUT)
+            proxy.auth_publickey(connection_ocid, pkey)
+            # direct-tcpip forwarding channel to the instance's serial console. 转发通道：目的地是实例 OCID:22（控制台服务据此把流量接到该实例的串口）。
+            forward = proxy.open_channel(
+                "direct-tcpip", (instance_id, 22), ("127.0.0.1", 0))
+            client = paramiko.SSHClient()
+            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            client.connect(instance_id, port=22, username="root", pkey=pkey,
+                           sock=forward, timeout=SSH_CONNECT_TIMEOUT,
+                           banner_timeout=SSH_BANNER_TIMEOUT,
+                           look_for_keys=False, allow_agent=False)
+            channel = client.invoke_shell(width=cols, height=rows)
+            self.client = client
+            self.channel = channel
+            self.proxy_transport = proxy
+            self._active = True
+            self.banner = ("已连接到实例串行控制台\n"
+                           "（实例的串口输出将显示在这里，登录提示出现后"
+                           "输入 root 及密码登录）")
+            return self.banner
+        except Exception:
+            if client is not None:
+                try:
+                    client.close()
+                except Exception:
+                    pass
+            try:
+                proxy.close()
             except Exception:
                 pass
             raise
@@ -339,10 +401,14 @@ class SSHSession:
         transport = self.client.get_transport() if self.client else None
         if transport is not None and not transport.is_active():
             return False
+        # Console sessions also hold a proxy transport (the forwarding channel dies with it). 控制台会话还持有一个代理 Transport（它断了转发通道就断）。
+        if self.proxy_transport is not None \
+                and not self.proxy_transport.is_active():
+            return False
         return True
 
     def close(self) -> None:
-        """关 channel 与 client。"""
+        """关 channel 与 client（控制台会话还关代理 Transport）。"""
         self._active = False
         if self.channel is not None:
             try:
@@ -356,6 +422,12 @@ class SSHSession:
             except Exception:
                 pass
             self.client = None
+        if self.proxy_transport is not None:
+            try:
+                self.proxy_transport.close()
+            except Exception:
+                pass
+            self.proxy_transport = None
 
 
 # ================= 会话管理器 =================
@@ -426,6 +498,47 @@ class SSHSessionManager:
                 "sftp_home": None,
             }
         logger.info("SSH 会话建立：%s -> %s@%s:%s", session_id, username, host, port)
+        return session_id
+
+    def create_console_session(self, host: str, port: int,
+                               connection_ocid: str, instance_id: str,
+                               key_path: Optional[str] = None,
+                               cols: int = 80, rows: int = 24) -> str:
+        """新建串行控制台会话（两阶段直连，见 SSHSession.connect_console），
+        返回 session_id（uuid4）。
+
+        超过 MAX_SESSIONS 抛 RuntimeError；连接失败抛 paramiko 异常。
+        会话记录里的 host 是控制台端点，username 是连接 OCID，
+        host_id 是实例 OCID。
+        """
+        with self._lock:
+            if len(self._sessions) >= MAX_SESSIONS:
+                raise RuntimeError(f"SSH 会话已满（{MAX_SESSIONS} 个），请先关闭一些")
+        session = SSHSession()
+        banner = session.connect_console(host, port, connection_ocid,
+                                         instance_id, key_path=key_path,
+                                         cols=cols, rows=rows)
+        session_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc)
+        output_buffer = deque(maxlen=OUTPUT_BUFFER_LINES)
+        output_buffer.extend(banner.splitlines(keepends=True))
+        with self._lock:
+            self._sessions[session_id] = {
+                "session": session,
+                "host": host,
+                "port": port,
+                "username": connection_ocid,
+                "host_id": instance_id,
+                "created_at": now,
+                "last_active": now,
+                "output_buffer": output_buffer,
+                "ws_connected": False,
+                "disconnected_at": None,
+                "sftp": None,
+                "sftp_home": None,
+            }
+        logger.info("串行控制台会话建立：%s -> %s@%s:%s（实例 %s）",
+                    session_id, connection_ocid, host, port, instance_id)
         return session_id
 
     def get(self, session_id: str):
@@ -656,15 +769,22 @@ def api_ssh_connect_instance(body: ConnectInstanceRequest,
 _CONSOLE_HOST_RE = re.compile(
     r"^instance-console\.[a-z0-9-]+\.oci\.oraclecloud\.com$")
 _CONSOLE_USER_HOST_RE = re.compile(r"(\S+)@(\S+)")
+# Instance OCID in the outer ssh target of a console connection string
+# (the direct-tcpip destination of the forwarding channel). 控制台连接
+# 命令中外层 ssh 目标里的实例 OCID（转发通道的 direct-tcpip 目的地）。
+_INSTANCE_OCID_RE = re.compile(r"ocid1\.instance\.oc1\.\.[a-z0-9]+")
 
 
 def parse_console_connection_string(connection_string):
-    """解析串行控制台连接串，返回 (host, port, username)。
+    """解析串行控制台连接串，返回 (host, port, username, instance_id)。
 
     先认 ProxyCommand 形式（OCI 实测格式），再认简单形式
     ssh [-i key] [-p port] user@host；host 必须是 OCI 控制台主机
     （instance-console.<region>.oci.oraclecloud.com），否则报
     ValueError（本接口只连 OCI 控制台，任意主机走手动连接表单）。
+    instance_id 是外层 ssh 的目标（实例 OCID），直连时作
+    direct-tcpip 通道的目的地；命令里没有实例 OCID（如只有内层
+    ssh 的简单形式）时报 ValueError——没有它无法转发到串口。
     """
     text = (connection_string or "").strip()
     if not text:
@@ -680,7 +800,12 @@ def parse_console_connection_string(connection_string):
     username, host = user_host.group(1), user_host.group(2)
     if not _CONSOLE_HOST_RE.match(host):
         raise ValueError(f"不是 OCI 串行控制台主机：{host}")
-    return host, port, username
+    instance_match = _INSTANCE_OCID_RE.search(text)
+    if not instance_match:
+        raise ValueError(
+            "串行控制台连接命令里没有实例 OCID，无法直连；请用控制台"
+            "弹窗里新获取的连接命令重试")
+    return host, port, username, instance_match.group(0)
 
 
 def _console_private_key_path():
@@ -698,11 +823,46 @@ def _console_private_key_path():
     return private if os.path.isfile(private) else None
 
 
+def _load_console_private_key(key_path=None):
+    """加载串行控制台登录用的私钥，返回 paramiko PKey 对象，找不到返回 None。
+
+    依次试：显式 key_path（或 _console_private_key_path 解析出的那把）、
+    ~/.ssh/id_ed25519、~/.ssh/id_rsa，最后试 ssh-agent 里的密钥。
+    加密私钥（无口令解不开）跳过。供两阶段直连用：内层 Transport 与
+    外层 SSHClient 都要拿这个 PKey 做认证（注册连接时用的就是这把）。
+    """
+    candidates = []
+    resolved = key_path or _console_private_key_path()
+    if resolved:
+        candidates.append(resolved)
+    for default in ("~/.ssh/id_ed25519", "~/.ssh/id_rsa"):
+        expanded = os.path.expanduser(default)
+        if expanded not in candidates:
+            candidates.append(expanded)
+    for candidate in candidates:
+        if not os.path.isfile(candidate):
+            continue
+        for key_cls in (paramiko.RSAKey, paramiko.Ed25519Key,
+                        paramiko.ECDSAKey):
+            try:
+                return key_cls.from_private_key_file(candidate)
+            except paramiko.SSHException:
+                continue  # 不是这种密钥类型，换下一种试。
+            except (OSError, ValueError):
+                break  # 文件读不了，换下一个文件。
+    try:
+        agent_keys = paramiko.Agent().get_keys()
+    except Exception:
+        agent_keys = []
+    return agent_keys[0] if agent_keys else None
+
+
 class ConnectConsoleRequest(BaseModel):
     """POST /api/ssh/connect-console 的请求体。
 
     connection_string 是串行控制台弹窗里显示的那条连接命令（服务端
-    据此解析出控制台主机/端口/连接 OCID 并直连）；label 是终端标签。
+    据此解析出控制台主机/端口/连接 OCID 与实例 OCID 并两阶段直连）；
+    label 是终端标签。
     """
 
     connection_string: str
@@ -712,21 +872,24 @@ class ConnectConsoleRequest(BaseModel):
 @router.post("/api/ssh/connect-console")
 def api_ssh_connect_console(body: ConnectConsoleRequest,
                             _session=Depends(require_auth)):
-    """串行控制台直连：用连接命令解析出的控制台主机建 SSH 会话。
+    """串行控制台直连：两阶段连接（见 SSHSession.connect_console）。
 
-    救机入口（实例自身 SSH 不通时用）：后端直接连 OCI 串行控制台主机
-    （443 端口，用户名是连接 OCID，密钥认证），返回 session_id，前端
-    据此在终端页开标签。密钥只在服务端用，绝不返回给前端、不记日志。
-    解析失败报 400；密钥认证失败报 401；连不上报 502。
+    救机入口（实例自身 SSH 不通时用）：先以内层 Transport 连 OCI 串行
+    控制台主机（443 端口，用户名是连接 OCID，密钥认证），在其上开
+    direct-tcpip 转发通道到实例 OCID:22，再以外层 SSHClient 经该通道
+    开交互 shell，返回 session_id，前端据此在终端页开标签。密钥只在
+    服务端用，绝不返回给前端、不记日志。解析失败报 400；密钥认证失败
+    报 401；连不上报 502。
     """
     try:
-        host, port, username = parse_console_connection_string(
-            body.connection_string)
+        host, port, username, instance_id = \
+            parse_console_connection_string(body.connection_string)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     try:
-        session_id = manager.create_session(
-            host, port, username, key_path=_console_private_key_path())
+        session_id = manager.create_console_session(
+            host, port, username, instance_id,
+            key_path=_console_private_key_path())
     except paramiko.AuthenticationException:
         raise HTTPException(
             status_code=401,
@@ -735,10 +898,11 @@ def api_ssh_connect_console(body: ConnectConsoleRequest,
                    "id_ed25519），请检查后重试")
     except (paramiko.SSHException, OSError, socket.timeout) as exc:
         raise HTTPException(status_code=502, detail=f"串行控制台连接失败：{exc}")
-    logger.info("串行控制台直连成功：%s@%s:%s -> %s",
-                username, host, port, session_id)
+    logger.info("串行控制台直连成功：%s@%s:%s（实例 %s）-> %s",
+                username, host, port, instance_id, session_id)
     return {"session_id": session_id, "host": host,
-            "username": username, "port": port}
+            "username": username, "port": port,
+            "instance_id": instance_id}
 
 
 @router.get("/api/ssh/sessions")

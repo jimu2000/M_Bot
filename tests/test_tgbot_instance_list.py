@@ -283,6 +283,25 @@ class TestFmtInstanceDetail(unittest.TestCase):
         text = fmt_instance_detail(self._detail(), FAKE_IP)
         self.assertIn("CPU 型号：未知", text)
 
+    def test_root_password_shown_in_code_block(self):
+        text = fmt_instance_detail(self._detail(), FAKE_IP, "AMD EPYC 7J13",
+                                   root_password="pw-test-123")
+        self.assertIn("初始开机密码：<code>pw-test-123</code>", text)
+
+    def test_root_password_missing_shows_not_saved(self):
+        text = fmt_instance_detail(self._detail(), FAKE_IP, "AMD EPYC 7J13")
+        self.assertIn("初始开机密码：未保存", text)
+
+    def test_name_with_html_chars_escaped(self):
+        # Instance names are user-chosen; with parse_mode="HTML" they must
+        # be escaped or Telegram fails to parse the message.
+        # 实例名是用户起的，可能含 <>&：parse_mode="HTML" 时必须转义。
+        detail = self._detail()
+        detail["display-name"] = "test <b>& \"x\""
+        text = fmt_instance_detail(detail, FAKE_IP)
+        self.assertIn("test &lt;b&gt;&amp;", text)
+        self.assertNotIn("<b>", text)
+
     def test_detail_still_unpacks_data_wrapper(self):
         text = fmt_instance_detail({"data": self._detail()}, FAKE_IP,
                                    "Ampere Altra")

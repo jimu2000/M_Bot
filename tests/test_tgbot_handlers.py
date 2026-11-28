@@ -446,6 +446,36 @@ class TestInstanceDetailCallback(HandlersTestCase):
         self.assertIn("instance-a1", text)
         self.assertNotIn(FAKE_IP, text)
 
+    async def test_detail_shows_stored_root_password(self):
+        """详情里显示凭据库中存的初始开机密码（<code> 块，HTML 模式发送）。"""
+        update = make_callback_update("i:detail:0")
+        with patch("tgbot.handlers.get_instance",
+                   return_value=dict(FAKE_DETAIL)), \
+             patch("tgbot.handlers.get_public_ip",
+                   return_value=FAKE_IP), \
+             patch("tgbot.handlers.get_root_password",
+                   return_value="pw-test-123"):
+            await handlers.instance_detail_callback(
+                update, self._context_with_instances())
+        text = update.callback_query.edit_message_text.call_args.args[0]
+        self.assertIn("初始开机密码：<code>pw-test-123</code>", text)
+        kwargs = update.callback_query.edit_message_text.call_args.kwargs
+        self.assertEqual(kwargs.get("parse_mode"), "HTML")
+
+    async def test_detail_shows_not_saved_when_no_password(self):
+        """没存密码时详情显示“未保存”。"""
+        update = make_callback_update("i:detail:0")
+        with patch("tgbot.handlers.get_instance",
+                   return_value=dict(FAKE_DETAIL)), \
+             patch("tgbot.handlers.get_public_ip",
+                   return_value=FAKE_IP), \
+             patch("tgbot.handlers.get_root_password",
+                   return_value=None):
+            await handlers.instance_detail_callback(
+                update, self._context_with_instances())
+        text = update.callback_query.edit_message_text.call_args.args[0]
+        self.assertIn("初始开机密码：未保存", text)
+
     async def test_detail_invalid_idx(self):
         update = make_callback_update("i:detail:99")
         await handlers.instance_detail_callback(

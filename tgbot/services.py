@@ -14,6 +14,7 @@ Telegram 网络，单元测试直接用 mock 的 update/context 就能跑。
 
 import asyncio
 import functools
+import html
 import logging
 import threading
 import time
@@ -314,11 +315,17 @@ def fmt_instance_list(instances, profile, lang="zh"):
     return "\n".join(lines)
 
 
-def fmt_instance_detail(inst, public_ip=None, cpu_model=None, lang="zh"):
+def fmt_instance_detail(inst, public_ip=None, cpu_model=None, lang="zh",
+                        root_password=None):
     """实例详情全文。inst 是 get_instance 返回的完整 JSON（已解包 data）。
 
     cpu_model 是缓存/检测到的 CPU 型号（如 "AMD EPYC 7J13"），
     未检测到时该行显示“未知”。
+    root_password 是凭据库里存的初始开机密码（调用方传
+    get_root_password(instance_id) 的结果）；有则以 <code> 块显示
+    （Telegram 里点一下就能复制），没有（None）显示“未保存”。
+    返回的是 HTML 文本（实例名与密码都已按 Telegram HTML 规则转义），
+    发送时须用 parse_mode="HTML"。
     """
     data = inst.get("data") if isinstance(inst, dict) else None
     if data is None:
@@ -332,7 +339,7 @@ def fmt_instance_detail(inst, public_ip=None, cpu_model=None, lang="zh"):
     ocpus = cfg.get("ocpus", "?")
     memory = cfg.get("memory-in-gbs", "?")
     lines = [
-        f"🖥️ {name}",
+        f"🖥️ {html.escape(name, quote=False)}",
         f"ID：{_tail(data.get('id'))}",
         f"{bot_i18n.t(lang, 'instances.detail_state')}：{state}",
         f"{bot_i18n.t(lang, 'instances.detail_shape')}："
@@ -342,6 +349,14 @@ def fmt_instance_detail(inst, public_ip=None, cpu_model=None, lang="zh"):
         f"{bot_i18n.t(lang, 'instances.detail_ad')}：{ad}",
         f"{bot_i18n.t(lang, 'instances.detail_created')}：{created}",
     ]
+    if root_password:
+        lines.append(
+            f"{bot_i18n.t(lang, 'instances.detail_root_password')}："
+            f"<code>{html.escape(root_password, quote=False)}</code>")
+    else:
+        lines.append(
+            f"{bot_i18n.t(lang, 'instances.detail_root_password')}："
+            f"{bot_i18n.t(lang, 'instances.detail_root_password_missing')}")
     if public_ip:
         lines.append(f"{bot_i18n.t(lang, 'instances.detail_public_ip')}："
                      f"{public_ip}")

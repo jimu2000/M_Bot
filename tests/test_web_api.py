@@ -141,6 +141,21 @@ class WebApiTestCase(unittest.TestCase):
         LOGIN_GUARD.reset()
         SESSIONS.reset()
         TASKS.reset()
+        # Host-independent: never let a real OCI SDK call happen in web
+        # tests. The cached_raw_* helpers call these SDK list methods;
+        # patching them to [] makes tests that forget to mock cached_raw_*
+        # pass on a host with no OCI config (e.g. clean HOME on .160),
+        # where sdk.config.from_file would raise ConfigFileNotFound.
+        # 主机无关：Web 测试里绝不真的调 OCI SDK。cached_raw_* 会调
+        # 这三个 SDK 列表方法；把它们打成 []，漏 mock cached_raw_* 的
+        # 测试在没有 OCI 配置的主机上也不会炸 ConfigFileNotFound。
+        for _target in (
+                "oci.client.OCIClient.sdk_list_instances",
+                "oci.client.OCIClient.sdk_list_boot_volumes",
+                "oci.client.OCIClient.sdk_list_vnic_attachments"):
+            _p = patch(_target, return_value=[])
+            _p.start()
+            self.addCleanup(_p.stop)
         self.client = TestClient(self.app)
         self.anon = TestClient(self.app)
 

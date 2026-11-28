@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 from tgbot import notify as notify_mod
 import tgbot.handlers_extra as he
 from tgbot.cpu_policy import BootKeys
+from tgbot.instance_credentials import get_root_password
 from tgbot.services import TaskRegistry
 from oci.grabber import GrabResult
 
@@ -214,6 +215,53 @@ class TestNotifyBootSuccess(unittest.TestCase):
         self.assertFalse(result["bark"])
         self.assertEqual(result["errors"], [])
 
+    def test_telegram_unconfigured_is_not_an_error(self):
+        # TG 未配（token/chat_id 缺失）只跳过 TG，Bark 照发，不记错误。
+        with patch.object(notify_mod, "send_telegram_message",
+                          return_value=(False,
+                                        "Telegram token 或 chat_id 未配置")), \
+                patch.object(notify_mod, "send_bark",
+                             return_value=(True, "")):
+            result = notify_mod.notify_boot_success(
+                None, None, "新加坡", "新加坡", "VM.Standard.E2.1.Micro",
+                1, 1, 47,
+                [{"name": "AMD_2026-01-01", "public_ip": None,
+                  "attempts": 1, "elapsed_seconds": 3.0}])
+        self.assertFalse(result["telegram"])
+        self.assertTrue(result["bark"])
+        self.assertEqual(result["errors"], [])
+
+    def test_both_unconfigured_is_silent(self):
+        # 两通道都未配：静默跳过，不记错误、不抛异常。
+        with patch.object(notify_mod, "send_telegram_message",
+                          return_value=(False,
+                                        "Telegram token 或 chat_id 未配置")), \
+                patch.object(notify_mod, "send_bark",
+                             return_value=(False, "Bark 推送未开启")):
+            result = notify_mod.notify_boot_success(
+                None, None, "新加坡", "新加坡", "VM.Standard.E2.1.Micro",
+                1, 1, 47,
+                [{"name": "AMD_2026-01-01", "public_ip": None,
+                  "attempts": 1, "elapsed_seconds": 3.0}])
+        self.assertFalse(result["telegram"])
+        self.assertFalse(result["bark"])
+        self.assertEqual(result["errors"], [])
+
+    def test_telegram_real_failure_is_an_error(self):
+        # TG 真实发送失败（如 chat 不存在）仍记进 errors。
+        with patch.object(notify_mod, "send_telegram_message",
+                          return_value=(False, "chat not found")), \
+                patch.object(notify_mod, "send_bark",
+                             return_value=(True, "")):
+            result = notify_mod.notify_boot_success(
+                "T", 1, "新加坡", "新加坡", "VM.Standard.E2.1.Micro",
+                1, 1, 47,
+                [{"name": "AMD_2026-01-01", "public_ip": None,
+                  "attempts": 1, "elapsed_seconds": 3.0}])
+        self.assertFalse(result["telegram"])
+        self.assertTrue(result["bark"])
+        self.assertEqual(result["errors"], ["Telegram：chat not found"])
+
     def test_never_raises(self):
         with patch.object(notify_mod, "send_telegram_message",
                           side_effect=RuntimeError("boom")), \
@@ -343,6 +391,73 @@ class TestGrabberThreadNotify(unittest.TestCase):
         get_ip.assert_called_once()
         self.assertEqual(get_ip.call_args[0][1],
                          "ocid1.instance.oc1..aaa1")
+
+
+class TestBotNotifyBootSuccess(unittest.TestCase):
+    """机器人端 _notify_boot_success：双通道（TG + Bark），未配置的通道静默跳过。"""
+
+    def setUp(self):
+        self._cred_tmp = tempfile.TemporaryDirectory()
+        self._cred_patch = patch(
+            "tgbot.instance_credentials.CREDENTIALS_FILE",
+            os.path.join(self._cred_tmp.name,
+                         "instance_credentials.json"))
+        self._cred_patch.start()
+        self.addCleanup(self._cred_patch.stop)
+        self.addCleanup(self._cred_tmp.cleanup)
+        self.tasks = TaskRegistry()
+        self._tasks = patch.object(he, "TASKS", self.tasks)
+        self._tasks.start()
+        self.addCleanup(self._tasks.stop)
+        self.preset = {"display_name": "AMD_2026-01-02",
+                       "shape": "VM.Standard.E2.1.Micro",
+                       "ocpus": 1, "memory_gb": 1, "count": 1}
+        self.notify = {"token": None, "chat_id": None,
+                       "profile_label": "新加坡", "region_label": "新加坡",
+                       "root_password": "pw123"}
+
+    def test_both_unconfigured_logs_skip_not_failure(self):
+        # 两通道都未配：任务日志里是跳过摘要，不报“部分失败”。
+        task_id = self.tasks.register("grab")
+        result = GrabResult(instance_id="ocid1.instance.oc1..aaa1",
+                            releases=0, attempts=1, elapsed_seconds=3.0)
+        with patch.object(he, "wait_for_public_ip",
+                          return_value="203.0.113.10"), \
+                patch.object(notify_mod, "send_telegram_message",
+                             return_value=(False,
+                                           "Telegram token 或 chat_id 未配置")), \
+                patch.object(notify_mod, "send_bark",
+                             return_value=(False, "Bark 推送未开启")):
+            he._notify_boot_success(MagicMock(), self.preset, [result],
+                                    self.notify, task_id=task_id)
+        logs = self.tasks.get(task_id).get("logs") or []
+        self.assertFalse(any("部分失败" in line for line in logs))
+        self.assertTrue(any("Telegram 未配置，已跳过" in line
+                            and "Bark 未配置，已跳过" in line
+                            for line in logs))
+        # The root password is still saved per instance for later SSH / DD logins. 密码照常按实例存好，供之后 SSH / DD 登录。
+        self.assertEqual(
+            get_root_password("ocid1.instance.oc1..aaa1"), "pw123")
+
+    def test_telegram_only_unconfigured_still_sends_bark(self):
+        # 只 TG 未配：Bark 照发，日志里是“Telegram 未配置，已跳过，Bark 已发送”。
+        task_id = self.tasks.register("grab")
+        result = GrabResult(instance_id="ocid1.instance.oc1..aaa1",
+                            releases=0, attempts=1, elapsed_seconds=3.0)
+        with patch.object(he, "wait_for_public_ip",
+                          return_value="203.0.113.10"), \
+                patch.object(notify_mod, "send_telegram_message",
+                             return_value=(False,
+                                           "Telegram token 或 chat_id 未配置")), \
+                patch.object(notify_mod, "send_bark",
+                             return_value=(True, "")):
+            he._notify_boot_success(MagicMock(), self.preset, [result],
+                                    self.notify, task_id=task_id)
+        logs = self.tasks.get(task_id).get("logs") or []
+        self.assertFalse(any("部分失败" in line for line in logs))
+        self.assertTrue(any("Telegram 未配置，已跳过" in line
+                            and "Bark 已发送" in line
+                            for line in logs))
 
 
 class TestGrabberThreadCpuFilter(unittest.TestCase):
@@ -627,6 +742,22 @@ class TestNotifyDualPin(unittest.TestCase):
         self.assertTrue(result["bark"])
         self.assertEqual(len(result["errors"]), 1)
         self.assertIn("置顶失败", result["errors"][0])
+
+    def test_telegram_unconfigured_is_not_an_error(self):
+        # TG 未配只跳过 TG（不记错误），Bark 照发；pin=True 时也不尝试置顶。
+        with patch.object(notify_mod, "send_telegram_message_full",
+                          return_value=(False,
+                                        "Telegram token 或 chat_id 未配置",
+                                        None)) as send, \
+                patch.object(notify_mod, "pin_telegram_message") as pin, \
+                patch.object(notify_mod, "send_bark",
+                             return_value=(True, "")):
+            result = notify_mod.notify_dual(None, None, "标题", "正文",
+                                            pin=True)
+        self.assertFalse(result["telegram"])
+        self.assertTrue(result["bark"])
+        self.assertEqual(result["errors"], [])
+        pin.assert_not_called()
 
 
 class TestFmtPaidInstanceAlert(unittest.TestCase):

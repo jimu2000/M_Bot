@@ -203,15 +203,33 @@ def fmt_boot_success(profile_label, region_label, shape, ocpus,
     return "\n".join(lines)
 
 
+def _is_not_configured(err):
+    """错误是否表示“该通道未配置/未开启”（正常状态，静默跳过，不记进 errors）。
+
+    Telegram 未配时 send_telegram_message 返回 "Telegram token 或 chat_id
+    未配置"；Bark 未配时 send_bark 返回 "Bark 推送未开启" 或 "Bark 地址或加密
+    Key 未配置"。两种都含“未配置”或“未开启”，用子串判断（真实发送失败的
+    文案里不会出现这两个词）。
+    """
+    err = err or ""
+    return "未配置" in err or "未开启" in err
+
+
 def fmt_notify_outcome(outcome):
     """通知结果的一行摘要（写进任务日志，方便追溯推送丢没丢）。
 
     outcome 是 notify_boot_success / notify_dual 的返回值
-    {"telegram": bool, "bark": bool, "errors": [str]}。Bark 没发时
-    分两种：errors 里有 Bark 错误是发送失败，没有就是未配置/未开
-    启被跳过（notify_boot_success 不把未配置记进 errors）。
+    {"telegram": bool, "bark": bool, "errors": [str]}。某通道没发时
+    分两种：errors 里有该通道的错误是发送失败，没有就是未配置/未开
+    启被跳过（notify_boot_success / notify_dual 不把未配置记进 errors）。
     """
-    tg = "Telegram 已发送" if outcome.get("telegram") else "Telegram 发送失败"
+    if outcome.get("telegram"):
+        tg = "Telegram 已发送"
+    elif any(str(e).startswith("Telegram：")
+             for e in outcome.get("errors", [])):
+        tg = "Telegram 发送失败"
+    else:
+        tg = "Telegram 未配置，已跳过"
     if outcome.get("bark"):
         bark = "Bark 已发送"
     elif any(str(e).startswith("Bark：")
@@ -227,10 +245,11 @@ def notify_boot_success(token, chat_id, profile_label, region_label,
                         root_password=None, region_code=None,
                         ssh_key_set=False, cpu_unverified=False,
                         cpu_model=None):
-    """开机成功双通道推送：Telegram + Bark（Bark 未开启时只推 TG）。
+    """开机成功双通道推送：Telegram + Bark。
 
-    返回 {"telegram": bool, "bark": bool, "errors": [str]}。
-    绝不抛异常。
+    任一通道未配置时只跳过该通道（不记错误），两通道都未配置时静默
+    跳过；只把真实发送失败记进 errors。返回
+    {"telegram": bool, "bark": bool, "errors": [str]}。绝不抛异常。
     """
     text = fmt_boot_success(profile_label, region_label, shape, ocpus,
                             memory_gb, disk_gb, instances,
@@ -243,7 +262,9 @@ def notify_boot_success(token, chat_id, profile_label, region_label,
     try:
         ok, err = send_telegram_message(token, chat_id, text)
         result["telegram"] = ok
-        if not ok:
+        # Telegram 未配置（token/chat_id 缺失）是正常状态，不记为错误；
+        # 只把真实发送失败记进 errors（与 Bark 同一套规则）。
+        if not ok and not _is_not_configured(err):
             result["errors"].append(f"Telegram：{err}")
     except Exception as exc:  # noqa: BLE001
         result["errors"].append(f"Telegram：{exc}")
@@ -251,7 +272,7 @@ def notify_boot_success(token, chat_id, profile_label, region_label,
         ok, err = send_bark("🎉 恭喜，开机成功！", text)
         result["bark"] = ok
         # Bark not enabled / not configured is a normal state, not an error. Bark 未开启/未配置是正常状态，不记为错误。
-        if not ok and "未开启" not in err and "未配置" not in err:
+        if not ok and not _is_not_configured(err):
             result["errors"].append(f"Bark：{err}")
     except Exception as exc:  # noqa: BLE001
         result["errors"].append(f"Bark：{exc}")
@@ -270,7 +291,8 @@ def notify_dual(token, chat_id, title, body, group="m-bot", pin=False):
             token, chat_id, f"{title}\n\n{body}")
         result["telegram"] = ok
         if not ok:
-            result["errors"].append(f"Telegram：{err}")
+            if not _is_not_configured(err):
+                result["errors"].append(f"Telegram：{err}")
         elif pin:
             pinned, pin_err = pin_telegram_message(token, chat_id, message_id)
             if not pinned:
@@ -280,7 +302,7 @@ def notify_dual(token, chat_id, title, body, group="m-bot", pin=False):
     try:
         ok, err = send_bark(title, body, group=group)
         result["bark"] = ok
-        if not ok and "未开启" not in err and "未配置" not in err:
+        if not ok and not _is_not_configured(err):
             result["errors"].append(f"Bark：{err}")
     except Exception as exc:  # noqa: BLE001
         result["errors"].append(f"Bark：{exc}")

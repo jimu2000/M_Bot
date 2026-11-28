@@ -706,10 +706,20 @@ class TestNormalizeOciKeyFile(unittest.TestCase):
         self.assertEqual(original, "/home/user/.oci/fake-key.pem")
 
     def test_relative_path_normalized(self):
-        with patch.dict(os.environ, {"HOME": "/root"}):
-            fields, _ = hc.normalize_oci_key_file(
-                "NEWACC", {"key_file": "my-key.pem"})
-        self.assertEqual(fields["key_file"], "/root/NEWACC.pem")
+        # Use an isolated temp HOME disjoint from the repo checkout:
+        # normalize_oci_key_file resolves relative paths against the
+        # cwd, and on hosts whose repo lives under HOME (e.g. .160's
+        # /root/rbot-clone-test) the relative path would resolve under
+        # HOME and be kept as-is instead of normalizing.
+        # 用与仓库目录不相交的临时 HOME：归一化对相对路径按 cwd 解析，
+        # 仓库在 HOME 下的机器（如 .160 的 /root/rbot-clone-test）上
+        # 相对路径会解析到 HOME 里、被原样保留而不归一化。
+        with tempfile.TemporaryDirectory() as home:
+            with patch.dict(os.environ, {"HOME": home}):
+                fields, _ = hc.normalize_oci_key_file(
+                    "NEWACC", {"key_file": "my-key.pem"})
+            self.assertEqual(fields["key_file"],
+                             os.path.join(home, "NEWACC.pem"))
 
 
 class TestMaybeCopyKeyFile(unittest.TestCase):

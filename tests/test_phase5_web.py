@@ -264,7 +264,12 @@ class TestConsoleApi(Phase5WebTestCase):
         self.assertTrue(body["ok"])
         self.assertIn("ssh -i key", body["console"]["connection-string"])
         self.assertEqual(body["console"]["lifecycle-state"], "ACTIVE")
-        mock_console.assert_called_once_with(ANY, FAKE_INSTANCE)
+        # The route passes the compartment so get_serial_console can list
+        # existing connections (reuse) instead of always creating.
+        # 路由把 compartment 传进去，get_serial_console 才能先列已有连接
+        # （复用）而不是每次都新建。
+        mock_console.assert_called_once_with(ANY, FAKE_INSTANCE,
+                                             compartment_id=ANY)
 
     @patch("web.routes.instances.get_serial_console",
            side_effect=NotFoundError("not found"))

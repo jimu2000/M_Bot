@@ -121,6 +121,21 @@ class ReadCacheTestCase(unittest.TestCase):
         LOGIN_GUARD.reset()
         SESSIONS.reset()
         TASKS.reset()
+        # Host-independent: never let a real OCI SDK call happen in web
+        # tests. The cached_raw_* helpers call these SDK list methods;
+        # patching them to [] makes tests that forget to mock cached_raw_*
+        # pass on a host with no OCI config (e.g. clean HOME on .160),
+        # where sdk.config.from_file would raise ConfigFileNotFound.
+        # 主机无关：Web 测试里绝不真的调 OCI SDK。cached_raw_* 会调
+        # 这三个 SDK 列表方法；把它们打成 []，漏 mock cached_raw_* 的
+        # 测试在没有 OCI 配置的主机上也不会炸 ConfigFileNotFound。
+        for _target in (
+                "oci.client.OCIClient.sdk_list_instances",
+                "oci.client.OCIClient.sdk_list_boot_volumes",
+                "oci.client.OCIClient.sdk_list_vnic_attachments"):
+            _p = patch(_target, return_value=[])
+            _p.start()
+            self.addCleanup(_p.stop)
         self.client = TestClient(self.app)
         self._login()
 
@@ -166,7 +181,21 @@ class TestQuotaCache(ReadCacheTestCase):
 
     @patch("web.routes.quota.get_free_tier_summary",
            return_value=FAKE_SUMMARY)
-    def test_summary_cache_keyed_by_profile(self, mock_summary):
+    @patch("web.routes.quota.resolve_profile")
+    @patch("web.config.profile_display_name",
+           side_effect=lambda name: {"DEFAULT": "新加坡",
+                                     "ACCOUNT2": "圣何塞"}.get(name, name))
+    def test_summary_cache_keyed_by_profile(self, mock_label, mock_resolve,
+                                            mock_summary):
+        # Host-independent: resolve_profile("ACCOUNT2") and
+        # profile_display_name("ACCOUNT2") both need a real OCI config
+        # containing that profile (present locally, absent under a clean
+        # HOME). Mock them so the cache-key-by-profile behaviour is tested
+        # without a real config; profile_name still comes from the request,
+        # so the two calls get different cache keys.
+        mock_cli = MagicMock()
+        mock_cli.region = "ap-singapore-1"
+        mock_resolve.return_value = (mock_cli, "ocid1.compartment.x")
         self.client.get("/api/quota")
         self.client.get("/api/quota?profile=ACCOUNT2")
         # Different profile -> separate cache entry -> OCI called again.

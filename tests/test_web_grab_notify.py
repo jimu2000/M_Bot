@@ -85,6 +85,44 @@ class TestNotifyGrabSuccess(unittest.TestCase):
         self.assertEqual(args[2], "T")
         self.assertEqual(args[3], 654321)
 
+    def test_both_channels_unconfigured_logs_skip_not_failure(self):
+        # 两通道都未配：不报“部分失败”，任务日志只留一行跳过摘要。
+        from tgbot import notify as notify_mod
+        notify = dict(self.notify, token=None, chat_id=None)
+        with patch.object(web_tasks, "wait_for_public_ip",
+                          return_value="203.0.113.10"), \
+                patch.object(notify_mod, "send_telegram_message",
+                             return_value=(False,
+                                           "Telegram token 或 chat_id 未配置")), \
+                patch.object(notify_mod, "send_bark",
+                             return_value=(False, "Bark 推送未开启")):
+            web_tasks._notify_grab_success(self.registry, "t1", MagicMock(),
+                                           self.params, self.result, notify)
+        logs = [c.args[1] for c in self.registry.append_log.call_args_list]
+        self.assertFalse(any("部分失败" in line for line in logs))
+        self.assertTrue(any("Telegram 未配置，已跳过" in line
+                            and "Bark 未配置，已跳过" in line
+                            for line in logs))
+
+    def test_telegram_configured_bark_unconfigured_logs_skip(self):
+        # TG 已配、只 Bark 未配：TG 照发，日志里是“Telegram 已发送，
+        # Bark 未配置，已跳过”，不报“部分失败”。
+        from tgbot import notify as notify_mod
+        with patch.object(web_tasks, "wait_for_public_ip",
+                          return_value="203.0.113.10"), \
+                patch.object(notify_mod, "send_telegram_message",
+                             return_value=(True, "")), \
+                patch.object(notify_mod, "send_bark",
+                             return_value=(False, "Bark 推送未开启")):
+            web_tasks._notify_grab_success(self.registry, "t1", MagicMock(),
+                                           self.params, self.result,
+                                           self.notify)
+        logs = [c.args[1] for c in self.registry.append_log.call_args_list]
+        self.assertFalse(any("部分失败" in line for line in logs))
+        self.assertTrue(any("Telegram 已发送" in line
+                            and "Bark 未配置，已跳过" in line
+                            for line in logs))
+
 
 if __name__ == "__main__":
     unittest.main()

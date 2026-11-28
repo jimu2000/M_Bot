@@ -21,6 +21,7 @@ OCI CLI（认证由 OCI CLI 自己处理，本模块不读私钥）。
 
 import json
 import os
+import time
 
 # ================= 配置区（改这里） =================
 # Default compartment OCID (the root compartment is the tenancy OCID; placeholder). 默认 compartment OCID（根 compartment 即 tenancy OCID，占位符）。
@@ -300,11 +301,100 @@ def reinstall_instance(cli, instance_id, image_id=None):
     return _unwrap(result) or {}
 
 
-def get_serial_console(cli, instance_id, ssh_public_key_file=None):
+def _console_connection_summary(connection):
+    """把一个控制台连接字典精简成 get_serial_console 的返回形状。"""
+    connection = connection or {}
+    return {
+        "id": connection.get("id"),
+        "connection-string": connection.get("connection-string"),
+        "fingerprint": connection.get("fingerprint"),
+        "service-host-key-fingerprint":
+            connection.get("service-host-key-fingerprint"),
+        "lifecycle-state": connection.get("lifecycle-state"),
+    }
+
+
+# Max time (seconds) to wait for a CREATING console connection to become
+# ACTIVE before returning it as-is (the caller can retry). 正在创建的控
+# 制台连接等多久变 ACTIVE（超时后把 CREATING 的连接信息原样返回，调用
+# 方稍后可重试）。
+CONSOLE_CREATING_WAIT_SECONDS = 10
+# Poll interval (seconds) while waiting for a CREATING / DELETING console
+# connection to settle. 等待控制台连接状态落定时的轮询间隔（秒）。
+CONSOLE_POLL_SECONDS = 2
+# Max time (seconds) to wait for a DELETING console connection to disappear
+# before creating a new one. 等正在删除的控制台连接消失的最长等待（秒）。
+CONSOLE_DELETING_WAIT_SECONDS = 6
+
+
+def _wait_console_active(cli, connection_id, timeout_seconds):
+    """等一个控制台连接变 ACTIVE：轮询 get，变 ACTIVE 返回最新详情；
+    超时返回最后一次查到的详情（可能仍是 CREATING），查不到返回 None。"""
+    deadline = time.monotonic() + timeout_seconds
+    last = None
+    while True:
+        try:
+            last = cli.sdk_get_instance_console_connection(
+                connection_id) or {}
+        except Exception:
+            break
+        if (last or {}).get("lifecycle-state") == "ACTIVE":
+            return last
+        if time.monotonic() >= deadline:
+            return last
+        time.sleep(CONSOLE_POLL_SECONDS)
+    return last
+
+
+def _list_console_connections(cli, instance_id, compartment_id):
+    """列出某实例的控制台连接；拿不到 compartment 时返回 None（调用方
+    直接走 create，旧行为）。列表本身失败也返回 None（不阻塞新建）。"""
+    if compartment_id is None:
+        try:
+            detail = _unwrap(get_instance(cli, instance_id)) or {}
+            compartment_id = detail.get("compartment-id")
+        except Exception:
+            compartment_id = None
+    if not compartment_id:
+        return None
+    try:
+        return cli.sdk_list_instance_console_connections(
+            compartment_id, instance_id=instance_id) or []
+    except Exception:
+        return None
+
+
+def _wait_console_gone(cli, instance_id, compartment_id, connection_id,
+                       timeout_seconds):
+    """等一个正在删除的控制台连接从列表里消失；消失返回 True，超时 False。"""
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        current = _list_console_connections(cli, instance_id, compartment_id)
+        if current is None:
+            return False
+        if not any((c or {}).get("id") == connection_id
+                   for c in current):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(CONSOLE_POLL_SECONDS)
+
+
+def get_serial_console(cli, instance_id, ssh_public_key_file=None,
+                       compartment_id=None):
     """获取串行控制台连接。
 
-    两步：先 create instance-console-connection（返回连接串与指纹），
-    再 get 确认连接状态（create 未返回 id 时跳过 get）。
+    OCI 每台实例只允许一个 ACTIVE 控制台连接，直接 create 第二个会报
+    IncorrectState（"already exists or has not been terminated"）。所以
+    先列出该实例已有的连接：
+      - 已有 ACTIVE 的直接复用（再 get 一次拿最新连接串/指纹），不新建；
+      - 正在 CREATING 的等一会儿（最多约 10 秒），变 ACTIVE 就复用，
+        一直没变就把这条 CREATING 的连接信息返回（调用方稍后可重试）；
+      - FAILED 的先删掉再新建；
+      - 正在 DELETING 的等它消失（最多约 6 秒）再新建；
+      - 没有可用连接时才 create（create 未返回 id 时跳过 get）。
+    新建时若仍撞上 IncorrectState（并发新建的竞态），重新列一次，
+    有 ACTIVE 的就复用它，否则原样抛错。
     返回精简字典：
         {"id", "connection-string", "fingerprint",
          "service-host-key-fingerprint", "lifecycle-state"}。
@@ -314,6 +404,8 @@ def get_serial_console(cli, instance_id, ssh_public_key_file=None):
     必填参数 --ssh-public-key-file，缺了报 Missing option）。
     不传时依次取环境变量 MBOT_CONSOLE_SSH_KEY_FILE、~/.ssh/id_ed25519.pub；
     都没有时抛 ValueError（调用方应提示用户先配置）。
+    compartment_id：列出已有连接用的 compartment；不传时先查实例
+    详情取它的 compartment-id，查不到时跳过复用、直接 create（旧行为）。
     """
     key_file = (ssh_public_key_file
                 or os.environ.get("MBOT_CONSOLE_SSH_KEY_FILE")
@@ -322,10 +414,77 @@ def get_serial_console(cli, instance_id, ssh_public_key_file=None):
         raise ValueError(
             f"串行控制台需要 SSH 公钥文件，未找到：{key_file}。"
             "请设环境变量 MBOT_CONSOLE_SSH_KEY_FILE 指向一个公钥文件。")
-    created = _unwrap(cli.run(
-        ["compute", "instance-console-connection", "create",
-         "--instance-id", instance_id,
-         "--ssh-public-key-file", key_file])) or {}
+    existing = _list_console_connections(cli, instance_id, compartment_id)
+    if existing is not None:
+        active = [c for c in existing
+                  if (c or {}).get("lifecycle-state") == "ACTIVE"]
+        if active:
+            # Reuse the existing ACTIVE connection (no create). 复用已有
+            # 的 ACTIVE 连接，不新建。
+            detail = cli.sdk_get_instance_console_connection(
+                active[0].get("id")) or {}
+            merged = dict(active[0])
+            for key, value in detail.items():
+                if value is not None:
+                    merged[key] = value
+            return _console_connection_summary(merged)
+        creating = [c for c in existing
+                    if (c or {}).get("lifecycle-state") == "CREATING"]
+        if creating:
+            # Wait briefly for it to become ACTIVE; return the CREATING
+            # record as-is if it never settles (the caller can retry).
+            # 正在创建：等一会儿变 ACTIVE 就复用，一直没变就把 CREATING
+            # 的连接信息原样返回（调用方稍后可重试）。
+            detail = _wait_console_active(
+                cli, creating[0].get("id"), CONSOLE_CREATING_WAIT_SECONDS)
+            merged = dict(creating[0])
+            for key, value in (detail or {}).items():
+                if value is not None:
+                    merged[key] = value
+            return _console_connection_summary(merged)
+        failed = [c for c in existing
+                  if (c or {}).get("lifecycle-state") == "FAILED"]
+        for conn in failed:
+            # A FAILED connection still occupies the one-connection slot;
+            # delete it (best effort) before creating a new one.
+            # FAILED 的连接仍占着唯一名额，先删掉（尽力删）再新建。
+            try:
+                cli.run(["compute", "instance-console-connection", "delete",
+                         "--instance-console-connection-id",
+                         conn.get("id"), "--force"])
+            except Exception:
+                pass
+        deleting = [c for c in existing
+                    if (c or {}).get("lifecycle-state") == "DELETING"]
+        if deleting:
+            _wait_console_gone(cli, instance_id, compartment_id,
+                               deleting[0].get("id"),
+                               CONSOLE_DELETING_WAIT_SECONDS)
+    try:
+        created = _unwrap(cli.run(
+            ["compute", "instance-console-connection", "create",
+             "--instance-id", instance_id,
+             "--ssh-public-key-file", key_file])) or {}
+    except Exception as exc:
+        # A concurrent create may have won the race: re-list once and
+        # reuse the ACTIVE connection if one now exists, instead of
+        # surfacing IncorrectState. 并发新建抢赢了：重新列一次，有
+        # ACTIVE 的就复用，不再把 IncorrectState 抛给用户。
+        if "IncorrectState" in str(exc):
+            retry = _list_console_connections(cli, instance_id,
+                                              compartment_id)
+            if retry:
+                active = [c for c in retry
+                          if (c or {}).get("lifecycle-state") == "ACTIVE"]
+                if active:
+                    detail = cli.sdk_get_instance_console_connection(
+                        active[0].get("id")) or {}
+                    merged = dict(active[0])
+                    for key, value in detail.items():
+                        if value is not None:
+                            merged[key] = value
+                    return _console_connection_summary(merged)
+        raise
     connection_id = created.get("id")
     if connection_id:
         # 跟进查详情走 SDK 直调（读接口，不起子进程）。
@@ -333,14 +492,7 @@ def get_serial_console(cli, instance_id, ssh_public_key_file=None):
         for key, value in detail.items():
             if value is not None:
                 created[key] = value
-    return {
-        "id": created.get("id"),
-        "connection-string": created.get("connection-string"),
-        "fingerprint": created.get("fingerprint"),
-        "service-host-key-fingerprint":
-            created.get("service-host-key-fingerprint"),
-        "lifecycle-state": created.get("lifecycle-state"),
-    }
+    return _console_connection_summary(created)
 
 
 def find_instance_by_name(cli, compartment_id, display_name):

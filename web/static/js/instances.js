@@ -24,6 +24,7 @@
   var bootswapSelected = null;
   var bootBackupDelTarget = null;
   var detailLoadSeq = 0;  // Detail-load sequence: guards against out-of-order responses when the user opens another instance's detail while one is still loading. 详情加载序号：用户快速连点两个实例时，旧请求的回包不再覆盖新弹窗。
+  var detailRootPassword = null;  // Detail modal's current instance initial boot password (in memory only, never rendered in the DOM; the cell shows •••••••• and a click copies it). 详情弹窗当前实例的初始开机密码（只放内存，不进 DOM；格子里只显示 ••••••••，点击复制）。
   var cpuRefreshTimer = null;  // Timer for the delayed CPU-model refetch (at most one refetch per load round). CPU 型号延迟补拉的定时器（每轮只补拉一次）。
   var consoleCommand = "";
   var consoleTarget = null;
@@ -329,6 +330,11 @@
     document.getElementById("detail-ad").textContent = loadingText;
     document.getElementById("detail-boot-volume").textContent = loadingText;
     document.getElementById("detail-created").textContent = loadingText;
+    detailRootPassword = null;  // Drop the previous instance's password; the cell is re-filled by loadDetailRootPassword once the detail API returns. 丢掉上一台实例的密码；密码格由 loadDetailRootPassword 在详情接口回来后重填。
+    var pwdCell = document.getElementById("detail-root-password");
+    pwdCell.textContent = loadingText;
+    pwdCell.title = "";
+    pwdCell.style.cursor = "";
     document.getElementById("detail-watchdog").textContent = loadingText;
     document.getElementById("detail-modal").dataset.instanceId = instId;
     document.getElementById("detail-bind-domain-btn").hidden = true;
@@ -383,11 +389,41 @@
       document.getElementById("detail-watchdog-btn").hidden = true;
       // CPU re-detection is only available for RUNNING instances. CPU 重新检测也只对运行中的实例可用。
       document.getElementById("detail-cpu-btn").hidden = !watchdogOn;
+      // Initial boot password is fetched separately for this one instance (the list/detail APIs never include it). 初始开机密码单独为这一台拉一次（列表与详情接口都不带密码）。
+      loadDetailRootPassword(instId, seq);
       if (watchdogOn) refreshWatchdog();
     } catch (err) {
       if (seq !== detailLoadSeq) return;
       MBot.closeModal("detail-modal");
       MBot.toast("加载实例详情失败：" + err.message, "error");
+    }
+  }
+
+  // Instance detail: initial boot password (masked, click to copy). The password lives only in the server-side per-instance credential store; the list/detail APIs never include it, so it is fetched only when the detail view opens for this one instance. A 404 means no password was saved for this instance. 详情里的初始开机密码（隐藏、点击复制）：密码只存在服务端凭据库，列表与详情接口都不带，只在打开这台实例的详情时为这一台单独拉一次；404 表示没存密码。
+  async function loadDetailRootPassword(instId, seq) {
+    var cell = document.getElementById("detail-root-password");
+    if (!cell) return;
+    try {
+      var res = await MBot.api(MBot.withProfile("/api/instances/" + encodeURIComponent(instId) + "/password", currentProfile, currentRegion), { noRedirect: true });
+      if (seq !== detailLoadSeq) return;  // A newer detail load started; discard this stale result. 已有更新的详情请求，丢弃这份旧回包。
+      if (res && res.root_password) {
+        detailRootPassword = res.root_password;
+        cell.textContent = "••••••••";
+        cell.title = "点击复制密码";
+        cell.style.cursor = "pointer";
+      } else {
+        detailRootPassword = null;
+        cell.textContent = "未保存";
+        cell.title = "";
+        cell.style.cursor = "";
+      }
+    } catch (err) {
+      if (seq !== detailLoadSeq) return;
+      detailRootPassword = null;
+      // 404 = no password saved for this instance; any other failure degrades quietly to "—" so the detail view still works. 404 是没存密码；其他失败静默降级成“—”，不影响详情页。
+      cell.textContent = (err && err.status === 404) ? "未保存" : "—";
+      cell.title = "";
+      cell.style.cursor = "";
     }
   }
 
@@ -965,6 +1001,10 @@
     });
     document.getElementById("detail-cpu-btn").addEventListener("click", function () {
       refreshCpuModel();
+    });
+    document.getElementById("detail-root-password").addEventListener("click", function () {
+      // Masked password cell: click copies the real password (held in memory only, never rendered in the DOM). 密码格点击复制：复制内存里那份真密码（不进 DOM）。
+      if (detailRootPassword) MBot.copyText(detailRootPassword, "初始开机密码");
     });
 
     document.getElementById("bootbackup-del-confirm-btn").addEventListener("click", async function () {

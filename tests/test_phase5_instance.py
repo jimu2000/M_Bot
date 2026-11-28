@@ -200,6 +200,7 @@ class TestGetSerialConsole(unittest.TestCase):
     @patch("oci.instance.os.path.isfile", return_value=True)
     def test_create_then_get(self, _mock_isfile):
         cli = MagicMock()
+        cli.sdk_list_instance_console_connections.return_value = []
         cli.run.return_value = {"data": {
             "id": FAKE_CONNECTION,
             "connection-string":
@@ -231,12 +232,143 @@ class TestGetSerialConsole(unittest.TestCase):
     def test_create_without_id_skips_get(self, _mock_isfile):
         """create 未返回 id 时不调 get，字段为 None。"""
         cli = _mock_cli({"data": {}})
+        cli.sdk_list_instance_console_connections.return_value = []
         result = get_serial_console(cli, FAKE_INSTANCE_1,
                                     ssh_public_key_file="/tmp/fake-key.pub")
         cli.run.assert_called_once()
         self.assertIsNone(result["id"])
         self.assertIsNone(result["connection-string"])
         self.assertIsNone(result["lifecycle-state"])
+
+    @patch("oci.instance.os.path.isfile", return_value=True)
+    def test_reuse_active_connection(self, _mock_isfile):
+        """已有 ACTIVE 连接时直接复用，不调 create。"""
+        cli = MagicMock()
+        cli.sdk_list_instance_console_connections.return_value = [{
+            "id": FAKE_CONNECTION,
+            "connection-string":
+                "ssh -i key " + FAKE_CONNECTION + "@instance-console",
+            "fingerprint": "aa:bb:cc",
+            "lifecycle-state": "ACTIVE"}]
+        cli.sdk_get_instance_console_connection.return_value = {
+            "id": FAKE_CONNECTION, "lifecycle-state": "ACTIVE",
+            "service-host-key-fingerprint": "dd:ee:ff"}
+        result = get_serial_console(
+            cli, FAKE_INSTANCE_1, ssh_public_key_file="/tmp/fake-key.pub",
+            compartment_id="ocid1.compartment.oc1..test")
+        cli.run.assert_not_called()
+        self.assertEqual(result["id"], FAKE_CONNECTION)
+        self.assertIn("ssh -i key", result["connection-string"])
+        self.assertEqual(result["fingerprint"], "aa:bb:cc")
+        self.assertEqual(result["lifecycle-state"], "ACTIVE")
+        self.assertEqual(result["service-host-key-fingerprint"], "dd:ee:ff")
+
+    @patch("oci.instance.os.path.isfile", return_value=True)
+    def test_create_when_none_exists(self, _mock_isfile):
+        """列表为空时才 create。"""
+        cli = MagicMock()
+        cli.sdk_list_instance_console_connections.return_value = []
+        cli.run.return_value = {"data": {
+            "id": FAKE_CONNECTION,
+            "connection-string":
+                "ssh -i key " + FAKE_CONNECTION + "@instance-console",
+            "fingerprint": "aa:bb:cc",
+            "lifecycle-state": "CREATING"}}
+        cli.sdk_get_instance_console_connection.return_value = {
+            "id": FAKE_CONNECTION, "lifecycle-state": "ACTIVE"}
+        result = get_serial_console(
+            cli, FAKE_INSTANCE_1, ssh_public_key_file="/tmp/fake-key.pub",
+            compartment_id="ocid1.compartment.oc1..test")
+        self.assertEqual(cli.run.call_count, 1)
+        create_args = cli.run.call_args_list[0][0][0]
+        self.assertEqual(create_args[:3],
+                         ["compute", "instance-console-connection", "create"])
+        self.assertEqual(result["lifecycle-state"], "ACTIVE")
+
+    @patch("oci.instance.os.path.isfile", return_value=True)
+    def test_incorrect_state_reuses_active(self, _mock_isfile):
+        """create 撞上 IncorrectState 时重新列一次、复用 ACTIVE 的，不抛错。"""
+        cli = MagicMock()
+        active = {"id": FAKE_CONNECTION,
+                  "connection-string":
+                      "ssh -i key " + FAKE_CONNECTION + "@instance-console",
+                  "fingerprint": "aa:bb:cc",
+                  "lifecycle-state": "ACTIVE"}
+        cli.sdk_list_instance_console_connections.side_effect = [[], [active]]
+        cli.run.side_effect = OCIError(
+            "IncorrectState: Console connection for instance "
+            "ocid1.instance.oc1..aaaa already exists or has not been "
+            "terminated.")
+        cli.sdk_get_instance_console_connection.return_value = {
+            "id": FAKE_CONNECTION, "lifecycle-state": "ACTIVE"}
+        result = get_serial_console(
+            cli, FAKE_INSTANCE_1, ssh_public_key_file="/tmp/fake-key.pub",
+            compartment_id="ocid1.compartment.oc1..test")
+        self.assertEqual(result["id"], FAKE_CONNECTION)
+        self.assertEqual(result["lifecycle-state"], "ACTIVE")
+        self.assertEqual(
+            cli.sdk_list_instance_console_connections.call_count, 2)
+
+    @patch("oci.instance.os.path.isfile", return_value=True)
+    def test_incorrect_state_without_active_reraises(self, _mock_isfile):
+        """create 撞上 IncorrectState、重新列也没有 ACTIVE 时原样抛错。"""
+        cli = MagicMock()
+        cli.sdk_list_instance_console_connections.return_value = []
+        cli.run.side_effect = OCIError("IncorrectState: already exists")
+        with self.assertRaises(OCIError):
+            get_serial_console(
+                cli, FAKE_INSTANCE_1,
+                ssh_public_key_file="/tmp/fake-key.pub",
+                compartment_id="ocid1.compartment.oc1..test")
+
+    @patch("oci.instance.os.path.isfile", return_value=True)
+    def test_failed_connection_deleted_then_created(self, _mock_isfile):
+        """FAILED 的连接先删掉再新建。"""
+        cli = MagicMock()
+        cli.sdk_list_instance_console_connections.return_value = [{
+            "id": FAKE_CONNECTION, "lifecycle-state": "FAILED"}]
+        cli.run.return_value = {"data": {
+            "id": FAKE_CONNECTION,
+            "connection-string":
+                "ssh -i key " + FAKE_CONNECTION + "@instance-console",
+            "fingerprint": "aa:bb:cc",
+            "lifecycle-state": "CREATING"}}
+        cli.sdk_get_instance_console_connection.return_value = {
+            "id": FAKE_CONNECTION, "lifecycle-state": "ACTIVE"}
+        result = get_serial_console(
+            cli, FAKE_INSTANCE_1, ssh_public_key_file="/tmp/fake-key.pub",
+            compartment_id="ocid1.compartment.oc1..test")
+        self.assertEqual(cli.run.call_count, 2)
+        delete_args = cli.run.call_args_list[0][0][0]
+        self.assertEqual(delete_args[:3],
+                         ["compute", "instance-console-connection", "delete"])
+        self.assertIn(FAKE_CONNECTION, delete_args)
+        self.assertIn("--force", delete_args)
+        create_args = cli.run.call_args_list[1][0][0]
+        self.assertEqual(create_args[2], "create")
+        self.assertEqual(result["lifecycle-state"], "ACTIVE")
+
+    @patch("oci.instance.os.path.isfile", return_value=True)
+    def test_creating_connection_becomes_active_reused(self, _mock_isfile):
+        """CREATING 的连接轮询变 ACTIVE 后复用，不新建。"""
+        cli = MagicMock()
+        cli.sdk_list_instance_console_connections.return_value = [{
+            "id": FAKE_CONNECTION,
+            "connection-string":
+                "ssh -i key " + FAKE_CONNECTION + "@instance-console",
+            "fingerprint": "aa:bb:cc",
+            "lifecycle-state": "CREATING"}]
+        cli.sdk_get_instance_console_connection.return_value = {
+            "id": FAKE_CONNECTION, "lifecycle-state": "ACTIVE",
+            "connection-string":
+                "ssh -i key " + FAKE_CONNECTION + "@instance-console",
+            "fingerprint": "aa:bb:cc"}
+        result = get_serial_console(
+            cli, FAKE_INSTANCE_1, ssh_public_key_file="/tmp/fake-key.pub",
+            compartment_id="ocid1.compartment.oc1..test")
+        cli.run.assert_not_called()
+        self.assertEqual(result["id"], FAKE_CONNECTION)
+        self.assertEqual(result["lifecycle-state"], "ACTIVE")
 
     @patch("oci.instance.os.path.isfile", return_value=False)
     def test_missing_key_file_raises(self, _mock_isfile):
