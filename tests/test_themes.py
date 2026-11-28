@@ -89,13 +89,25 @@ class TestThemeCss(unittest.TestCase):
             self.assertIn(var + ":", m.group(1), f"经典暗色主题缺少变量 {var}")
 
     def test_glow_themes_have_backdrop_and_z_index(self):
-        """带环境光晕的主题有 body::before 光晕，且内容层压在其上。"""
+        """带环境光晕的主题有 body::before 光晕，且内容层压在其上。
+
+        v2.25.4 回归：内容层抬升只抬 .shell——.topbar（fixed，z-index 50）
+        与 .resourcebar（sticky，z-index 40）本来就在光晕（z-index 0）之上，
+        绝不能再被一条 position: relative 规则盖掉（否则非经典主题顶栏
+        不固定、资源栏不粘住）。
+        """
         css = _read("static/css/themes.css")
         for theme in ("forest", "ocean", "sunset", "sakura", "obsidian", "mint", "ice", "desert"):
             self.assertIn(f'html[data-theme="{theme}"] body::before', css,
                           f"{theme} 主题缺少环境光晕")
-            self.assertIn(f'html[data-theme="{theme}"] .topbar', css,
+            self.assertIn(f'html[data-theme="{theme}"] .shell', css,
                           f"{theme} 主题的内容层 z-index 规则缺失")
+        for theme in ("starry", "forest", "ocean", "sunset", "sakura",
+                      "obsidian", "mint", "ice", "desert"):
+            self.assertNotIn(f'html[data-theme="{theme}"] .topbar', css,
+                             f"{theme} 主题不应改 .topbar 的 position（顶栏须保持 fixed）")
+            self.assertNotIn(f'html[data-theme="{theme}"] .resourcebar', css,
+                             f"{theme} 主题不应改 .resourcebar 的 position（资源栏须保持 sticky）")
 
 
 class TestThemeSelector(unittest.TestCase):

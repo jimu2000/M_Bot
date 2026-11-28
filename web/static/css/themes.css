@@ -483,33 +483,25 @@ html[data-theme="desert"] body::before {
   background: radial-gradient(ellipse 55% 42% at 50% 105%, rgba(180, 83, 9, 0.12), transparent 70%);
 }
 
-/* In themes with a backdrop glow, the content layer must sit above it. 带环境光晕的主题下，内容层要压在光晕之上。 */
-html[data-theme="starry"] .topbar,
-html[data-theme="starry"] .resourcebar,
+/* In themes with a backdrop glow, the content layer must sit above it.
+   Only .shell needs lifting here: .topbar (fixed, z-index 50) and
+   .resourcebar (sticky, z-index 40) already sit above the glow (z-index 0),
+   and forcing position: relative on them would break the fixed top bar and
+   the sticky resource bar (v2.25.4: non-classic themes lost the fixed top
+   bar because this rule overrode fixed/sticky with relative).
+   带环境光晕的主题下，内容层要压在光晕之上。这里只需要抬 .shell：
+   .topbar（fixed，z-index 50）与 .resourcebar（sticky，z-index 40）本来就
+   在光晕（z-index 0）之上，再强行改 position: relative 会把固定顶栏与
+   粘性资源栏改坏（v2.25.4：非经典主题顶栏不固定就是这条规则把 fixed /
+   sticky 盖成 relative 造成的）。 */
 html[data-theme="starry"] .shell,
-html[data-theme="forest"] .topbar,
-html[data-theme="forest"] .resourcebar,
 html[data-theme="forest"] .shell,
-html[data-theme="ocean"] .topbar,
-html[data-theme="ocean"] .resourcebar,
 html[data-theme="ocean"] .shell,
-html[data-theme="sunset"] .topbar,
-html[data-theme="sunset"] .resourcebar,
 html[data-theme="sunset"] .shell,
-html[data-theme="sakura"] .topbar,
-html[data-theme="sakura"] .resourcebar,
 html[data-theme="sakura"] .shell,
-html[data-theme="obsidian"] .topbar,
-html[data-theme="obsidian"] .resourcebar,
 html[data-theme="obsidian"] .shell,
-html[data-theme="mint"] .topbar,
-html[data-theme="mint"] .resourcebar,
 html[data-theme="mint"] .shell,
-html[data-theme="ice"] .topbar,
-html[data-theme="ice"] .resourcebar,
 html[data-theme="ice"] .shell,
-html[data-theme="desert"] .topbar,
-html[data-theme="desert"] .resourcebar,
 html[data-theme="desert"] .shell {
   position: relative;
   z-index: 1;

@@ -552,11 +552,11 @@ class TestVersion200(unittest.TestCase):
     """A4：版本号 2.10。"""
 
     def test_version_file(self):
-        self.assertEqual(read("VERSION").strip(), "2.25.3")
+        self.assertEqual(read("VERSION").strip(), "2.25.4")
 
     def test_readme_top_version(self):
         readme = read("README.md")
-        self.assertIn("**当前版本：v2.25.3**", readme)
+        self.assertIn("**当前版本：v2.25.4**", readme)
 
     def test_static_assets_carry_version_query(self):
         """静态资源链接带 ?v= 版本号（发版后浏览器拉新 CSS，不再用缓存的旧样式把顶栏滚走）。"""

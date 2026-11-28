@@ -9,6 +9,9 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [2.25.4] - 2026-11-28
+- Non-classic theme layout fix: the glow layering rule at the end of themes.css used to set `.topbar`, `.resourcebar` and `.shell` all to `position: relative`, overriding the top bar's `fixed` and the resource bar's `sticky`, so switching themes unfixed the top bar. Now only `.shell` is lifted (the top bar at z-index 50 and the resource bar at z-index 40 already sit above the glow, no lifting needed).
+
 ## [2.25.3] - 2026-11-28
 - Instance card blue bar and serial console swapped: the blue bar is now the serial console, renamed "ssh串行控制台", keeping its blue style; the grid button that was "serial console" is now SSH.
 
