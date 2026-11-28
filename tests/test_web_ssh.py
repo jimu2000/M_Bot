@@ -511,6 +511,13 @@ FAKE_CONSOLE_STRING_SIMPLE = (
     "ssh -i /root/.ssh/id_rsa -p 443 "
     "ocid1.instanceconsoleconnection.oc1..consoletest"
     "@instance-console.ap-singapore-1.oci.oraclecloud.com")
+# Real OCI OCIDs carry a region (ocid1.instance.oc1.<region>.<id>),
+# unlike the region-less fakes above. The parser must accept both.
+FAKE_CONSOLE_STRING_REGIONAL = (
+    "ssh -o ProxyCommand='ssh -W %h:%p -p 443 "
+    "ocid1.instanceconsoleconnection.oc1.ap-singapore-1.aaaaaaaatestconn1"
+    "@instance-console.ap-singapore-1.oci.oraclecloud.com' "
+    "ocid1.instance.oc1.ap-singapore-1.aaaaaaaatestregional1")
 
 
 class TestParseConsoleConnectionString(unittest.TestCase):
@@ -525,6 +532,22 @@ class TestParseConsoleConnectionString(unittest.TestCase):
         self.assertEqual(
             username, "ocid1.instanceconsoleconnection.oc1..consoletest")
         self.assertEqual(instance_id, "ocid1.instance.oc1..consoletest")
+
+    def test_proxycommand_form_with_regional_ocid(self):
+        # Regression (smoke test 2026-01-05): real OCI instance OCIDs
+        # carry a region (ocid1.instance.oc1.ap-singapore-1.<id>); the
+        # parser must extract it, not reject the string with a 400.
+        host, port, username, instance_id = \
+            parse_console_connection_string(FAKE_CONSOLE_STRING_REGIONAL)
+        self.assertEqual(
+            host, "instance-console.ap-singapore-1.oci.oraclecloud.com")
+        self.assertEqual(port, 443)
+        self.assertEqual(
+            username,
+            "ocid1.instanceconsoleconnection.oc1.ap-singapore-1.aaaaaaaatestconn1")
+        self.assertEqual(
+            instance_id,
+            "ocid1.instance.oc1.ap-singapore-1.aaaaaaaatestregional1")
 
     def test_simple_form_without_instance_id_rejected(self):
         # 简单形式里没有实例 OCID，直连无法确定 direct-tcpip 目的地，

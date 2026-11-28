@@ -772,7 +772,12 @@ _CONSOLE_USER_HOST_RE = re.compile(r"(\S+)@(\S+)")
 # Instance OCID in the outer ssh target of a console connection string
 # (the direct-tcpip destination of the forwarding channel). 控制台连接
 # 命令中外层 ssh 目标里的实例 OCID（转发通道的 direct-tcpip 目的地）。
-_INSTANCE_OCID_RE = re.compile(r"ocid1\.instance\.oc1\.\.[a-z0-9]+")
+# Real OCIDs carry a region (ocid1.instance.oc1.ap-singapore-1.<id>);
+# test fixtures use the region-less form (ocid1.instance.oc1..<id>).
+# Both must match: the old regex only matched the region-less form, so
+# direct-connect rejected every real connection string with a 400.
+_INSTANCE_OCID_RE = re.compile(
+    r"ocid1\.instance\.oc1\.\.?(?:[a-z0-9-]+\.)?[a-z0-9]+")
 
 
 def parse_console_connection_string(connection_string):
