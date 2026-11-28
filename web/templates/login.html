@@ -5,8 +5,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>登录 · M_Bot Oracle开源管理面板</title>
-<link rel="stylesheet" href="/static/css/themes.css">
-<link rel="stylesheet" href="/static/css/base.css">
+<link rel="stylesheet" href="/static/css/themes.css?v={{ app_version }}">
+<link rel="stylesheet" href="/static/css/base.css?v={{ app_version }}">
 {% if clarity_id %}
 {# Microsoft Clarity stats: only loaded when MBOT_CLARITY_ID is configured (login-page stats). Microsoft Clarity 统计：仅配置了 MBOT_CLARITY_ID 时加载（登录页统计）。 #}
 <script type="text/javascript">
@@ -107,8 +107,8 @@
 </div>
 
 <div id="toast-container" aria-live="polite"></div>
-<script src="/static/js/i18n.js"></script>
-<script src="/static/js/app.js"></script>
-<script src="/static/js/login.js"></script>
+<script src="/static/js/i18n.js?v={{ app_version }}"></script>
+<script src="/static/js/app.js?v={{ app_version }}"></script>
+<script src="/static/js/login.js?v={{ app_version }}"></script>
 </body>
 </html>

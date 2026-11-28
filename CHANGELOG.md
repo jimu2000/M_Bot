@@ -9,6 +9,13 @@
 
 ## [Unreleased]
 
+## [2.25.2] - 2026-11-28
+- 顶栏固定：静态资源链接带版本号（`?v=`），浏览器每次发版都拉新 CSS，不再用缓存的旧样式把顶栏滚走。
+- 实例卡片“初始开机密码”改成一行：标签列由 64px 加宽到 84px 且不换行。
+
+## [2.25.1] - 2026-11-28
+- GitHub README 重新排版（照 R-Bot 的摆法）：中文 README.md + 英文 md/en/README.md 分开，顶栏互链。
+
 ## [2.25.0] - 2026-11-28
 - 实例详情加“系统版本”行（CPU 型号下面）：如 Debian 13.8、Ubuntu 22.04，SSH 读 `/etc/os-release` + `/etc/debian_version`（Debian 小版本只在 debian_version 里），结果缓存到 `tgbot/data/os_versions.json`；实例终止/重装成功后清缓存，DD 完成后也清缓存重新检测。实例卡片与机器人端详情同步显示（卡片上 CPU 型号下面一行）。
 - 多 worker 重复拉起抢机修好：面板用 uvicorn `--workers 4` 启动时每个 worker 都会跑一遍启动恢复，同一抢机任务会被拉起 4 个重复线程（抢到时可能重复建机，面板上状态还会来回跳）。现在启动恢复先抢排他文件锁，只有拿到锁的 worker 恢复抢机，其余 worker 跳过；锁保留到进程结束，后启动的 worker 也拿不到。

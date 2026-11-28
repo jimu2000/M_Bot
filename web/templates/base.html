@@ -5,8 +5,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}M_Bot Oracle开源管理面板{% endblock %}</title>
-<link rel="stylesheet" href="/static/css/themes.css">
-<link rel="stylesheet" href="/static/css/base.css">
+<link rel="stylesheet" href="/static/css/themes.css?v={{ app_version }}">
+<link rel="stylesheet" href="/static/css/base.css?v={{ app_version }}">
 {# Apply the saved theme as early as possible to avoid a page flash. 尽早应用已保存的主题，避免页面闪烁。 #}
 <script>
 (function () {
@@ -244,9 +244,9 @@
   </div>
 </div>
 
-<script src="/static/js/i18n.js"></script>
-<script src="/static/js/app.js"></script>
-<script src="/static/js/settings.js"></script>
+<script src="/static/js/i18n.js?v={{ app_version }}"></script>
+<script src="/static/js/app.js?v={{ app_version }}"></script>
+<script src="/static/js/settings.js?v={{ app_version }}"></script>
 {% block extra_scripts %}{% endblock %}
 </body>
 </html>

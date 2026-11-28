@@ -377,6 +377,6 @@
 {% endblock %}
 
 {% block extra_scripts %}
-<script src="/static/js/instances.js"></script>
-<script src="/static/js/bind-domain.js"></script>
+<script src="/static/js/instances.js?v={{ app_version }}"></script>
+<script src="/static/js/bind-domain.js?v={{ app_version }}"></script>
 {% endblock %}

@@ -9,6 +9,13 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [2.25.2] - 2026-11-28
+- Top bar pinned: static asset links now carry a version query (`?v=`), so the browser fetches fresh CSS on each release instead of scrolling the top bar away with a stale cached copy.
+- Instance card "initial boot password" is now a single line: the label column widened from 64px to 84px with no wrapping.
+
+## [2.25.1] - 2026-11-28
+- GitHub README re-laid out (same arrangement as R-Bot): Chinese README.md plus English md/en/README.md, linked from each other's top.
+
 ## [2.25.0] - 2026-11-28
 - The instance detail view has a new "OS version" row, under the CPU model (e.g. Debian 13.8, Ubuntu 22.04). It reads `/etc/os-release` plus `/etc/debian_version` over SSH (the Debian point release only lives in debian_version) and caches the result in `tgbot/data/os_versions.json`; the cache is cleared when the instance is terminated, reinstalled, or after DD completes. The instance card and the bot's instance detail show it too (on the card, one row under the CPU model).
 - Fixed duplicate grab threads on restart with multiple workers: the panel runs uvicorn with `--workers 4`, and every worker used to run the startup recovery, relaunching the same grab task into 4 duplicate threads (which could create duplicate instances when capacity appeared, and made the panel status flap). Startup recovery now takes an exclusive file lock first: only the worker holding it resumes grabs, and the others skip; the lock is held for the process lifetime, so late-starting workers skip too.

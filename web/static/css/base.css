@@ -396,7 +396,7 @@ textarea { resize: vertical; min-height: 74px; }
 .instance-meta-row {
   display: flex; align-items: baseline; gap: 10px;
 }
-.instance-meta-label { color: var(--text-muted); flex-shrink: 0; width: 64px; }
+.instance-meta-label { color: var(--text-muted); flex-shrink: 0; width: 84px; white-space: nowrap; }
 .instance-meta-value {
   min-width: 0; word-break: break-all;
   display: flex; align-items: center; gap: 6px; flex-wrap: wrap;

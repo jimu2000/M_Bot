@@ -219,14 +219,22 @@ class TestInstallScript(unittest.TestCase):
         self.assertNotIn("listen ${PANEL_PORT} ssl;", self.text)
 
     def test_readme_quickstart(self):
+        # README 按 R-Bot 摆法分开：中文 README.md + 英文 md/en/README.md，
+        # 各有一条一键命令。中文 README.md (Chinese) and English md/en/README.md
+        # each carry one one-liner.
         with open(README, encoding="utf-8") as f:
             readme = f.read()
-        self.assertEqual(readme.count(ONELINER), 2,
-                         "README 中英两节应各有一条一键命令")
-        self.assertIn("### 快速开始\n", readme)
-        self.assertIn("### Quick start\n", readme)
-        self.assertIn("### 手动安装", readme)
-        self.assertIn("### Manual install", readme)
+        with open(os.path.join(ROOT, "md", "en", "README.md"),
+                  encoding="utf-8") as f:
+            readme_en = f.read()
+        self.assertEqual(readme.count(ONELINER), 1,
+                         "中文 README 应有一条一键命令")
+        self.assertEqual(readme_en.count(ONELINER), 1,
+                         "英文 README 应有一条一键命令")
+        self.assertIn("## 快速开始\n", readme)
+        self.assertIn("## Quick start\n", readme_en)
+        self.assertIn("## 手动安装", readme)
+        self.assertIn("## Manual install", readme_en)
     def test_lego_pinned_and_arch_aware(self):
         self.assertIn('LEGO_VERSION="v5.', self.text)
         self.assertIn("install_lego()", self.text)

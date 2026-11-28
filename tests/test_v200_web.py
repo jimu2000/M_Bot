@@ -202,7 +202,7 @@ class TestI18nSwitch(unittest.TestCase):
         self.assertIsNotNone(m, "login.html 应有 #login-lang-select")
         self.assertIn('value="zh-CN"', m.group(1))
         self.assertIn('value="en"', m.group(1))
-        self.assertIn('src="/static/js/i18n.js"', self.login)
+        self.assertIn('src="/static/js/i18n.js?v={{ app_version }}"', self.login)
 
     def test_i18n_loaded_before_app_js(self):
         """i18n.js 在 app.js 之前加载，各页面脚本才能用 MBotI18n。"""
@@ -552,11 +552,23 @@ class TestVersion200(unittest.TestCase):
     """A4：版本号 2.10。"""
 
     def test_version_file(self):
-        self.assertEqual(read("VERSION").strip(), "2.25.0")
+        self.assertEqual(read("VERSION").strip(), "2.25.2")
 
     def test_readme_top_version(self):
         readme = read("README.md")
-        self.assertIn("**当前版本：v2.25.0**", readme)
+        self.assertIn("**当前版本：v2.25.2**", readme)
+
+    def test_static_assets_carry_version_query(self):
+        """静态资源链接带 ?v= 版本号（发版后浏览器拉新 CSS，不再用缓存的旧样式把顶栏滚走）。"""
+        base = read("web/templates/base.html")
+        self.assertIn('/static/css/base.css?v={{ app_version }}', base)
+        self.assertIn('/static/css/themes.css?v={{ app_version }}', base)
+        self.assertIn('/static/js/app.js?v={{ app_version }}', base)
+
+    def test_instance_meta_label_fits_password(self):
+        """实例卡片标签列够宽（84px + 不换行），“初始开机密码”六个字不折行。"""
+        css = read("web/static/css/base.css")
+        self.assertIn("width: 84px; white-space: nowrap;", css)
 
     def test_changelogs_cover_v200(self):
         for rel, needles in (
