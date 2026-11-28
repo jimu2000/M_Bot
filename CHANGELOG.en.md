@@ -9,6 +9,10 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [2.25.5] - 2026-11-28
+- install.sh language choice: the one-click installer now asks for a language first (1 Chinese / 2 English, Enter defaults to Chinese); choosing English makes the whole install English (prompts, progress and results all go through `L "Chinese" "English"`, MBOT_LANG=en). MBOT_INSTALL_LANG presets it as an env var, the choice is saved to `.mbot-lang` in the install dir and reused by upgrade/uninstall; non-interactive and update runs silently default to Chinese.
+- DD security script dd_security.sh gains BBR + TCP tuning: same logic as install.sh's setup_bbr() (TCP buffers enlarged to 64MB, switch to BBR + fq when the tcp_bbr module exists), plus the tcp_notsent_lowat / tcp_mtu_probing / tcp_slow_start_after_idle trio from bufanche's tcp-tune.sh.
+
 ## [2.25.4] - 2026-11-28
 - Non-classic theme layout fix: the glow layering rule at the end of themes.css used to set `.topbar`, `.resourcebar` and `.shell` all to `position: relative`, overriding the top bar's `fixed` and the resource bar's `sticky`, so switching themes unfixed the top bar. Now only `.shell` is lifted (the top bar at z-index 50 and the resource bar at z-index 40 already sit above the glow, no lifting needed).
 

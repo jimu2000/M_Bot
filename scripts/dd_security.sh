@@ -8,6 +8,9 @@
 # 不改 SSH 端口、不关密码登录（DD 初始化本身走密码 SSH，关了会断）。
 #
 # 内容（按用户 2026-11-28 定）：
+#   - BBR + TCP 优化：TCP 缓冲调大到 64MB，有 tcp_bbr 模块时切 BBR + fq
+#     （与 install.sh 的 setup_bbr() 同款逻辑，另参考 bufanche tcp-tune.sh
+#     的 tcp_notsent_lowat / tcp_mtu_probing / tcp_slow_start_after_idle 三项）。
 #   - fail2ban：SSH 端口自动识别（跟随系统实际 SSH 端口，不写死 22/14422），
 #     jail.local 用用户给的配置。
 #   - unattended-upgrades：每日自动检查更新，内核更新后 04:00 自动重启，
@@ -45,6 +48,40 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y vnstat python3 curl fail2ban unattended-upgrades apt-listchanges powermgmt-base rkhunter
 systemctl enable --now vnstat
+
+# ---------- BBR + TCP 优化（与 install.sh 的 setup_bbr() 同款逻辑） ----------
+# 另参考 bufanche tcp-tune.sh（https://bufanche.com/tcp-tune.sh，MIT）的三项：
+# tcp_notsent_lowat=131072、tcp_mtu_probing=1、tcp_slow_start_after_idle=0。
+# 全部写 /etc/sysctl.conf 与 /etc/modules 持久化；重复跑不重复写（幂等）。
+echo "--- BBR + TCP 优化 ---"
+persist_sysctl() {
+    local key="$1" val="$2"
+    local esc_key="${key//./\\.}"
+    if grep -q "^${esc_key}=" /etc/sysctl.conf 2>/dev/null; then
+        sed -i "s|^${esc_key}=.*|${key}=${val}|" /etc/sysctl.conf
+    else
+        echo "${key}=${val}" >> /etc/sysctl.conf
+    fi
+}
+for kv in "net.core.rmem_max=67108864" "net.core.wmem_max=67108864" \
+          "net.ipv4.tcp_rmem=4096 87380 67108864" "net.ipv4.tcp_wmem=4096 65536 67108864" \
+          "net.core.netdev_max_backlog=250000" "net.ipv4.tcp_notsent_lowat=131072" \
+          "net.ipv4.tcp_mtu_probing=1" "net.ipv4.tcp_slow_start_after_idle=0"; do
+    key="${kv%%=*}"; val="${kv#*=}"
+    sysctl -w "$key=$val" >/dev/null 2>&1 || true
+    persist_sysctl "$key" "$val"
+done
+if modprobe tcp_bbr 2>/dev/null && sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -qw bbr; then
+    sysctl -w net.core.default_qdisc=fq >/dev/null 2>&1 || true
+    sysctl -w net.ipv4.tcp_congestion_control=bbr >/dev/null 2>&1 || true
+    persist_sysctl "net.core.default_qdisc" "fq"
+    persist_sysctl "net.ipv4.tcp_congestion_control" "bbr"
+    grep -qx "tcp_bbr" /etc/modules 2>/dev/null || echo "tcp_bbr" >> /etc/modules
+    echo "BBR 已开启（fq + bbr），TCP 缓冲已调大到 64MB。"
+else
+    echo "无 tcp_bbr 模块，保持 cubic（TCP 缓冲优化仍生效）。"
+fi
+echo "当前拥塞算法：$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo 未知)"
 
 # ---------- fail2ban（SSH 端口跟随系统） ----------
 echo "--- fail2ban：端口 $SSH_PORT ---"
@@ -113,9 +150,10 @@ fi
 
 echo ""
 echo "🛡️ [全自动化完成]："
-echo "1. fail2ban：已启用，SSH 端口 $SSH_PORT（跟随系统），5 次失败封 10 天"
-echo "2. 系统更新：每日自动检查，内核更新后 04:00 自动重启"
-echo "3. 流量看门狗：每 10 分钟巡检，200GB 熔断，SSH 逃生门已保留"
-echo "4. 安全守护：每 10 分钟检查，每周日 rkhunter"
-echo "5. 磁盘清理：已开启自动删除旧内核与无用依赖"
+echo "1. BBR + TCP 优化：缓冲已调大到 64MB，拥塞算法 $(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo 未知)"
+echo "2. fail2ban：已启用，SSH 端口 $SSH_PORT（跟随系统），5 次失败封 10 天"
+echo "3. 系统更新：每日自动检查，内核更新后 04:00 自动重启"
+echo "4. 流量看门狗：每 10 分钟巡检，200GB 熔断，SSH 逃生门已保留"
+echo "5. 安全守护：每 10 分钟检查，每周日 rkhunter"
+echo "6. 磁盘清理：已开启自动删除旧内核与无用依赖"
 echo "===== DD 安全加固完成 $(date '+%F %T') ====="

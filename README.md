@@ -1,6 +1,6 @@
 # M_Bot 甲骨文云开源管理面板
 
-> **当前版本：v2.25.4** · 更新记录见 [CHANGELOG.md](CHANGELOG.md)
+> **当前版本：v2.25.5** · 更新记录见 [CHANGELOG.md](CHANGELOG.md)
 
 简体中文 | [English](md/en/README.md)
 

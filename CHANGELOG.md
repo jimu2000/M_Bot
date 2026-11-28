@@ -9,6 +9,10 @@
 
 ## [Unreleased]
 
+## [2.25.5] - 2026-11-28
+- install.sh 首选语言：一键安装的第一个选择是 1中文 / 2English，默认回车是中文；选英文则安装全程英文（提示、进度与结果都走 `L "中文" "English"` 翻译，MBOT_LANG=en）。MBOT_INSTALL_LANG 环境变量可预设，选择保存在安装目录的 `.mbot-lang`，升级/卸载复用；非交互与更新模式静默默认中文。
+- DD 安全脚本 dd_security.sh 加 BBR + TCP 优化：与 install.sh 的 setup_bbr() 同款逻辑（TCP 缓冲调大到 64MB，有 tcp_bbr 模块时切 BBR + fq），另参考 bufanche tcp-tune.sh 的 tcp_notsent_lowat / tcp_mtu_probing / tcp_slow_start_after_idle 三项。
+
 ## [2.25.4] - 2026-11-28
 - 非经典主题排版修复：themes.css 末尾的光晕压层规则曾把 `.topbar`、`.resourcebar`、`.shell` 全设成 `position: relative`，盖掉了顶栏的 `fixed` 与资源栏的 `sticky`，导致一换主题顶栏就不固定。现只抬 `.shell`（顶栏 z-index 50、资源栏 z-index 40 本来就在光晕之上，无需再抬）。
 

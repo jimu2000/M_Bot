@@ -131,7 +131,7 @@ class TestInstallScript(unittest.TestCase):
 
     def test_update_mode_keeps_config(self):
         self.assertIn('FRESH_INSTALL=0', self.text)
-        self.assertIn('[ -f "$ENV_FILE" ] && { info "环境文件已存在，不覆盖。"; return 0; }',
+        self.assertIn('[ -f "$ENV_FILE" ] && { info "$(L "环境文件已存在，不覆盖。" "Env file already exists; not overwriting.")"; return 0; }',
                       self.text)
 
     def test_no_hardcoded_secrets(self):
@@ -448,7 +448,7 @@ class TestInstallScript(unittest.TestCase):
         self.assertNotIn("2>/dev/null", update_fn)
         self.assertIn("git fetch origin main", update_fn)
         self.assertIn("git reset --hard origin/main", update_fn)
-        self.assertIn("die \"代码更新失败", update_fn)
+        self.assertIn("die \"$(L \"代码更新失败", update_fn)
         self.assertNotIn("用现有代码继续", self.text)
 
     def test_install_and_upgrade_use_update_code(self):
@@ -461,9 +461,9 @@ class TestInstallScript(unittest.TestCase):
 
     def test_version_reported_after_install(self):
         self.assertIn("installed_version() {", self.text)
-        self.assertIn('ok "代码已就绪（版本 v$(installed_version)）。"',
+        self.assertIn('ok "$(L "代码已就绪（版本 v$(installed_version)）。" "Code ready (version v$(installed_version)).")"',
                       self.text)
-        self.assertIn('ok "升级完成（版本 v$(installed_version)）。"',
+        self.assertIn('ok "$(L "升级完成（版本 v$(installed_version)）。" "Upgrade complete (version v$(installed_version)).")"',
                       self.text)
         self.assertIn("代码已更新到 v$(installed_version)", self.text)
 
@@ -649,6 +649,113 @@ class TestInstallScript(unittest.TestCase):
         self.assertIn("_firewall_ufw", fn)
         self.assertIn("回落到 UFW", fn)
         self.assertIn("ip6 filter", fn)
+
+    # ---------- 语言选择（v2.25.5） ----------
+    def test_language_selection_exists(self):
+        # L() 翻译函数、MBOT_LANG 默认中文、choose_language 与保存文件都在；
+        # install/upgrade/uninstall 三个入口都先选语言。
+        self.assertIn('MBOT_LANG="${MBOT_LANG:-zh}"', self.text)
+        self.assertIn('L() { if [ "${MBOT_LANG:-zh}" = "en" ]; then',
+                      self.text)
+        self.assertIn("choose_language() {", self.text)
+        self.assertIn("MBOT_INSTALL_LANG", self.text)
+        self.assertIn(".mbot-lang", self.text)
+        for fn in ("cmd_install() {", "cmd_upgrade() {",
+                   "cmd_uninstall() {"):
+            body = self.text.split(fn)[1].split("\n}\n")[0]
+            self.assertIn("choose_language", body, f"{fn} 应先选语言")
+
+    def test_language_prompt_is_bilingual(self):
+        # 提问本身必须是中英双语（提问前还没选语言），默认回车是中文。
+        self.assertIn("请选择语言 / Select language:", self.text)
+        self.assertIn("  1) 中文", self.text)
+        self.assertIn("  2) English", self.text)
+        self.assertIn("默认 1 中文 / Default 1 Chinese", self.text)
+
+    def test_token_prompt_has_english(self):
+        # MBOT_LANG=en 时 Token 提示是英文；默认（中文）时是中文。
+        token_line = next(
+            ln for ln in self.text.splitlines()
+            if "Telegram 机器人 Token" in ln and "L \"" in ln)
+        self.assertIn("Telegram bot Token (get it from @BotFather",
+                      token_line)
+        lang_block = self.text.split(
+            "# ---------- 语言 / Language ----------")[1].split(
+            "\ncommand_exists()")[0]
+        script = ("set -u\n" + lang_block + "\n"
+                  "MBOT_LANG=en\n" + token_line + "\n"
+                  "MBOT_LANG=zh\n" + token_line + "\n")
+        result = subprocess.run(["bash", "-c", script],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        out = result.stdout
+        self.assertIn("Telegram bot Token (get it from @BotFather",
+                      out, "英文模式下 Token 提示应是英文")
+        self.assertIn("Telegram 机器人 Token", out, "中文模式下应是中文")
+
+    def test_language_default_is_chinese(self):
+        lang_block = self.text.split(
+            "# ---------- 语言 / Language ----------")[1].split(
+            "\ncommand_exists()")[0]
+        script = ("set -u\n" + lang_block + "\n"
+                  "unset MBOT_LANG\n"
+                  "L \"中文\" \"English\"\n")
+        result = subprocess.run(["bash", "-c", script],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "中文", "MBOT_LANG 未设时默认中文")
+
+    def test_language_runtime_choices(self):
+        # env 变量优先、已保存文件次之、其余静默默认中文（不提问、不报错）。
+        lang_block = self.text.split(
+            "# ---------- 语言 / Language ----------")[1].split(
+            "\ncommand_exists()")[0]
+        script = (
+            "set -euo pipefail\n"
+            "D=$(mktemp -d)\n"
+            "INSTALL_DIR=\"$D\"; ENV_FILE=\"$D/.mbot.env\"\n"
+            + lang_block + "\n"
+            "MBOT_INSTALL_LANG=en; MBOT_LANG=zh; choose_language\n"
+            "[ \"$MBOT_LANG\" = en ] || exit 11\n"
+            "[ \"$(cat $D/.mbot-lang)\" = en ] || exit 12\n"
+            "unset MBOT_INSTALL_LANG\n"
+            "printf 'zh\\n' > $D/.mbot-lang\n"
+            "MBOT_LANG=en; choose_language < /dev/null\n"
+            "[ \"$MBOT_LANG\" = zh ] || exit 13\n"
+            "rm -f $D/.mbot-lang\n"
+            "MBOT_LANG=en; choose_language < /dev/null\n"
+            "[ \"$MBOT_LANG\" = zh ] || exit 14\n"
+            "touch $ENV_FILE\n"
+            "MBOT_LANG=en; choose_language < /dev/null\n"
+            "[ \"$MBOT_LANG\" = zh ] || exit 15\n"
+            "rm -rf $D\n"
+            "echo OK\n")
+        result = subprocess.run(["bash", "-c", script],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0,
+                         f"语言选择分支失败（exit {result.returncode}）"
+                         f"：{result.stderr}")
+        self.assertIn("OK", result.stdout)
+
+    def test_output_all_bilingual(self):
+        # 自查：info/ok/warn/die/echo/printf 的参数里不应有裸中文——
+        # 中文只应出现在 L() 的第一个参数里，唯一的例外是语言选择提示本身。
+        zh = re.compile(r"[\u4e00-\u9fff]")
+        outpat = re.compile(r"\b(info|ok|warn|die|echo|printf)\b")
+        prompt = ("请选择语言", "1) 中文", "默认 1 中文")
+        bare = []
+        for ln in self.text.splitlines():
+            s = ln.strip()
+            if s.startswith("#") or not zh.search(ln):
+                continue
+            if not outpat.search(ln):
+                continue
+            if 'L "' in ln:
+                continue
+            if any(p in ln for p in prompt):
+                continue
+            bare.append(ln.strip())
+        self.assertEqual(bare, [], f"仍有裸中文输出行：{bare[:5]}")
 
 
 if __name__ == "__main__":

@@ -141,10 +141,77 @@ ok()    { echo "[+] $*"; }
 warn()  { echo "[!] $*" >&2; }
 die()   { echo "[x] $*" >&2; exit 1; }
 
+# ---------- 语言 / Language ----------
+# MBOT_LANG: zh (default) or en. L() picks the matching string for terminal
+# output: L "中文" "English". The choice comes from MBOT_INSTALL_LANG, the
+# saved file $INSTALL_DIR/.mbot-lang, or the first-run prompt in
+# choose_language(). Non-interactive/update runs default to zh silently.
+# MBOT_LANG：zh（默认）或 en。L() 按语言取对应的终端输出文案：L "中文" "English"。
+# 选择来源：MBOT_INSTALL_LANG 环境变量、已保存的 $INSTALL_DIR/.mbot-lang 文件，
+# 或首次安装时的提问（choose_language()）。非交互/更新模式静默默认中文。
+MBOT_LANG="${MBOT_LANG:-zh}"
+L() { if [ "${MBOT_LANG:-zh}" = "en" ]; then printf '%s' "$2"; else printf '%s' "$1"; fi; }
+
+# Save the language choice for future runs (upgrade/uninstall reuse it).
+# Only when the install dir already exists: on a fresh install it does not
+# exist yet (creating it here would make install_code refuse to clone), so
+# cmd_install saves again after install_code creates it. Never fatal.
+# 保存语言选择供以后运行复用（升级/卸载都按它走）。只有安装目录已存在时才写：
+# 全新安装时目录还没建（这里建目录会让 install_code 拒绝克隆），cmd_install
+# 会在 install_code 建好目录后再存一次。写失败不报错。
+save_language() {
+    if [ -d "$INSTALL_DIR" ]; then
+        printf '%s\n' "${MBOT_LANG:-zh}" > "$INSTALL_DIR/.mbot-lang" 2>/dev/null || true
+    fi
+}
+
+# Language choice (first prompt of the installer; the prompt itself must stay
+# bilingual because it runs before any language is chosen). Priority:
+# MBOT_INSTALL_LANG env var > saved $INSTALL_DIR/.mbot-lang > interactive
+# prompt on a fresh install (TTY only; Enter/EOF = Chinese) > silent
+# default zh. Never fatal (read has || true, EOF cannot kill the script).
+# 语言选择（安装程序的第一个选择；提问前还没选语言，所以提示本身必须是中英双语）。
+# 优先级：MBOT_INSTALL_LANG 环境变量 > 已保存的 $INSTALL_DIR/.mbot-lang >
+# 全新安装且 stdin 是 TTY 时提问（回车/EOF = 中文）> 其余情况静默默认中文。
+# 不报错（read 后有 || true，EOF 不会杀脚本）。
+choose_language() {
+    local saved ans
+    if [ -n "${MBOT_INSTALL_LANG:-}" ]; then
+        case "$MBOT_INSTALL_LANG" in
+            en) MBOT_LANG="en" ;;
+            *) MBOT_LANG="zh" ;;
+        esac
+        save_language
+        return 0
+    fi
+    if [ -f "$INSTALL_DIR/.mbot-lang" ]; then
+        saved="$(cat "$INSTALL_DIR/.mbot-lang" 2>/dev/null || true)"
+        case "$saved" in
+            en) MBOT_LANG="en" ;;
+            *) MBOT_LANG="zh" ;;
+        esac
+        return 0
+    fi
+    if [ ! -f "$ENV_FILE" ] && [ -t 0 ]; then
+        echo "请选择语言 / Select language:"
+        echo "  1) 中文"
+        echo "  2) English"
+        printf "默认 1 中文 / Default 1 Chinese: "
+        read -r ans || true
+        case "$ans" in
+            2) MBOT_LANG="en" ;;
+            *) MBOT_LANG="zh" ;;
+        esac
+        save_language
+        return 0
+    fi
+    MBOT_LANG="zh"
+}
+
 command_exists() { command -v "$1" >/dev/null 2>&1; }
 
 require_root() {
-    [ "$(id -u)" = "0" ] || die "请用 root 运行（sudo -i 后再执行）。"
+    [ "$(id -u)" = "0" ] || die "$(L "请用 root 运行（sudo -i 后再执行）。" "Please run as root (run sudo -i first).")"
 }
 
 detect_os() {
@@ -155,7 +222,7 @@ detect_os() {
             debian|ubuntu) return 0 ;;
         esac
     fi
-    die "只支持 Debian / Ubuntu（当前系统：${ID:-未知}），请手动按 README 部署。"
+    die "$(L "只支持 Debian / Ubuntu（当前系统：${ID:-未知}），请手动按 README 部署。" "Only Debian / Ubuntu are supported (current system: ${ID:-unknown}); please deploy manually following the README.")"
 }
 
 # ---------- 依赖 ----------
@@ -180,9 +247,9 @@ wait_for_apt() {
     local waited=0
     while apt_locked; do
         if [ "$waited" -ge 600 ]; then
-            die "等 apt 锁超过 10 分钟（可能系统更新卡住了），请稍后再试。"
+            die "$(L "等 apt 锁超过 10 分钟（可能系统更新卡住了），请稍后再试。" "Waited over 10 minutes for the apt lock (a system update may be stuck); please try again later.")"
         fi
-        [ "$waited" = "0" ] && info "apt 正被系统更新占用，等锁释放…"
+        [ "$waited" = "0" ] && info "$(L "apt 正被系统更新占用，等锁释放…" "apt is busy with a system update; waiting for the lock to release...")"
         sleep 10
         waited=$((waited + 10))
     done
@@ -195,7 +262,7 @@ setup_nginx_repo() {
     id="$(. /etc/os-release; echo "${ID:-}")"
     case "$id" in
         debian|ubuntu) : ;;
-        *) warn "未知发行版 $id，nginx 用发行版自带版本。"; return 1 ;;
+        *) warn "$(L "未知发行版 $id，nginx 用发行版自带版本。" "Unknown distribution $id; using the distro-provided nginx.")"; return 1 ;;
     esac
     # Fetching the repo key needs curl + gpg + lsb-release, which minimal images may not preinstall. 取仓库密钥要 curl + gpg + lsb-release，精简镜像上未必预装。
     if ! command_exists curl || ! command_exists gpg \
@@ -203,17 +270,17 @@ setup_nginx_repo() {
         wait_for_apt
         apt-get install -y -qq apt-transport-https ca-certificates curl \
             gnupg lsb-release >/dev/null 2>&1 \
-            || { warn "仓库工具安装失败，nginx 用发行版自带版本。"; return 1; }
+            || { warn "$(L "仓库工具安装失败，nginx 用发行版自带版本。" "Failed to install repo tools; using the distro-provided nginx.")"; return 1; }
     fi
     codename="$(lsb_release -cs 2>/dev/null || true)"
     [ -n "$codename" ] \
         || codename="$(. /etc/os-release; echo "${VERSION_CODENAME:-}")"
     [ -n "$codename" ] \
-        || { warn "读不到系统代号，nginx 用发行版自带版本。"; return 1; }
+        || { warn "$(L "读不到系统代号，nginx 用发行版自带版本。" "Cannot read the system codename; using the distro-provided nginx.")"; return 1; }
     if ! curl -fsSL https://nginx.org/keys/nginx_signing.key \
             | gpg --batch --yes --dearmor -o /usr/share/keyrings/nginx-archive-keyring.gpg \
             2>/dev/null; then
-        warn "nginx 签名密钥下载失败，nginx 用发行版自带版本。"
+        warn "$(L "nginx 签名密钥下载失败，nginx 用发行版自带版本。" "Failed to download the nginx signing key; using the distro-provided nginx.")"
         return 1
     fi
     printf 'deb [signed-by=/usr/share/keyrings/nginx-archive-keyring.gpg] https://nginx.org/packages/mainline/%s %s nginx\n' \
@@ -222,21 +289,21 @@ setup_nginx_repo() {
         > /etc/apt/preferences.d/99nginx
     wait_for_apt
     apt-get update -qq >/dev/null 2>&1 \
-        || { warn "nginx 仓库更新失败，nginx 用发行版自带版本。"; return 1; }
-    ok "nginx.org 官方仓库已添加（${id} ${codename}，mainline 分支）。"
+        || { warn "$(L "nginx 仓库更新失败，nginx 用发行版自带版本。" "Failed to update the nginx repo; using the distro-provided nginx.")"; return 1; }
+    ok "$(L "nginx.org 官方仓库已添加（${id} ${codename}，mainline 分支）。" "nginx.org official repo added (${id} ${codename}, mainline branch).")"
     return 0
 }
 
 install_deps() {
-    info "安装系统依赖（python3 / git / nginx / ufw / certbot）…"
+    info "$(L "安装系统依赖（python3 / git / nginx / ufw / certbot）…" "Installing system dependencies (python3 / git / nginx / ufw / certbot)...")"
     export DEBIAN_FRONTEND=noninteractive
     wait_for_apt
     # A race can still occur between the lock check and apt-get (another process may grab the lock), so update / install each retry 3 times before giving up. 等锁与 apt-get 之间仍可能有竞态（锁刚被别的进程抢走），update / install 各重试 3 次，失败才退出。
     local attempt=0
     until apt-get update -qq; do
         attempt=$((attempt + 1))
-        [ "$attempt" -ge 3 ] && die "apt-get update 多次失败，请检查网络与 apt 源。"
-        warn "apt-get update 失败（可能锁被占），15 秒后重试…"
+        [ "$attempt" -ge 3 ] && die "$(L "apt-get update 多次失败，请检查网络与 apt 源。" "apt-get update failed repeatedly; please check the network and apt sources.")"
+        warn "$(L "apt-get update 失败（可能锁被占），15 秒后重试…" "apt-get update failed (lock may be held); retrying in 15 seconds...")"
         sleep 15
         wait_for_apt
     done
@@ -248,61 +315,61 @@ install_deps() {
         python3 python3-venv python3-pip git nginx \
         ufw fail2ban curl wget openssl iproute2 procps psmisc >/dev/null; do
         attempt=$((attempt + 1))
-        [ "$attempt" -ge 3 ] && die "apt 安装依赖失败，请检查网络与 apt 源。"
-        warn "apt 安装失败（可能锁被占），15 秒后重试…"
+        [ "$attempt" -ge 3 ] && die "$(L "apt 安装依赖失败，请检查网络与 apt 源。" "apt failed to install dependencies; please check the network and apt sources.")"
+        warn "$(L "apt 安装失败（可能锁被占），15 秒后重试…" "apt install failed (lock may be held); retrying in 15 seconds...")"
         sleep 15
         wait_for_apt
     done
-    ok "系统依赖已就绪（nginx $(nginx -v 2>&1 | head -n 1)）。"
+    ok "$(L "系统依赖已就绪（nginx $(nginx -v 2>&1 | head -n 1)）。" "System dependencies ready (nginx $(nginx -v 2>&1 | head -n 1)).")"
 }
 
 # ---------- 交互提问 ----------
 prompt_config() {
     if [ -f "$ENV_FILE" ]; then
-        info "检测到已有配置 $ENV_FILE，跳过提问（更新模式）。"
+        info "$(L "检测到已有配置 $ENV_FILE，跳过提问（更新模式）。" "Existing config $ENV_FILE found, skipping prompts (update mode).")"
         FRESH_INSTALL=0
         # Update mode also honors MBOT_INSTALL_CERT_METHOD (otherwise it defaults to http and an env-passed cfdns is ignored). Invalid values fall back to http without interrupting the update. 更新模式也认 MBOT_INSTALL_CERT_METHOD（否则默认走 http，环境变量传了 cfdns 也不生效）。非法值回落 http，不中断更新。
         CERT_METHOD="${MBOT_INSTALL_CERT_METHOD:-http}"
         case "$CERT_METHOD" in
             http|cfdns) : ;;
-            *) warn "MBOT_INSTALL_CERT_METHOD='$CERT_METHOD' 无效（只能是 http/cfdns），用 http。"; CERT_METHOD="http" ;;
+            *) warn "$(L "MBOT_INSTALL_CERT_METHOD='$CERT_METHOD' 无效（只能是 http/cfdns），用 http。" "MBOT_INSTALL_CERT_METHOD='$CERT_METHOD' is invalid (must be http/cfdns); using http.")"; CERT_METHOD="http" ;;
         esac
         return 0
     fi
     FRESH_INSTALL=1
     echo
-    echo "=== M_Bot 安装配置（Token 留空则只装面板；密码/域名可留空） ==="
+    echo "$(L "=== M_Bot 安装配置（Token 留空则只装面板；密码/域名可留空） ===" "=== M_Bot install config (leave Token empty for panel only; password/domain optional) ===")"
     # Token: env var > interactive input > empty (panel only, no bot). Token：环境变量 > 交互输入 > 留空（只装面板，不装机器人）。
     # Every read needs || true: under nohup / non-interactive runs stdin may be EOF, read returns non-zero and set -e kills the script. On EOF the variable stays empty and is handled as not provided below. 注意：read 后面都要加 || true——nohup / 非交互运行时 stdin 可能是 EOF，read 返回非零，set -e 会直接杀掉脚本。EOF 时变量保持为空，后面按“未提供”处理（Token 缺了只装面板，密码/域名缺了走默认值）。
     TOKEN="${MBOT_INSTALL_TOKEN:-}"
     if [ -z "$TOKEN" ]; then
-        printf "Telegram 机器人 Token（@BotFather 处获得，留空则只装面板）："
+        printf '%s' "$(L "Telegram 机器人 Token（@BotFather 处获得，留空则只装面板）：" "Telegram bot Token (get it from @BotFather, leave empty for panel only):")"
         read -r TOKEN || true
     fi
     if [ -n "$TOKEN" ]; then
         case "$TOKEN" in
             *:*[A-Za-z0-9_-]*) : ;;
-            *) die "Token 格式不对，应为 数字:字母数字 的形式。" ;;
+            *) die "$(L "Token 格式不对，应为 数字:字母数字 的形式。" "Invalid Token format; expected digits:alphanumerics.")" ;;
         esac
         BOT_ENABLED=1
     else
         BOT_ENABLED=0
-        info "未提供 Token：只装面板，不装机器人。"
-        info "以后想加机器人：在 $ENV_FILE 里填 MBOT_TELEGRAM_TOKEN 与 MBOT_ALLOWED_USERS 后重跑安装即可。"
+        info "$(L "未提供 Token：只装面板，不装机器人。" "No Token provided: panel only, no bot.")"
+        info "$(L "以后想加机器人：在 $ENV_FILE 里填 MBOT_TELEGRAM_TOKEN 与 MBOT_ALLOWED_USERS 后重跑安装即可。" "To add a bot later: fill in MBOT_TELEGRAM_TOKEN and MBOT_ALLOWED_USERS in $ENV_FILE, then re-run the installer.")"
     fi
     USER_ID="${MBOT_INSTALL_USER_ID:-}"
     if [ "$BOT_ENABLED" = "1" ]; then
         if [ -z "$USER_ID" ]; then
-            printf "你的 Telegram 用户 ID（纯数字，@userinfobot 发 /start 查看）："
+            printf '%s' "$(L "你的 Telegram 用户 ID（纯数字，@userinfobot 发 /start 查看）：" "Your Telegram user ID (digits only; send /start to @userinfobot to see it):")"
             read -r USER_ID || true
         fi
         case "$USER_ID" in
-            *[!0-9]*|"") die "用户 ID 必须是纯数字。" ;;
+            *[!0-9]*|"") die "$(L "用户 ID 必须是纯数字。" "User ID must be digits only.")" ;;
         esac
     fi
     ADMIN_PASSWORD="${MBOT_INSTALL_PASSWORD:-}"
     if [ -z "$ADMIN_PASSWORD" ]; then
-        printf "面板管理员密码（留空自动生成 16 位随机密码）："
+        printf '%s' "$(L "面板管理员密码（留空自动生成 16 位随机密码）：" "Panel admin password (leave empty to auto-generate a 16-char random password):")"
         read -r -s ADMIN_PASSWORD || true
         echo
     fi
@@ -314,13 +381,13 @@ prompt_config() {
     fi
     DOMAIN="${MBOT_INSTALL_DOMAIN:-}"
     if [ -z "${MBOT_INSTALL_DOMAIN+x}" ]; then
-        printf "面板域名（留空则用自签证书 + IP 访问，如 panel.example.com）："
+        printf '%s' "$(L "面板域名（留空则用自签证书 + IP 访问，如 panel.example.com）：" "Panel domain (leave empty to use a self-signed cert + IP access, e.g. panel.example.com):")"
         read -r DOMAIN || true
     fi
     if [ -n "$DOMAIN" ]; then
         case "$DOMAIN" in
             *.*) : ;;
-            *) die "域名格式不对，应含至少一个点（如 panel.example.com）。" ;;
+            *) die "$(L "域名格式不对，应含至少一个点（如 panel.example.com）。" "Invalid domain format; it must contain at least one dot (e.g. panel.example.com).")" ;;
         esac
     fi
     CERT_METHOD="${MBOT_INSTALL_CERT_METHOD:-http}"
@@ -341,24 +408,24 @@ prompt_config() {
     if [ -z "${MBOT_INSTALL_CERT_METHOD+x}" ]; then
         if [ -n "$DOMAIN" ] && { [ -n "$CF_API_TOKEN" ] || { [ -n "$CF_API_KEY" ] && [ -n "$CF_EMAIL" ]; }; }; then
             CERT_METHOD="cfdns"
-            info "检测到 Cloudflare 凭据，域名证书走 Cloudflare DNS 验证（cfdns），自动申请。"
+            info "$(L "检测到 Cloudflare 凭据，域名证书走 Cloudflare DNS 验证（cfdns），自动申请。" "Cloudflare credentials found; the domain cert will use Cloudflare DNS validation (cfdns) and be requested automatically.")"
         else
             CERT_METHOD="http"
         fi
     fi
     case "$CERT_METHOD" in
         http|cfdns) : ;;
-        *) die "验证方式只能是 http 或 cfdns。" ;;
+        *) die "$(L "验证方式只能是 http 或 cfdns。" "Validation method must be http or cfdns.")" ;;
     esac
     if [ "$CERT_METHOD" = "cfdns" ]; then
         if [ -z "$CF_API_TOKEN" ] && [ -z "$CF_API_KEY" ]; then
-            printf "Cloudflare API Token（Zone:DNS:Edit + Zone:Zone:Read 权限）："
+            printf '%s' "$(L "Cloudflare API Token（Zone:DNS:Edit + Zone:Zone:Read 权限）：" "Cloudflare API Token (needs Zone:DNS:Edit + Zone:Zone:Read):")"
             read -r -s CF_API_TOKEN || true
             echo
         fi
         if [ -z "$CF_API_TOKEN" ] \
                 && { [ -z "$CF_API_KEY" ] || [ -z "$CF_EMAIL" ]; }; then
-            die "cfdns 需要 Cloudflare 凭据（Token，或 Key + 邮箱），都没有就选 http。"
+            die "$(L "cfdns 需要 Cloudflare 凭据（Token，或 Key + 邮箱），都没有就选 http。" "cfdns needs Cloudflare credentials (a Token, or Key + email); with neither, choose http.")"
         fi
     fi
 }
@@ -366,16 +433,16 @@ prompt_config() {
 # ---------- 代码 ----------
 # Update installed code to the latest: git pull first; on fast-forward failure use fetch + reset to force-sync (only git-tracked code files; the env file at $INSTALL_DIR/.mbot.env, runtime data and __pycache__ are not in git and are untouched). If both fail, exit instead of silently installing with stale code. 把已安装的代码更新到最新版：先 git pull，快进失败时改用 fetch + reset 强制同步（只动 git 跟踪的代码文件；环境文件在 $INSTALL_DIR/.mbot.env、运行时数据与 __pycache__ 都不在 git 里，不受影响）；两条路都失败时直接退出，绝不静默用旧代码继续装。
 update_code() {
-    info "更新代码到最新版…"
+    info "$(L "更新代码到最新版…" "Updating code to the latest version...")"
     if (cd "$INSTALL_DIR" && git pull --ff-only); then
-        ok "代码已更新到最新版。"
+        ok "$(L "代码已更新到最新版。" "Code updated to the latest version.")"
         return 0
     fi
-    warn "git pull 失败，改用 fetch + reset 强制同步到最新版…"
+    warn "$(L "git pull 失败，改用 fetch + reset 强制同步到最新版…" "git pull failed; switching to fetch + reset to force-sync to the latest version...")"
     (cd "$INSTALL_DIR" && git fetch origin main \
         && git reset --hard origin/main) \
-        || die "代码更新失败：拿不到最新版，停止安装（请检查网络，或手动处理 $INSTALL_DIR 的本地改动）。"
-    ok "代码已强制同步到最新版。"
+        || die "$(L "代码更新失败：拿不到最新版，停止安装（请检查网络，或手动处理 $INSTALL_DIR 的本地改动）。" "Code update failed: cannot fetch the latest version; stopping install (please check the network, or manually resolve local changes in $INSTALL_DIR).")"
+    ok "$(L "代码已强制同步到最新版。" "Code force-synced to the latest version.")"
 }
 
 installed_version() {
@@ -390,34 +457,34 @@ install_code() {
     if [ -d "$INSTALL_DIR/.git" ]; then
         update_code
     else
-        info "克隆代码到 $INSTALL_DIR …"
-        [ -e "$INSTALL_DIR" ] && die "$INSTALL_DIR 已存在但不是 git 仓库，请先移走它。"
+        info "$(L "克隆代码到 $INSTALL_DIR …" "Cloning code to $INSTALL_DIR...")"
+        [ -e "$INSTALL_DIR" ] && die "$(L "$INSTALL_DIR 已存在但不是 git 仓库，请先移走它。" "$INSTALL_DIR already exists but is not a git repo; please move it away first.")"
         git clone --depth 1 "$REPO_URL" "$INSTALL_DIR" \
-            || die "git clone 失败，请检查网络与仓库地址。"
+            || die "$(L "git clone 失败，请检查网络与仓库地址。" "git clone failed; please check the network and repo URL.")"
     fi
     [ -f "$INSTALL_DIR/requirements.txt" ] \
-        || die "代码缺 requirements.txt，克隆不完整，请删除 $INSTALL_DIR 重试。"
+        || die "$(L "代码缺 requirements.txt，克隆不完整，请删除 $INSTALL_DIR 重试。" "Code is missing requirements.txt (incomplete clone); please delete $INSTALL_DIR and retry.")"
     [ -f "$INSTALL_DIR/web/app.py" ] \
-        || die "代码缺 web/app.py，克隆不完整，请删除 $INSTALL_DIR 重试。"
-    ok "代码已就绪（版本 v$(installed_version)）。"
+        || die "$(L "代码缺 web/app.py，克隆不完整，请删除 $INSTALL_DIR 重试。" "Code is missing web/app.py (incomplete clone); please delete $INSTALL_DIR and retry.")"
+    ok "$(L "代码已就绪（版本 v$(installed_version)）。" "Code ready (version v$(installed_version)).")"
 }
 
 setup_venv() {
-    info "创建虚拟环境并安装 Python 依赖（含 oci-cli）…"
+    info "$(L "创建虚拟环境并安装 Python 依赖（含 oci-cli）…" "Creating the virtualenv and installing Python dependencies (incl. oci-cli)...")"
     [ -d "$VENV_DIR" ] || python3 -m venv "$VENV_DIR"
     "$VENV_DIR/bin/pip" install --quiet --upgrade pip
     "$VENV_DIR/bin/pip" install --quiet -r "$INSTALL_DIR/requirements.txt" \
-        || die "pip 安装依赖失败，请检查网络。"
+        || die "$(L "pip 安装依赖失败，请检查网络。" "pip failed to install dependencies; please check the network.")"
     # OCI calls use the official OCI CLI (subprocess); it is not in requirements.txt, so install it separately into the venv and point MBOT_OCI_CLI at it. OCI 调用走官方 OCI CLI（subprocess），requirements.txt 里没有，这里单独装进 venv，MBOT_OCI_CLI 指到它。
     "$VENV_DIR/bin/pip" install --quiet oci-cli \
-        || die "pip 安装 oci-cli 失败，请检查网络。"
-    ok "Python 依赖已就绪。"
+        || die "$(L "pip 安装 oci-cli 失败，请检查网络。" "pip failed to install oci-cli; please check the network.")"
+    ok "$(L "Python 依赖已就绪。" "Python dependencies ready.")"
 }
 
 # ---------- 环境文件 ----------
 write_env_file() {
-    [ -f "$ENV_FILE" ] && { info "环境文件已存在，不覆盖。"; return 0; }
-    info "写入环境文件 $ENV_FILE（600 权限）…"
+    [ -f "$ENV_FILE" ] && { info "$(L "环境文件已存在，不覆盖。" "Env file already exists; not overwriting.")"; return 0; }
+    info "$(L "写入环境文件 $ENV_FILE（600 权限）…" "Writing env file $ENV_FILE (mode 600)...")"
     local secret hash
     secret="$(openssl rand -hex 32)"
     # Pass the password to Python via an env var to avoid shell quoting/escaping issues. 密码经环境变量传给 Python，避免 shell 引用转义问题。
@@ -426,17 +493,17 @@ write_env_file() {
         "$VENV_DIR/bin/python" -c \
         "import os; from web.auth import hash_password; print(hash_password(os.environ['MBOT_PW']))" \
         2>/tmp/mbot_hash_err)" \
-        || { cat /tmp/mbot_hash_err >&2; die "生成密码哈希失败。"; }
-    [ -n "$hash" ] || die "生成密码哈希失败（空哈希）。"
+        || { cat /tmp/mbot_hash_err >&2; die "$(L "生成密码哈希失败。" "Failed to generate the password hash.")"; }
+    [ -n "$hash" ] || die "$(L "生成密码哈希失败（空哈希）。" "Failed to generate the password hash (empty hash).")"
     # Compartment is derived from the OCI config's tenancy (the root compartment is the tenancy); when unreadable, omit the line (never write a placeholder again) and let the panel derive it from the tenancy at startup. compartment：从 OCI 配置的 tenancy 推导（根 compartment 即 tenancy）；读不到时不写这行（绝不再写占位符），面板启动时再从 tenancy 推导。
     local compartment_line=""
     local tenancy
     tenancy="$(read_tenancy_from_oci_config 2>/dev/null || true)"
     if [ -n "$tenancy" ]; then
         compartment_line="MBOT_COMPARTMENT_DEFAULT=$tenancy"
-        info "从 OCI 配置读到 tenancy，已写入 MBOT_COMPARTMENT_DEFAULT。"
+        info "$(L "从 OCI 配置读到 tenancy，已写入 MBOT_COMPARTMENT_DEFAULT。" "Read tenancy from the OCI config; wrote MBOT_COMPARTMENT_DEFAULT.")"
     else
-        warn "未在 OCI 配置里找到 tenancy，未写 MBOT_COMPARTMENT_DEFAULT（面板会在你放好 OCI 配置后自动推导）。"
+        warn "$(L "未在 OCI 配置里找到 tenancy，未写 MBOT_COMPARTMENT_DEFAULT（面板会在你放好 OCI 配置后自动推导）。" "No tenancy found in the OCI config; MBOT_COMPARTMENT_DEFAULT not written (the panel will derive it automatically once you place the OCI config).")"
     fi
     cat > "$ENV_FILE" <<EOF
 # M_Bot runtime config (generated by install.sh, mode 600, do not share this file). M_Bot 运行配置（install.sh 生成，600 权限，不要分享此文件）。
@@ -455,7 +522,7 @@ EOF
         chmod 600 "$ADMIN_PASSWORD_FILE"
     fi
     mkdir -p "$INSTALL_DIR/tgbot/data" "$INSTALL_DIR/web/data"
-    ok "环境文件已写入。"
+    ok "$(L "环境文件已写入。" "Env file written.")"
 }
 
 # ---------- 统一配置文件 ----------
@@ -479,12 +546,12 @@ EOF
 # 转义问题。注意：CF_API_TOKEN 在 txt 里没有位置，不写进去（它继续
 # 留在 env 文件里经 systemd 生效）。
 write_config_txt() {
-    [ -f "$CONFIG_FILE" ] && { info "统一配置文件已存在，不覆盖。"; return 0; }
-    info "写入统一配置文件 $CONFIG_FILE（600 权限）…"
+    [ -f "$CONFIG_FILE" ] && { info "$(L "统一配置文件已存在，不覆盖。" "Unified config file already exists; not overwriting.")"; return 0; }
+    info "$(L "写入统一配置文件 $CONFIG_FILE（600 权限）…" "Writing unified config file $CONFIG_FILE (mode 600)...")"
     CF_JSON_KEY="${CF_API_KEY:-}" \
     CF_JSON_EMAIL="${CF_EMAIL:-}" MBOT_CONFIG_PATH="$CONFIG_FILE" \
     MBOT_INSTALL_DIR="$INSTALL_DIR" \
-    "$VENV_DIR/bin/python" - <<'PYEOF_INNER' || die "写入统一配置文件失败。"
+    "$VENV_DIR/bin/python" - <<'PYEOF_INNER' || die "$(L "写入统一配置文件失败。" "Failed to write the unified config file.")"
 import configparser
 import os
 import sys
@@ -526,7 +593,7 @@ if os.environ.get("CF_JSON_EMAIL"):
     cfg["cloudflare"]["email"] = os.environ["CF_JSON_EMAIL"]
 mbot_config.save_config(cfg, path)
 PYEOF_INNER
-    ok "统一配置文件已写入 $CONFIG_FILE。"
+    ok "$(L "统一配置文件已写入 $CONFIG_FILE。" "Unified config file written to $CONFIG_FILE.")"
 }
 
 # ---------- systemd 单元 ----------
@@ -563,7 +630,7 @@ write_systemd_units() {
             BOT_ENABLED=0
         fi
     fi
-    info "写入 systemd 单元（$WEB_SERVICE$([ "$BOT_ENABLED" = "1" ] && echo " / $BOT_SERVICE")）…"
+    info "$(L "写入 systemd 单元（$WEB_SERVICE$([ "$BOT_ENABLED" = "1" ] && echo " / $BOT_SERVICE")）…" "Writing systemd units ($WEB_SERVICE$([ "$BOT_ENABLED" = "1" ] && echo " / $BOT_SERVICE")...)...")"
     cat > "/etc/systemd/system/${WEB_SERVICE}.service" <<EOF
 [Unit]
 Description=M_Bot web panel (FastAPI + uvicorn)
@@ -617,24 +684,24 @@ EOF
         systemctl daemon-reload
         # Must use restart, not --now: in update mode the service is already running, --now does not restart it and the old process keeps running old code. 必须用 restart 不用 --now：更新模式下服务已在跑，--now 不重启，旧进程会一直跑旧代码。
         systemctl enable "$WEB_SERVICE" "$BOT_SERVICE" \
-            || die "设置服务自启失败。"
+            || die "$(L "设置服务自启失败。" "Failed to enable services at boot.")"
         systemctl restart "$WEB_SERVICE" "$BOT_SERVICE" \
-            || die "启动服务失败，请看 journalctl -u $WEB_SERVICE / -u $BOT_SERVICE。"
-        ok "服务已启动（开机自启）。"
+            || die "$(L "启动服务失败，请看 journalctl -u $WEB_SERVICE / -u $BOT_SERVICE。" "Failed to start services; see journalctl -u $WEB_SERVICE / -u $BOT_SERVICE.")"
+        ok "$(L "服务已启动（开机自启）。" "Services started (enabled at boot).")"
         return 0
     fi
     if [ -f "/etc/systemd/system/${BOT_SERVICE}.service" ]; then
         systemctl stop "$BOT_SERVICE" 2>/dev/null || true
         systemctl disable "$BOT_SERVICE" 2>/dev/null || true
         rm -f "/etc/systemd/system/${BOT_SERVICE}.service"
-        info "已停掉旧的机器人服务（本次只装面板）。"
+        info "$(L "已停掉旧的机器人服务（本次只装面板）。" "Stopped the old bot service (panel only this time).")"
     fi
     systemctl daemon-reload
     systemctl enable "$WEB_SERVICE" \
-        || die "设置面板服务自启失败。"
+        || die "$(L "设置面板服务自启失败。" "Failed to enable the panel service at boot.")"
     systemctl restart "$WEB_SERVICE" \
-        || die "启动面板服务失败，请看 journalctl -u $WEB_SERVICE."
-    ok "面板服务已启动（开机自启）；未装机器人。"
+        || die "$(L "启动面板服务失败，请看 journalctl -u $WEB_SERVICE." "Failed to start the panel service; see journalctl -u $WEB_SERVICE.")"
+    ok "$(L "面板服务已启动（开机自启）；未装机器人。" "Panel service started (enabled at boot); no bot installed.")"
 }
 
 # ---------- nginx 反代 ----------
@@ -690,12 +757,12 @@ write_nginx_selfsigned() {
     local port="${PANEL_LISTEN_PORT:-$(pick_panel_port)}"
     mkdir -p "$cert_dir"
     if [ ! -f "$cert_dir/fullchain.pem" ] || [ ! -f "$cert_dir/privkey.pem" ]; then
-        info "生成自签证书（有效期 10 年，仅用于加密传输）…"
+        info "$(L "生成自签证书（有效期 10 年，仅用于加密传输）…" "Generating a self-signed cert (valid 10 years, for encryption only)...")"
         openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
             -keyout "$cert_dir/privkey.pem" \
             -out "$cert_dir/fullchain.pem" \
             -subj "/CN=$(hostname)" >/dev/null 2>&1 \
-            || die "自签证书生成失败。"
+            || die "$(L "自签证书生成失败。" "Failed to generate the self-signed cert.")"
     fi
     cat > "$NGINX_CONF" <<EOF
 # M_Bot panel reverse proxy (generated by install.sh, self-signed cert, listens on ${port}). M_Bot 面板反代（install.sh 生成，自签证书，监听 ${port}）。
@@ -729,10 +796,10 @@ ${NGINX_BAD_BOT_GUARD}
     }
 }
 EOF
-    nginx -t >/dev/null 2>&1 || die "nginx 配置校验失败，请检查 $NGINX_CONF。"
+    nginx -t >/dev/null 2>&1 || die "$(L "nginx 配置校验失败，请检查 $NGINX_CONF。" "nginx config check failed; please check $NGINX_CONF.")"
     systemctl reload nginx 2>/dev/null || systemctl restart nginx \
-        || die "nginx 重载失败，请看 journalctl -u nginx。"
-    ok "nginx 反代已生效（自签证书，端口 ${port}）。"
+        || die "$(L "nginx 重载失败，请看 journalctl -u nginx。" "nginx reload failed; see journalctl -u nginx.")"
+    ok "$(L "nginx 反代已生效（自签证书，端口 ${port}）。" "nginx reverse proxy active (self-signed cert, port ${port}).")"
 }
 
 write_nginx_domain() {
@@ -742,21 +809,21 @@ write_nginx_domain() {
         local holder
         holder="$(ss -ltnp 2>/dev/null | grep ':80 ' | grep -v nginx | head -n 1 || true)"
         if [ -n "$holder" ]; then
-            warn "80 端口已被占用：${holder}，域名证书验证不了，回落自签证书。"
+            warn "$(L "80 端口已被占用：${holder}，域名证书验证不了，回落自签证书。" "Port 80 is taken by ${holder}; domain cert validation is impossible, falling back to a self-signed cert.")"
             CERT_OK=0
             write_nginx_selfsigned
             return 0
         fi
     fi
     if ! command_exists certbot; then
-        info "安装 certbot（域名证书用）…"
+        info "$(L "安装 certbot（域名证书用）…" "Installing certbot (for domain certs)...")"
         wait_for_apt
         apt-get install -y -qq certbot >/dev/null 2>&1 \
-            || warn "certbot 安装失败，只能用自签证书。"
+            || warn "$(L "certbot 安装失败，只能用自签证书。" "certbot install failed; only a self-signed cert can be used.")"
     fi
     if command_exists certbot; then
-        info "申请 Let's Encrypt 证书（域名 $domain，需该域名已解析到本机）…"
-        write_nginx_acme_vhost "$domain" || die "nginx 验证配置写入失败。"
+        info "$(L "申请 Let's Encrypt 证书（域名 $domain，需该域名已解析到本机）…" "Requesting a Let's Encrypt cert (domain $domain; it must already resolve to this machine)...")"
+        write_nginx_acme_vhost "$domain" || die "$(L "nginx 验证配置写入失败。" "Failed to write the nginx validation config.")"
         if certbot certonly --webroot -w "$ACME_WEBROOT" -d "$domain" \
                 --non-interactive --agree-tos \
                 --register-unsafely-without-email >/dev/null 2>&1; then
@@ -768,15 +835,15 @@ write_nginx_domain() {
             if write_nginx_domain_https "$domain" \
                     "/etc/letsencrypt/live/${domain}/fullchain.pem" \
                     "/etc/letsencrypt/live/${domain}/privkey.pem" 1; then
-                ok "Let's Encrypt 证书已申请并生效。"
+                ok "$(L "Let's Encrypt 证书已申请并生效。" "Let's Encrypt cert requested and active.")"
                 CERT_OK=1
                 CERT_KIND=domain
                 return 0
             fi
         fi
-        warn "certbot 申请证书失败（域名可能未解析到本机），回落自签证书。"
+        warn "$(L "certbot 申请证书失败（域名可能未解析到本机），回落自签证书。" "certbot failed to request the cert (the domain may not resolve to this machine); falling back to a self-signed cert.")"
     else
-        warn "未装 certbot，回落自签证书。"
+        warn "$(L "未装 certbot，回落自签证书。" "certbot is not installed; falling back to a self-signed cert.")"
     fi
     CERT_OK=0
     write_nginx_selfsigned
@@ -851,7 +918,7 @@ load_cf_credentials() {
     CF_EMAIL="${MBOT_INSTALL_CF_EMAIL:-${CF_EMAIL:-${CF_Email:-}}}"
     if [ -z "$CF_API_TOKEN" ] && [ -z "$CF_API_KEY" ]; then
         if read_cf_from_oci_config; then
-            info "从 OCI 配置文件 [cloudflare] 段读到 Cloudflare 凭据，直接用它。"
+            info "$(L "从 OCI 配置文件 [cloudflare] 段读到 Cloudflare 凭据，直接用它。" "Cloudflare credentials found in the [cloudflare] section of the OCI config file; using them directly.")"
         fi
     fi
     [ -n "$CF_API_TOKEN" ] && return 0
@@ -906,15 +973,15 @@ ensure_dns_points_here() {
     local ip
     ip="$(public_ip)"
     if dns_points_here "$domain" "$ip"; then
-        ok "域名 $domain 已解析到本机 $ip。"
+        ok "$(L "域名 $domain 已解析到本机 $ip。" "Domain $domain already resolves to this machine ($ip).")"
         return 0
     fi
     load_cf_credentials || {
-        warn "域名 $domain 未解析到本机 $ip，且没有 Cloudflare 凭据自动绑定。"
-        warn "请手动添加 DNS A 记录：$domain → $ip（不开启 CF 代理），再重跑安装；本次先继续，证书可能申请失败并回落自签。"
+        warn "$(L "域名 $domain 未解析到本机 $ip，且没有 Cloudflare 凭据自动绑定。" "Domain $domain does not resolve to this machine ($ip), and there are no Cloudflare credentials for auto-binding.")"
+        warn "$(L "请手动添加 DNS A 记录：$domain → $ip（不开启 CF 代理），再重跑安装；本次先继续，证书可能申请失败并回落自签。" "Please manually add a DNS A record: $domain -> $ip (without CF proxy), then re-run the installer; continuing for now, but the cert request may fail and fall back to self-signed.")"
         return 1
     }
-    info "域名 $domain 未解析到本机，正在用 Cloudflare API 自动绑定…"
+    info "$(L "域名 $domain 未解析到本机，正在用 Cloudflare API 自动绑定…" "Domain $domain does not resolve to this machine; auto-binding via the Cloudflare API...")"
     local zone="" zone_id="" rest="$domain"
     local resp
     while [ -n "$rest" ]; do
@@ -930,7 +997,7 @@ ensure_dns_points_here() {
             *) rest="" ;;
         esac
     done
-    [ -n "$zone_id" ] || { warn "Cloudflare 里找不到域名 $domain 所属的 zone（凭据权限不足或域名不在此账号下）。"; return 1; }
+    [ -n "$zone_id" ] || { warn "$(L "Cloudflare 里找不到域名 $domain 所属的 zone（凭据权限不足或域名不在此账号下）。" "No zone for domain $domain found in Cloudflare (insufficient credential permissions, or the domain is not under this account).")"; return 1; }
     resp="$(cf_api GET "/zones/$zone_id/dns_records?type=A&name=$domain")"
     local rec_id
     rec_id="$(printf '%s' "$resp" | python3 -c "import json,sys; r=json.load(sys.stdin).get('result') or []; print(r[0]['id'] if r else '')" 2>/dev/null || true)"
@@ -942,14 +1009,14 @@ ensure_dns_points_here() {
     fi
     local ok_flag
     ok_flag="$(printf '%s' "$resp" | python3 -c "import json,sys; print(json.load(sys.stdin).get('success', False))" 2>/dev/null || true)"
-    [ "$ok_flag" = "True" ] || { warn "Cloudflare API 建/改 A 记录失败（见上面返回）。"; return 1; }
-    ok "DNS 记录已更新：$domain → $ip（DNS-only），等解析生效…"
+    [ "$ok_flag" = "True" ] || { warn "$(L "Cloudflare API 建/改 A 记录失败（见上面返回）。" "Cloudflare API failed to create/update the A record (see the response above).")"; return 1; }
+    ok "$(L "DNS 记录已更新：$domain → $ip（DNS-only），等解析生效…" "DNS record updated: $domain -> $ip (DNS-only); waiting for it to take effect...")"
     local i
     for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
-        dns_points_here "$domain" "$ip" && { ok "域名 $domain 解析已生效。"; return 0; }
+        dns_points_here "$domain" "$ip" && { ok "$(L "域名 $domain 解析已生效。" "Domain $domain now resolves.")"; return 0; }
         sleep 5
     done
-    warn "DNS 记录已建，但 60 秒后解析仍未生效（可能是 DNS 缓存），证书申请可能失败。"
+    warn "$(L "DNS 记录已建，但 60 秒后解析仍未生效（可能是 DNS 缓存），证书申请可能失败。" "DNS record created, but it still has not taken effect after 60 seconds (possibly DNS caching); the cert request may fail.")"
     return 1
 }
 
@@ -962,24 +1029,24 @@ install_lego() {
     case "$(uname -m)" in
         x86_64|amd64) arch="amd64" ;;
         aarch64|arm64) arch="arm64" ;;
-        *) warn "lego 不支持当前架构 $(uname -m)，只能用自签证书。"; return 1 ;;
+        *) warn "$(L "lego 不支持当前架构 $(uname -m)，只能用自签证书。" "lego does not support the current architecture $(uname -m); only a self-signed cert can be used.")"; return 1 ;;
     esac
     local url="https://github.com/go-acme/lego/releases/download/${LEGO_VERSION}/lego_${LEGO_VERSION}_linux_${arch}.tar.gz"
     local tmp
     tmp="$(mktemp -d)"
-    info "下载 lego ${LEGO_VERSION}（${arch}）…"
+    info "$(L "下载 lego ${LEGO_VERSION}（${arch}）…" "Downloading lego ${LEGO_VERSION} (${arch})...")"
     if ! curl -sL -m 120 -o "$tmp/lego.tar.gz" "$url"; then
-        warn "lego 下载失败，只能用自签证书。"
+        warn "$(L "lego 下载失败，只能用自签证书。" "lego download failed; only a self-signed cert can be used.")"
         rm -rf "$tmp"
         return 1
     fi
     if tar -xzf "$tmp/lego.tar.gz" -C "$tmp" lego 2>/dev/null \
             && install -m 755 "$tmp/lego" "$LEGO_BIN"; then
         rm -rf "$tmp"
-        ok "lego 已安装：$("$LEGO_BIN" --version 2>/dev/null | head -n 1)"
+        ok "$(L "lego 已安装：$("$LEGO_BIN" --version 2>/dev/null | head -n 1)" "lego installed: $("$LEGO_BIN" --version 2>/dev/null | head -n 1)")"
         return 0
     fi
-    warn "lego 解压/安装失败，只能用自签证书。"
+    warn "$(L "lego 解压/安装失败，只能用自签证书。" "Failed to extract/install lego; only a self-signed cert can be used.")"
     rm -rf "$tmp"
     return 1
 }
@@ -1021,7 +1088,7 @@ EOF
     printf '0 3 */2 * * root %s >> /var/log/mbot-cert-renew.log 2>&1\n' \
         "$RENEW_SCRIPT" > "$RENEW_CRON"
     chmod 644 "$RENEW_CRON"
-    ok "证书自动续期已设置（每 2 天凌晨 3 点）。"
+    ok "$(L "证书自动续期已设置（每 2 天凌晨 3 点）。" "Auto cert renewal scheduled (every 2 days at 03:00).")"
 }
 
 # Port-80 vhost for IP-cert validation: serves only ACME validation files, everything else 404 (the panel is not on port 80). server_name is the IP itself, because http-01 validation requests use the IP as Host and match exactly (other port-80 sites on the machine cannot steal the validation request). IP 证书验证用的 80 端口 vhost：只 serve ACME 验证文件，其余请求一律 404（面板不在 80 上）。server_name 写 IP 本身，http-01 的验证请求 Host 就是 IP，能精确匹配上（机器上若还有别的 80 端口站点也不会抢走验证请求）。
@@ -1046,9 +1113,9 @@ server {
     }
 }
 EOF
-    nginx -t >/dev/null 2>&1 || die "nginx 配置校验失败，请检查 $NGINX_CONF。"
+    nginx -t >/dev/null 2>&1 || die "$(L "nginx 配置校验失败，请检查 $NGINX_CONF。" "nginx config check failed; please check $NGINX_CONF.")"
     systemctl reload nginx 2>/dev/null || systemctl restart nginx \
-        || die "nginx 重载失败，请看 journalctl -u nginx。"
+        || die "$(L "nginx 重载失败，请看 journalctl -u nginx。" "nginx reload failed; see journalctl -u nginx.")"
 }
 
 write_nginx_lego_ip() {
@@ -1056,7 +1123,7 @@ write_nginx_lego_ip() {
     local port="${PANEL_LISTEN_PORT:-$(pick_panel_port)}"
     local crt="$LEGO_CERT_DIR/${ip}.crt" key="$LEGO_CERT_DIR/${ip}.key"
     [ -f "$crt" ] && [ -f "$key" ] \
-        || { warn "lego 证书文件不存在：$crt"; return 1; }
+        || { warn "$(L "lego 证书文件不存在：$crt" "lego cert file missing: $crt")"; return 1; }
     cat > "$NGINX_CONF" <<EOF
 # M_Bot panel reverse proxy (generated by install.sh, Let's Encrypt IP cert, ${ip}). M_Bot 面板反代（install.sh 生成，Let's Encrypt IP 证书，${ip}）。
 ${NGINX_HTTP_MAPS}
@@ -1103,10 +1170,10 @@ ${NGINX_BAD_BOT_GUARD}
     }
 }
 EOF
-    nginx -t >/dev/null 2>&1 || die "nginx 配置校验失败，请检查 $NGINX_CONF。"
+    nginx -t >/dev/null 2>&1 || die "$(L "nginx 配置校验失败，请检查 $NGINX_CONF。" "nginx config check failed; please check $NGINX_CONF.")"
     systemctl reload nginx 2>/dev/null || systemctl restart nginx \
-        || die "nginx 重载失败，请看 journalctl -u nginx。"
-    ok "nginx 反代已生效（Let's Encrypt IP 证书，端口 ${port}）。"
+        || die "$(L "nginx 重载失败，请看 journalctl -u nginx。" "nginx reload failed; see journalctl -u nginx.")"
+    ok "$(L "nginx 反代已生效（Let's Encrypt IP 证书，端口 ${port}）。" "nginx reverse proxy active (Let's Encrypt IP cert, port ${port}).")"
 }
 
 # Full config after a domain cert is issued (shared by lego cfdns and certbot http): panel on 443 ssl, or ${PANEL_PORT} when 443 is held by xray or similar (the cert stays valid; just include the port in the address); port 80 redirects. 域名拿到证书后的完整配置（lego cfdns 与 certbot http 共用）：面板走 443 ssl，443 已被 xray 之类服务占了时改走 ${PANEL_PORT}（证书照样有效，地址带端口就行）；80 端口做跳转。
@@ -1115,11 +1182,11 @@ EOF
 write_nginx_domain_https() {
     local domain="$1" crt="$2" key="$3" acme_on_80="${4:-0}"
     [ -f "$crt" ] && [ -f "$key" ] \
-        || { warn "证书文件不存在：$crt"; return 1; }
+        || { warn "$(L "证书文件不存在：$crt" "Cert file missing: $crt")"; return 1; }
     local port="${PANEL_LISTEN_PORT:-$(pick_panel_port)}"
     local redirect="https://\$host\$request_uri"
     if [ "$port" != "443" ]; then
-        warn "443 端口已被占用，面板改走 ${port} 端口。"
+        warn "$(L "443 端口已被占用，面板改走 ${port} 端口。" "Port 443 is taken; the panel will use port ${port} instead.")"
         redirect="https://\$host:${port}\$request_uri"
     fi
     CERT_PORT="$port"
@@ -1171,10 +1238,10 @@ ${acme_location}    location / {
     }
 }
 EOF
-    nginx -t >/dev/null 2>&1 || die "nginx 配置校验失败，请检查 $NGINX_CONF。"
+    nginx -t >/dev/null 2>&1 || die "$(L "nginx 配置校验失败，请检查 $NGINX_CONF。" "nginx config check failed; please check $NGINX_CONF.")"
     systemctl reload nginx 2>/dev/null || systemctl restart nginx \
-        || die "nginx 重载失败，请看 journalctl -u nginx。"
-    ok "nginx 反代已生效（Let's Encrypt 证书，域名 ${domain}，端口 ${port}）。"
+        || die "$(L "nginx 重载失败，请看 journalctl -u nginx。" "nginx reload failed; see journalctl -u nginx.")"
+    ok "$(L "nginx 反代已生效（Let's Encrypt 证书，域名 ${domain}，端口 ${port}）。" "nginx reverse proxy active (Let's Encrypt cert, domain ${domain}, port ${port}).")"
 }
 
 write_nginx_lego_domain() {
@@ -1186,18 +1253,18 @@ write_nginx_lego_domain() {
 request_ip_cert() {
     local ip
     ip="$(curl -s -m 5 https://api.ipify.org 2>/dev/null || true)"
-    [ -n "$ip" ] || { warn "拿不到公网 IP，只能用自签证书。"; return 1; }
+    [ -n "$ip" ] || { warn "$(L "拿不到公网 IP，只能用自签证书。" "Cannot get the public IP; only a self-signed cert can be used.")"; return 1; }
     # Let's Encrypt does not issue certs for private/reserved addresses. Let's Encrypt 不给内网/保留地址发证。
     case "$ip" in
         10.*|172.1[6-9].*|172.2[0-9].*|172.3[0-1].*|192.168.*|127.*|0.*)
-            warn "公网 IP 是内网地址 $ip，Let's Encrypt 不给内网 IP 发证，只能用自签证书。"
+            warn "$(L "公网 IP 是内网地址 $ip，Let's Encrypt 不给内网 IP 发证，只能用自签证书。" "Public IP $ip is a private address; Let's Encrypt does not issue certs for private IPs, so only a self-signed cert can be used.")"
             return 1 ;;
     esac
     if command_exists ss; then
         local holder
         holder="$(ss -ltnp 2>/dev/null | grep ':80 ' | grep -v nginx | head -n 1 || true)"
         if [ -n "$holder" ]; then
-            warn "80 端口已被占用：${holder}，IP 证书验证不了，只能用自签证书。"
+            warn "$(L "80 端口已被占用：${holder}，IP 证书验证不了，只能用自签证书。" "Port 80 is taken by ${holder}; IP cert validation is impossible, so only a self-signed cert can be used.")"
             return 1
         fi
     fi
@@ -1205,7 +1272,7 @@ request_ip_cert() {
     write_lego_env
     write_lego_deploy_hook
     write_nginx_acme_vhost "$ip" || return 1
-    info "申请 Let's Encrypt IP 证书（$ip，shortlived，有效期约 6 天，自动续期）…"
+    info "$(L "申请 Let's Encrypt IP 证书（$ip，shortlived，有效期约 6 天，自动续期）…" "Requesting a Let's Encrypt IP cert ($ip, shortlived, valid ~6 days, auto-renewed)...")"
     local args="--profile shortlived --http --http.webroot $ACME_WEBROOT -d $ip --deploy-hook $LEGO_DIR/deploy-hook.sh"
     if ( [ -f "$LEGO_DIR/env" ] && set -a && . "$LEGO_DIR/env" && set +a || true; \
          "$LEGO_BIN" run --path "$LEGO_DIR" --accept-tos $args >/dev/null 2>&1 ); then
@@ -1213,11 +1280,11 @@ request_ip_cert() {
         if write_nginx_lego_ip "$ip"; then
             CERT_OK=1
             CERT_KIND=ip
-            ok "Let's Encrypt IP 证书已生效（每 2 天自动续期）。"
+            ok "$(L "Let's Encrypt IP 证书已生效（每 2 天自动续期）。" "Let's Encrypt IP cert active (auto-renewed every 2 days).")"
             return 0
         fi
     fi
-    warn "IP 证书申请失败（可能 80 端口未对外放行），回落自签证书。"
+    warn "$(L "IP 证书申请失败（可能 80 端口未对外放行），回落自签证书。" "IP cert request failed (port 80 may not be open to the outside); falling back to a self-signed cert.")"
     return 1
 }
 
@@ -1226,7 +1293,7 @@ request_domain_cert_cfdns() {
     install_lego || return 1
     write_lego_env
     write_lego_deploy_hook
-    info "申请 Let's Encrypt 证书（域名 $domain，Cloudflare DNS 验证）…"
+    info "$(L "申请 Let's Encrypt 证书（域名 $domain，Cloudflare DNS 验证）…" "Requesting a Let's Encrypt cert (domain $domain, Cloudflare DNS validation)...")"
     # lego's DNS-01 propagation check uses the local system resolver by default; OCI's resolver (169.254.169.254) negative-caches new records for 1800 seconds, so cfdns always fails. Use public resolvers 1.1.1.1 / 8.8.8.8 instead. lego 的 DNS-01 传播检查默认走本机系统解析器；OCI 的解析器（169.254.169.254）对新建记录有 1800 秒负缓存，cfdns 必失败。改走公共解析器 1.1.1.1 / 8.8.8.8。
     local args="--dns cloudflare --dns.resolvers 1.1.1.1:53,8.8.8.8:53 -d $domain --deploy-hook $LEGO_DIR/deploy-hook.sh"
     # Keep a copy of lego's output as a log (for failure diagnosis; it used to go entirely to /dev/null, and the error misleadingly blamed token permissions when it was often a propagation-check timeout). lego 输出留一份日志（失败时定位用；以前全丢 /dev/null，报错还误导说 Token 权限不对，实际常是传播检查超时）。
@@ -1237,11 +1304,11 @@ request_domain_cert_cfdns() {
         if write_nginx_lego_domain "$domain"; then
             CERT_OK=1
             CERT_KIND=domain
-            ok "Let's Encrypt 证书已生效（Cloudflare DNS 验证）。"
+            ok "$(L "Let's Encrypt 证书已生效（Cloudflare DNS 验证）。" "Let's Encrypt cert active (Cloudflare DNS validation).")"
             return 0
         fi
     fi
-    warn "Cloudflare DNS 验证失败（可能是 DNS 传播未完成、Token 权限不对或域名不在该账号下），详见 $lego_log，回落自签证书。"
+    warn "$(L "Cloudflare DNS 验证失败（可能是 DNS 传播未完成、Token 权限不对或域名不在该账号下），详见 $lego_log，回落自签证书。" "Cloudflare DNS validation failed (DNS may not have propagated, the Token may lack permission, or the domain may not be under this account); see $lego_log. Falling back to a self-signed cert.")"
     return 1
 }
 
@@ -1255,9 +1322,9 @@ setup_nginx() {
                 *nginx*) : ;;  # 已是我们自己的 nginx，重装时正常
                 *)
                     if port_443_free; then
-                        warn "端口 ${PANEL_PORT} 已被占用：${holder}。443 空闲，面板走 443，不影响。"
+                        warn "$(L "端口 ${PANEL_PORT} 已被占用：${holder}。443 空闲，面板走 443，不影响。" "Port ${PANEL_PORT} is taken by ${holder}. Port 443 is free, so the panel will use 443; no impact.")"
                     else
-                        die "端口 ${PANEL_PORT} 已被占用：${holder}。请先停掉它再安装。"
+                        die "$(L "端口 ${PANEL_PORT} 已被占用：${holder}。请先停掉它再安装。" "Port ${PANEL_PORT} is taken by ${holder}. Please stop it before installing.")"
                     fi
                     ;;
             esac
@@ -1342,7 +1409,7 @@ firewall_ports() {
 setup_firewall() {
     local fw
     fw="$(detect_firewall)"
-    info "本机防火墙：$fw（放行 $(firewall_ports)）…"
+    info "$(L "本机防火墙：$fw（放行 $(firewall_ports)）…" "Local firewall: $fw (opening $(firewall_ports))...")"
     case "$fw" in
         ufw) _firewall_ufw ;;
         firewalld) _firewall_firewalld ;;
@@ -1350,10 +1417,10 @@ setup_firewall() {
         iptables) _firewall_iptables ;;
         none)
             if command_exists ufw; then
-                info "没有在运行的防火墙，用 ufw（启用它）。"
+                info "$(L "没有在运行的防火墙，用 ufw（启用它）。" "No firewall is running; using ufw (enabling it).")"
                 _firewall_ufw
             else
-                info "本机没有在运行的防火墙，端口默认都是通的，跳过。"
+                info "$(L "本机没有在运行的防火墙，端口默认都是通的，跳过。" "No firewall is running on this machine; ports are open by default, skipping.")"
             fi
             ;;
     esac
@@ -1370,10 +1437,10 @@ _firewall_ufw() {
         ufw allow "$port/tcp" >/dev/null 2>&1 || true
     done
     if ufw status 2>/dev/null | grep -q "Status: inactive"; then
-        ufw --force enable >/dev/null 2>&1 || warn "ufw 开启失败，请手动检查。"
-        ok "UFW 已开启（已放行 SSH + 面板端口）。"
+        ufw --force enable >/dev/null 2>&1 || warn "$(L "ufw 开启失败，请手动检查。" "Failed to enable ufw; please check manually.")"
+        ok "$(L "UFW 已开启（已放行 SSH + 面板端口）。" "UFW enabled (SSH + panel ports opened).")"
     else
-        ok "UFW 规则已添加（防火墙本来就是开着的）。"
+        ok "$(L "UFW 规则已添加（防火墙本来就是开着的）。" "UFW rules added (the firewall was already on).")"
     fi
     # Oracle cloud images (Ubuntu) ship /etc/iptables/rules.v4 with an INPUT -j REJECT (only port 22 allowed) sitting ahead of UFW's chains: it blocks every UFW allow rule, so panel ports look like No route to host from outside while local curl works. The REJECT is redundant once UFW is on (UFW denies inbound by default), so remove it. Oracle 云镜像（Ubuntu）自带 /etc/iptables/rules.v4，INPUT 链里有一条 -j REJECT（只放行 22），位置在 UFW 的链前面，会把 UFW 的放行规则全部挡住——面板端口从外网看就是 No route to host，本机 curl 却正常。UFW 开启后这条 REJECT 是多余的（UFW 默认入站就是拒绝），删掉它。
     if ufw status 2>/dev/null | grep -q "Status: active"; then
@@ -1387,8 +1454,8 @@ _firewall_firewalld() {
     for port in $(firewall_ports); do
         firewall-cmd --permanent --add-port="$port/tcp" >/dev/null 2>&1 || true
     done
-    firewall-cmd --reload >/dev/null 2>&1 || warn "firewalld 重载失败，请手动检查。"
-    ok "firewalld 规则已添加（--permanent，重启仍在）。"
+    firewall-cmd --reload >/dev/null 2>&1 || warn "$(L "firewalld 重载失败，请手动检查。" "firewalld reload failed; please check manually.")"
+    ok "$(L "firewalld 规则已添加（--permanent，重启仍在）。" "firewalld rules added (--permanent, survives reboot).")"
 }
 
 # nftables: find the filter table's input chain and insert allow rules at its head (insert goes first, so a trailing drop cannot block them; existing rules are not duplicated). nftables：找到 filter 表的 input 链，在链首插入放行规则（insert 放最前面，避免被链尾的 drop 挡住；已有的不重复加）。
@@ -1411,22 +1478,22 @@ _firewall_nft() {
             fi
         done
         if [ "$has_rules" = "0" ] && command_exists ufw; then
-            info "nft filter 表是空的、没有 input 链，回落到 UFW 放行端口。"
+            info "$(L "nft filter 表是空的、没有 input 链，回落到 UFW 放行端口。" "The nft filter table is empty with no input chain; falling back to UFW to open ports.")"
             _firewall_ufw
             return 0
         fi
-        warn "nft 有 filter 表但找不到 input 链，请手动放行端口。"
+        warn "$(L "nft 有 filter 表但找不到 input 链，请手动放行端口。" "nft has a filter table but no input chain; please open the ports manually.")"
         return 0
     fi
     local port
     for port in $(firewall_ports); do
         if ! nft list chain $chain 2>/dev/null | grep -q "tcp dport $port accept"; then
             nft insert rule $chain tcp dport "$port" accept 2>/dev/null \
-                || warn "nft 放行 $port 失败，请手动检查。"
+                || warn "$(L "nft 放行 $port 失败，请手动检查。" "Failed to open $port in nft; please check manually.")"
         fi
     done
-    ok "nft 规则已添加。"
-    warn "nft 规则只在当前生效，重启后会丢（除非写进 /etc/nftables.conf）；建议改用 ufw 或 firewalld 管理。"
+    ok "$(L "nft 规则已添加。" "nft rules added.")"
+    warn "$(L "nft 规则只在当前生效，重启后会丢（除非写进 /etc/nftables.conf）；建议改用 ufw 或 firewalld 管理。" "nft rules only apply until reboot (unless written to /etc/nftables.conf); consider using ufw or firewalld instead.")"
 }
 
 _firewall_iptables() {
@@ -1436,11 +1503,11 @@ _firewall_iptables() {
         for port in $(firewall_ports); do
             "$ipt" -C INPUT -p tcp --dport "$port" -j ACCEPT >/dev/null 2>&1 \
                 || "$ipt" -I INPUT -p tcp --dport "$port" -j ACCEPT >/dev/null 2>&1 \
-                || warn "$ipt 放行 $port 失败，请手动检查。"
+                || warn "$(L "$ipt 放行 $port 失败，请手动检查。" "Failed to open $port with $ipt; please check manually.")"
         done
     done
-    ok "iptables 规则已添加。"
-    warn "iptables 规则只在当前生效，重启后会丢（除非装了 iptables-persistent 或写进 /etc/iptables/rules.v4）；建议改用 ufw 或 firewalld 管理。"
+    ok "$(L "iptables 规则已添加。" "iptables rules added.")"
+    warn "$(L "iptables 规则只在当前生效，重启后会丢（除非装了 iptables-persistent 或写进 /etc/iptables/rules.v4）；建议改用 ufw 或 firewalld 管理。" "iptables rules only apply until reboot (unless iptables-persistent is installed or they are written to /etc/iptables/rules.v4); consider using ufw or firewalld instead.")"
 }
 
 # ---------- 网络优化（TCP 缓冲 + BBR） ----------
@@ -1460,7 +1527,7 @@ persist_sysctl() {
 }
 
 setup_bbr() {
-    info "网络优化（TCP 缓冲 + BBR）…"
+    info "$(L "网络优化（TCP 缓冲 + BBR）…" "Network tuning (TCP buffers + BBR)...")"
     local kv key val
     for kv in "net.core.rmem_max=67108864" "net.core.wmem_max=67108864" \
               "net.ipv4.tcp_rmem=4096 87380 67108864" "net.ipv4.tcp_wmem=4096 65536 67108864" \
@@ -1475,9 +1542,9 @@ setup_bbr() {
         persist_sysctl "net.core.default_qdisc" "fq"
         persist_sysctl "net.ipv4.tcp_congestion_control" "bbr"
         grep -qx "tcp_bbr" /etc/modules 2>/dev/null || echo "tcp_bbr" >> /etc/modules
-        ok "网络优化完成：TCP 缓冲已调大，已切 BBR + fq。"
+        ok "$(L "网络优化完成：TCP 缓冲已调大，已切 BBR + fq。" "Network tuning done: TCP buffers enlarged, switched to BBR + fq.")"
     else
-        info "无 tcp_bbr 模块，保持 cubic（TCP 缓冲优化仍生效）。"
+        info "$(L "无 tcp_bbr 模块，保持 cubic（TCP 缓冲优化仍生效）。" "No tcp_bbr module; keeping cubic (TCP buffer tuning still applies).")"
     fi
 }
 
@@ -1488,7 +1555,7 @@ setup_bbr() {
 # 封禁动作跟防火墙走（ufw 在就用 ufw，否则 iptables-multiport）。
 # fail2ban 由 install_deps 装好；这里只写配置并启用。失败只警告，不中断安装。
 setup_fail2ban() {
-    command_exists fail2ban-server || { info "未装 fail2ban，跳过 Fail2Ban 配置。"; return 0; }
+    command_exists fail2ban-server || { info "$(L "未装 fail2ban，跳过 Fail2Ban 配置。" "fail2ban is not installed; skipping Fail2Ban setup.")"; return 0; }
     local ssh_port banaction
     ssh_port="$(detect_ssh_port)"
     banaction="iptables-multiport"
@@ -1513,9 +1580,9 @@ setup_fail2ban() {
         > /etc/fail2ban/jail.local
     systemctl enable fail2ban >/dev/null 2>&1 || true
     if systemctl restart fail2ban >/dev/null 2>&1; then
-        ok "Fail2Ban 已配置并启动（sshd 端口 $ssh_port，封禁动作 $banaction）。"
+        ok "$(L "Fail2Ban 已配置并启动（sshd 端口 $ssh_port，封禁动作 $banaction）。" "Fail2Ban configured and started (sshd port $ssh_port, ban action $banaction).")"
     else
-        warn "Fail2Ban 启动失败，请手动检查（systemctl status fail2ban）。"
+        warn "$(L "Fail2Ban 启动失败，请手动检查（systemctl status fail2ban）。" "Fail2Ban failed to start; please check manually (systemctl status fail2ban).")"
     fi
 }
 
@@ -1526,20 +1593,20 @@ setup_fail2ban() {
 open_cloud_ports() {
     local meta
     meta="$(curl -s -m 3 http://169.254.169.254/opc/v1/instance/ 2>/dev/null || true)"
-    [ -n "$meta" ] || { info "不是 OCI 实例（无元数据服务），跳过云端放行。"; return 0; }
-    echo "$meta" | grep -q "ocid1.instance" || { info "元数据不是 OCI 格式，跳过云端放行。"; return 0; }
+    [ -n "$meta" ] || { info "$(L "不是 OCI 实例（无元数据服务），跳过云端放行。" "Not an OCI instance (no metadata service); skipping cloud-side opening.")"; return 0; }
+    echo "$meta" | grep -q "ocid1.instance" || { info "$(L "元数据不是 OCI 格式，跳过云端放行。" "Metadata is not OCI format; skipping cloud-side opening.")"; return 0; }
     local oci_bin="$VENV_DIR/bin/oci"
-    [ -x "$oci_bin" ] || { warn "OCI CLI 不在 $oci_bin，跳过云端放行。"; return 0; }
+    [ -x "$oci_bin" ] || { warn "$(L "OCI CLI 不在 $oci_bin，跳过云端放行。" "OCI CLI not found at $oci_bin; skipping cloud-side opening.")"; return 0; }
     local ports
     ports="$(panel_ports)"
-    info "OCI 实例：检查云端安全列表是否放行 $ports …"
+    info "$(L "OCI 实例：检查云端安全列表是否放行 $ports …" "OCI instance: checking whether the cloud security list opens $ports...")"
     if _oci_open_ports "$oci_bin" "$ports"; then
         CLOUD_OPENED=1
         return 0
     fi
     CLOUD_OPENED=0
-    warn "云端放行没完成（见上面原因），请手动在 OCI 控制台放行："
-    warn "  Networking → VCN → 子网 → 安全列表 → 添加入站规则：来源 0.0.0.0/0，TCP 目标端口 $ports。"
+    warn "$(L "云端放行没完成（见上面原因），请手动在 OCI 控制台放行：" "Cloud-side opening did not complete (see the reason above); please open it manually in the OCI console:")"
+    warn "$(L "  Networking → VCN → 子网 → 安全列表 → 添加入站规则：来源 0.0.0.0/0，TCP 目标端口 $ports。" "  Networking -> VCN -> Subnet -> Security List -> add an ingress rule: source 0.0.0.0/0, TCP destination ports $ports.")"
     return 0
 }
 
@@ -1553,14 +1620,14 @@ _oci_open_ports() {
     local vnic_id
     vnic_id="$(curl -s -m 3 http://169.254.169.254/opc/v1/vnics/ 2>/dev/null \
         | python3 -c "import json,sys; print(json.load(sys.stdin)[0]['vnicId'])" 2>/dev/null || true)"
-    [ -n "$vnic_id" ] || { warn "读不到主网卡 ID（元数据异常）。"; return 1; }
+    [ -n "$vnic_id" ] || { warn "$(L "读不到主网卡 ID（元数据异常）。" "Cannot read the primary VNIC ID (metadata error).")"; return 1; }
     local vnic
     vnic="$("$oci_bin" $auth_args network vnic get --vnic-id "$vnic_id" --output json 2>/dev/null)" \
-        || { warn "OCI API 调用失败（无可用认证：既没有 OCI 配置文件，实例主体也没配动态组/策略）。"; return 1; }
+        || { warn "$(L "OCI API 调用失败（无可用认证：既没有 OCI 配置文件，实例主体也没配动态组/策略）。" "OCI API call failed (no usable auth: neither an OCI config file nor an instance principal with a dynamic group/policy).")"; return 1; }
     local subnet_id nsg_ids
     subnet_id="$(printf '%s' "$vnic" | python3 -c "import json,sys; print(json.load(sys.stdin)['data']['subnet-id'])" 2>/dev/null || true)"
     nsg_ids="$(printf '%s' "$vnic" | python3 -c "import json,sys; print(' '.join(json.load(sys.stdin)['data'].get('nsg-ids') or []))" 2>/dev/null || true)"
-    [ -n "$subnet_id" ] || { warn "读不到子网 ID。"; return 1; }
+    [ -n "$subnet_id" ] || { warn "$(L "读不到子网 ID。" "Cannot read the subnet ID.")"; return 1; }
     if [ -n "$nsg_ids" ]; then
         # When the VNIC has an NSG attached, security-list rules do not apply; add NSG rules instead (additive). 网卡挂了 NSG 时安全列表规则不生效，只加 NSG 规则（additive）。
         local nsg
@@ -1572,7 +1639,7 @@ _oci_open_ports() {
     local sl_ids
     sl_ids="$("$oci_bin" $auth_args network subnet get --subnet-id "$subnet_id" --output json 2>/dev/null \
         | python3 -c "import json,sys; print(' '.join(json.load(sys.stdin)['data'].get('security-list-ids') or []))" 2>/dev/null || true)"
-    [ -n "$sl_ids" ] || { warn "读不到安全列表 ID。"; return 1; }
+    [ -n "$sl_ids" ] || { warn "$(L "读不到安全列表 ID。" "Cannot read the security list ID.")"; return 1; }
     local sl
     for sl in $sl_ids; do
         _oci_add_sl_rules "$oci_bin" "$auth_args" "$sl" "$ports" || return 1
@@ -1633,18 +1700,18 @@ _oci_add_sl_rules() {
     local current new_rules rc
     current="$("$oci_bin" $auth_args network security-list get --security-list-id "$sl_id" --output json 2>/dev/null \
         | python3 -c "import json,sys; print(json.dumps(json.load(sys.stdin)['data'].get('ingress-security-rules') or []))" 2>/dev/null || true)"
-    [ -n "$current" ] || { warn "读安全列表失败。"; return 1; }
+    [ -n "$current" ] || { warn "$(L "读安全列表失败。" "Failed to read the security list.")"; return 1; }
     new_rules="$(_oci_rules_with_ports "$current" "$ports")"
     rc=$?
     if [ "$rc" = "2" ]; then
-        ok "云端安全列表已放行 $ports，无需改动。"
+        ok "$(L "云端安全列表已放行 $ports，无需改动。" "Cloud security list already opens $ports; no change needed.")"
         return 0
     fi
-    [ "$rc" = "0" ] || { warn "生成安全列表规则失败。"; return 1; }
+    [ "$rc" = "0" ] || { warn "$(L "生成安全列表规则失败。" "Failed to build the security list rules.")"; return 1; }
     "$oci_bin" $auth_args network security-list update --security-list-id "$sl_id" \
         --ingress-security-rules "$new_rules" --force >/dev/null 2>&1 \
-        || { warn "更新安全列表失败（权限不足或 API 错误）。"; return 1; }
-    ok "云端安全列表已放行 $ports。"
+        || { warn "$(L "更新安全列表失败（权限不足或 API 错误）。" "Failed to update the security list (insufficient permissions or an API error).")"; return 1; }
+    ok "$(L "云端安全列表已放行 $ports。" "Cloud security list now opens $ports.")"
     return 0
 }
 
@@ -1653,18 +1720,18 @@ _oci_add_nsg_rules() {
     local current new_rules rc
     current="$("$oci_bin" $auth_args network nsg rules list --nsg-id "$nsg_id" --output json 2>/dev/null \
         | python3 -c "import json,sys; print(json.dumps(json.load(sys.stdin).get('data') or []))" 2>/dev/null || true)"
-    [ -n "$current" ] || { warn "读 NSG 规则失败。"; return 1; }
+    [ -n "$current" ] || { warn "$(L "读 NSG 规则失败。" "Failed to read the NSG rules.")"; return 1; }
     new_rules="$(_oci_rules_with_ports "$current" "$ports" "nsg")"
     rc=$?
     if [ "$rc" = "2" ]; then
-        ok "云端 NSG 已放行 $ports，无需改动。"
+        ok "$(L "云端 NSG 已放行 $ports，无需改动。" "Cloud NSG already opens $ports; no change needed.")"
         return 0
     fi
-    [ "$rc" = "0" ] || { warn "生成 NSG 规则失败。"; return 1; }
+    [ "$rc" = "0" ] || { warn "$(L "生成 NSG 规则失败。" "Failed to build the NSG rules.")"; return 1; }
     "$oci_bin" $auth_args network nsg rules add --nsg-id "$nsg_id" \
         --security-rules "$new_rules" >/dev/null 2>&1 \
-        || { warn "更新 NSG 失败（权限不足或 API 错误）。"; return 1; }
-    ok "云端 NSG 已放行 $ports。"
+        || { warn "$(L "更新 NSG 失败（权限不足或 API 错误）。" "Failed to update the NSG (insufficient permissions or an API error).")"; return 1; }
+    ok "$(L "云端 NSG 已放行 $ports。" "Cloud NSG now opens $ports.")"
     return 0
 }
 
@@ -1685,12 +1752,12 @@ remove_shadow_reject() {
     n="$("$ipt" -L INPUT --line-numbers -n 2>/dev/null \
         | awk '$1 ~ /^[0-9]+$/ { if ($2 == "REJECT") { print $1; exit } if ($2 ~ /^ufw-/) exit }')"
     [ -n "$n" ] || return 0
-    info "发现镜像自带的 iptables REJECT 规则（第 $n 行）挡住了 UFW，正在清理…"
-    "$ipt" -D INPUT "$n" 2>/dev/null || warn "删除实时 REJECT 规则失败，请手动检查 iptables。"
+    info "$(L "发现镜像自带的 iptables REJECT 规则（第 $n 行）挡住了 UFW，正在清理…" "Found the image's built-in iptables REJECT rule (line $n) blocking UFW; cleaning it up...")"
+    "$ipt" -D INPUT "$n" 2>/dev/null || warn "$(L "删除实时 REJECT 规则失败，请手动检查 iptables。" "Failed to delete the live REJECT rule; please check iptables manually.")"
     if [ -f "$rules" ] && grep -q "^-A INPUT -j REJECT" "$rules"; then
         cp -a "$rules" "$rules.bak.mbot" 2>/dev/null || true
         sed -i '/^-A INPUT -j REJECT/d' "$rules"
-        ok "已清理 $rules 里的 INPUT REJECT（原文件备为 $rules.bak.mbot）。"
+        ok "$(L "已清理 $rules 里的 INPUT REJECT（原文件备为 $rules.bak.mbot）。" "Cleaned the INPUT REJECT from $rules (original backed up as $rules.bak.mbot).")"
     fi
 }
 
@@ -1699,36 +1766,36 @@ health_check() {
     local fail=0
     sleep 3
     if systemctl is-active --quiet "$WEB_SERVICE"; then
-        ok "面板服务运行中。"
+        ok "$(L "面板服务运行中。" "Panel service is running.")"
     else
-        warn "面板服务未运行！看日志：journalctl -u $WEB_SERVICE -n 50"
+        warn "$(L "面板服务未运行！看日志：journalctl -u $WEB_SERVICE -n 50" "Panel service is NOT running! See the logs: journalctl -u $WEB_SERVICE -n 50")"
         fail=1
     fi
     if [ -f "/etc/systemd/system/${BOT_SERVICE}.service" ]; then
         if systemctl is-active --quiet "$BOT_SERVICE"; then
-            ok "机器人服务运行中。"
+            ok "$(L "机器人服务运行中。" "Bot service is running.")"
         elif systemctl is-enabled --quiet "$BOT_SERVICE" 2>/dev/null; then
-            warn "机器人服务未运行（常见原因是 Token 不对）！看日志：journalctl -u $BOT_SERVICE -n 50"
+            warn "$(L "机器人服务未运行（常见原因是 Token 不对）！看日志：journalctl -u $BOT_SERVICE -n 50" "Bot service is NOT running (usually a wrong Token)! See the logs: journalctl -u $BOT_SERVICE -n 50")"
             fail=1
         else
-            info "机器人服务已停用，跳过检查。"
+            info "$(L "机器人服务已停用，跳过检查。" "Bot service is disabled; skipping the check.")"
         fi
     else
-        info "未装机器人服务，跳过检查。"
+        info "$(L "未装机器人服务，跳过检查。" "Bot service is not installed; skipping the check.")"
     fi
     # The internal port is uvicorn (the panel itself) and the external port is nginx (the proxy). Both must be up: checking only the external port reports healthy when uvicorn is dead (nginx still listens). 内部端口是 uvicorn（面板本身），外部端口是 nginx（反代）。两个都要在：只查外部端口会在 uvicorn 挂了时误报正常（nginx 自己还在监听）。
     if command_exists ss && ss -ltn 2>/dev/null | grep -q ":${INTERNAL_PORT} "; then
-        ok "面板内部端口 ${INTERNAL_PORT} 监听中。"
+        ok "$(L "面板内部端口 ${INTERNAL_PORT} 监听中。" "Panel internal port ${INTERNAL_PORT} is listening.")"
     else
-        warn "面板内部端口 ${INTERNAL_PORT} 未监听，uvicorn 可能未起来。"
+        warn "$(L "面板内部端口 ${INTERNAL_PORT} 未监听，uvicorn 可能未起来。" "Panel internal port ${INTERNAL_PORT} is not listening; uvicorn may not be up.")"
         fail=1
     fi
     # External port: 443 for a domain deploy (9527 when 443 is taken), 9527 without a domain. 外部端口：域名部署走 443（443 被占时走 9527），无域名走 9527。
     # Check that an nginx process holds 9527 or 443, not just that the port listens: 443 may be held by xray or similar, and a bare port check would falsely report healthy. 查“nginx 进程占着 9527 或 443”而不是只查端口在听：443 可能被 xray 之类服务占着，只查端口会误报正常。
     if command_exists ss && ss -ltnp 2>/dev/null | grep nginx | grep -qE ":(${PANEL_PORT}|443) "; then
-        ok "nginx 反代监听中。"
+        ok "$(L "nginx 反代监听中。" "nginx reverse proxy is listening.")"
     else
-        warn "nginx 反代未监听（${PANEL_PORT} 或 443），面板可能无法访问。"
+        warn "$(L "nginx 反代未监听（${PANEL_PORT} 或 443），面板可能无法访问。" "nginx reverse proxy is not listening (${PANEL_PORT} or 443); the panel may be unreachable.")"
         fail=1
     fi
     return "$fail"
@@ -1764,9 +1831,9 @@ self_test() {
     [ "${CERT_KIND:-selfsigned}" = "selfsigned" ] && k="-k"
 
     echo
-    echo "--- 安装自检 ---"
+    echo "$(L "--- 安装自检 ---" "--- Install self-check ---")"
 
-    local cert_line="跳过"
+    local cert_line="$(L "跳过" "Skipped")"
     if [ "${CERT_KIND:-selfsigned}" = "domain" ] || [ "${CERT_KIND:-selfsigned}" = "ip" ]; then
         local cert_text not_after
         cert_text="$(echo | openssl s_client -connect "$host:$port" -servername "$host" 2>/dev/null | openssl x509 -noout -issuer -subject -dates -checkend 0 2>/dev/null || true)"
@@ -1774,29 +1841,29 @@ self_test() {
         if printf '%s' "$cert_text" | grep -q "Let's Encrypt" \
             && printf '%s' "$cert_text" | grep -q "Certificate will not expire" \
             && printf '%s' "$cert_text" | grep -q "$host"; then
-            cert_line="通过（Let's Encrypt，有效至 $not_after）"
+            cert_line="$(L "通过（Let's Encrypt，有效至 $not_after）" "Passed (Let's Encrypt, valid until $not_after)")"
         else
-            cert_line="失败（证书内容不对）"
+            cert_line="$(L "失败（证书内容不对）" "Failed (cert contents are wrong)")"
         fi
     else
         if echo | openssl s_client -connect "$host:$port" -servername "$host" 2>/dev/null | openssl x509 -noout -subject 2>/dev/null | grep -q "subject="; then
-            cert_line="通过（自签证书，握手正常）"
+            cert_line="$(L "通过（自签证书，握手正常）" "Passed (self-signed cert, handshake OK)")"
         else
-            cert_line="失败（握手失败）"
+            cert_line="$(L "失败（握手失败）" "Failed (handshake failed)")"
         fi
     fi
-    echo "证书：$cert_line"
+    echo "$(L "证书：$cert_line" "Certificate: $cert_line")"
 
     local code page_line
     code="$(curl -s $k -o /dev/null -w "%{http_code}" --max-time 15 "$base_url/login" 2>/dev/null || echo 000)"
     if [ "$code" = "200" ]; then
-        page_line="通过（$base_url/login 返回 200）"
+        page_line="$(L "通过（$base_url/login 返回 200）" "Passed ($base_url/login returned 200)")"
     else
-        page_line="失败（返回 $code）"
+        page_line="$(L "失败（返回 $code）" "Failed (returned $code)")"
     fi
-    echo "登录页：$page_line"
+    echo "$(L "登录页：$page_line" "Login page: $page_line")"
 
-    local login_line="跳过（无密码）"
+    local login_line="$(L "跳过（无密码）" "Skipped (no password)")"
     if [ -n "$password" ]; then
         local body cookie_file
         body="$(python3 -c "import json,sys; print(json.dumps({'username': 'admin', 'password': sys.argv[1]}))" "$password")"
@@ -1805,29 +1872,29 @@ self_test() {
             -c "$cookie_file" -H "Content-Type: application/json" \
             -d "$body" "$base_url/api/auth/login" 2>/dev/null || echo 000)"
         if [ "$code" = "200" ] && grep -q "mbot_session" "$cookie_file" 2>/dev/null; then
-            login_line="通过（admin 登录成功，会话 cookie 已设置）"
+            login_line="$(L "通过（admin 登录成功，会话 cookie 已设置）" "Passed (admin login OK, session cookie set)")"
         else
-            login_line="失败（登录接口返回 $code）"
+            login_line="$(L "失败（登录接口返回 $code）" "Failed (login API returned $code)")"
         fi
         rm -f "$cookie_file"
     fi
-    echo "真实登录：$login_line"
+    echo "$(L "真实登录：$login_line" "Real login: $login_line")"
 
-    local redirect_line="跳过（无域名或证书未成功）"
+    local redirect_line="$(L "跳过（无域名或证书未成功）" "Skipped (no domain or cert not ready)")"
     if [ -n "${DOMAIN:-}" ] && [ "${CERT_OK:-0}" = "1" ]; then
         local loc
         loc="$(curl -s -o /dev/null -w "%{http_code} %{redirect_url}" --max-time 10 "http://${DOMAIN}/login" 2>/dev/null || echo "000")"
         case "$loc" in
-            301\ https://*) redirect_line="通过（http 自动跳 https）" ;;
-            *) redirect_line="失败（返回 $loc）" ;;
+            301\ https://*) redirect_line="$(L "通过（http 自动跳 https）" "Passed (http auto-redirects to https)")" ;;
+            *) redirect_line="$(L "失败（返回 $loc）" "Failed (returned $loc)")" ;;
         esac
     fi
-    echo "http 跳转：$redirect_line"
+    echo "$(L "http 跳转：$redirect_line" "HTTP redirect: $redirect_line")"
 
     # Port 80 reachability from outside needs no separate test: a successful http-01 issuance already proves it. 80 端口外网可达不用再测：http-01 发证成功本身就是证明。
     if { [ "${CERT_KIND:-selfsigned}" = "domain" ] || [ "${CERT_KIND:-selfsigned}" = "ip" ]; } \
         && [ "${CERT_METHOD:-http}" = "http" ]; then
-        echo "外网 80 端口：可达（http-01 发证成功已证明）"
+        echo "$(L "外网 80 端口：可达（http-01 发证成功已证明）" "Port 80 from the outside: reachable (proven by the successful http-01 issuance)")"
     fi
 }
 
@@ -1835,60 +1902,60 @@ print_access_info() {
     local ip
     ip="$(curl -s -m 5 https://api.ipify.org 2>/dev/null || hostname -I | awk '{print $1}')"
     echo
-    echo "==================== 安装完成 ===================="
+    echo "$(L "==================== 安装完成 ====================" "==================== Install complete ====================")"
     # Only give the domain URL when the cert was really issued: after a certbot failure falls back to self-signed, the panel serves on IP:9527 and a domain URL would mislead (the domain does not resolve). 域名地址只在证书真的申请成功时才给：certbot 失败回落自签后，面板走的是 IP:9527，给域名地址会误导用户（域名根本不解析）。
     if [ -n "${DOMAIN:-}" ] && [ "${CERT_OK:-0}" = "1" ]; then
         if [ "${CERT_PORT:-443}" = "443" ]; then
-            echo "面板地址：https://${DOMAIN}/login"
+            echo "$(L "面板地址：https://${DOMAIN}/login" "Panel URL: https://${DOMAIN}/login")"
         else
-            echo "面板地址：https://${DOMAIN}:${CERT_PORT}/login（443 端口被占用，面板改走 ${CERT_PORT} 端口）"
+            echo "$(L "面板地址：https://${DOMAIN}:${CERT_PORT}/login（443 端口被占用，面板改走 ${CERT_PORT} 端口）" "Panel URL: https://${DOMAIN}:${CERT_PORT}/login (port 443 is taken, so the panel uses port ${CERT_PORT})")"
         fi
     else
         if [ -n "${DOMAIN:-}" ]; then
-            echo "域名证书申请失败，已回落自签证书（域名解析到本机后可重跑安装）。"
+            echo "$(L "域名证书申请失败，已回落自签证书（域名解析到本机后可重跑安装）。" "Domain cert request failed; fell back to a self-signed cert (re-run the installer once the domain resolves to this machine).")"
         fi
         panel_port="${PANEL_LISTEN_PORT:-$PANEL_PORT}"
         if [ "$panel_port" = "443" ]; then
-            echo "面板地址：https://${ip}/login"
+            echo "$(L "面板地址：https://${ip}/login" "Panel URL: https://${ip}/login")"
         else
-            echo "面板地址：https://${ip}:${panel_port}/login"
+            echo "$(L "面板地址：https://${ip}:${panel_port}/login" "Panel URL: https://${ip}:${panel_port}/login")"
         fi
         if [ "${CERT_KIND:-selfsigned}" = "ip" ]; then
-            echo "（Let's Encrypt IP 证书，有效期约 6 天，cron 每 2 天自动续期）"
+            echo "$(L "（Let's Encrypt IP 证书，有效期约 6 天，cron 每 2 天自动续期）" "(Let's Encrypt IP cert, valid ~6 days, auto-renewed by cron every 2 days)")"
         else
-            echo "（自签证书，浏览器提示不受信任时点“继续访问”即可）"
+            echo "$(L "（自签证书，浏览器提示不受信任时点“继续访问”即可）" "(Self-signed cert; if the browser warns it is untrusted, click \"Continue\" to proceed)")"
         fi
     fi
-    echo "用户名：admin"
+    echo "$(L "用户名：admin" "Username: admin")"
     if [ "${GENERATED_PASSWORD:-0}" = "1" ]; then
-        echo "密码：${ADMIN_PASSWORD}（只显示这一次，也存在 $ADMIN_PASSWORD_FILE）"
+        echo "$(L "密码：${ADMIN_PASSWORD}（只显示这一次，也存在 $ADMIN_PASSWORD_FILE）" "Password: ${ADMIN_PASSWORD} (shown only once; also stored in $ADMIN_PASSWORD_FILE)")"
     else
-        echo "密码：你刚才输入的密码"
+        echo "$(L "密码：你刚才输入的密码" "Password: the one you just entered")"
     fi
     echo
-    echo "下一步："
+    echo "$(L "下一步：" "Next steps:")"
     if [ "${BOT_ENABLED:-1}" = "1" ]; then
-        echo "  1. 在 Telegram 里找你的机器人，发 /uploadapi 上传 OCI 配置"
-        echo "     （安装目录的 oci_config + API 私钥），或手动放到服务器的安装目录（oci_config）与 /root/（API 私钥）下。"
-        echo "  2. 发 /oracle 打开菜单，点“切换账号/区域”确认账号已接通。"
+        echo "$(L "  1. 在 Telegram 里找你的机器人，发 /uploadapi 上传 OCI 配置" "  1. Find your bot in Telegram and send /uploadapi to upload the OCI config")"
+        echo "$(L "     （安装目录的 oci_config + API 私钥），或手动放到服务器的安装目录（oci_config）与 /root/（API 私钥）下。" "     (the install dir's oci_config + API private key), or place them manually in the install dir (oci_config) and /root/ (API private key).")"
+        echo "$(L "  2. 发 /oracle 打开菜单，点“切换账号/区域”确认账号已接通。" "  2. Send /oracle to open the menu, then tap \"Switch account/region\" to confirm the account is connected.")"
     else
-        echo "  1. 把 OCI 配置手动放到服务器的安装目录下（oci_config + API 私钥，私钥放 /root/），"
-        echo "     面板里切换账号即可用；或在 $ENV_FILE 里填 Token 后重跑安装补装机器人。"
+        echo "$(L "  1. 把 OCI 配置手动放到服务器的安装目录下（oci_config + API 私钥，私钥放 /root/），" "  1. Place the OCI config manually in the install dir (oci_config + API private key, key in /root/),")"
+        echo "$(L "     面板里切换账号即可用；或在 $ENV_FILE 里填 Token 后重跑安装补装机器人。" "     then switch accounts in the panel to use it; or fill in a Token in $ENV_FILE and re-run the installer to add the bot.")"
     fi
     if [ "${CLOUD_OPENED:-0}" = "1" ]; then
-        echo "云端安全列表已自动放行（80/443/9527），本机防火墙也已放行。"
+        echo "$(L "云端安全列表已自动放行（80/443/9527），本机防火墙也已放行。" "The cloud security list already opens 80/443/9527, and the local firewall does too.")"
     else
-        echo "如果浏览器打不开面板：检查云厂商的安全组/安全列表是否放行了"
+        echo "$(L "如果浏览器打不开面板：检查云厂商的安全组/安全列表是否放行了" "If the browser cannot open the panel: check whether the cloud security group/list opens")"
         if [ -n "${DOMAIN:-}" ] && [ "${CERT_OK:-0}" = "1" ]; then
-            echo "  ${CERT_PORT:-443} 端口（本机防火墙已放行，云上那层也要放行）。"
+            echo "$(L "  ${CERT_PORT:-443} 端口（本机防火墙已放行，云上那层也要放行）。" "  port ${CERT_PORT:-443} (the local firewall already opens it; the cloud layer must too).")"
         else
-            echo "  ${PANEL_LISTEN_PORT:-$PANEL_PORT} 端口（本机防火墙已放行，云上那层也要放行）。"
+            echo "$(L "  ${PANEL_LISTEN_PORT:-$PANEL_PORT} 端口（本机防火墙已放行，云上那层也要放行）。" "  port ${PANEL_LISTEN_PORT:-$PANEL_PORT} (the local firewall already opens it; the cloud layer must too).")"
             if [ "${CERT_KIND:-selfsigned}" = "ip" ]; then
-                echo "IP 证书续期要走 80 端口验证，云上安全组也要放行 80。"
+                echo "$(L "IP 证书续期要走 80 端口验证，云上安全组也要放行 80。" "IP cert renewal needs port-80 validation, so the cloud security group must open 80 too.")"
             fi
         fi
     fi
-    echo "管理命令：bash install.sh start|stop|restart|status|log|upgrade|auto-upgrade|setup-auto-upgrade|uninstall"
+    echo "$(L "管理命令：bash install.sh start|stop|restart|status|log|upgrade|auto-upgrade|setup-auto-upgrade|uninstall" "Management: bash install.sh start|stop|restart|status|log|upgrade|auto-upgrade|setup-auto-upgrade|uninstall")"
     echo "=================================================="
 }
 
@@ -1896,6 +1963,7 @@ print_access_info() {
 cmd_install() {
     require_root
     detect_os
+    choose_language
     # Install deps before prompting: random password generation needs openssl, which minimal images may not preinstall. 先装依赖再提问：提问里的随机密码生成要用到 openssl，精简镜像上 openssl 未必预装。
     install_deps
     # 系统加固（装机与升级都跑，幂等）：TCP 缓冲 + BBR 网络优化、Fail2Ban 防 SSH 爆破（端口自动识别）。
@@ -1903,6 +1971,7 @@ cmd_install() {
     setup_fail2ban
     prompt_config
     install_code
+    save_language  # Fresh install: the install dir now exists, persist the language choice made in choose_language().
     setup_venv
     write_env_file
     write_config_txt
@@ -1917,17 +1986,17 @@ cmd_install() {
         DOMAIN="${MBOT_INSTALL_DOMAIN:-}"
         setup_nginx
     else
-        info "nginx 配置已存在，跳过（想换域名请删 $NGINX_CONF 后重跑）。"
+        info "$(L "nginx 配置已存在，跳过（想换域名请删 $NGINX_CONF 后重跑）。" "nginx config already exists; skipping (to change the domain, delete $NGINX_CONF and re-run).")"
     fi
-    health_check || warn "健康检查有告警，见上面日志。"
+    health_check || warn "$(L "健康检查有告警，见上面日志。" "Health check reported warnings; see the logs above.")"
     setup_auto_upgrade
     if [ "$FRESH_INSTALL" = "1" ]; then
         self_test "$ADMIN_PASSWORD"
         print_access_info
     else
         echo
-        echo "更新完成：代码已更新到 v$(installed_version)，服务已重启。"
-        echo "查看状态：bash install.sh status"
+        echo "$(L "更新完成：代码已更新到 v$(installed_version)，服务已重启。" "Update complete: code updated to v$(installed_version), services restarted.")"
+        echo "$(L "查看状态：bash install.sh status" "Check status: bash install.sh status")"
     fi
 }
 
@@ -1935,7 +2004,7 @@ cmd_install() {
 setup_auto_upgrade() {
     if [ -n "${MBOT_INSTALL_NO_AUTO_UPGRADE:-}" ]; then
         rm -f "$UPGRADE_CRON"
-        info "已跳过自动升级设置（MBOT_INSTALL_NO_AUTO_UPGRADE）。"
+        info "$(L "已跳过自动升级设置（MBOT_INSTALL_NO_AUTO_UPGRADE）。" "Auto-upgrade setup skipped (MBOT_INSTALL_NO_AUTO_UPGRADE).")"
         return 0
     fi
     printf '%s root (cp %s/install.sh /tmp/mbot-install-run.sh && bash /tmp/mbot-install-run.sh auto-upgrade) >> %s 2>&1\n' \
@@ -1957,7 +2026,7 @@ setup_auto_upgrade() {
         fi
         rm -f "$_cron_tmp"
     fi
-    ok "定时自动升级已设置（每天凌晨 4 点，有新版时才升级）。"
+    ok "$(L "定时自动升级已设置（每天凌晨 4 点，有新版时才升级）。" "Scheduled auto-upgrade set (daily at 04:00; upgrades only when a new version exists).")"
 }
 
 # Bark notification on auto-upgrade failure (silently skipped when Bark is unconfigured or disabled). $1 = short failure reason. Any error in the notification itself is swallowed; it must never affect the upgrade flow. 自动升级失败时 Bark 通知（Bark 未配置或未开启时静默跳过）。$1 = 失败原因简述。通知本身的任何异常都吞掉，绝不能影响升级流程。
@@ -2008,12 +2077,12 @@ upgrade_nginx() {
 cmd_auto_upgrade() {
     # Scheduled auto-upgrade (invoked by cron): check mbot and nginx for new versions independently; when both are already latest, only log and touch nothing; upgrade only the ones with a new version; on failure log and send a Bark notification (when Bark is configured and enabled). 定时自动升级（cron 调用）：分别检查 mbot 与 nginx 有无新版；两者都已是最新时只记日志、不碰服务；只升有新版的那一个；失败时记日志并 Bark 通知（Bark 配好且已开启时）。
     require_root
-    [ -d "$INSTALL_DIR/.git" ] || die "未安装（$INSTALL_DIR 不存在），先运行不带参数的安装。"
-    cd "$INSTALL_DIR" || die "无法进入 $INSTALL_DIR。"
-    info "自动升级检查开始（当前版本 v$(installed_version)，nginx $(nginx -v 2>&1 | head -n 1)）。"
+    [ -d "$INSTALL_DIR/.git" ] || die "$(L "未安装（$INSTALL_DIR 不存在），先运行不带参数的安装。" "Not installed ($INSTALL_DIR does not exist); run the installer without arguments first.")"
+    cd "$INSTALL_DIR" || die "$(L "无法进入 $INSTALL_DIR。" "Cannot enter $INSTALL_DIR.")"
+    info "$(L "自动升级检查开始（当前版本 v$(installed_version)，nginx $(nginx -v 2>&1 | head -n 1)）。" "Auto-upgrade check starting (current version v$(installed_version), nginx $(nginx -v 2>&1 | head -n 1)).")"
     local mbot_update=0 nginx_update=0 failed=""
     if ! git fetch origin main --quiet 2>/dev/null; then
-        warn "拉取远端失败，跳过本次 mbot 检查。"
+        warn "$(L "拉取远端失败，跳过本次 mbot 检查。" "Failed to fetch the remote; skipping this mbot check.")"
         _notify_upgrade_failure "拉取远端失败"
     else
         local local_head remote_head
@@ -2027,21 +2096,21 @@ cmd_auto_upgrade() {
     until apt-get update -qq 2>/dev/null; do
         attempt=$((attempt + 1))
         [ "$attempt" -ge 3 ] && break
-        warn "apt-get update 失败（可能锁被占），15 秒后重试…"
+        warn "$(L "apt-get update 失败（可能锁被占），15 秒后重试…" "apt-get update failed (lock may be held); retrying in 15 seconds...")"
         sleep 15
         wait_for_apt
     done
     if [ "$attempt" -ge 3 ]; then
-        warn "apt-get update 多次失败，跳过本次 nginx 检查。"
+        warn "$(L "apt-get update 多次失败，跳过本次 nginx 检查。" "apt-get update failed repeatedly; skipping this nginx check.")"
     elif nginx_update_available; then
         nginx_update=1
     fi
     if [ "$mbot_update" = "0" ] && [ "$nginx_update" = "0" ]; then
-        info "mbot 与 nginx 都已是最新版，无需升级。"
+        info "$(L "mbot 与 nginx 都已是最新版，无需升级。" "mbot and nginx are both already latest; no upgrade needed.")"
         return 0
     fi
     if [ "$mbot_update" = "1" ]; then
-        info "发现 mbot 新版，开始升级…"
+        info "$(L "发现 mbot 新版，开始升级…" "New mbot version found; upgrading...")"
         # Run the upgrade steps in a subshell: if update_code fails, die exits only the subshell and the outer layer can catch the failure and send a Bark notification; do not use local inside the subshell. 升级步骤放子 shell 里跑：update_code 失败时 die 只退出子 shell，外层能捕获失败并 Bark 通知；子 shell 里不要用 local。
         if (
             set -e
@@ -2055,32 +2124,33 @@ cmd_auto_upgrade() {
             fi
             health_check
         ); then
-            ok "mbot 自动升级完成（版本 v$(installed_version)）。"
+            ok "$(L "mbot 自动升级完成（版本 v$(installed_version)）。" "mbot auto-upgrade complete (version v$(installed_version)).")"
         else
-            warn "mbot 自动升级失败，服务保持原状，见日志 $UPGRADE_LOG。"
+            warn "$(L "mbot 自动升级失败，服务保持原状，见日志 $UPGRADE_LOG。" "mbot auto-upgrade failed; services left as-is, see $UPGRADE_LOG.")"
             failed="mbot"
         fi
     fi
     if [ "$nginx_update" = "1" ]; then
-        info "发现 nginx 新版，开始升级…"
+        info "$(L "发现 nginx 新版，开始升级…" "New nginx version found; upgrading...")"
         if upgrade_nginx; then
-            ok "nginx 自动升级完成（版本 $(nginx -v 2>&1 | head -n 1)）。"
+            ok "$(L "nginx 自动升级完成（版本 $(nginx -v 2>&1 | head -n 1)）。" "nginx auto-upgrade complete (version $(nginx -v 2>&1 | head -n 1)).")"
         else
-            warn "nginx 自动升级失败，见日志 $UPGRADE_LOG。"
+            warn "$(L "nginx 自动升级失败，见日志 $UPGRADE_LOG。" "nginx auto-upgrade failed; see $UPGRADE_LOG.")"
             failed="${failed:+$failed + }nginx"
         fi
     fi
     if [ -n "$failed" ]; then
         _notify_upgrade_failure "升级步骤失败（$failed）"
     else
-        ok "自动升级完成。"
+        ok "$(L "自动升级完成。" "Auto-upgrade complete.")"
     fi
 }
 
 cmd_upgrade() {
     require_root
-    [ -d "$INSTALL_DIR/.git" ] || die "未安装（$INSTALL_DIR 不存在），先运行不带参数的安装。"
-    info "升级：拉最新代码 → 装依赖 → 重启服务…"
+    choose_language
+    [ -d "$INSTALL_DIR/.git" ] || die "$(L "未安装（$INSTALL_DIR 不存在），先运行不带参数的安装。" "Not installed ($INSTALL_DIR does not exist); run the installer without arguments first.")"
+    info "$(L "升级：拉最新代码 → 装依赖 → 重启服务…" "Upgrading: pull latest code -> install deps -> restart services...")"
     update_code
     "$VENV_DIR/bin/pip" install --quiet -r "$INSTALL_DIR/requirements.txt"
     "$VENV_DIR/bin/pip" install --quiet oci-cli
@@ -2090,18 +2160,19 @@ cmd_upgrade() {
         # shellcheck disable=SC2086
         systemctl restart $to_restart
     fi
-    health_check || warn "健康检查有告警，见上面日志。"
-    ok "升级完成（版本 v$(installed_version)）。"
+    health_check || warn "$(L "健康检查有告警，见上面日志。" "Health check reported warnings; see the logs above.")"
+    ok "$(L "升级完成（版本 v$(installed_version)）。" "Upgrade complete (version v$(installed_version)).")"
 }
 
 cmd_uninstall() {
     require_root
-    echo "即将卸载 M_Bot：停服务、删 systemd 单元、删 nginx 反代、删 $INSTALL_DIR。"
-    echo "环境文件 $ENV_FILE、统一配置文件 $CONFIG_FILE 与密码文件 $ADMIN_PASSWORD_FILE 会保留（凭据不删）。"
-    echo "证书续期 cron 与脚本、定时自动升级 cron 与日志会删掉；/etc/lego 里的证书与 CF Token 保留（重装还能用）。"
-    printf "确认卸载？输入 yes 继续："
+    choose_language
+    echo "$(L "即将卸载 M_Bot：停服务、删 systemd 单元、删 nginx 反代、删 $INSTALL_DIR。" "About to uninstall M_Bot: stop services, delete systemd units, delete the nginx proxy, delete $INSTALL_DIR.")"
+    echo "$(L "环境文件 $ENV_FILE、统一配置文件 $CONFIG_FILE 与密码文件 $ADMIN_PASSWORD_FILE 会保留（凭据不删）。" "The env file $ENV_FILE, unified config $CONFIG_FILE and password file $ADMIN_PASSWORD_FILE will be kept (credentials are not deleted).")"
+    echo "$(L "证书续期 cron 与脚本、定时自动升级 cron 与日志会删掉；/etc/lego 里的证书与 CF Token 保留（重装还能用）。" "The cert-renewal cron + script and the auto-upgrade cron + log will be deleted; certs and the CF Token in /etc/lego are kept (reusable on reinstall).")"
+    printf '%s' "$(L "确认卸载？输入 yes 继续：" "Confirm uninstall? Type yes to continue:")"
     read -r ans || true
-    [ "$ans" = "yes" ] || { echo "已取消。"; exit 0; }
+    [ "$ans" = "yes" ] || { echo "$(L "已取消。" "Cancelled.")"; exit 0; }
     systemctl stop "$WEB_SERVICE" "$BOT_SERVICE" 2>/dev/null || true
     systemctl disable "$WEB_SERVICE" "$BOT_SERVICE" 2>/dev/null || true
     rm -f "/etc/systemd/system/${WEB_SERVICE}.service" \
@@ -2112,15 +2183,15 @@ cmd_uninstall() {
     rm -f "$NGINX_CONF"
     nginx -t >/dev/null 2>&1 && systemctl reload nginx 2>/dev/null || true
     rm -rf "$INSTALL_DIR"
-    ok "已卸载。凭据仍在 $ENV_FILE 与 $CONFIG_FILE（想彻底删掉请手动 rm 它们）。"
+    ok "$(L "已卸载。凭据仍在 $ENV_FILE 与 $CONFIG_FILE（想彻底删掉请手动 rm 它们）。" "Uninstalled. Credentials remain in $ENV_FILE and $CONFIG_FILE (delete them manually with rm for a full wipe).")"
 }
 
 # ---------- 入口 ----------
 case "${1:-}" in
     "")         cmd_install ;;
-    start)      systemctl start $(mbot_services) && echo "已启动。" ;;
-    stop)       systemctl stop $(mbot_services) && echo "已停止。" ;;
-    restart)    systemctl restart $(mbot_services) && echo "已重启。" ;;
+    start)      systemctl start $(mbot_services) && echo "$(L "已启动。" "Started.")" ;;
+    stop)       systemctl stop $(mbot_services) && echo "$(L "已停止。" "Stopped.")" ;;
+    restart)    systemctl restart $(mbot_services) && echo "$(L "已重启。" "Restarted.")" ;;
     status)     systemctl status $(mbot_services) --no-pager ;;
     log)        journalctl $(mbot_services | sed 's/^/-u /;s/ / -u /g') -n 100 --no-pager ;;
     upgrade)    cmd_upgrade ;;
@@ -2128,8 +2199,8 @@ case "${1:-}" in
     setup-auto-upgrade) setup_auto_upgrade ;;
     uninstall)  cmd_uninstall ;;
     *)
-        echo "用法：$0 [start|stop|restart|status|log|upgrade|auto-upgrade|setup-auto-upgrade|uninstall]"
-        echo "不带参数：首次运行安装，再次运行更新并重启。"
+        echo "$(L "用法：$0 [start|stop|restart|status|log|upgrade|auto-upgrade|setup-auto-upgrade|uninstall]" "Usage: $0 [start|stop|restart|status|log|upgrade|auto-upgrade|setup-auto-upgrade|uninstall]")"
+        echo "$(L "不带参数：首次运行安装，再次运行更新并重启。" "No arguments: first run installs; later runs update and restart.")"
         exit 1
         ;;
 esac
