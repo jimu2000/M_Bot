@@ -316,11 +316,12 @@ def fmt_instance_list(instances, profile, lang="zh"):
 
 
 def fmt_instance_detail(inst, public_ip=None, cpu_model=None, lang="zh",
-                        root_password=None):
+                        root_password=None, os_version=None):
     """实例详情全文。inst 是 get_instance 返回的完整 JSON（已解包 data）。
 
     cpu_model 是缓存/检测到的 CPU 型号（如 "AMD EPYC 7J13"），
-    未检测到时该行显示“未知”。
+    未检测到时该行显示“未知”。os_version 是缓存/检测到的系统版本
+    （如 "Debian 13.8"），未检测到时该行显示“未知”。
     root_password 是凭据库里存的初始开机密码（调用方传
     get_root_password(instance_id) 的结果）；有则以 <code> 块显示
     （Telegram 里点一下就能复制），没有（None）显示“未保存”。
@@ -346,6 +347,8 @@ def fmt_instance_detail(inst, public_ip=None, cpu_model=None, lang="zh",
         f"{fmt_shape_spec(shape, ocpus, memory, lang=lang)}",
         f"{bot_i18n.t(lang, 'instances.detail_cpu')}："
         f"{cpu_model or bot_i18n.t(lang, 'common.unknown')}",
+        f"{bot_i18n.t(lang, 'instances.detail_os_version')}："
+        f"{os_version or bot_i18n.t(lang, 'common.unknown')}",
         f"{bot_i18n.t(lang, 'instances.detail_ad')}：{ad}",
         f"{bot_i18n.t(lang, 'instances.detail_created')}：{created}",
     ]

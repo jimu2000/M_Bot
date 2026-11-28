@@ -25,6 +25,7 @@
   var bootBackupDelTarget = null;
   var detailLoadSeq = 0;  // Detail-load sequence: guards against out-of-order responses when the user opens another instance's detail while one is still loading. 详情加载序号：用户快速连点两个实例时，旧请求的回包不再覆盖新弹窗。
   var detailRootPassword = null;  // Detail modal's current instance initial boot password (in memory only, never rendered in the DOM; the cell shows •••••••• and a click copies it). 详情弹窗当前实例的初始开机密码（只放内存，不进 DOM；格子里只显示 ••••••••，点击复制）。
+  var cardPasswords = {};  // Card passwords by instance id (in memory only, never rendered in the DOM; the card cell shows •••••••• and the copy button copies from here). 卡片密码按实例存（只放内存，不进 DOM；卡片格子只显示 ••••••••，复制按钮从这里取）。
   var cpuRefreshTimer = null;  // Timer for the delayed CPU-model refetch (at most one refetch per load round). CPU 型号延迟补拉的定时器（每轮只补拉一次）。
   var consoleCommand = "";
   var consoleTarget = null;
@@ -163,6 +164,15 @@
         ? '<span class="mono">' + esc(ip) + '</span> ' +
           '<button type="button" class="copy-btn" data-copy="' + esc(ip) + '" title="复制 IP">⧉</button>'
         : "—";
+      // Card password cell: cardPasswords holds the per-instance password
+      // (string = saved, null = fetched and none saved, absent = not yet
+      // fetched). The cell never shows the real password, only ••••••••.
+      // 卡片密码格：cardPasswords 按实例存（字符串 = 已存，null = 查过没存，
+      // 没有这项 = 还没查）。格子永远不显示真密码，只显示 ••••••••。
+      var pwState = cardPasswords[String(inst.id)];
+      var pwText = (typeof pwState === "string" && pwState) ? "••••••••"
+        : (pwState === null ? "未保存" : "—");
+      var pwCopyHidden = !(typeof pwState === "string" && pwState);
       var spec = (inst.ocpus != null && inst.memory_gb != null)
         ? inst.ocpus + " OCPU / " + inst.memory_gb + " GB" : "—";
       var created = inst.created ? esc(MBot.formatTime(inst.created)) : "—";
@@ -192,12 +202,15 @@
           '<div class="instance-card-head">' +
             '<input type="checkbox" class="row-select" data-select="' + esc(inst.id) + '"' + checked + ' aria-label="选择实例">' +
             '<button type="button" class="name-btn instance-card-name" data-act="detail" title="查看详情">' + esc(inst.name) + "</button>" +
+            '<button type="button" class="instance-card-detail-link" data-act="detail" title="查看详情">(查看实例详情)</button>' +
             stateBadge(inst.state) +
           "</div>" +
           '<div class="instance-meta">' +
             '<div class="instance-meta-row"><span class="instance-meta-label">公网 IP</span><span class="instance-meta-value">' + ipCell + "</span></div>" +
+            '<div class="instance-meta-row"><span class="instance-meta-label">初始开机密码</span><span class="instance-meta-value"><span class="mono" data-root-password="1">' + pwText + '</span><button type="button" class="copy-btn" data-act="copy-password" title="复制密码"' + (pwCopyHidden ? " hidden" : "") + '>⧉</button></span></div>' +
             '<div class="instance-meta-row"><span class="instance-meta-label">Shape</span><span class="instance-meta-value mono">' + esc(fmtShape(inst.shape)) + "</span></div>" +
             '<div class="instance-meta-row"><span class="instance-meta-label">CPU 型号</span><span class="instance-meta-value mono" data-cpu-model="1">' + esc(cpuModelLabel(inst.cpuModel, inst.shape)) + "</span></div>" +
+            '<div class="instance-meta-row"><span class="instance-meta-label">系统版本</span><span class="instance-meta-value mono">' + esc(inst.osVersion || "未检测") + "</span></div>" +
             '<div class="instance-meta-row"><span class="instance-meta-label">规格</span><span class="instance-meta-value">' + esc(spec) + "</span></div>" +
             '<div class="instance-meta-row"><span class="instance-meta-label">启动盘</span><span class="instance-meta-value">' + bootVolumeCell(inst) + "</span></div>" +
             '<div class="instance-meta-row"><span class="instance-meta-label">创建时间</span><span class="instance-meta-value">' + created + "</span></div>" +
@@ -252,6 +265,7 @@
       loading = false;
       render();
       scheduleCpuRefresh();
+      refreshCardPasswords();
     } catch (err) {
       if (profileAtStart !== currentProfile || regionAtStart !== currentRegion) return;
       loading = false;
@@ -298,6 +312,53 @@
     }
   }
 
+  // Card passwords: the list API never carries the initial boot password
+  // (it lives only in the server-side per-instance credential store), so
+  // after the list renders, fetch it per visible instance from
+  // GET /api/instances/{id}/password. A 404 means no password was saved
+  // for that instance (booted before v2.23.0) and the card shows "未保存";
+  // any other failure leaves the cell as "—". Passwords stay in
+  // cardPasswords (memory only, never in the DOM); the card cell shows
+  // •••••••• and the copy button copies from there. After all fetches
+  // settle, render() once so the cells show the fetched state (in-place
+  // cell updates would not survive a later re-render, and the stub DOM in
+  // tests cannot do them). Stale results (profile/region switched
+  // mid-flight) are discarded.
+  // 卡片密码：列表接口不带初始开机密码（只在服务端凭据库），列表渲染后为
+  // 每台可见实例调 GET /api/instances/{id}/password 单独拉一次。404 表示
+  // 这台没存过密码（v2.23.0 之前开的），卡片显示“未保存”；其他失败保持
+  // “—”。密码只放 cardPasswords（内存，不进 DOM），格子只显示 ••••••••，
+  // 复制按钮从这里取。全部拉完后 render() 一次，让格子显示查到的状态
+  // （就地改格子撑不过下一次重绘，测试桩 DOM 也做不了）。切账号/区域
+  // 期间旧回包直接丢弃。
+  async function refreshCardPasswords() {
+    var profileAtStart = currentProfile;
+    var regionAtStart = currentRegion;
+    var ids = instances.map(function (inst) { return String(inst.id); });
+    // Drop passwords for instances no longer in the list (account/region switched).
+    // 清掉已不在列表里的实例密码（切账号/区域后）。
+    Object.keys(cardPasswords).forEach(function (id) {
+      if (ids.indexOf(id) === -1) delete cardPasswords[id];
+    });
+    if (ids.length === 0) return;
+    var jobs = ids.map(function (id) {
+      return MBot.api(MBot.withProfile("/api/instances/" + encodeURIComponent(id) + "/password", currentProfile, currentRegion), { noRedirect: true }).then(function (res) {
+        if (profileAtStart !== currentProfile || regionAtStart !== currentRegion) return;
+        if (res && res.root_password) cardPasswords[id] = res.root_password;
+        else cardPasswords[id] = null;
+      }).catch(function (err) {
+        if (profileAtStart !== currentProfile || regionAtStart !== currentRegion) return;
+        // 404 = no password saved; any other failure degrades quietly to "—".
+        // 404 是没存密码；其他失败静默降级成“—”。
+        if (err && err.status === 404) cardPasswords[id] = null;
+        else delete cardPasswords[id];
+      });
+    });
+    await Promise.all(jobs);
+    if (profileAtStart !== currentProfile || regionAtStart !== currentRegion) return;
+    if (!loading) render();
+  }
+
   async function instanceAction(id, action, label) {
     try {
       await MBot.api(MBot.withProfile("/api/instances/" + encodeURIComponent(id) + "/" + action, currentProfile, currentRegion), { method: "POST" });
@@ -322,6 +383,7 @@
     document.getElementById("detail-name").textContent = detailTarget.name;
     document.getElementById("detail-shape").textContent = loadingText;
     document.getElementById("detail-cpu-model").textContent = loadingText;
+    document.getElementById("detail-os-version").textContent = loadingText;
     document.getElementById("detail-spec").textContent = loadingText;
     document.getElementById("detail-state").textContent = loadingText;
     document.getElementById("detail-public-ip").textContent = loadingText;
@@ -352,6 +414,7 @@
       document.getElementById("detail-name").textContent = inst2["display-name"] || "—";
       document.getElementById("detail-shape").textContent = fmtShape(inst2.shape) || "—";
       document.getElementById("detail-cpu-model").textContent = cpuModelLabel(res.cpu_model, inst2.shape);
+      document.getElementById("detail-os-version").textContent = res.os_version || "未检测";
       document.getElementById("detail-spec").textContent =
         (cfg.ocpus != null ? cfg.ocpus + " OCPU / " + cfg["memory-in-gbs"] + " GB" : "—");
       document.getElementById("detail-state").innerHTML = stateBadge(inst2["lifecycle-state"]);
@@ -908,6 +971,15 @@
       else if (act === "stop") instanceAction(instId, "stop", tr("instances.stop", "停止"));
       else if (act === "restart") instanceAction(instId, "restart", tr("instances.restart", "重启"));
       else if (act === "detail") showDetail(inst);
+      else if (act === "copy-password") {
+        // Card password copy: the password lives only in cardPasswords
+        // (memory, never in the DOM); the cell shows ••••••••. No password
+        // stored means the button stays hidden, so this is unreachable then.
+        // 卡片密码复制：密码只在 cardPasswords（内存，不进 DOM），格子只显示
+        // ••••••••；没存密码时按钮是隐藏的，走不到这里。
+        var pw = cardPasswords[instId];
+        if (pw) MBot.copyText(pw, "初始开机密码");
+      }
       else if (act === "ssh") {
         // Instance card SSH one-click login: the terminal page auto-connects as root (fixed password first, else the per-instance password saved at creation; see /api/ssh/connect-instance); on failure it falls back to the manual form with the host prefilled. 实例卡片 SSH 一键直连：终端页自动登录 root（固定密码优先，没有时用开机时按实例存的那份，见 /api/ssh/connect-instance），失败回落手动表单（预填主机）。
         var n = norm(inst);
@@ -941,6 +1013,12 @@
         document.getElementById("reinstall-confirm-name").value = "";
         MBot.openModal("reinstall-modal");
       } else if (act === "console") {
+        // Double-click guard: disable the card button while the console
+        // connection string is being fetched (a second click would only
+        // refetch the same read-only string). 防重复点击：取连接命令期间
+        // 禁用卡片按钮（再点也只是重复取同一条只读命令）。
+        if (btn.disabled) return;
+        btn.disabled = true;
         (async function () {
           try {
             var res = await MBot.api(MBot.withProfile("/api/instances/" + encodeURIComponent(instId) + "/console", currentProfile, currentRegion));
@@ -959,6 +1037,8 @@
             MBot.openModal("console-modal");
           } catch (err) {
             MBot.toast("获取串行控制台失败：" + err.message, "error");
+          } finally {
+            btn.disabled = false;
           }
         })();
       }
@@ -1226,6 +1306,19 @@
     // 一样，不用复制命令再去别处跑）。
     document.getElementById("btn-connect-console").addEventListener("click", async function () {
       if (!consoleCommand) return;
+      // Double-click guard: disable the button at once so a second click
+      // cannot fire a second POST — two POSTs would open two SSH clients
+      // on the same OCI console connection and OCI kicks one with
+      // "Another ssh client has connected". Re-enable only on error;
+      // success navigates to the terminal page. The button is looked up
+      // by id (not `this`: the listener may be invoked without the
+      // element as receiver). 防重复点击：点下立即禁用，避免第二个 POST
+      //（两个 POST 会在同一个 OCI 控制台连接上开两个 SSH 客户端，OCI 会
+      // 踢掉一个）；失败时才恢复，成功直接跳走。用 id 取按钮（不用 this，
+      // 监听器被调用时 this 未必是按钮）。
+      var btn = document.getElementById("btn-connect-console");
+      if (btn.disabled) return;
+      btn.disabled = true;
       var label = "串行控制台" + (consoleTarget ? "：" + norm(consoleTarget).name : "");
       try {
         var res = await MBot.api("/api/ssh/connect-console", {
@@ -1238,9 +1331,22 @@
           body: { connection_string: consoleCommand, label: label },
         });
         MBot.closeModal("console-modal");
+        // Pass the instance OCID so the terminal page can auto-login with
+        // the saved boot root password (see terminal.js consoleAutoLogin).
+        // Use console_instance (not instance: ?instance= already means
+        // one-click SSH auto-connect on the terminal page). 把实例 OCID
+        // 传给终端页，让它能用保存的开机 root 密码自动登录（见
+        // terminal.js 的 consoleAutoLogin）。用 console_instance（不用
+        // instance：终端页上 ?instance= 已是一键 SSH 自动连接的意思）。
+        var instParam = "";
+        if (consoleTarget) {
+          var instId = consoleTarget.id || norm(consoleTarget).id;
+          if (instId) instParam = "&console_instance=" + encodeURIComponent(instId);
+        }
         window.location.href = "/terminal?session=" + encodeURIComponent(res.session_id) +
-          "&label=" + encodeURIComponent(label);
+          "&label=" + encodeURIComponent(label) + instParam;
       } catch (err) {
+        btn.disabled = false;
         MBot.toast("串行控制台直连失败：" + err.message, "error");
       }
     });

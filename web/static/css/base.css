@@ -22,6 +22,9 @@ input, select, textarea { font: inherit; color: var(--text); }
 code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 
 /* ================= 顶栏 ================= */
+/* Fixed (not sticky): the top bar never scrolls away, like the left sidebar
+   stays put. 顶栏固定不滚动（不用 sticky，iOS 上 sticky 偶尔会跟丢），与左侧
+   边栏一样始终可见；body 用 has-topbar 的 padding-top 把内容顶下来，避免被盖住。 */
 .topbar {
   display: flex;
   align-items: center;
@@ -30,10 +33,13 @@ code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monosp
   padding: 0 16px;
   background: var(--topbar-bg);
   border-bottom: 1px solid var(--border);
-  position: sticky;
+  position: fixed;
   top: 0;
+  left: 0;
+  right: 0;
   z-index: 50;
 }
+body.has-topbar { padding-top: 54px; }
 
 .logo { display: flex; align-items: center; gap: 10px; user-select: none; }
 .logo-mark {
@@ -49,6 +55,11 @@ code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monosp
   border: 1px solid var(--border); border-radius: 999px; padding: 1px 7px;
   white-space: nowrap;
 }
+/* Top-bar version label, right after the logo subtitle (v2.24.0+). 顶栏版本号，紧跟 logo 副标题。 */
+.logo-version {
+  font-size: 11px; color: var(--text-muted); font-weight: 400;
+  white-space: nowrap;
+}
 
 .topbar-spacer { flex: 1; }
 
@@ -60,6 +71,12 @@ code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monosp
   padding: 5px 8px;
   color: var(--text);
 }
+/* Top-bar language/theme dropdowns: cap their widths so they don't stretch
+   the top bar (the language list's longest option "跟随浏览器语言" would
+   otherwise make it very wide). 顶栏语言/主题下拉限宽，避免被最长选项
+   （“跟随浏览器语言”）撑得很宽。 */
+.topbar #lang-select { max-width: 112px; }
+.topbar #theme-select { max-width: 88px; }
 
 .icon-btn {
   width: 34px; height: 34px;
@@ -364,6 +381,16 @@ textarea { resize: vertical; min-height: 74px; }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-size: 15.5px;
 }
+/* Card "(view instance details)" link next to the instance name: opens the
+   same detail modal as the name button, but makes the affordance explicit.
+   卡片实例名旁的“（查看实例详情）”链接：与名字按钮一样打开详情弹窗，
+   只是把入口说得更明白。 */
+.instance-card-detail-link {
+  border: none; background: transparent; padding: 0;
+  font: inherit; font-size: 12px; color: var(--text-muted);
+  cursor: pointer; white-space: nowrap; flex-shrink: 0;
+}
+.instance-card-detail-link:hover { color: var(--accent); text-decoration: underline; }
 .instance-card-head .badge { flex-shrink: 0; }
 .instance-meta { display: flex; flex-direction: column; gap: 7px; font-size: 13.5px; }
 .instance-meta-row {
@@ -632,7 +659,8 @@ tr.task-row.expanded { background: var(--surface-hover); }
   /* Mobile top bar: when space is tight, first collapse the logo subtitle, shrink spacing and padding, and cap the language/theme dropdown widths; the GitHub icon (.github-link) is always kept, never squeezed out or hidden. 手机端顶栏：空间紧张时先收 logo 副标题、缩间距与内边距，语言/主题下拉限宽，GitHub 图标（.github-link）始终保留、不被挤掉或隐藏。 */
   .topbar { gap: 8px; padding: 0 10px; }
   .topbar .logo-sub { display: none; }
-  .topbar select { max-width: 108px; }
+  .topbar #lang-select { max-width: 112px; }
+  .topbar #theme-select { max-width: 88px; }
   .topbar .github-link { display: inline-flex; flex-shrink: 0; }
   .topbar .logo-text { font-size: 17px; }
   /* Mobile: the sidebar moves into a left drawer (slid off-screen by default); open it with the top-bar hamburger (.nav-toggle), close it via the mask or a nav link. Do not hide the sidebar with display: none again — that leaves mobile users with no entry to DNS, quota, task management and other pages. 手机端：侧边栏收进左侧抽屉（默认滑出屏幕外），点顶栏汉堡按钮（.nav-toggle）打开，点遮罩或导航链接关闭。注意：不要再用 display: none 藏侧边栏——那样手机上 DNS 管理、配额、任务管理等页面完全没有入口。 */
@@ -702,6 +730,7 @@ select:focus-visible, textarea:focus-visible { outline: 3px solid var(--accent-s
 @media (max-width: 560px) {
   body { font-size: 14px; }
   .topbar { height: 52px; }
+  body.has-topbar { padding-top: 52px; }
   .resourcebar { top: 52px; height: 42px; }
   .shell { min-height: calc(100dvh - 94px); }
   .content { padding: 12px 10px 28px; }

@@ -1,8 +1,37 @@
-# M_Bot Oracle开源管理面板
+# M_Bot 甲骨文云开源管理面板
 
-> **当前版本：v2.24.0** · 更新记录见 [CHANGELOG.md](CHANGELOG.md)（[英文版 / English](CHANGELOG.en.md)）
+> **当前版本：v2.25.0** · 更新记录见 [CHANGELOG.md](CHANGELOG.md)
 
 [中文](#中文) | [English](#english)
+
+## 目录 / Contents
+
+- [中文](#中文)
+  - [快速开始](#快速开始)
+  - [🚀 一条命令安装](#一条命令安装)
+  - [拿到 Telegram 机器人 Token（详细步骤）](#拿到-telegram-机器人-token详细步骤)
+  - [拿到 OCI API 密钥（详细步骤）](#拿到-oci-api-密钥详细步骤)
+  - [界面预览](#界面预览)
+  - [功能](#功能)
+  - [GFW 自动换 IP（菜单 16，v1.10.0 新增）](#gfw-自动换-ip菜单-16v1100-新增)
+  - [手动安装](#手动安装)
+  - [配置规范](#配置规范)
+  - [测试](#测试)
+  - [项目结构](#项目结构)
+  - [明确不做的功能](#明确不做的功能)
+- [English](#english)
+  - [Quick start](#quick-start)
+  - [🚀 One-command install](#one-command-install)
+  - [Getting your Telegram bot token (step by step)](#getting-your-telegram-bot-token-step-by-step)
+  - [Getting your OCI API key (step by step)](#getting-your-oci-api-key-step-by-step)
+  - [Screenshots](#screenshots)
+  - [Features](#features)
+  - [GFW auto IP change (menu 16, new in v1.10.0)](#gfw-auto-ip-change-menu-16-new-in-v1100)
+  - [Manual install](#manual-install)
+  - [Configuration rules](#configuration-rules)
+  - [Tests](#tests)
+  - [Deliberately not implemented](#deliberately-not-implemented)
+- [License](#license)
 
 ---
 
@@ -16,7 +45,7 @@ M_Bot 是一个开源的 Oracle Cloud 管理面板：Telegram 机器人 + Web �
 
 **核心亮点：**
 
-- **安全与独立**：纯自研代码、3330 个单元测试；OCI 私钥只在本地做请求签名，不外传；免费功能全开，无付费墙。
+- **安全与独立**：纯自研代码、3421 个单元测试；OCI 私钥只在本地做请求签名，不外传；免费功能全开，无付费墙。
 - **多端协同**：Telegram 机器人 + FastAPI Web 面板 + MCP 协议接入，配置与通知（Telegram + Bark 加密推送）打通。
 - **省心运维**：终止实例默认连带删引导卷防扣费；RIPE Atlas 探针自动换被墙 IP；Let's Encrypt 域名与 IP 证书自动签发/续期。
 
@@ -354,10 +383,10 @@ python3 mcp_server.py
 
 ```bash
 python3 -m unittest discover -s tests -t .
-# Ran 3330 tests ... OK
+# Ran 3421 tests ... OK
 ```
 
-3330 个单元测试（mock 为主，写操作零次碰生产）。真实 API 验证记录见
+3421 个单元测试（mock 为主，写操作零次碰生产）。真实 API 验证记录见
 `docs/verification*.md`：只读操作对真实 OCI / Cloudflare API 实测通过；
 写操作（创建 / 换 IP / 升降配 / 扩容 / 释放等）在测试实例上真实跑通过。
 
@@ -371,7 +400,7 @@ M_Bot/
   clouds/       Cloudflare 客户端 + 其他云抽象接口与 stub
   mcp_server.py MCP 服务器（JSON-RPC over stdio）
   scripts/      部署脚本（原子升级）
-  tests/        单元测试（3330 个）
+  tests/        单元测试（3421 个）
   docs/         设计与验证文档
 ```
 
@@ -386,6 +415,8 @@ M_Bot/
 
 ## English
 
+**M_Bot Oracle Cloud Open-Source Management Panel**
+
 M_Bot is an open-source Oracle Cloud management panel written in Python:
 Telegram bot + web panel + web SSH + instance grabber + Cloudflare DNS + MCP
 server. All code here is independently written, fully visible and auditable.
@@ -396,7 +427,7 @@ server. All code here is independently written, fully visible and auditable.
 
 **Highlights:**
 
-- **Secure and independent**: independently written code, 3330 unit tests; the OCI private key only signs requests locally and is never sent out; every free feature is open, no paywall.
+- **Secure and independent**: independently written code, 3421 unit tests; the OCI private key only signs requests locally and is never sent out; every free feature is open, no paywall.
 - **Multi-client**: Telegram bot + FastAPI web panel + MCP server, with shared config and notifications (Telegram + encrypted Bark push).
 - **Low-maintenance**: terminating an instance deletes its boot volume by default (no surprise charges); RIPE Atlas probes auto-swap a firewalled IP; Let's Encrypt domain and IP certificates are issued and renewed automatically.
 
@@ -569,10 +600,10 @@ Send `/oracle` to the bot; if it lists your accounts and instances, it works. Th
 
 Live demo (no login, simulated data): https://demo.youu.eu.org
 
-![Overview / cloud report](docs/screenshots/overview.png)
-![Instance list](docs/screenshots/instances.png)
-![Web SSH terminal](docs/screenshots/terminal.png)
-![Task management and grabber plans](docs/screenshots/tasks.png)
+![Overview / cloud report](docs/screenshots/overview-en.png)
+![Instance list](docs/screenshots/instances-en.png)
+![Web SSH terminal](docs/screenshots/terminal-en.png)
+![Task management and grabber plans](docs/screenshots/tasks-en.png)
 
 ### Features
 
@@ -786,10 +817,10 @@ For production, run both services under systemd — see `docs/deployment.md`
 
 ```bash
 python3 -m unittest discover -s tests -t .
-# Ran 3330 tests ... OK
+# Ran 3421 tests ... OK
 ```
 
-3330 unit tests (mostly mocked; write operations never touch production).
+3421 unit tests (mostly mocked; write operations never touch production).
 Real-API verification notes live in `docs/verification*.md`: read-only calls
 verified against the real OCI / Cloudflare APIs; write operations (create /
 change IP / resize / extend / terminate) verified for real on test instances.

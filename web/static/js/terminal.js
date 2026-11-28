@@ -51,6 +51,118 @@ function confirmPaste(lineCount) {
   });
 }
 
+// ---------- 串行控制台自动登录 ----------
+// Auto-login for the serial console: the boot root password is saved
+// per instance, so the console can log in as root by itself. The flow
+// watches the serial output for the getty prompts and types them:
+// "login:" -> "root", "Password:" -> saved password. If the password is
+// wrong (the user changed it after boot), it asks once for the modified
+// password and retries; a second failure leaves the console for manual
+// typing. 串行控制台自动登录：开机 root 密码按实例存着，控制台可以自
+// 己登录。流程是盯串口输出里的 getty 提示自动输入：看到 "login:" 发
+// "root"，看到 "Password:" 发保存的密码。密码不对（开机后改过）时问一
+// 次修改后的密码再试一次；第二次还不对就停手，让用户自己输。
+// The password is fetched from GET /api/instances/<id>/password (404
+// when not saved: auto-login stays off and the user types manually).
+// 密码从 GET /api/instances/<id>/password 取（没存返回 404：不自动登
+// 录，用户自己输）。
+async function fetchSavedRootPassword(instanceId) {
+  try {
+    const resp = await fetch(
+      `/api/instances/${encodeURIComponent(instanceId)}/password`);
+    if (!resp.ok) return null;
+    const body = await resp.json();
+    return body.root_password || null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function setupConsoleAutoLogin(tab, instanceId) {
+  tab.autoLogin = {
+    stage: 'idle', password: null, triedModified: false, buf: '',
+    resultTimer: null,
+  };
+  fetchSavedRootPassword(instanceId).then((pw) => {
+    if (tab.closed) return;
+    if (!pw) {
+      tab.term.write('\r\n\x1b[33m[未保存开机密码，请手动输入 root 及密码登录]\x1b[0m\r\n');
+      tab.autoLogin.stage = 'done';
+      return;
+    }
+    tab.autoLogin.password = pw;
+    tab.autoLogin.stage = 'wait-login';
+    // The login prompt may already be on screen (the poke "\r" was sent
+    // on connect); re-scan what arrived so far. 登录提示可能已经打出
+    // 来了（连上时已发过回车），把已收到的输出再扫一遍。
+    scanConsoleOutput(tab, '');
+  });
+}
+
+function sendConsoleInput(tab, data) {
+  if (tab.closed || !tab.ws || tab.ws.readyState !== WebSocket.OPEN) return;
+  tab.ws.send(JSON.stringify({ type: 'input', data }));
+}
+
+/** Scan new serial output for getty prompts and drive the auto-login state machine. 扫新到的串口输出，找 getty 提示并推进自动登录状态机。 */
+function scanConsoleOutput(tab, text) {
+  const al = tab.autoLogin;
+  if (!al || al.stage === 'done' || al.stage === 'idle') return;
+  // Keep only the tail (prompts are at the end; a full buffer would
+  // re-match old prompts). 只留尾巴（提示总在末尾；整段留着会反复命中旧提示）。
+  al.buf = (al.buf + text).slice(-2000);
+  const tail = al.buf.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
+  if (al.stage === 'wait-login') {
+    if (/(?:^|[\r\n])[^:\r\n]*login:\s*$/i.test(tail)) {
+      al.buf = '';
+      al.stage = 'wait-password';
+      sendConsoleInput(tab, 'root\r');
+    }
+  } else if (al.stage === 'wait-password') {
+    if (/password:\s*$/i.test(tail)) {
+      al.buf = '';
+      al.stage = 'wait-result';
+      sendConsoleInput(tab, al.password + '\r');
+      // If nothing says failure within 2.5s, assume the login worked.
+      // 2.5 秒内没出现失败信号，就当登录成功了。
+      clearTimeout(al.resultTimer);
+      al.resultTimer = setTimeout(() => {
+        if (tab.autoLogin && tab.autoLogin.stage === 'wait-result') {
+          tab.autoLogin.stage = 'done';
+          tab.term.write('\r\n\x1b[32m[已用保存的开机密码自动登录]\x1b[0m\r\n');
+        }
+      }, 2500);
+    }
+  } else if (al.stage === 'wait-result') {
+    if (/login incorrect/i.test(tail) || /(?:^|[\r\n])[^:\r\n]*login:\s*$/i.test(tail)) {
+      clearTimeout(al.resultTimer);
+      al.buf = '';
+      if (!al.triedModified) {
+        // First failure: the password was probably changed after boot;
+        // ask once for the modified password and retry. 第一次失败：
+        // 密码可能在开机后改过，问一次修改后的密码再试。
+        al.triedModified = true;
+        const modified = window.prompt(
+          '保存的开机密码登录失败（可能已改过），请输入修改后的 root 密码：');
+        if (modified) {
+          al.password = modified;
+          al.stage = 'wait-login';
+          // The login prompt is already on screen; poke it so the
+          // scanner sees it again. 登录提示已经在屏上了，发个回车让
+          // 扫描器重新看到它。
+          sendConsoleInput(tab, '\r');
+        } else {
+          al.stage = 'done';
+          tab.term.write('\r\n\x1b[33m[自动登录已取消，请手动输入 root 及密码登录]\x1b[0m\r\n');
+        }
+      } else {
+        al.stage = 'done';
+        tab.term.write('\r\n\x1b[31m[自动登录失败（密码不对），请手动输入 root 及密码登录]\x1b[0m\r\n');
+      }
+    }
+  }
+}
+
 // ---------- 终端管理器：每标签一个 xterm 实例 + 一条 WebSocket ----------
 class TerminalManager {
   constructor() {
@@ -61,7 +173,13 @@ class TerminalManager {
   }
 
   // ----- 标签页 -----
-  openTab(sessionId, label) {
+  // opts.console: serial-console tab (opened via ?session=, see the bottom
+  // of this file) — on the first WebSocket connect it sends one bare "\r"
+  // so getty prints the login prompt without the user having to press
+  // Enter first. opts.console：串行控制台标签（经 ?session= 打开，见本文件
+  // 底部）——首次 WS 连上时主动发一个回车，让 getty 直接打出 login 提示，
+  // 不用用户先按回车。
+  openTab(sessionId, label, opts) {
     const container = $('terminal-container');
     const pane = document.createElement('div');
     pane.className = 'terminal-pane';
@@ -84,9 +202,20 @@ class TerminalManager {
       term, fit, ws: null, label, el: pane,
       tabEl: this._createTabElement(sessionId, label),
       reconnects: 0, closed: false,
+      isConsole: !!(opts && opts.console),
+      consolePoked: false,
+      autoLogin: null,
     };
     this.tabs.set(sessionId, tab);
     this.switchTab(sessionId);
+    // Serial console auto-login: the instance OCID comes in opts (see the
+    // ?session= handler at the bottom); fetch the saved boot root password
+    // and type the login prompts automatically. 串行控制台自动登录：实
+    // 例 OCID 从 opts 传进来（见底部 ?session= 处理），取保存的开机 root
+    // 密码自动输登录提示。
+    if (tab.isConsole && opts && opts.instanceId) {
+      setupConsoleAutoLogin(tab, opts.instanceId);
+    }
 
     // Keyboard input: single chars are sent directly; multi-line content (paste) goes through paste protection. 键盘输入：单字符直接发；多行内容（粘贴）走粘贴保护。
     // Note: xterm.js paste arrives via onData as one whole block, unlike per-key typing, so checking "contains multiple lines" in onData is enough to catch multi-line pastes. 说明：xterm.js 的粘贴经 onData 以整块文本到达，区别于逐字按键，因此在 onData 里按“是否含多行”判断即可拦截多行粘贴。
@@ -192,13 +321,32 @@ class TerminalManager {
       ws.send(JSON.stringify({
         type: 'resize', cols: tab.term.cols, rows: tab.term.rows,
       }));
+      // Serial console: nudge getty once so the login prompt appears
+      // without the user typing. Only on the first connect, never on a
+      // reconnect (a bare "\r" at a shell prompt is harmless, but at a
+      // login prompt it would submit an empty username, and mid-login it
+      // could submit an empty password). 串行控制台：首次连上时发一个回车
+      // 唤出 login 提示；重连时不再发（shell 下回车无害，但 login 提示下会
+      // 提交空用户名、登录途中会提交空密码）。
+      if (tab.isConsole && !tab.consolePoked) {
+        tab.consolePoked = true;
+        ws.send(JSON.stringify({ type: 'input', data: '\r' }));
+      }
     };
 
     ws.onmessage = (event) => {
       let msg;
       try { msg = JSON.parse(event.data); } catch (e) { return; }
       if (msg.type === 'output' && msg.data) {
-        tab.term.write(b64ToBytes(msg.data));
+        const bytes = b64ToBytes(msg.data);
+        tab.term.write(bytes);
+        // Serial console auto-login: scan the output for getty prompts.
+        // 串行控制台自动登录：扫输出里的 getty 提示。
+        if (tab.isConsole && tab.autoLogin) {
+          let text = '';
+          try { text = new TextDecoder('utf-8', { fatal: false }).decode(bytes); } catch (e) { /* binary output: ignore */ }
+          if (text) scanConsoleOutput(tab, text);
+        }
       } else if (msg.type === 'closed') {
         tab.term.write(`\r\n\x1b[1;31m[SSH 会话已断开：${msg.reason || ''}]\x1b[0m\r\n`);
         tab.tabEl.classList.add('disconnected');
@@ -1168,8 +1316,14 @@ document.addEventListener('DOMContentLoaded', () => {
   // Serial console direct connect: /terminal?session=<id>&label=...
   // (the session was already created by POST /api/ssh/connect-console,
   // so just open its tab). 串行控制台直连：会话已由后端建好，直接开标签。
+  // Pass console: true so the tab pokes getty once on connect and the
+  // login prompt shows without the user pressing Enter first.
   const _sessionId = _params.get('session');
   if (_sessionId) {
-    mgr.openTab(_sessionId, _params.get('label') || '串行控制台');
+    // Pass the instance OCID (from ?console_instance=, set by the console
+    // direct-connect button) so the tab can auto-login with the saved
+    // boot root password. 把实例 OCID（?console_instance=，控制台直连
+    // 按钮带的）传进去，让标签能用保存的开机 root 密码自动登录。
+    mgr.openTab(_sessionId, _params.get('label') || '串行控制台', { console: true, instanceId: _params.get('console_instance') || null });
   }
 });

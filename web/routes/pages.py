@@ -25,6 +25,21 @@ _TEMPLATES_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "templates")
 templates = Jinja2Templates(directory=_TEMPLATES_DIR)
 
+
+def _read_app_version():
+    """读项目根目录的 VERSION 文件返回版本号（如 "2.24.0"）；读不到返回空字符串。"""
+    try:
+        version_path = os.path.join(
+            os.path.dirname(os.path.dirname(_TEMPLATES_DIR)), "VERSION")
+        with open(version_path, encoding="utf-8") as f:
+            return f.read().strip()
+    except Exception:
+        return ""
+
+
+# 当前版本号（顶栏显示，见 base.html 的 logo-version；VERSION 文件改了重启 web 即更新）。
+APP_VERSION = _read_app_version()
+
 # A minimal placeholder page when a template is missing (no longer used once the frontend templates are in place). 模板缺失时的最小占位页面（前端模板到位后不再用到）。
 _PLACEHOLDER_HTML = """<!DOCTYPE html>
 <html lang="zh-CN">
@@ -60,6 +75,8 @@ def _render(request, name, title, context=None):
         "title": title,
         "current_page": os.path.splitext(os.path.basename(name))[0],
         "username": _current_username(request),
+        # 当前版本号（顶栏 logo 后显示，见 base.html 的 logo-version）。
+        "app_version": APP_VERSION,
         # Demo mode flag: templates show a "演示模式" badge when on.
         # 演示模式标记：开启时模板显示“演示模式”角标。
         "demo_mode": config.DEMO_MODE,

@@ -6,7 +6,7 @@ Netboot 向导 / 前置检查 / 控制台连接管理。
 Web 与 Bot 两端共用。所有函数都接受一个 oci.client.OCIClient
 对象作为第一个参数，真实 OCI 调用走 mock 友好的 cli.run()。
 
-ARM 实测结论（2026-01-02，测试机 ARM_2026-01-02），本模块按实测写：
+ARM 实测结论（2026-11-25，ARM 测试机），本模块按实测写：
   - 安全恢复（先建后删）通：备份 → 恢复盘 → 原生换盘 → 删旧盘。
   - 无盘实例原地救回没有路：直接启动 409、从镜像建盘无此 API、
     恢复盘/克隆盘 attach 一律 409、无盘时原生换盘 400。
@@ -195,10 +195,10 @@ def plan_diskless_rescue(cli, compartment_id, instance_id):
     name = detail.get("display-name") or instance_id
     # No in-place rescue path exists for a diskless instance: attach of a
     # restored/cloned boot volume is always rejected with 409 and the native
-    # swap API returns 400 without a mounted volume (ARM test 2026-01-02).
+    # swap API returns 400 without a mounted volume (ARM test 2026-11-25).
     # The only way out is to rebuild a new instance from a backup.
     # 无盘实例没有原地救回的路：恢复盘/克隆盘 attach 一律 409，原生换盘
-    # 在无盘时 400（2026-01-02 ARM 实测），唯一出路是从备份新建实例。
+    # 在无盘时 400（2026-11-25 ARM 实测），唯一出路是从备份新建实例。
     if has_boot_volume:
         message = (f"实例「{name}」当前挂着启动盘，不需要无盘救机。"
                    "系统砖了请走 Netboot 向导；要恢复系统请走安全恢复。")

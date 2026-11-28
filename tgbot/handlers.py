@@ -37,6 +37,7 @@ from tgbot import i18n as bot_i18n
 from tgbot import menu_tracker
 from tgbot.cpu_model import (cached_cpu_model, delete_cpu_model,
                              get_cpu_model, host_for_ip)
+from tgbot.os_version import cached_os_version, get_os_version
 from tgbot.instance_credentials import delete_credential, get_root_password
 from tgbot.handlers_client import run_remote_command
 from tgbot.i18n import lang_of, set_lang_context, toggle_user_lang
@@ -551,6 +552,13 @@ async def _refresh_cpu_model_later(context, query, instance_id, host,
     except Exception as exc:  # noqa: BLE001 - 检测失败只记日志
         logger.warning("后台查 CPU 型号失败：%s", exc)
         model = None
+    # 系统版本：同一轮后台刷新里一起取（读缓存，未命中再 SSH 检测一次）。
+    try:
+        os_version = await run_sync(get_os_version, instance_id, host,
+                                    run_remote_command)
+    except Exception as exc:  # noqa: BLE001 - 检测失败只记日志
+        logger.warning("后台查系统版本失败：%s", exc)
+        os_version = cached_os_version(instance_id)
     message = getattr(query, "message", None)
     message_id = getattr(message, "message_id", None)
     pending = context.user_data.get(_CPU_PENDING_KEY) or {}
@@ -560,7 +568,8 @@ async def _refresh_cpu_model_later(context, query, instance_id, host,
     try:
         await query.edit_message_text(
             fmt_instance_detail(detail, public_ip, model, lang=lang,
-                                root_password=get_root_password(instance_id)),
+                                root_password=get_root_password(instance_id),
+                                os_version=os_version),
             reply_markup=instance_actions_keyboard(int(idx), state,
                                                    lang=lang),
             parse_mode="HTML")
@@ -632,9 +641,12 @@ async def instance_detail_callback(update: Update,
                 pending_cpu = True
     display_model = (bot_i18n.t(lang, "common.detecting")
                      if pending_cpu else cpu_model)
+    # 系统版本：先读缓存；未命中时后台 CPU 刷新那一轮会一起取到。
+    os_version = cached_os_version(instance_id)
     await menu_tracker.safe_edit(query,
         fmt_instance_detail(detail, public_ip, display_model, lang=lang,
-                            root_password=get_root_password(instance_id)),
+                            root_password=get_root_password(instance_id),
+                            os_version=os_version),
         reply_markup=instance_actions_keyboard(int(idx), state,
                                                lang=lang),
         parse_mode="HTML")

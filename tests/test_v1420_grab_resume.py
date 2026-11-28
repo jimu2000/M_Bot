@@ -10,6 +10,7 @@
   部分失败三种情况）。
 """
 
+import fcntl
 import os
 import shutil
 import stat
@@ -44,6 +45,21 @@ def _wait_for(predicate, timeout=5.0, interval=0.05):
     return predicate()
 
 
+def _reset_grab_resume_lock():
+    """Close and clear web_tasks' module-level grab-resume lock fd.
+
+    Test isolation only: the lock fd is held for the process lifetime
+    by design, so tests must reset it between resume cases.
+    """
+    fd = web_tasks._GRAB_RESUME_LOCK_FD
+    web_tasks._GRAB_RESUME_LOCK_FD = None
+    if fd is not None:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+
 class _TempTasksFile(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -59,6 +75,12 @@ class _TempTasksFile(unittest.TestCase):
         self.addCleanup(self._cred_patch.stop)
 
     def tearDown(self):
+        # Reset the module-level grab-resume lock between tests: a
+        # resume test holds the flock fd in web_tasks for the process
+        # lifetime, which would make later resume tests skip.
+        # 恢复锁是模块级、进程内常驻的，测试之间要复位，否则后
+        # 面的恢复测试会因拿不到锁而跳过。
+        _reset_grab_resume_lock()
         # The resume path runs a background thread that can still be
         # flushing the task file when tearDown runs; plain cleanup()
         # then fails spuriously with OSError: Directory not empty.
@@ -122,7 +144,7 @@ class TestNotifyOutcomeLoggedWeb(_TempTasksFile):
         super().setUp()
         self.registry = WebRegistry(tasks_file=self.path)
         self.task_id = self.registry.create("grab", detail="抢机测试")
-        self.params = {"display_name": "AMD_2026-01-02",
+        self.params = {"display_name": "AMD_2026-11-25",
                        "shape": "VM.Standard.E2.1.Micro",
                        "ocpus": 1, "memory_gb": 1,
                        "boot_volume_size_gbs": 47}
@@ -171,7 +193,7 @@ class TestNotifyOutcomeLoggedBot(_TempTasksFile):
         self._tasks.start()
         self.addCleanup(self._tasks.stop)
         self.task_id = self.tasks.register("grab", detail="抢机测试")
-        self.preset = {"display_name": "ARM_2026-01-01", "count": 1,
+        self.preset = {"display_name": "ARM_2026-11-24", "count": 1,
                        "shape": "VM.Standard.A1.Flex",
                        "boot_volume_size_gbs": 47}
         self.notify = {"token": "T", "chat_id": 654321,
@@ -219,7 +241,7 @@ class TestGrabSpecWritten(_TempTasksFile):
         tasks = BotRegistry(tasks_file=self.path)
         with patch.object(he, "TASKS", tasks):
             task_id = tasks.register("grab", detail="抢机测试")
-            preset = {"display_name": "ARM_2026-01-01",
+            preset = {"display_name": "ARM_2026-11-24",
                       "shape": "VM.Standard.A1.Flex",
                       "availability_domain": "AD-1", "image_id": "img",
                       "subnet_id": "subnet", "ocpus": 1, "memory_gb": 6,
@@ -248,7 +270,7 @@ class TestGrabSpecWritten(_TempTasksFile):
         self.assertEqual(spec["profile"], "DEFAULT")
         self.assertEqual(spec["region"], "ap-singapore-1")
         self.assertEqual(spec["compartment_id"], "comp")
-        self.assertEqual(spec["params"]["display_name"], "ARM_2026-01-01")
+        self.assertEqual(spec["params"]["display_name"], "ARM_2026-11-24")
         self.assertEqual(spec["params"]["shape"], "VM.Standard.A1.Flex")
         self.assertEqual(spec["notify"]["chat_id"], 654321)
         self.assertEqual(spec["notify"]["root_password"], "pw" + "123")
@@ -263,7 +285,7 @@ class TestGrabSpecWritten(_TempTasksFile):
     def test_web_thread_writes_spec(self):
         registry = WebRegistry(tasks_file=self.path)
         task_id = registry.create("grab", detail="抢机测试")
-        params = {"display_name": "AMD_2026-01-02",
+        params = {"display_name": "AMD_2026-11-25",
                   "shape": "VM.Standard.E2.1.Micro",
                   "availability_domain": "AD-1", "image_id": "img",
                   "subnet_id": "subnet", "ocpus": 1, "memory_gb": 1,
@@ -307,7 +329,7 @@ class TestPublicRecordStripsSpec(_TempTasksFile):
             self.path, "web", "grab", detail="抢机测试", status="running")
         spec = task_store.build_grab_spec(
             "DEFAULT", "ap-singapore-1", "comp",
-            {"display_name": "ARM_2026-01-01",
+            {"display_name": "ARM_2026-11-24",
              "shape": "VM.Standard.A1.Flex"},
             {"chat_id": 1, "root_password": "pw" + "123"})
         task_store.update_record(self.path, record["id"],
@@ -336,7 +358,7 @@ class TestResumeGrabs(_TempTasksFile):
                            kind="grab"):
         record = task_store.create_record(
             self.path, origin, kind, detail="抢机测试", status="running")
-        params = {"display_name": "ARM_2026-01-01",
+        params = {"display_name": "ARM_2026-11-24",
                   "shape": "VM.Standard.A1.Flex",
                   "availability_domain": "AD-1", "image_id": "img",
                   "subnet_id": "subnet", "ocpus": 1, "memory_gb": 6,
@@ -384,7 +406,7 @@ class TestResumeGrabs(_TempTasksFile):
         grabber_cls = mocks[0]
         # Grab only the 1 remaining instance (count=2, 1 already grabbed); the name continues the numbering with -2. 只抢剩余 1 台（count=2，已抢 1 台），名字接着编号 -2。
         self.assertEqual(grabber_cls.call_count, 1)
-        self.assertEqual(grabber_cls.call_args[0][6], "ARM_2026-01-01-2")
+        self.assertEqual(grabber_cls.call_args[0][6], "ARM_2026-11-24-2")
         record = task_store.get_record(self.path, task_id)
         self.assertEqual(len(record["grab_spec"]["successes"]), 2)
         logs = "\n".join(record.get("logs", []))
@@ -433,7 +455,7 @@ class TestWebResumeGrabs(_TempTasksFile):
         registry = WebRegistry(tasks_file=self.path)
         record = task_store.create_record(
             self.path, "web", "grab", detail="抢机测试", status="running")
-        params = {"display_name": "AMD_2026-01-02",
+        params = {"display_name": "AMD_2026-11-25",
                   "shape": "VM.Standard.E2.1.Micro",
                   "availability_domain": "AD-1", "image_id": "img",
                   "subnet_id": "subnet", "ocpus": 1, "memory_gb": 1,
@@ -466,6 +488,41 @@ class TestWebResumeGrabs(_TempTasksFile):
         record = task_store.get_record(self.path, record["id"])
         logs = "\n".join(record.get("logs", []))
         self.assertIn("🔄 重启后恢复抢机", logs)
+
+    def test_second_worker_skips_resume_when_lock_held(self):
+        """多 worker：另一 worker 已拿恢复锁时，本 worker 跳过恢复。
+
+        uvicorn --workers N 时每个 worker 都跑 lifespan；若都恢复
+        同一抢机任务，会拉起 N 个重复线程（抢到时可能重复建机）。
+        模拟另一 worker 已持有锁文件：本 worker 的 resume 应直接
+        返回，Grabber 一次也不调，任务状态保持 running 不动。
+        """
+        _reset_grab_resume_lock()
+        registry = WebRegistry(tasks_file=self.path)
+        record = task_store.create_record(
+            self.path, "web", "grab", detail="抢机测试", status="running")
+        params = {"display_name": "AMD_2026-11-25",
+                  "shape": "VM.Standard.E2.1.Micro",
+                  "availability_domain": "AD-1", "image_id": "img",
+                  "subnet_id": "subnet", "ocpus": 1, "memory_gb": 1,
+                  "boot_volume_size_gbs": 47}
+        spec = task_store.build_grab_spec(
+            "ACCOUNT2", "us-sanjose-1", "comp", params,
+            {"chat_id": 654321, "root_password": "pw" + "123"})
+        task_store.update_record(self.path, record["id"],
+                                 fields={"grab_spec": spec})
+        # Hold the resume lock as another worker would.
+        lock_path = os.path.join(os.path.dirname(self.path),
+                                 ".grab_resume.lock")
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+        self.addCleanup(os.close, fd)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with patch.object(web_tasks, "Grabber") as grabber_cls:
+            web_tasks.resume_interrupted_grabs(registry)
+        grabber_cls.assert_not_called()
+        self.assertEqual(
+            task_store.get_record(self.path, record["id"])["status"],
+            "running")
 
 
 class TestUserDataFileRecreated(unittest.TestCase):

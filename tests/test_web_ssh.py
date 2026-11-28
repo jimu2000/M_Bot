@@ -263,6 +263,87 @@ class TestSSHSessionManager(unittest.TestCase):
             mgr.stop()
 
 
+class TestConsoleSessionReuse(unittest.TestCase):
+    """串行控制台会话按实例幂等（Bug 1）：同一实例第二次创建直接复用
+    已活着的会话，不再新开 SSH 连接——OCI 每个控制台连接只允许一个
+    SSH 客户端，第二个拨号会把第一个踢掉（"Another ssh client has
+    connected."）。"""
+
+    CONSOLE_HOST = "instance-console.ap-singapore-1.oci.oraclecloud.com"
+    CONN_OCID = "ocid1.instanceconsoleconnection.oc1..consoletest"
+    INST_A = "ocid1.instance.oc1..consoletest-a"
+    INST_B = "ocid1.instance.oc1..consoletest-b"
+
+    def setUp(self):
+        self._session_patch = patch("web.ssh.SSHSession")
+        mock_cls = self._session_patch.start()
+        self.addCleanup(self._session_patch.stop)
+        self.mock_session = mock_cls.return_value
+        self.mock_session.connect.return_value = "BANNER\nline2\n"
+        self.mock_session.connect_console.return_value = "CONSOLE BANNER\n"
+        self.mock_session.is_active.return_value = True
+        self.mgr = SSHSessionManager(start_cleanup_thread=False)
+
+    def _create(self, instance_id):
+        return self.mgr.create_console_session(
+            self.CONSOLE_HOST, 443, self.CONN_OCID, instance_id)
+
+    def test_reuses_live_session_for_same_instance(self):
+        sid1 = self._create(self.INST_A)
+        sid2 = self._create(self.INST_A)
+        # Same session id, and the SSH dial happened only once.
+        # 同一个 session_id，且只拨号一次。
+        self.assertEqual(sid1, sid2)
+        self.assertEqual(self.mock_session.connect_console.call_count, 1)
+        self.assertEqual(len(self.mgr.list_sessions()), 1)
+        self.assertEqual(self.mgr.get(sid1)["kind"], "console")
+
+    def test_different_instances_create_separate_sessions(self):
+        sid_a = self._create(self.INST_A)
+        sid_b = self._create(self.INST_B)
+        self.assertNotEqual(sid_a, sid_b)
+        self.assertEqual(self.mock_session.connect_console.call_count, 2)
+        self.assertEqual(len(self.mgr.list_sessions()), 2)
+
+    def test_dead_session_is_replaced(self):
+        sid1 = self._create(self.INST_A)
+        self.mock_session.is_active.return_value = False
+        sid2 = self._create(self.INST_A)
+        # Dead session dropped, a fresh dial replaces it.
+        # 已死的会话被摘掉，重新拨号建一个。
+        self.assertNotEqual(sid1, sid2)
+        self.assertEqual(self.mock_session.connect_console.call_count, 2)
+        self.assertIsNone(self.mgr.get(sid1))
+        self.assertIsNotNone(self.mgr.get(sid2))
+
+    def test_concurrent_double_call_dials_once(self):
+        # Two threads racing the same double-click: the lock must serialize
+        # them so only one dials and both get the same session id.
+        # 两个线程模拟重复点击：锁保证只有一个拨号，两边拿到同一个 session_id。
+        def slow_console(*args, **kwargs):
+            time.sleep(0.2)
+            return "CONSOLE BANNER\n"
+        self.mock_session.connect_console.side_effect = slow_console
+        results = []
+
+        def _call():
+            results.append(self._create(self.INST_A))
+
+        threads = [threading.Thread(target=_call) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(results[0], results[1])
+        self.assertEqual(self.mock_session.connect_console.call_count, 1)
+        self.assertEqual(len(self.mgr.list_sessions()), 1)
+
+    def test_regular_session_kind_is_ssh(self):
+        sid = self.mgr.create_session(TEST_HOST, 22, "root", password="x")
+        self.assertEqual(self.mgr.get(sid)["kind"], "ssh")
+        self.assertEqual(self.mgr.list_sessions()[0]["kind"], "ssh")
+
+
 class TestLoadHosts(unittest.TestCase):
     def test_load_hosts_and_get_host(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -534,7 +615,7 @@ class TestParseConsoleConnectionString(unittest.TestCase):
         self.assertEqual(instance_id, "ocid1.instance.oc1..consoletest")
 
     def test_proxycommand_form_with_regional_ocid(self):
-        # Regression (smoke test 2026-01-05): real OCI instance OCIDs
+        # Regression (smoke test 2026-11-28): real OCI instance OCIDs
         # carry a region (ocid1.instance.oc1.ap-singapore-1.<id>); the
         # parser must extract it, not reject the string with a 400.
         host, port, username, instance_id = \

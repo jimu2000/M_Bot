@@ -279,6 +279,16 @@ class TestFmtInstanceDetail(unittest.TestCase):
         self.assertIn("CPU 型号：AMD EPYC 7J13", text)
         self.assertIn("规格：E2.1.Micro（1 核 / 1GB）永久免费", text)
 
+    def test_os_version_shown_below_cpu_model(self):
+        text = fmt_instance_detail(self._detail(), FAKE_IP, "AMD EPYC 7J13",
+                                   os_version="Debian 13.7")
+        self.assertIn("系统版本：Debian 13.7", text)
+        self.assertLess(text.index("CPU 型号"), text.index("系统版本"))
+
+    def test_os_version_unknown_when_none(self):
+        text = fmt_instance_detail(self._detail(), FAKE_IP, "AMD EPYC 7J13")
+        self.assertIn("系统版本：未知", text)
+
     def test_cpu_model_unknown_when_none(self):
         text = fmt_instance_detail(self._detail(), FAKE_IP)
         self.assertIn("CPU 型号：未知", text)

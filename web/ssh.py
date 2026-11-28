@@ -435,8 +435,10 @@ class SSHSession:
 class SSHSessionManager:
     """线程安全的 SSH 会话字典 + 空闲清理后台线程。
 
-    每条记录：{session, host, port, username, host_id, created_at,
+    每条记录：{session, host, port, username, host_id, kind, created_at,
     last_active, output_buffer(deque), ws_connected, disconnected_at}
+    （kind 是 "ssh" 或 "console"，见 create_session /
+    create_console_session）。
     """
 
     def __init__(self, start_cleanup_thread: bool = True):
@@ -488,6 +490,12 @@ class SSHSessionManager:
                 "port": port,
                 "username": username,
                 "host_id": host_id,
+                # Session kind: "ssh" (regular host login) or "console"
+                # (OCI serial console). The console dedupe in
+                # create_console_session only ever reuses kind == "console".
+                # 会话类型：ssh（常规主机登录）或 console（OCI 串行控制台）；
+                # create_console_session 的复用只认 console 类型。
+                "kind": "ssh",
                 "created_at": now,
                 "last_active": now,
                 "output_buffer": output_buffer,
@@ -507,28 +515,61 @@ class SSHSessionManager:
         """新建串行控制台会话（两阶段直连，见 SSHSession.connect_console），
         返回 session_id（uuid4）。
 
-        超过 MAX_SESSIONS 抛 RuntimeError；连接失败抛 paramiko 异常。
-        会话记录里的 host 是控制台端点，username 是连接 OCID，
-        host_id 是实例 OCID。
+        同一实例幂等：OCI 串行控制台每个连接只允许一个 SSH 客户端，
+        第二个客户端连上来会把第一个踢掉（控制台端点报 "Closing
+        connection. Another ssh client has connected."），所以先查
+        有没有该实例还活着的控制台会话，有就直接复用它的 session_id，
+        不再新开 SSH 连接。检查 + 拨号 + 入库全程持锁，两个并发的
+        POST 也不可能同时拨号。已死（SSH 断了）的同实例控制台会话
+        先摘掉再重建。超过 MAX_SESSIONS 抛 RuntimeError；连接失败抛
+        paramiko 异常。会话记录里的 host 是控制台端点，username 是
+        连接 OCID，host_id 是实例 OCID，kind 是 "console"。
         """
         with self._lock:
+            # Reuse a live console session for this instance (OCI allows
+            # only one SSH client per console connection; a second dial
+            # would kick the first). Dead same-instance console sessions
+            # are dropped so the dial below replaces them. The lock is
+            # held across check + dial + insert so two concurrent POSTs
+            # cannot both dial. 复用该实例还活着的控制台会话（OCI 每个控
+            # 制台连接只允许一个 SSH 客户端，第二个拨号会把第一个踢掉）；
+            # 已死的同实例会话先摘掉；全程持锁，两个并发 POST 也不会同时拨号。
+            for sid, entry in list(self._sessions.items()):
+                if entry.get("kind") != "console":
+                    continue
+                if entry.get("host_id") != instance_id:
+                    continue
+                if entry["session"].is_active():
+                    entry["last_active"] = datetime.now(timezone.utc)
+                    logger.info("串行控制台会话已存在，复用：%s（实例 %s）",
+                                sid, instance_id)
+                    return sid
+                # Dead console session for this instance: drop it (close
+                # the SSH objects here; close() only touches paramiko
+                # objects and never takes the manager lock). 已死的同实例
+                # 控制台会话：摘掉（close 只碰 paramiko 对象，不拿管理器锁）。
+                self._sessions.pop(sid, None)
+                try:
+                    entry["session"].close()
+                except Exception:
+                    pass
             if len(self._sessions) >= MAX_SESSIONS:
                 raise RuntimeError(f"SSH 会话已满（{MAX_SESSIONS} 个），请先关闭一些")
-        session = SSHSession()
-        banner = session.connect_console(host, port, connection_ocid,
-                                         instance_id, key_path=key_path,
-                                         cols=cols, rows=rows)
-        session_id = str(uuid.uuid4())
-        now = datetime.now(timezone.utc)
-        output_buffer = deque(maxlen=OUTPUT_BUFFER_LINES)
-        output_buffer.extend(banner.splitlines(keepends=True))
-        with self._lock:
+            session = SSHSession()
+            banner = session.connect_console(host, port, connection_ocid,
+                                             instance_id, key_path=key_path,
+                                             cols=cols, rows=rows)
+            session_id = str(uuid.uuid4())
+            now = datetime.now(timezone.utc)
+            output_buffer = deque(maxlen=OUTPUT_BUFFER_LINES)
+            output_buffer.extend(banner.splitlines(keepends=True))
             self._sessions[session_id] = {
                 "session": session,
                 "host": host,
                 "port": port,
                 "username": connection_ocid,
                 "host_id": instance_id,
+                "kind": "console",
                 "created_at": now,
                 "last_active": now,
                 "output_buffer": output_buffer,
@@ -537,9 +578,9 @@ class SSHSessionManager:
                 "sftp": None,
                 "sftp_home": None,
             }
-        logger.info("串行控制台会话建立：%s -> %s@%s:%s（实例 %s）",
-                    session_id, connection_ocid, host, port, instance_id)
-        return session_id
+            logger.info("串行控制台会话建立：%s -> %s@%s:%s（实例 %s）",
+                        session_id, connection_ocid, host, port, instance_id)
+            return session_id
 
     def get(self, session_id: str):
         """取一条会话记录（含 session 对象），不存在返回 None。"""
@@ -577,6 +618,9 @@ class SSHSessionManager:
                 "port": entry["port"],
                 "username": entry["username"],
                 "host_id": entry["host_id"],
+                # "ssh" or "console"; old records (and test stubs) may lack
+                # it, default to "ssh". 新老记录都可能没有 kind，缺省按 ssh。
+                "kind": entry.get("kind", "ssh"),
                 "created_at": entry["created_at"].isoformat(),
                 "last_active": entry["last_active"].isoformat(),
                 "active": entry["session"].is_active(),

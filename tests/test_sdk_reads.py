@@ -92,7 +92,7 @@ def _instance(state="RUNNING", shape="VM.Standard.A1.Flex",
         "availability-domain": FAKE_AD,
         "shape": shape,
         "shape-config": {"ocpus": ocpus, "memory-in-gbs": memory_gb},
-        "time-created": "2026-01-01T10:00:00.000Z",
+        "time-created": "2026-11-24T10:00:00.000Z",
     }
 
 
@@ -103,7 +103,7 @@ def _volume(volume_id=FAKE_BV, size=47, state="AVAILABLE"):
         "size-in-gbs": size,
         "lifecycle-state": state,
         "availability-domain": FAKE_AD,
-        "time-created": "2026-01-01T10:00:00.000Z",
+        "time-created": "2026-11-24T10:00:00.000Z",
     }
 
 
@@ -116,7 +116,7 @@ def _backup(backup_id=FAKE_BACKUP, state="AVAILABLE"):
         "lifecycle-state": state,
         "source-type": "MANUAL",
         "type": "FULL",
-        "time-created": "2026-01-01T10:00:00.000Z",
+        "time-created": "2026-11-24T10:00:00.000Z",
     }
 
 
@@ -157,11 +157,11 @@ def _mock_cli():
     cli.sdk_get_namespace.return_value = FAKE_NAMESPACE
     cli.sdk_list_buckets.return_value = [{
         "name": FAKE_BUCKET, "namespace": FAKE_NAMESPACE,
-        "time-created": "2026-01-01T10:00:00.000Z",
+        "time-created": "2026-11-24T10:00:00.000Z",
     }]
     cli.sdk_list_objects.return_value = [{
         "name": "backup-1.tar.gz", "size": 1234,
-        "time-created": "2026-01-01T10:00:00.000Z",
+        "time-created": "2026-11-24T10:00:00.000Z",
     }]
     cli.sdk_list_boot_volume_backups.return_value = [_backup()]
     cli.sdk_get_boot_volume_backup.return_value = _backup()
@@ -191,7 +191,7 @@ def _mock_cli():
         "id": FAKE_CONNECTION, "instance-id": FAKE_INSTANCE,
         "connection-string": "ssh ...",
         "lifecycle-state": "ACTIVE",
-        "time-created": "2026-01-01T10:00:00.000Z",
+        "time-created": "2026-11-24T10:00:00.000Z",
     }]
     cli.sdk_get_instance_console_connection.return_value = {
         "id": FAKE_CONNECTION, "instance-id": FAKE_INSTANCE,
@@ -205,7 +205,7 @@ def _mock_cli():
     cli.sdk_list_api_keys.return_value = [{
         "fingerprint": "aa:bb:cc",
         "lifecycle-state": "ACTIVE",
-        "time-created": "2026-01-01T10:00:00.000Z",
+        "time-created": "2026-11-24T10:00:00.000Z",
     }]
     cli.sdk_list_users.return_value = [{
         "id": FAKE_USER, "name": "api_user",
@@ -215,7 +215,7 @@ def _mock_cli():
         "id": "ocid1.emailsender.oc1..eeee",
         "email-address": "noreply@example.com",
         "lifecycle-state": "ACTIVE",
-        "time-created": "2026-01-01T10:00:00.000Z",
+        "time-created": "2026-11-24T10:00:00.000Z",
     }]
     return cli
 
@@ -346,7 +346,7 @@ class TestModelToDict(unittest.TestCase):
         self.assertEqual(d["shape-config"]["ocpus"], 1)
         # 时间已转成 ISO 字符串。
         self.assertIsInstance(d["time-created"], str)
-        self.assertTrue(d["time-created"].startswith("2026-01-01"))
+        self.assertTrue(d["time-created"].startswith("2026-11-24"))
 
     def test_boot_volume_model_keeps_vpus(self):
         sdk = _load_sdk()
@@ -456,7 +456,7 @@ class TestSdkErrorMapping(unittest.TestCase):
 class TestSdkCallSignatures(unittest.TestCase):
     """回归：SDK 方法的真实签名必须接受我们传参的方式。
 
-    教训（2026-01-02）：BlockstorageClient.list_boot_volumes /
+    教训（2026-11-25）：BlockstorageClient.list_boot_volumes /
     list_volumes 的真实签名是 (self, **kwargs)，compartment_id 只能
     关键字传；mock 测试拦不住这种签名不匹配，.160 上线后报 500 才发现。
     这里直接对真实 SDK 的方法做 inspect.signature 断言。

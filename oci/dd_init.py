@@ -20,6 +20,7 @@ SSH 用 Paramiko 密码认证（DD 阶段只有密码可用）。
 """
 
 import logging
+import os
 import threading
 import time
 
@@ -120,6 +121,117 @@ def _is_debian13(client):
             key, _, value = line.partition("=")
             fields[key.strip()] = value.strip().strip('"')
     return fields.get("ID") == "debian" and fields.get("VERSION_ID") == "13"
+
+
+def upload_files(public_ip, password, files, port=DD_SSH_PORT,
+                 timeout=SSH_CONNECT_TIMEOUT):
+    """DD 完成后用 root 密码 SSH（SFTP）把文件传到实例上。
+
+    files 是列表，每项是 dict：{"local": 本地路径, "remote": 目标路径,
+    "mode": 权限（可选，默认 0644）} 或 {"content": 文本内容,
+    "remote": 目标路径, "mode": 权限（可选）}。DD 初始化脚本要用的
+    文件（流量看门狗、安全守护脚本、自动升级脚本、Bark 配置）靠这个
+    传上去，而不是把大段代码塞进初始化脚本字符串里。
+    返回 (uploaded_count, error_or_None)。
+    """
+    if not files:
+        return 0, None
+    try:
+        client = _ssh_connect(public_ip, port, password, timeout=timeout)
+    except Exception as exc:  # noqa: BLE001 - 连不上就报给调用方
+        return 0, f"SSH 连接失败：{exc}"
+    try:
+        sftp = client.open_sftp()
+    except Exception as exc:  # noqa: BLE001 - SFTP 打不开就报给调用方
+        try:
+            client.close()
+        except Exception:  # noqa: BLE001 - 关闭失败忽略
+            pass
+        return 0, f"SFTP 打开失败：{exc}"
+    uploaded = 0
+    try:
+        for entry in files:
+            remote = entry.get("remote")
+            mode = entry.get("mode", 0o644)
+            if not remote:
+                continue
+            try:
+                if "content" in entry:
+                    # Write content via a temp file (SFTP has no direct
+                    # write-string). 内容经临时文件写（SFTP 没有直接写字符串）。
+                    import tempfile
+                    fd, tmp = tempfile.mkstemp()
+                    try:
+                        with os.fdopen(fd, "w", encoding="utf-8") as f:
+                            f.write(entry["content"])
+                        sftp.put(tmp, remote)
+                    finally:
+                        try:
+                            os.unlink(tmp)
+                        except OSError:
+                            pass
+                else:
+                    sftp.put(entry["local"], remote)
+                try:
+                    sftp.chmod(remote, mode)
+                except Exception:  # noqa: BLE001 - chmod 失败不阻断
+                    pass
+                uploaded += 1
+            except Exception as exc:  # noqa: BLE001 - 单个文件失败就停
+                return uploaded, f"传文件 {remote} 失败：{exc}"
+        return uploaded, None
+    finally:
+        try:
+            sftp.close()
+        except Exception:  # noqa: BLE001 - 关闭失败忽略
+            pass
+        try:
+            client.close()
+        except Exception:  # noqa: BLE001 - 关闭失败忽略
+            pass
+    """DD 完成后用 root 密码 SSH 进去，把公钥追加到 authorized_keys。
+
+    DD 会抹掉开机时 cloud-init 塞的 SSH 公钥（只剩 root 密码能登），
+    不补回去看门狗 / CPU 检测 / 一键 SSH 全都连不上。幂等地追加
+    （已在文件里的跳过）；返回 (added_count, error_or_None)。
+    keys 是公钥字符串列表（用户 keys + guard 公钥）。
+    """
+    keys = [k.strip() for k in (keys or []) if k and k.strip()]
+    if not keys:
+        return 0, None
+    try:
+        client = _ssh_connect(public_ip, port, password, timeout=timeout)
+    except Exception as exc:  # noqa: BLE001 - 连不上就报给调用方
+        return 0, f"SSH 连接失败：{exc}"
+    try:
+        added = 0
+        for key in keys:
+            parts = key.split()
+            marker = parts[1][:40] if len(parts) > 1 else key[:40]
+            # Single-quoted marker is safe (base64 has no quote); the key
+            # itself goes through repr() so any quote in it is escaped.
+            # marker 是 base64 无引号；key 本身用 repr() 转义后写进命令。
+            # The shell prints ADDED only when it actually appends.
+            # 只有真正追加时才打印 ADDED，已存在时打印 EXISTS。
+            cmd = (
+                "mkdir -p /root/.ssh && chmod 700 /root/.ssh && "
+                "touch /root/.ssh/authorized_keys && "
+                "chmod 600 /root/.ssh/authorized_keys && "
+                f"if grep -q '{marker}' /root/.ssh/authorized_keys; then "
+                f"echo EXISTS; else echo {key!r} >> /root/.ssh/authorized_keys && echo ADDED; fi"
+            )
+            try:
+                out, _err = _run_ssh_command(client, cmd, timeout=30)
+            except Exception as exc:  # noqa: BLE001 - 单条失败不拖垮其余
+                return added, f"写公钥失败：{exc}"
+            if "ADDED" in out:
+                added += 1
+        return added, None
+    finally:
+        try:
+            client.close()
+        except Exception:  # noqa: BLE001 - 关闭失败忽略
+            pass
 
 
 def wait_for_dd(public_ip, password, port=DD_SSH_PORT,
@@ -250,9 +362,17 @@ def verify_password_login(public_ip, password, port=DD_SSH_PORT,
 
 
 def run_dd_init(public_ip, password, init_script, instance_name="",
-                port=DD_SSH_PORT, on_event=None, stop_event=None):
+                port=DD_SSH_PORT, on_event=None, stop_event=None,
+                ssh_keys=None, files=None):
     """DD 等待 + 初始化执行的完整流程（同步，会阻塞到结束）。
 
+    ssh_keys：DD 完成后要补回 authorized_keys 的公钥字符串列表
+    （用户 keys + guard 公钥）。DD 会抹掉开机时 cloud-init 塞的
+    公钥，不补看门狗 / CPU 检测全连不上；补钥匙失败不阻断初始化，
+    只写进通知提醒用户手动补。
+    files：DD 完成后要传到实例上的文件列表（见 upload_files：每项
+    {"local"/"content", "remote", "mode"}，如流量看门狗、安全守护
+    脚本、Bark 配置）。传文件失败不阻断初始化，只写进通知提醒。
     init_script 为空时只等 DD 完成并验证系统就绪（不跑脚本），同样
     发 DD 完成与初始化完成通知。on_event(event_type, message)：进度
     回调，event_type 为 "dd_done" / "init_started" / "init_done" /
@@ -273,6 +393,26 @@ def run_dd_init(public_ip, password, init_script, instance_name="",
         _emit("dd_timeout", f"实例 {instance_name}（{public_ip}）DD 等待"
                             "超时（30 分钟），未检测到 Debian 13。")
         return False
+    # DD done: re-add SSH public keys (DD wiped the boot-time authorized_keys, leaving only password login). DD 完成：把公钥补回 authorized_keys（DD 抹掉了开机时塞的公钥，只剩密码能登）；补失败不阻断初始化，只提醒。
+    keys_note = ""
+    if ssh_keys:
+        added, key_err = add_ssh_keys(public_ip, password, ssh_keys,
+                                      port=port)
+        if key_err:
+            keys_note = f"公钥补回失败（{key_err}），看门狗与一键 SSH 可能连不上，请手动把公钥加进 /root/.ssh/authorized_keys。"
+        elif added:
+            keys_note = f"已把 {added} 条 SSH 公钥补回 authorized_keys。"
+        else:
+            keys_note = "SSH 公钥已在 authorized_keys 里，无需补回。"
+    # Upload files (traffic watchdog, guard script, Bark config, ...).
+    # 传文件（流量看门狗、安全守护脚本、Bark 配置等）；失败不阻断，只提醒。
+    if files:
+        uploaded, file_err = upload_files(public_ip, password, files,
+                                          port=port)
+        if file_err:
+            keys_note += f"文件上传失败（{file_err}），部分安全功能可能没装上。"
+        elif uploaded:
+            keys_note += f"已传 {uploaded} 个安全文件到实例。"
     if not init_script:
         # 无初始化脚本：DD 已完成，只验证系统就绪（密码登录可用、sshd
         # 运行中），同样发完成通知。No init script: DD is done; verify
@@ -283,10 +423,10 @@ def run_dd_init(public_ip, password, init_script, instance_name="",
             public_ip, password, port=port, require_dropin=False)
         if verified:
             _emit("init_done", f"实例 {instance_name}（{public_ip}）DD 完成，"
-                               f"无初始化脚本。{detail}")
+                               f"无初始化脚本。{detail}{keys_note}")
         else:
             _emit("init_done", f"实例 {instance_name}（{public_ip}）DD 完成，"
-                               f"无初始化脚本，但密码登录验证失败：{detail}")
+                               f"无初始化脚本，但密码登录验证失败：{detail}{keys_note}")
         return True
     _emit("dd_done", f"实例 {instance_name}（{public_ip}）DD 完成，"
                      "Debian 13 已就绪，开始执行初始化脚本。")
@@ -300,10 +440,10 @@ def run_dd_init(public_ip, password, init_script, instance_name="",
             public_ip, password, port=port)
         if verified:
             _emit("init_done", f"实例 {instance_name}（{public_ip}）初始化"
-                               f"脚本执行完成。{detail}")
+                               f"脚本执行完成。{detail}{keys_note}")
         else:
             _emit("init_done", f"实例 {instance_name}（{public_ip}）初始化"
-                               f"脚本执行完成，但密码登录验证失败：{detail}")
+                               f"脚本执行完成，但密码登录验证失败：{detail}{keys_note}")
         return True
     if code is None:
         _emit("init_timeout", f"实例 {instance_name}（{public_ip}）初始化"
@@ -315,13 +455,15 @@ def run_dd_init(public_ip, password, init_script, instance_name="",
 
 
 def start_dd_init(public_ip, password, init_script, instance_name="",
-                  port=DD_SSH_PORT, on_event=None, stop_event=None):
+                  port=DD_SSH_PORT, on_event=None, stop_event=None,
+                  ssh_keys=None, files=None):
     """开 daemon 线程跑 run_dd_init，立即返回线程对象。"""
     thread = threading.Thread(
         target=run_dd_init,
         args=(public_ip, password, init_script, instance_name),
         kwargs={"port": port, "on_event": on_event,
-                "stop_event": stop_event},
+                "stop_event": stop_event, "ssh_keys": ssh_keys,
+                "files": files},
         daemon=True,
         name=f"dd-init-{instance_name or public_ip}")
     thread.start()

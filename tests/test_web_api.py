@@ -610,9 +610,25 @@ class TestCpuModelApi(WebApiTestCase):
                       "/root/.ssh/rbot_guard"))
 
     @patch("web.routes.instances._refresh_cpu_models_background")
+    @patch("web.routes.instances.load_os_versions",
+           return_value={FAKE_INSTANCE: {"version": "Debian 13.7",
+                                         "checked_at": "2026-11-28T00:00:00+00:00"}})
     @patch("web.routes.instances.load_cpu_models",
            return_value={FAKE_INSTANCE: {"model": "AMD EPYC 7J13",
-                                         "checked_at": "2026-01-01T00:00:00+00:00"}})
+                                         "checked_at": "2026-11-24T00:00:00+00:00"}})
+    @patch("web.routes.instances.attach_public_ips_bulk", return_value=[FAKE_IP])
+    @patch("web.routes.instances.cached_raw_instances", return_value=FAKE_INSTANCES)
+    def test_list_includes_os_version(self, mock_list, mock_ip,
+                                      mock_cache, mock_os, mock_bg):
+        r = self.client.get("/api/instances")
+        self.assertEqual(r.status_code, 200)
+        inst = r.json()["instances"][0]
+        self.assertEqual(inst["osVersion"], "Debian 13.7")
+
+    @patch("web.routes.instances._refresh_cpu_models_background")
+    @patch("web.routes.instances.load_cpu_models",
+           return_value={FAKE_INSTANCE: {"model": "AMD EPYC 7J13",
+                                         "checked_at": "2026-11-24T00:00:00+00:00"}})
     @patch("web.routes.instances.attach_public_ips_bulk", return_value=[FAKE_IP])
     @patch("web.routes.instances.cached_raw_instances", return_value=FAKE_INSTANCES)
     def test_list_includes_cpu_model(self, mock_list, mock_ip,
@@ -665,6 +681,48 @@ class TestCpuModelApi(WebApiTestCase):
         self.assertEqual(r.json()["cpu_model"], "Ampere Altra")
         mock_fetch.assert_called_once()
 
+    @patch("web.routes.instances.get_os_version")
+    @patch("web.routes.instances.cached_os_version",
+           return_value="Debian 13.7")
+    @patch("web.routes.instances.get_cpu_model",
+           return_value="Ampere Altra")
+    @patch("web.routes.instances.cached_cpu_model", return_value=None)
+    @patch("web.routes.instances.get_public_ip", return_value=FAKE_IP)
+    @patch("web.routes.instances.get_instance")
+    def test_detail_os_version_cached(self, mock_get, mock_ip,
+                                      mock_cached_cpu, mock_fetch_cpu,
+                                      mock_cached_os, mock_fetch_os):
+        mock_get.return_value = {"data": {"id": FAKE_INSTANCE,
+                                          "display-name": "instance-a1",
+                                          "lifecycle-state": "RUNNING",
+                                          "availability-domain": "AD-1"}}
+        r = self.client.get(f"/api/instances/{FAKE_INSTANCE}")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["os_version"], "Debian 13.7")
+        mock_fetch_os.assert_not_called()
+
+    @patch("web.routes.instances.get_os_version",
+           return_value="Debian 13.7")
+    @patch("web.routes.instances.cached_os_version", return_value=None)
+    @patch("web.routes.instances.get_cpu_model",
+           return_value="Ampere Altra")
+    @patch("web.routes.instances.cached_cpu_model", return_value=None)
+    @patch("web.routes.instances.get_public_ip", return_value=FAKE_IP)
+    @patch("web.routes.instances.get_instance")
+    def test_detail_os_version_fetched_when_missing(self, mock_get, mock_ip,
+                                                    mock_cached_cpu,
+                                                    mock_fetch_cpu,
+                                                    mock_cached_os,
+                                                    mock_fetch_os):
+        mock_get.return_value = {"data": {"id": FAKE_INSTANCE,
+                                          "display-name": "instance-a1",
+                                          "lifecycle-state": "RUNNING",
+                                          "availability-domain": "AD-1"}}
+        r = self.client.get(f"/api/instances/{FAKE_INSTANCE}")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["os_version"], "Debian 13.7")
+        mock_fetch_os.assert_called_once()
+
     def test_post_refresh_success(self):
         ip_patch, key_patch = self._patch_host()
         with ip_patch, key_patch, patch(
@@ -700,7 +758,7 @@ class TestCpuModelApi(WebApiTestCase):
 
     @patch("web.routes.instances.load_cpu_models",
            return_value={FAKE_INSTANCE: {"model": "AMD EPYC 7J13",
-                                         "checked_at": "2026-01-05T00:00:00+00:00"},
+                                         "checked_at": "2026-11-28T00:00:00+00:00"},
                          FAKE_INSTANCE_2: {"model": None},
                          "ocid1.instance.oc1..testzzzz": {}})
     def test_cpu_models_endpoint_reads_cache_only(self, mock_load):
@@ -1054,13 +1112,17 @@ class TestCreateAndTasksApi(WebApiTestCase):
         # （InstallNET -pwd），DD 后的系统就用这个密码登录。
         self.assertIn("-pwd '" + form_password + "'",
                       kwargs["user_data"])
-        # DD init is started with the script (mocked: no real SSH wait thread). DD 初始化被启动，传的是脚本原文（已 mock，不起真等 DD 的线程）。
+        # DD init is started with the combined script (security hardening
+        # first, then the user's own script; mocked: no real SSH wait
+        # thread). DD 初始化被启动，传的是合并后的脚本（先安全加固、再用
+        # 户自己的脚本；已 mock，不起真等 DD 的线程）。
         deadline = time.time() + 2.0
         while not mock_dd_init.called and time.time() < deadline:
             time.sleep(0.05)
         self.assertTrue(mock_dd_init.called, "DD 开时应起 DD 初始化")
-        self.assertEqual(mock_dd_init.call_args.args[2],
-                         "#!/bin/bash\necho hi\n")
+        combined = mock_dd_init.call_args.args[2]
+        self.assertIn("#!/bin/bash\necho hi", combined)
+        self.assertIn("DD 安全加固", combined)
         # DD init SSH logs in with the same form password. DD 初始化
         # SSH 登录用的也是同一份表单密码。
         self.assertEqual(mock_dd_init.call_args.args[1], form_password)
@@ -1591,7 +1653,7 @@ class TestNotifyGrabSuccess(unittest.TestCase):
         self.addCleanup(self._cred_tmp.cleanup)
         self.registry = MagicMock()
         self.params = {
-            "display_name": "ARM_2026-01-01",
+            "display_name": "ARM_2026-11-24",
             "shape": "VM.Standard.A1.Flex",
             "ocpus": 1, "memory_gb": 6,
             "boot_volume_size_gbs": 47,
@@ -1623,7 +1685,7 @@ class TestNotifyGrabSuccess(unittest.TestCase):
         self.assertEqual(args[3], "首尔")
         self.assertEqual(args[4], "VM.Standard.A1.Flex")
         self.assertEqual(args[7], 47)
-        self.assertEqual(args[8][0]["name"], "ARM_2026-01-01")
+        self.assertEqual(args[8][0]["name"], "ARM_2026-11-24")
         self.assertEqual(args[8][0]["public_ip"], FAKE_IP)
         self.assertEqual(args[8][0]["attempts"], 2)
         self.assertEqual(kwargs["root_password"], self.notify["root_password"])
@@ -1670,7 +1732,7 @@ class TestNotifyGrabSuccess(unittest.TestCase):
         self.assertIsNone(notify_fn.call_args[0][8][0]["public_ip"])
         followup.assert_called_once()
         args = followup.call_args[0]
-        self.assertEqual(args[1], "ARM_2026-01-01")
+        self.assertEqual(args[1], "ARM_2026-11-24")
         self.assertEqual(args[2], "T")
         self.assertEqual(args[3], 654321)
         with patch.object(tasks_mod, "get_public_ip",

@@ -108,6 +108,12 @@ from tgbot.cpu_model import (
     host_for_ip,
     load_cpu_models,
 )
+from tgbot.os_version import (
+    cached_os_version,
+    delete_os_version,
+    get_os_version,
+    load_os_versions,
+)
 from tgbot.instance_credentials import delete_credential, get_root_password
 from tgbot.handlers_client import (
     RemoteCommandError,
@@ -372,15 +378,17 @@ def _detail_extras(cli, compartment_id, instance_id, availability_domain):
     return extras
 
 
-def format_instance(inst, public_ip, region, cpu_models=None):
+def format_instance(inst, public_ip, region, cpu_models=None,
+                    os_versions=None):
     """把 list_instances 的条目转成 面板形状（阶段 5 工作包 E）。
 
     新形状（camelCase 字段）：
     {id, name, publicIp, shape, state, ocpus, memoryInGBs, region,
-     timeCreated, cpuModel}。ocpus / memoryInGBs 取自 shape-config
+     timeCreated, cpuModel, osVersion}。ocpus / memoryInGBs 取自 shape-config
     （list_instances 需带 include_shape_config=True，否则为 None）。
     cpuModel 是缓存的 CPU 型号（如 "AMD EPYC 7J13"），未检测时为
-    None（列表只读缓存不 SSH，后台检测线程会补上）。
+    None（列表只读缓存不 SSH，后台检测线程会补上）。osVersion 是缓存
+    的系统版本（如 "Debian 13.8"），未检测时为 None（同样只读缓存）。
 
     过渡期双写旧字段（display-name / lifecycle-state / time-created /
     public-ip），前端已改消费新字段，新字段是契约，旧字段后续可删。
@@ -388,6 +396,7 @@ def format_instance(inst, public_ip, region, cpu_models=None):
     cfg = inst.get("shape-config") or {}
     state = inst.get("lifecycle-state") or ""
     cpu_entry = (cpu_models or {}).get(inst.get("id")) or {}
+    os_entry = (os_versions or {}).get(inst.get("id")) or {}
     return {
         "id": inst.get("id"),
         "name": inst.get("display-name"),
@@ -399,6 +408,7 @@ def format_instance(inst, public_ip, region, cpu_models=None):
         "region": region,
         "timeCreated": inst.get("time-created"),
         "cpuModel": cpu_entry.get("model"),
+        "osVersion": os_entry.get("version"),
         # Old fields (written alongside during the transition). 旧字段（过渡期双写）。
         "display-name": inst.get("display-name"),
         "lifecycle-state": state,
@@ -480,7 +490,9 @@ def list_all(profile: str = Query(default=None),
         else:
             ips = []
         cpu_models = load_cpu_models()
-        instances = [format_instance(inst, ip, cli.region, cpu_models)
+        os_versions = load_os_versions()
+        instances = [format_instance(inst, ip, cli.region, cpu_models,
+                                     os_versions)
                      for inst, ip in zip(filtered, ips)]
         _refresh_cpu_models_background(filtered, ips, cpu_models)
     except ValueError as exc:
@@ -577,8 +589,8 @@ def detail(instance_id: str,
            username: str = Depends(get_current_user)):
     """查单个实例详情（含公网 IP、内网 IP、IPv6 列表、启动盘大小）。
 
-    另含 cpu_model：缓存的 CPU 型号；无缓存且实例运行中时同步
-    SSH 检测一次（约 2-4 秒），检测失败为 None。
+    另含 cpu_model 与 os_version：缓存的 CPU 型号与系统版本；无缓存
+    且实例运行中时同步 SSH 检测一次（约 2-4 秒），检测失败为 None。
     """
     if demo_data.is_demo():
         # Demo mode: simulated instance detail, no OCI/SSH calls.
@@ -600,13 +612,18 @@ def detail(instance_id: str,
     except OCIError as exc:
         return oci_error_response(exc)
     cpu_model = cached_cpu_model(instance_id)
-    if cpu_model is None \
-            and detail_data.get("lifecycle-state") == "RUNNING" \
-            and public_ip:
-        cpu_model = get_cpu_model(instance_id, host_for_ip(public_ip),
-                                  run_remote_command)
+    os_version = cached_os_version(instance_id)
+    if detail_data.get("lifecycle-state") == "RUNNING" and public_ip:
+        if cpu_model is None:
+            cpu_model = get_cpu_model(instance_id, host_for_ip(public_ip),
+                                      run_remote_command)
+        if os_version is None:
+            os_version = get_os_version(instance_id,
+                                        host_for_ip(public_ip),
+                                        run_remote_command)
     return {"ok": True, "instance": detail_data, "public_ip": public_ip,
             "cpu_model": cpu_model,
+            "os_version": os_version,
             "private_ip": extras["private_ip"],
             "ipv6_addresses": extras["ipv6_addresses"],
             "boot_volume_size_gbs": extras["boot_volume_size_gbs"],
@@ -660,6 +677,7 @@ def _action(instance_id, profile, func, action_name, region=None):
     clear_quota_cache(profile or config.DEFAULT_PROFILE)
     if action_name == "terminate":
         delete_cpu_model(instance_id)
+        delete_os_version(instance_id)
         delete_credential(instance_id)
     return {"ok": True, "instance_id": instance_id, "action": action_name}
 
@@ -784,6 +802,11 @@ def reinstall(instance_id: str,
         return error_response(str(exc), status_code=400)
     except OCIError as exc:
         return oci_error_response(exc)
+    # Reinstall changes the OS: drop the cached OS version so the next
+    # detail open re-detects it (the CPU model is hardware, unchanged).
+    # 重装会换系统：清掉缓存的系统版本，下次打开详情时重新检测
+    # （CPU 型号是硬件，不变，不用清）。
+    delete_os_version(instance_id)
     clear_instance_list_cache(profile or config.DEFAULT_PROFILE)
     return {"ok": True, "instance_id": instance_id, "instance": result}
 
@@ -1148,7 +1171,7 @@ def create_boot_backup(instance_id: str,
             "lifecycleState": "CREATING",
             "sourceType": "MANUAL",
             "type": backup_type,
-            "timeCreated": "2026-01-02T12:00:00.000000+00:00",
+            "timeCreated": "2026-11-25T12:00:00.000000+00:00",
             "imageId": None,
             "id": "ocid1.bootvolumebackup.oc1..demobackup0099",
             "display-name": fake_name,
@@ -1156,7 +1179,7 @@ def create_boot_backup(instance_id: str,
             "size-in-gbs": detail.get("boot_volume_size_gbs"),
             "lifecycle-state": "CREATING",
             "source-type": "MANUAL",
-            "time-created": "2026-01-02T12:00:00.000000+00:00",
+            "time-created": "2026-11-25T12:00:00.000000+00:00",
             "image-id": None,
         }
         return demo_data.fake_success(

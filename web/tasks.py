@@ -15,6 +15,7 @@ status：pending / running / done / failed / cancelled。
 其余还在跑的任务标记为 cancelled（进程已死，线程不可能还在跑）。
 """
 
+import fcntl
 import json
 import logging
 import os
@@ -29,13 +30,15 @@ from oci.grabber import GrabCancelledError, Grabber
 from oci.network import get_public_ip, wait_for_public_ip
 from tgbot import config as bot_config
 from tgbot import task_store
+from tgbot.bark import load_bark_config
 from tgbot.billing import FREE_SHAPES
-from tgbot.cpu_policy import (combined_boot_keys,
+from tgbot.cpu_policy import (combined_boot_keys, get_guard_public_key,
                               get_allowed_cpu_models, make_cpu_check_hook)
 from tgbot.handlers_client import run_remote_command
 from tgbot.instance_credentials import (resolve_root_password,
                                        save_credential,
                                        update_credential_ip)
+from tgbot.os_version import delete_os_version
 from tgbot.notify import (
     fmt_notify_outcome,
     fmt_paid_instance_alert,
@@ -119,7 +122,7 @@ class TaskRegistry:
         """注册一个任务，返回 ID（如抢机任务 "web-g1"）。初始状态 pending。
 
         label 是显示用的任务说明（如 "E2.1.Micro（新加坡）·
-        AMD_2026-01-01"），任务页用它当第一列，不再直接暴露
+        AMD_2026-11-24"），任务页用它当第一列，不再直接暴露
         grab 这类内部类型；旧任务没有 label 时前端退回 kind。
         """
         with self._lock:
@@ -244,6 +247,85 @@ TASKS = TaskRegistry()
 
 # ---------------- 抢机任务 ----------------
 
+def _dd_security_payload(user_init_script, ssh_keys_file):
+    """DD 后安全加固的传文件清单 + 合并后的初始化脚本。
+
+    DD 开时，DD 完成后除了跑用户自己的初始化脚本，还要自动跑安全
+    加固（DD 后执行安全脚本，用户 2026-11-28 定）。安全脚本
+    scripts/dd_security.sh 先跑（fail2ban 自动识别 SSH 端口、
+    unattended-upgrades、流量看门狗、安全守护、自动升级），再跑用户
+    自己的脚本。传文件清单里是安全脚本要用的文件（流量看门狗、
+    安全守护、自动升级脚本）与 Bark 配置（/root/.traffic_guard_bark，
+    从 M_bot_config.conf 的 [bark] 节取 url/key，供看门狗推送用）。
+    返回 (files, combined_script, ssh_keys)：files 是 upload_files
+    要的列表；combined_script 是 DD 初始化脚本；ssh_keys 是要补回
+    authorized_keys 的公钥列表（用户 keys + guard 公钥）。
+    """
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    scripts_dir = os.path.join(repo_root, "scripts")
+    files = []
+    for name, remote, mode in (
+            ("oracle_traffic_ultimate.py",
+             "/usr/local/bin/oracle_traffic_ultimate.py", 0o755),
+            ("vps_security_guard.sh",
+             "/usr/local/bin/vps_security_guard.sh", 0o755),
+            ("nginx-auto-update.sh",
+             "/usr/local/bin/nginx-auto-update.sh", 0o700),
+            ("xray-auto-update.sh",
+             "/usr/local/bin/xray-auto-update.sh", 0o700)):
+        local = os.path.join(scripts_dir, name)
+        if os.path.isfile(local):
+            files.append({"local": local, "remote": remote, "mode": mode})
+    # Bark config for the on-instance scripts (traffic watchdog reads it).
+    # 实例上脚本用的 Bark 配置（流量看门狗读它）。
+    try:
+        bark = load_bark_config()
+    except Exception:  # noqa: BLE001 - 读不到就跳过，不阻断
+        bark = {}
+    if bark.get("key"):
+        files.append({
+            "content": json.dumps(
+                {"url": bark.get("url") or "", "key": bark.get("key")},
+                ensure_ascii=False),
+            "remote": "/root/.traffic_guard_bark", "mode": 0o600})
+    # SSH keys to re-add after DD (DD wipes authorized_keys).
+    # DD 后要补回的公钥（用户 keys + guard 公钥）。
+    keys = []
+    guard_pub = None
+    try:
+        guard_pub = get_guard_public_key()
+    except Exception:  # noqa: BLE001 - 读不到就跳过
+        guard_pub = None
+    if guard_pub:
+        keys.append(guard_pub)
+    if ssh_keys_file:
+        try:
+            with open(ssh_keys_file, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith("ssh-"):
+                        keys.append(line)
+        except OSError:
+            pass
+    keys = [k for k in dict.fromkeys(k for k in keys if k and k.strip())]
+    # Combined init script: security hardening first, then the user's own
+    # script (if any). 合并后的初始化脚本：先跑安全加固，再跑用户自己的脚本。
+    security_script = ""
+    sec_path = os.path.join(scripts_dir, "dd_security.sh")
+    try:
+        with open(sec_path, encoding="utf-8") as f:
+            security_script = f.read()
+    except OSError:
+        security_script = ""
+    parts = []
+    if security_script.strip():
+        parts.append(security_script.rstrip("\n"))
+    if user_init_script and user_init_script.strip():
+        parts.append(user_init_script.rstrip("\n"))
+    combined = "\n\n".join(parts) if parts else ""
+    return files, combined, keys
+
+
 def _notify_grab_success(registry, task_id, cli, params, result, notify):
     """抢机成功后的双通道推送（与机器人端 _notify_boot_success 同逻辑）。
 
@@ -324,9 +406,17 @@ def _notify_grab_success(registry, task_id, cli, params, result, notify):
             name = params.get("display_name") or "?"
             token = notify.get("token")
             chat_id = notify.get("chat_id")
+            # DD 后安全加固：传安全文件、补 SSH 公钥、安全脚本 + 用户脚本
+            # 一起跑（见 _dd_security_payload）。DD security hardening:
+            # upload files, re-add SSH keys, run security + user script.
+            dd_files, dd_script, dd_keys = _dd_security_payload(
+                params.get("init_script"), params.get("ssh_keys_file"))
 
             def _on_event(event_type, message, _name=name, _ip=public_ip):
                 if event_type == "dd_done":
+                    # DD 换了系统：清掉缓存的系统版本，下次打开详情时重新检测。
+                    # DD changed the OS: drop the cached OS version so the next detail open re-detects it.
+                    delete_os_version(result.instance_id)
                     # dd_done 的 message 已含“有/无初始化脚本”的说明，直接发。
                     notify_dual(token, chat_id, "🔄 DD 完成", message)
                 elif event_type == "init_done":
@@ -340,8 +430,9 @@ def _notify_grab_success(registry, task_id, cli, params, result, notify):
                 registry.append_log(task_id, message)
 
             start_dd_init(public_ip, _dd_password,
-                          params.get("init_script"), instance_name=name,
-                          port=DD_SSH_PORT, on_event=_on_event)
+                          dd_script, instance_name=name,
+                          port=DD_SSH_PORT, on_event=_on_event,
+                          ssh_keys=dd_keys, files=dd_files)
             registry.append_log(task_id, f"已起 DD 初始化任务：{name}（{public_ip}）")
         elif params.get("dd"):
             registry.append_log(task_id, "DD 已开但缺 root 密码或公网 IP，未起 DD 初始化。")
@@ -613,6 +704,42 @@ def _finish_resumed_grab(registry, record, spec, successes):
     threading.Thread(target=_notify_in_background, daemon=True).start()
 
 
+def _acquire_grab_resume_lock(tasks_path):
+    """抢“抢机启动恢复”的排他锁（多 worker 防重复拉起）。
+
+    用 fcntl.flock 对锁文件加非阻塞排他锁；拿到返回 True，
+    拿不到返回 False。锁文件描述符存在模块级变量里，进程
+    不退出就不释放——后启动的 worker 也拿不到，只能跳过。
+    锁文件放在任务文件同目录（.grab_resume.lock）。
+    拿锁失败或文件系统不支持时返回 False（宁可不恢复，
+    也不重复拉起）；单 worker / 测试环境（无 tasks_file）
+    不走这里。
+    """
+    global _GRAB_RESUME_LOCK_FD
+    if _GRAB_RESUME_LOCK_FD is not None:
+        return True
+    lock_path = os.path.join(os.path.dirname(tasks_path),
+                             ".grab_resume.lock")
+    try:
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError as exc:
+        logger.warning("抢机恢复锁文件打不开（%s），跳过恢复：%s",
+                       lock_path, exc)
+        return False
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
+        return False
+    _GRAB_RESUME_LOCK_FD = fd
+    return True
+
+
+# 抢机启动恢复的锁文件描述符（见 _acquire_grab_resume_lock）：
+# 拿到锁的 worker 进程持有它直到退出，后启动的 worker 拿不到。
+_GRAB_RESUME_LOCK_FD = None
+
+
 def resume_interrupted_grabs(registry=None):
     """启动恢复（web lifespan 调用，代替 TASKS.recover()）。
 
@@ -620,11 +747,21 @@ def resume_interrupted_grabs(registry=None):
     grab_spec 恢复重跑，其余本来源未结束任务按老规矩标为
     已中断；机器人端的任务绝不碰。已抢满台数的任务标记完成
     并补发成功通知；无规格或非本来源的抢机任务不恢复。
+
+    多 worker 注意：uvicorn 以 --workers N 启动时每个 worker
+    进程都会跑一遍 lifespan，若都恢复抢机会把同一任务拉起 N
+    个重复线程（抢到时可能重复建机）。这里用排他文件锁抢
+    “恢复权”：只拿到锁的那个 worker 恢复抢机，锁文件描述符
+    保留到进程结束（模块级变量），后启动的 worker 拿不到锁
+    就跳过，绝不重复拉起。
     """
     registry = registry or TASKS
     path = registry.tasks_file
     if not path:
         registry.recover()
+        return
+    if not _acquire_grab_resume_lock(path):
+        logger.info("抢机启动恢复：另一 worker 已在恢复，本进程跳过。")
         return
     records = task_store.load_records(path)
     resumable = []

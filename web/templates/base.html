@@ -46,7 +46,7 @@
 {% endif %}
 {% block extra_head %}{% endblock %}
 </head>
-<body>
+<body class="has-topbar">
 {# ---------- 顶栏 ---------- #}
 <header class="topbar">
   {# Mobile nav button: at <=900px the sidebar moves into a drawer, and tapping here opens it (on desktop the sidebar is always shown and this button is hidden; see .nav-toggle in base.css). 手机端导航按钮：≤900px 时侧边栏收进抽屉，点这里打开（桌面端侧边栏常驻，此按钮隐藏，见 base.css 的 .nav-toggle）。 #}
@@ -58,6 +58,7 @@
     <span class="logo-mark">M</span>
     <span class="logo-text">M_Bot</span>
     <span class="logo-sub" data-i18n="app.subtitle">Oracle管理面板</span>
+    {% if app_version %}<span class="logo-version">v{{ app_version }}</span>{% endif %}
   </div>
   {% if demo_mode %}
   {# Demo mode badge: shown in the top bar when MBOT_DEMO_MODE=1, so visitors know the data is simulated. 演示模式角标：MBOT_DEMO_MODE=1 时顶栏显示，提示数据是模拟的。 #}

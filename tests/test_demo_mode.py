@@ -9,7 +9,7 @@
   任务列表/详情/取消/删除、云报告、创建默认值与创建实例。
 - 写操作（启停/删除/扩容/创建/恢复等）只做假动作：把各路由会调的
   OCI 入口 patch 成抛 AssertionError，仍返回成功，证明不调 OCI。
-- 模拟数据不含真实租户名、真实 IP、136137 等真实信息。
+- 模拟数据不含真实租户名、真实 IP、真实域名等真实信息。
 - 登录页与实例页含“演示模式”提示。
 - 演示模式不用登录：未登录直接进面板（自动按 demo 用户建会话），
   /login 跳面板首页；非演示模式未登录仍跳 /login、API 仍 401。
@@ -22,6 +22,7 @@
 """
 
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -39,11 +40,23 @@ TEST_PASSWORD = "test-admin-password"
 # Demo data uses only TEST-NET / example addresses; these must never appear
 # in demo payloads. 演示数据只用 TEST-NET / 示例地址；以下真实信息绝不
 # 能出现在演示响应里。
+# 注意：这里绝不能列出真实租户名、真实域名或真实 IP 段——列出来本身
+# 就是泄露（公开仓库）。改用结构检查：演示响应里只允许 TEST-NET
+# 文档地址（RFC 5737：192.0.2.x / 198.51.100.x / 203.0.113.x）与
+# DEMO_* 演示标识；任何其他公网 IPv4 都算真实信息泄露。
+# Do NOT list real tenant names, domains or IP ranges here — listing
+# them is itself a leak (public repo). Structural check instead: demo
+# responses may only contain TEST-NET addresses (RFC 5737) and DEMO_*
+# identifiers; any other public IPv4 counts as a real-data leak.
 FORBIDDEN = (
-    "136137", "nxjjdndaa", "s676931", "tiank025", "rbot-test",
-    "129.150.", "129.221.", "163.192.", "149.130.", "147.224.",
-    "167.234.", "170.9.", "168.107.",
+    "FORBIDDEN-EXAMPLE-TENANT",
+    "FORBIDDEN-EXAMPLE-DOMAIN",
 )
+# TEST-NET 文档地址段（RFC 5737），演示数据只许用这些。
+_TESTNET_RE = re.compile(
+    r"\b(?:192\.0\.2|198\.51\.100|203\.0\.113)\.\d{1,3}\b")
+# 任何公网 IPv4（先找出来，再排除 TEST-NET）。
+_ANY_IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 
 SG = "DEMO_SG"
 SJ = "DEMO_SJ"
@@ -91,6 +104,24 @@ class DemoModeTestCase(unittest.TestCase):
         text = repr(payload)
         for needle in FORBIDDEN:
             self.assertNotIn(needle, text, f"演示数据含真实信息：{needle}")
+        # 结构检查：演示响应里的公网 IPv4 必须全是 TEST-NET 文档地址，
+        # 出现其他公网 IP 就是真实信息泄露。私网/回环/链路本地地址不算。
+        # Structural check: every public IPv4 in a demo response must be
+        # a TEST-NET address; private/loopback/link-local are fine.
+        for ip in _ANY_IPV4_RE.findall(text):
+            first = int(ip.split(".")[0])
+            second = int(ip.split(".")[1])
+            if first == 10 or first == 127:
+                continue
+            if first == 172 and 16 <= second <= 31:
+                continue
+            if first == 192 and second == 168:
+                continue
+            if first == 169 and second == 254:
+                continue
+            self.assertRegex(
+                ip, _TESTNET_RE,
+                f"演示数据含非 TEST-NET 公网 IP（真实信息泄露）：{ip}")
 
 
 class TestDemoLogin(DemoModeTestCase):

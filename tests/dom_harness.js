@@ -31,6 +31,8 @@ const scenario = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
 const ROOT = path.resolve(__dirname, "..");
 const store = Object.assign({}, scenario.seedStorage || {});
 const fetchCalls = [];
+const wsSends = [];  // Every WebSocket send (so a scenario can assert what the terminal sent, e.g. the console "\r" poke). 每次 WS 发送（场景可断言终端发了什么，如控制台的回车唤醒）。
+const wsSockets = [];  // Created WebSocket stubs (wsReceive delivers a message to the latest one). 已建的 WebSocket 桩（wsReceive 往最新一个投消息）。
 const errors = [];
 const domReadyHandlers = [];
 
@@ -217,8 +219,14 @@ if ((scenario.page || "") === "terminal") {
   global.FitAddon = { FitAddon: function () { this.fit = function () {}; } };
   global.WebSocket = function () {
     this.readyState = 1;
-    this.send = function () {};
+    const self = this;
+    wsSockets.push(self);
+    // Record every send and fire onopen on the next tick, after the
+    // caller has assigned its handler. 记录每次发送，并在下一轮事件循环
+    // 触发 onopen（此时调用方已挂好 handler）。
+    this.send = function (data) { wsSends.push(data); };
     this.close = function () {};
+    setTimeout(function () { if (self.onopen) self.onopen(); }, 0);
   };
   global.WebSocket.OPEN = 1;
 }
@@ -375,6 +383,24 @@ async function run() {
       case "fetchCalls":
         results.push({ op: step.op, value: fetchCalls.slice() });
         break;
+      case "wsSends":
+        // Every WebSocket send so far (JSON strings as sent by the page).
+        // 到目前为止的每次 WS 发送（页面发出的 JSON 字符串原样）。
+        results.push({ op: step.op, value: wsSends.slice() });
+        break;
+      case "wsReceive": {
+        // Deliver server output to the latest WebSocket (terminal page):
+        // step.data is the raw text; it arrives as a base64 output
+        // message, the same shape the backend sends. 往最新一个
+        // WebSocket 投一条服务端输出：step.data 是原始文本，按后端同款
+        // base64 output 消息投递。
+        const ws = wsSockets[wsSockets.length - 1];
+        if (ws && ws.onmessage) {
+          const b64 = Buffer.from(step.data || "", "utf-8").toString("base64");
+          ws.onmessage({ data: JSON.stringify({ type: "output", data: b64 }) });
+        }
+        break;
+      }
       case "errors":
         results.push({ op: step.op, value: errors.slice() });
         break;
@@ -461,6 +487,7 @@ async function run() {
   process.stdout.write(JSON.stringify({
     results: results,
     fetchCalls: fetchCalls,
+    wsSends: wsSends,
     toasts: (elements["toast-container"] || { _children: [] })._children.map(function (c) {
       return { text: c.textContent, cls: c.className || "" };
     }),

@@ -260,6 +260,7 @@ STRINGS = {
     "instances.detail_state": {"zh": "状态", "en": "State"},
     "instances.detail_shape": {"zh": "规格", "en": "Shape"},
     "instances.detail_cpu": {"zh": "CPU 型号", "en": "CPU model"},
+    "instances.detail_os_version": {"zh": "系统版本", "en": "OS version"},
     "instances.detail_ad": {"zh": "可用域", "en": "Availability domain"},
     "instances.detail_created": {"zh": "创建时间", "en": "Created"},
     "instances.detail_public_ip": {"zh": "公网 IP", "en": "Public IP"},

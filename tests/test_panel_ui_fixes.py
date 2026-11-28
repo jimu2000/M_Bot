@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""M_Bot 面板 7 个 UI bug 修复的回归测试（2026-01-05 卸盘救机时浏览器实测发现）。
+"""M_Bot 面板 7 个 UI bug 修复的回归测试（2026-11-28 卸盘救机时浏览器实测发现）。
 
 用 tests/dom_harness.js 跑真实的 i18n.js + app.js + 页面脚本（stub
 DOM / fetch），覆盖 bug 1（停止按钮与状态码文案）、bug 2（详情立即
@@ -50,11 +50,11 @@ INSTANCES = [
     {"id": RUNNING_ID, "display-name": "TEST-AMD-01",
      "shape": "VM.Standard.E2.1.Micro", "lifecycle-state": "RUNNING",
      "shape-config": {"ocpus": 1, "memory-in-gbs": 1},
-     "time-created": "2026-01-05T00:00:00.000Z"},
+     "time-created": "2026-11-28T00:00:00.000Z"},
     {"id": STOPPED_ID, "display-name": "TEST-ARM-01",
      "shape": "VM.Standard.A1.Flex", "lifecycle-state": "STOPPED",
      "shape-config": {"ocpus": 1, "memory-in-gbs": 6},
-     "time-created": "2026-01-05T01:00:00.000Z"},
+     "time-created": "2026-11-28T01:00:00.000Z"},
 ]
 
 # The volume record carries ONLY volumeId (no dual-written id): that is
@@ -69,7 +69,7 @@ VOLUME = {"volumeId": VOLUME_ID, "displayName": "TEST-VOL-01",
 BACKUP = {"backupId": BACKUP_ID, "displayName": "TEST-BACKUP-01",
           "bootVolumeId": VOLUME_ID, "sizeInGBs": 50,
           "lifecycleState": "AVAILABLE", "type": "FULL",
-          "timeCreated": "2026-01-05T04:00:00.000Z"}
+          "timeCreated": "2026-11-28T04:00:00.000Z"}
 
 INSTANCE_DETAIL = {
     "instance": {"id": RUNNING_ID, "display-name": "TEST-AMD-01",
@@ -77,7 +77,7 @@ INSTANCE_DETAIL = {
                  "lifecycle-state": "RUNNING",
                  "shape-config": {"ocpus": 1, "memory-in-gbs": 1},
                  "availability-domain": "AD-1",
-                 "time-created": "2026-01-05T00:00:00.000Z"},
+                 "time-created": "2026-11-28T00:00:00.000Z"},
     "cpu_model": None,
     "public_ip": "203.0.113.10",
     "private_ip": "10.0.0.5",
@@ -85,6 +85,14 @@ INSTANCE_DETAIL = {
     "boot_volume_size_gbs": 50,
     "boot_volume_vpus_per_gb": 10,
 }
+
+# Fake serial-console connection string (placeholder OCIDs only).
+# 串行控制台连接命令（占位 OCID）。
+CONSOLE_CONNECTION_STRING = (
+    "ssh -o ProxyCommand='ssh -W %h:%p -p 443 "
+    "ocid1.instanceconsoleconnection.oc1..testconn@"
+    "instance-console.ap-singapore-1.oci.oraclecloud.com' "
+    "ocid1.instance.oc1..testrunning")
 
 INSTANCES_FETCH = {
     "GET /api/profiles": PROFILES,
@@ -283,6 +291,67 @@ class TestDetailRootPassword(unittest.TestCase):
         self.assertEqual(op_value(run, "errors"), [])
 
 
+class TestCardRootPassword(unittest.TestCase):
+    """卡片“初始开机密码”行（公网 IP 下一行）：默认隐藏、带复制按钮；没存密码时显示“未保存”；实例名后有“（查看实例详情）”。"""
+
+    def _fetch(self, password_response):
+        fetch = dict(INSTANCES_FETCH)
+        fetch["GET /api/instances/" + RUNNING_ID + "/password"] = \
+            password_response
+        return fetch
+
+    def test_card_shows_masked_password_and_copy_button(self):
+        run = run_scenario({
+            "page": "instances",
+            "fetch": self._fetch({"ok": True,
+                                  "root_password": "pw-test-123"}),
+            "steps": [{"op": "domContentLoaded"},
+                      {"op": "wait", "ms": 600},
+                      {"op": "read", "id": "instance-grid",
+                       "prop": "innerHTML"},
+                      {"op": "tbodyClick", "tbody": "instance-grid",
+                       "act": "copy-password", "rowId": RUNNING_ID,
+                       "rowAttr": "data-instance-id"},
+                      {"op": "wait", "ms": 50},
+                      {"op": "copied"},
+                      {"op": "fetchCalls"},
+                      {"op": "errors"}],
+        })
+        grid = op_value(run, "read")
+        # Password row is on the card, below the public IP row, masked.
+        # 密码行在卡片上（公网 IP 下一行），默认只显示掩码。
+        self.assertIn("初始开机密码", grid)
+        self.assertIn("••••••••", grid)
+        # The real password is never rendered in the DOM. 真密码不进 DOM。
+        self.assertNotIn("pw-test-123", grid)
+        # Instance name carries an explicit "(view instance details)" link.
+        # 实例名后有“（查看实例详情）”。
+        self.assertIn("(查看实例详情)", grid)
+        # Copy button copies the stored password. 复制按钮复制存的那份密码。
+        self.assertEqual(op_value(run, "copied"), "pw-test-123")
+        # The password endpoint is fetched per visible instance.
+        # 密码接口为每台可见实例拉一次。
+        self.assertTrue(fetch_calls(run, "GET", "/password"))
+        self.assertEqual(op_value(run, "errors"), [])
+
+    def test_card_shows_not_saved_when_no_password(self):
+        run = run_scenario({
+            "page": "instances",
+            "fetch": self._fetch({"__status": 404,
+                                  "__body": {"ok": False,
+                                             "error": "该实例未保存初始开机密码"}}),
+            "steps": [{"op": "domContentLoaded"},
+                      {"op": "wait", "ms": 600},
+                      {"op": "read", "id": "instance-grid",
+                       "prop": "innerHTML"},
+                      {"op": "errors"}],
+        })
+        grid = op_value(run, "read")
+        self.assertIn("初始开机密码", grid)
+        self.assertIn("未保存", grid)
+        self.assertEqual(op_value(run, "errors"), [])
+
+
 class TestBug4BackupButton(unittest.TestCase):
     """Bug 4：启动卷“备份”按钮点了没反应（findVolume 只认 id，不认 volumeId）。"""
 
@@ -436,7 +505,8 @@ class TestBug7LoadingSpeed(unittest.TestCase):
         first = op_results(run, "fetchCalls")[0]["value"]
         list_calls = [c for c in first
                       if c["method"] == "GET" and "/api/instances" in c["url"]
-                      and "cpu-models" not in c["url"]]
+                      and "cpu-models" not in c["url"]
+                      and "/password" not in c["url"]]
         self.assertEqual(len(list_calls), 1)
         self.assertFalse(any("refresh=1" in c["url"] for c in first))
         self.assertFalse(any("cpu-models" in c["url"] for c in first))
@@ -449,7 +519,8 @@ class TestBug7LoadingSpeed(unittest.TestCase):
         list_calls_after = [c for c in second
                             if c["method"] == "GET"
                             and "/api/instances" in c["url"]
-                            and "cpu-models" not in c["url"]]
+                            and "cpu-models" not in c["url"]
+                            and "/password" not in c["url"]]
         self.assertEqual(len(list_calls_after), 1)
         self.assertEqual(op_value(run, "errors"), [])
 
@@ -464,12 +535,12 @@ class TestNormKeepsCpuModel(unittest.TestCase):
                 {"id": RUNNING_ID, "name": "TEST-AMD-7551",
                  "shape": "VM.Standard.E2.1.Micro", "state": "RUNNING",
                  "ocpus": 1, "memoryInGBs": 1, "publicIp": "203.0.113.10",
-                 "timeCreated": "2026-01-05T00:00:00.000Z",
+                 "timeCreated": "2026-11-28T00:00:00.000Z",
                  "cpuModel": "AMD EPYC 7551"},
                 {"id": STOPPED_ID, "name": "TEST-AMD-UNKNOWN",
                  "shape": "VM.Standard.E2.1.Micro", "state": "STOPPED",
                  "ocpus": 1, "memoryInGBs": 1, "publicIp": None,
-                 "timeCreated": "2026-01-05T01:00:00.000Z"},
+                 "timeCreated": "2026-11-28T01:00:00.000Z"},
             ]},
             "GET /api/volumes": {"volumes": []},
         }
@@ -551,6 +622,152 @@ class TestTerminalCloseButton(unittest.TestCase):
                    if c["method"] == "DELETE"
                    and "/api/ssh/sessions/sid-9" in c["url"]]
         self.assertEqual(len(deletes), 1)
+        self.assertEqual(op_value(run, "errors"), [])
+
+
+class TestConsoleDirectConnectDoubleClick(unittest.TestCase):
+    """串行控制台“直接连接”防重复点击（Bug 1 前端）：点两下只发一个
+    POST，第二下因按钮已禁用被忽略；否则两个 POST 会在同一个 OCI 控制
+    台连接上开两个 SSH 客户端，OCI 会踢掉一个（"Another ssh client
+    has connected."）。"""
+
+    def test_double_click_posts_once(self):
+        fetch = dict(INSTANCES_FETCH)
+        fetch["GET /api/instances/" + RUNNING_ID + "/console"] = {
+            "ok": True, "instance_id": RUNNING_ID,
+            "console": {"connection-string": CONSOLE_CONNECTION_STRING,
+                        "lifecycle-state": "ACTIVE",
+                        "fingerprint": "SHA256:test"},
+        }
+        fetch["POST /api/ssh/connect-console"] = {
+            "session_id": "sid-9",
+            "host": "instance-console.ap-singapore-1.oci.oraclecloud.com",
+            "username": "ocid1.instanceconsoleconnection.oc1..testconn",
+            "port": 443, "instance_id": RUNNING_ID,
+            "__delay": 400,
+        }
+        run = run_scenario({
+            "page": "instances",
+            "fetch": fetch,
+            "steps": [{"op": "domContentLoaded"},
+                      {"op": "wait", "ms": 100},
+                      {"op": "tbodyClick", "tbody": "instance-grid",
+                       "act": "console", "rowId": RUNNING_ID,
+                       "rowAttr": "data-instance-id"},
+                      {"op": "wait", "ms": 150},
+                      {"op": "fireClick", "id": "btn-connect-console"},
+                      {"op": "fireClick", "id": "btn-connect-console"},
+                      {"op": "read", "id": "btn-connect-console",
+                       "prop": "disabled"},
+                      {"op": "fetchCalls"},
+                      {"op": "wait", "ms": 600},
+                      {"op": "fetchCalls"},
+                      {"op": "nav"},
+                      {"op": "errors"}],
+        })
+        reads = op_results(run, "read")
+        # The button is disabled as soon as the first click fires, while
+        # the POST is still in flight. 第一下点完、POST 还在飞时按钮已禁用。
+        self.assertTrue(reads[0]["value"])
+
+        def _posts(index):
+            return [c for c in op_value(run, "fetchCalls", index)
+                    if c["method"] == "POST"
+                    and "/api/ssh/connect-console" in c["url"]]
+        # Exactly one POST while the first is still in flight, and still
+        # one after the delayed response returns. POST 还在飞时只有一个，
+        # 延迟响应回来后仍只有一个。
+        self.assertEqual(len(_posts(0)), 1)
+        self.assertEqual(len(_posts(1)), 1)
+        nav = op_results(run, "nav")[0]
+        self.assertIn("/terminal?session=sid-9", nav["href"])
+        self.assertEqual(op_value(run, "errors"), [])
+
+
+class TestConsoleLoginPromptPoke(unittest.TestCase):
+    """串行控制台登录提示（Bug 2）：经 ?session= 打开控制台标签时，首次
+    WS 连上后自动发一个回车唤出 login 提示，不用用户先按回车。"""
+
+    def test_console_tab_pokes_enter_once_on_connect(self):
+        run = run_scenario({
+            "page": "terminal",
+            "locationSearch": "?session=sid-9",
+            "fetch": {},
+            "steps": [{"op": "domContentLoaded"},
+                      {"op": "wait", "ms": 150},
+                      {"op": "wsSends"},
+                      {"op": "errors"}],
+        })
+        sends = [json.loads(s) for s in op_value(run, "wsSends")]
+        # A resize first, then exactly one bare "\r" to wake getty.
+        # 先发 resize，再发一个回车唤醒 getty，且只发一次。
+        self.assertEqual(sends[0]["type"], "resize")
+        pokes = [s for s in sends
+                 if s.get("type") == "input" and s.get("data") == "\r"]
+        self.assertEqual(len(pokes), 1)
+        self.assertEqual(op_value(run, "errors"), [])
+
+
+class TestConsoleAutoLogin(unittest.TestCase):
+    """串行控制台自动登录：经 ?session= + ?instance= 打开时，用保存的
+    开机 root 密码自动输 login / Password 提示；密码不对时只问一次
+    修改后的密码。"""
+
+    def _run(self, fetch, steps):
+        return run_scenario({
+            "page": "terminal",
+            "locationSearch": "?session=sid-9&console_instance=" + RUNNING_ID,
+            "fetch": fetch,
+            "steps": steps,
+        })
+
+    def test_auto_login_types_root_and_password(self):
+        fetch = {
+            "GET /api/instances/" + RUNNING_ID + "/password": {
+                "ok": True, "root_password": "pw-1234",
+            },
+        }
+        run = self._run(fetch, [
+            {"op": "domContentLoaded"},
+            {"op": "wait", "ms": 150},
+            {"op": "wsReceive", "data": "Debian GNU/Linux 13\r\nlogin: "},
+            {"op": "wait", "ms": 50},
+            {"op": "wsSends"},
+            {"op": "wsReceive", "data": "Password: "},
+            {"op": "wait", "ms": 50},
+            {"op": "wsSends"},
+            {"op": "errors"},
+        ])
+        sends = [json.loads(s) for s in op_value(run, "wsSends", 0)]
+        # After the login prompt: root + Enter. 看到 login: 后发 root 回车。
+        self.assertIn({"type": "input", "data": "root\r"}, sends)
+        sends2 = [json.loads(s) for s in op_value(run, "wsSends", 1)]
+        # After the password prompt: the saved password + Enter.
+        # 看到 Password: 后发保存的密码 + 回车。
+        self.assertIn({"type": "input", "data": "pw-1234\r"}, sends2)
+        self.assertEqual(op_value(run, "errors"), [])
+
+    def test_no_saved_password_types_nothing(self):
+        fetch = {
+            "GET /api/instances/" + RUNNING_ID + "/password": {
+                "__status": 404,
+                "__body": {"ok": False, "error": "该实例未保存初始开机密码"},
+            },
+        }
+        run = self._run(fetch, [
+            {"op": "domContentLoaded"},
+            {"op": "wait", "ms": 150},
+            {"op": "wsReceive", "data": "Debian GNU/Linux 13\r\nlogin: "},
+            {"op": "wait", "ms": 50},
+            {"op": "wsSends"},
+            {"op": "errors"},
+        ])
+        sends = [json.loads(s) for s in op_value(run, "wsSends")]
+        # No saved password: only the resize + the getty poke, no root.
+        # 没存密码：只有 resize 与唤醒回车，不自动输 root。
+        typed = [s for s in sends
+                 if s.get("type") == "input" and s.get("data") == "root\r"]
+        self.assertEqual(typed, [])
         self.assertEqual(op_value(run, "errors"), [])
 
 
