@@ -330,7 +330,7 @@ def create_instance(body: CreateBody,
             "dd": bool(body.dd),
             "init_script": script,
         }
-        # Dual-channel notification info (passed in memory only to the thread: the password is never written to disk and is discarded after notifying). 双通道通知信息（只在内存里传给线程：密码不落盘，通知完即丢）。
+        # Dual-channel notification info (passed in memory to the thread; the password is saved to the per-instance credential store when the instance boots successfully, for later SSH / DD logins). 双通道通知信息（内存里传给线程；开机成功后密码会按实例存进凭据库，供之后 SSH / DD 登录用）。
         notify = {
             "token": bot_config.TELEGRAM_BOT_TOKEN,
             "chat_id": _notify_chat_id(),
@@ -345,7 +345,7 @@ def create_instance(body: CreateBody,
         return error_response(str(exc), status_code=400)
     except OCIError as exc:
         return oci_error_response(exc)
-    # The root password is returned with the response once (shown once in the frontend modal) and can never be looked up again. root 密码随响应返回一次（前端弹窗展示一次），之后不再可查。
+    # The root password is returned with the response once (shown once in the frontend modal); the server also keeps it in the per-instance credential store for later SSH / DD logins (tgbot/instance_credentials.py), but the panel never shows it again. root 密码随响应返回一次（前端弹窗展示一次）；服务端还会把它按实例存进凭据库，供之后 SSH / DD 登录用，但面板不再展示。
     return {"ok": True, "task_id": task_id,
             "root_password": root_password}
 

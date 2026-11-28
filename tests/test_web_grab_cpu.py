@@ -7,6 +7,7 @@
 
 import os
 import sys
+import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -20,6 +21,18 @@ from web import tasks as web_tasks
 class TestRunGrabberCpuFilter(unittest.TestCase):
 
     def setUp(self):
+        # Redirect the instance credential store to a temp file: the
+        # notify tests save the root password on success, and tests must
+        # not write it to the real data directory. 凭据库指到临时文件：
+        # 通知测试成功后会保存 root 密码，测试不能写真实数据目录。
+        self._cred_tmp = tempfile.TemporaryDirectory()
+        self._cred_patch = patch(
+            "tgbot.instance_credentials.CREDENTIALS_FILE",
+            os.path.join(self._cred_tmp.name,
+                         "instance_credentials.json"))
+        self._cred_patch.start()
+        self.addCleanup(self._cred_patch.stop)
+        self.addCleanup(self._cred_tmp.cleanup)
         self.params = {
             "display_name": "AMD_2026-01-02",
             "shape": "VM.Standard.E2.1.Micro",
@@ -158,6 +171,27 @@ class TestRunGrabberCpuFilter(unittest.TestCase):
         self.assertEqual(kwargs["target_cpu"], ["7J13"])
         self.assertIs(fake.cpu_check_hook, hook)
         mock_hook_fn.assert_called_once()
+
+    def test_e2_target_cpu_any_means_no_filter(self):
+        # 面板 CPU 下拉选“什么 CPU 都可以”（target_cpu="any"）：明确
+        # 不要筛 CPU，E2 默认补全不能把它盖回 7J13，抢到就留。
+        params = dict(self.params)
+        params["target_cpu"] = "any"
+        fake = self._fake_grabber()
+        with patch.object(web_tasks, "Grabber",
+                          return_value=fake) as mock_grabber_cls, \
+                patch.object(web_tasks, "combined_boot_keys",
+                             self._combined_keys("/tmp/user_keys.pub",
+                                                 False)) as mock_keys, \
+                patch.object(web_tasks, "get_allowed_cpu_models",
+                             return_value=["7J13"]) as mock_allowed, \
+                patch.object(web_tasks, "make_cpu_check_hook") as mock_hook_fn:
+            web_tasks._run_grabber(self.registry, "t1", MagicMock(),
+                                   "comp", params)
+        self.assertIsNone(mock_grabber_cls.call_args[1]["target_cpu"])
+        mock_hook_fn.assert_not_called()
+        mock_allowed.assert_not_called()
+        self.assertFalse(mock_keys.call_args[1]["include_guard"])
 
     def test_e2_default_spec_contains_target_cpu(self):
         # 默认补上的筛选要进 grab_spec，重启恢复时同样筛 CPU。

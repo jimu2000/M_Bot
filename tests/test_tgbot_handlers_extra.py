@@ -219,6 +219,18 @@ class HandlersExtraTestCase(unittest.IsolatedAsyncioTestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
 
+        # Redirect the instance credential store to a temp file: the
+        # boot-go thread saves the root password on success, and tests
+        # must not write it to the real data directory (same reason as
+        # the PRESETS_FILE patch in the boot-go tests). 凭据库指到临时
+        # 文件：开机线程成功后会保存 root 密码，测试不能写真实数据目录
+        # （与开机测试里 PRESETS_FILE 的 patch 同理）。
+        self._cred_patch = patch(
+            "tgbot.instance_credentials.CREDENTIALS_FILE",
+            os.path.join(self._tmp.name, "instance_credentials.json"))
+        self._cred_patch.start()
+        self.addCleanup(self._cred_patch.stop)
+
     def tmp_path(self, name):
         return os.path.join(self._tmp.name, name)
 
@@ -423,12 +435,12 @@ class TestInstanceTraffic(HandlersExtraTestCase):
     def test_fmt_instance_traffic_pure(self):
         self.assertIn("没有运行中的实例", he.fmt_instance_traffic([]))
         text = he.fmt_instance_traffic([
-            {"name": "a", "public_ip": "1.2.3.4", "city": "新加坡",
+            {"name": "a", "public_ip": "203.0.113.4", "city": "新加坡",
              "rx_gb": 1.0, "tx_gb": 2.0, "error": None},
             {"name": "b", "public_ip": None, "city": "未知地区",
              "rx_gb": None, "tx_gb": None, "error": "无公网 IP"},
         ])
-        self.assertIn("IP: 1.2.3.4（新加坡）", text)
+        self.assertIn("IP: 203.0.113.4（新加坡）", text)
         self.assertIn("当月入站: 1.00 GiB / 当月出站: 2.00 GiB", text)
         self.assertIn("IP: 无公网 IP（未知地区）", text)
         self.assertIn("查不到（无公网 IP）", text)
@@ -438,7 +450,7 @@ class TestInstanceTraffic(HandlersExtraTestCase):
         """每台查城市 + SSH vnstat，失败的台单独标 error。"""
         instances = [
             {"display-name": "web", "lifecycle-state": "RUNNING",
-             "public-ip": "1.2.3.4"},
+             "public-ip": "203.0.113.4"},
             {"display-name": "dead", "lifecycle-state": "RUNNING",
              "public-ip": "5.6.7.8"},
             {"display-name": "stopped", "lifecycle-state": "STOPPED",
@@ -448,11 +460,11 @@ class TestInstanceTraffic(HandlersExtraTestCase):
         context = make_context()
         with patch.object(bot_config, "GUARD_SSH_KEY", "/root/.ssh/rbot_guard"), \
                 patch.object(he, "fetch_city_for_ip",
-                             side_effect=lambda ip: {"1.2.3.4": "新加坡",
+                             side_effect=lambda ip: {"203.0.113.4": "新加坡",
                                                      "5.6.7.8": "圣何塞"}.get(ip, "未知地区")), \
                 patch.object(he, "run_remote_command") as mock_cmd:
             def _cmd(host, command):
-                if host["host"] == "1.2.3.4":
+                if host["host"] == "203.0.113.4":
                     return (0, self.VNSTAT_SAMPLE, "")
                 raise RuntimeError("ssh refused")
             mock_cmd.side_effect = _cmd
@@ -469,7 +481,7 @@ class TestInstanceTraffic(HandlersExtraTestCase):
     async def test_fetch_instance_traffic_no_key(self):
         """未配 SSH 密钥时每台都标“未配置 SSH 密钥”，不尝试 SSH。"""
         instances = [{"display-name": "web", "lifecycle-state": "RUNNING",
-                      "public-ip": "1.2.3.4"}]
+                      "public-ip": "203.0.113.4"}]
         context = make_context()
         with patch.object(bot_config, "GUARD_SSH_KEY", ""), \
                 patch.object(he, "fetch_city_for_ip",
@@ -482,7 +494,7 @@ class TestInstanceTraffic(HandlersExtraTestCase):
     async def test_fetch_traffic_auto_installs_vnstat(self):
         """v1.16.0：vnstat 没装时自动安装后重试，成功后标 installed。"""
         instances = [{"display-name": "new", "lifecycle-state": "RUNNING",
-                      "public-ip": "1.2.3.4"}]
+                      "public-ip": "203.0.113.4"}]
         context = make_context()
         calls = []
         with patch.object(bot_config, "GUARD_SSH_KEY",
@@ -511,7 +523,7 @@ class TestInstanceTraffic(HandlersExtraTestCase):
     async def test_fetch_traffic_install_failure(self):
         """v1.16.0：自动安装失败时标明原因，不再重试查询。"""
         instances = [{"display-name": "new", "lifecycle-state": "RUNNING",
-                      "public-ip": "1.2.3.4"}]
+                      "public-ip": "203.0.113.4"}]
         context = make_context()
         with patch.object(bot_config, "GUARD_SSH_KEY",
                           "/root/.ssh/rbot_guard"), \
@@ -531,7 +543,7 @@ class TestInstanceTraffic(HandlersExtraTestCase):
     async def test_fetch_traffic_other_failure_no_install(self):
         """v1.16.0：非“没装”原因的查询失败不触发自动安装。"""
         instances = [{"display-name": "web", "lifecycle-state": "RUNNING",
-                      "public-ip": "1.2.3.4"}]
+                      "public-ip": "203.0.113.4"}]
         context = make_context()
         with patch.object(bot_config, "GUARD_SSH_KEY",
                           "/root/.ssh/rbot_guard"), \
@@ -546,7 +558,7 @@ class TestInstanceTraffic(HandlersExtraTestCase):
     def test_fmt_instance_traffic_guard_line(self):
         """v1.21.0：每台流量下面带看门狗状态行。"""
         text = he.fmt_instance_traffic([
-            {"name": "a", "public_ip": "1.2.3.4", "city": "新加坡",
+            {"name": "a", "public_ip": "203.0.113.4", "city": "新加坡",
              "rx_gb": 1.0, "tx_gb": 2.0, "error": None,
              "guard": {"installed": True, "auto": True, "enabled": True,
                        "mode": 0, "tripped": False, "limited": False}},
@@ -561,7 +573,7 @@ class TestInstanceTraffic(HandlersExtraTestCase):
     def test_traffic_keyboard_toggle_labels(self):
         """v1.21.0：开关按钮按当前状态反着显示动作。"""
         entries = [
-            {"name": "web", "public_ip": "1.2.3.4",
+            {"name": "web", "public_ip": "203.0.113.4",
              "guard": {"installed": True, "enabled": True}},
             {"name": "e2", "public_ip": "5.6.7.8",
              "guard": {"installed": False, "enabled": False}},
@@ -580,7 +592,7 @@ class TestInstanceTraffic(HandlersExtraTestCase):
 
     def test_traffic_keyboard_no_key(self):
         """未配 SSH 密钥时不给开关按钮（装不了），只剩返回按钮。"""
-        entries = [{"name": "web", "public_ip": "1.2.3.4",
+        entries = [{"name": "web", "public_ip": "203.0.113.4",
                     "guard": {"installed": False, "enabled": False}}]
         with patch.object(bot_config, "GUARD_SSH_KEY", ""):
             keyboard = he.traffic_keyboard(entries)
@@ -742,7 +754,7 @@ class TestHealthTasksProfiles(HandlersExtraTestCase):
         """菜单 21 只列运行中的任务：已结束的不显示，且一行一个任务。"""
         running_id = self.tasks.register(
             "grab", detail="抢机进行中",
-            label="E2.1.Micro（新加坡）· AMD_2026-11-27")
+            label="E2.1.Micro（新加坡）· AMD_2026-01-04")
         done_id = self.tasks.register(
             "grab", detail="抢机完成", label="已完成任务")
         self.tasks.update(done_id, status="done", detail="抢机完成")
@@ -757,7 +769,7 @@ class TestHealthTasksProfiles(HandlersExtraTestCase):
         context = make_context()
         await he.handle_tasks(update, context)
         text = reply_text_of(update)
-        self.assertIn("• E2.1.Micro（新加坡）· AMD_2026-11-27", text)
+        self.assertIn("• E2.1.Micro（新加坡）· AMD_2026-01-04", text)
         # 一行一个任务：detail 进度行不显示。
         self.assertNotIn("抢机进行中", text)
         self.assertNotIn("已完成任务", text)
@@ -985,34 +997,34 @@ class TestUniquifyDisplayName(unittest.TestCase):
 
     def test_no_conflict_unchanged(self):
         self.assertEqual(
-            he.uniquify_display_name("AMD_2026-11-24", 1, set()),
-            "AMD_2026-11-24")
+            he.uniquify_display_name("AMD_2026-01-01", 1, set()),
+            "AMD_2026-01-01")
 
     def test_single_conflict_gets_suffix(self):
         self.assertEqual(
-            he.uniquify_display_name("AMD_2026-11-24", 1,
-                                     {"AMD_2026-11-24"}),
-            "AMD_2026-11-24-2")
+            he.uniquify_display_name("AMD_2026-01-01", 1,
+                                     {"AMD_2026-01-01"}),
+            "AMD_2026-01-01-2")
 
     def test_double_conflict_gets_next_suffix(self):
         self.assertEqual(
-            he.uniquify_display_name("AMD_2026-11-24", 1,
-                                     {"AMD_2026-11-24",
-                                      "AMD_2026-11-24-2"}),
-            "AMD_2026-11-24-3")
+            he.uniquify_display_name("AMD_2026-01-01", 1,
+                                     {"AMD_2026-01-01",
+                                      "AMD_2026-01-01-2"}),
+            "AMD_2026-01-01-3")
 
     def test_batch_checks_all_suffixed_names(self):
         self.assertEqual(
-            he.uniquify_display_name("ARM_2026-11-24", 2,
-                                     {"ARM_2026-11-24-1"}),
-            "ARM_2026-11-24-2")
+            he.uniquify_display_name("ARM_2026-01-01", 2,
+                                     {"ARM_2026-01-01-1"}),
+            "ARM_2026-01-01-2")
 
     def test_batch_skips_taken_second_group(self):
         self.assertEqual(
-            he.uniquify_display_name("ARM_2026-11-24", 2,
-                                     {"ARM_2026-11-24-1",
-                                      "ARM_2026-11-24-2-2"}),
-            "ARM_2026-11-24-3")
+            he.uniquify_display_name("ARM_2026-01-01", 2,
+                                     {"ARM_2026-01-01-1",
+                                      "ARM_2026-01-01-2-2"}),
+            "ARM_2026-01-01-3")
 
 
 class TestBoot(HandlersExtraTestCase):

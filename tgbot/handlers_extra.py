@@ -156,6 +156,9 @@ from tgbot.gfw import (
 from tgbot.cpu_policy import (combined_boot_keys,
                               get_allowed_cpu_models, make_cpu_check_hook)
 from tgbot import task_store
+from tgbot.instance_credentials import (resolve_root_password,
+                                       save_credential,
+                                       update_credential_ip)
 from tgbot.task_store import start_cancel_watcher
 from tgbot.handlers_client import put_remote_file, run_remote_command
 from tgbot.watchdog import (
@@ -1960,17 +1963,17 @@ def _start_dd_init(preset, instances, notify, task_id=None):
 
     preset 须含 dd=True、root_password（DD 密码，确认页生成的 UUID）。
     startup_script（初始化脚本原文）可空：没脚本也跟踪 DD 完成并通知
-    （2026-11-28 用户要求“立即改”——没脚本就不跟踪、不通知是个缺口）。
+    （2026-01-05 用户要求“立即改”——没脚本就不跟踪、不通知是个缺口）。
+    preset 里没密码时（比如重启恢复重跑）先看 notify，再按实例 OCID
+    读凭据库里开机时存的那份；三处都没有才跳过。
     DD 完成 / 初始化完成 / 失败时经 notify_dual 双通道推送。无公网 IP
     的实例起不了任务（SSH 没地址可连），记日志提示人工处理。
     """
     if not preset.get("dd"):
         return
     init_script = preset.get("startup_script")
-    password = preset.get("root_password")
-    if not password:
-        logger.warning("DD 已开但缺 root 密码，未起 DD 初始化。")
-        return
+    password = (preset.get("root_password")
+                or notify.get("root_password"))
     token = notify.get("token")
     chat_id = notify.get("chat_id")
     for inst in instances:
@@ -1978,6 +1981,11 @@ def _start_dd_init(preset, instances, notify, task_id=None):
         public_ip = inst.get("public_ip")
         if not public_ip:
             logger.warning("实例 %s 暂无公网 IP，未起 DD 初始化。", name)
+            continue
+        dd_password = password or resolve_root_password(
+            inst.get("instance_id"))
+        if not dd_password:
+            logger.warning("实例 %s 缺 root 密码，未起 DD 初始化。", name)
             continue
 
         def _on_event(event_type, message, _name=name, _ip=public_ip):
@@ -1995,7 +2003,7 @@ def _start_dd_init(preset, instances, notify, task_id=None):
             if task_id is not None:
                 TASKS.append_log(task_id, message)
 
-        start_dd_init(public_ip, password, init_script,
+        start_dd_init(public_ip, dd_password, init_script,
                       instance_name=name, port=DD_SSH_PORT,
                       on_event=_on_event)
         logger.info("已起 DD 初始化任务：实例 %s（%s）", name, public_ip)
@@ -2022,13 +2030,30 @@ def _notify_boot_success(cli, preset, successes, notify, task_id=None):
             if not public_ip:
                 start_ip_followup(
                     lambda iid=result.instance_id: get_public_ip(cli, iid),
-                    name, notify.get("token"), notify.get("chat_id"))
+                    name, notify.get("token"), notify.get("chat_id"),
+                    on_ip=lambda ip, iid=result.instance_id:
+                    update_credential_ip(iid, ip))
             instances.append({
+                "instance_id": result.instance_id,
                 "name": name,
                 "public_ip": public_ip,
                 "attempts": result.attempts,
                 "elapsed_seconds": result.elapsed_seconds,
             })
+        # 开机成功先把 root 密码按实例存进凭据库（之后 SSH、DD 后登录、
+        # DD 后追加 SSH 公钥都靠它；用通知里那份密码，不另生成）。
+        # 存失败只记日志，不拖垮通知。
+        _password = notify.get("root_password") or preset.get("root_password")
+        if _password:
+            for _inst in instances:
+                try:
+                    save_credential(
+                        _inst.get("instance_id"), _password,
+                        ip=_inst.get("public_ip"),
+                        instance_name=_inst.get("name"))
+                except Exception as exc:  # noqa: BLE001 - 存失败不拖垮通知
+                    logger.warning("实例 %s 的 root 密码保存失败：%s",
+                                   _inst.get("name") or "?", exc)
         shape = preset.get("shape") or ""
         ocpus = preset.get("ocpus")
         memory_gb = preset.get("memory_gb")

@@ -47,6 +47,15 @@ class _TempTasksFile(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.path = os.path.join(self._tmp.name, "tasks.json")
+        # Redirect the instance credential store to a temp file: the
+        # notify paths save the root password on success, and tests must
+        # not write it to the real data directory. 凭据库指到临时文件：
+        # 通知成功后会保存 root 密码，测试不能写真实数据目录。
+        self._cred_patch = patch(
+            "tgbot.instance_credentials.CREDENTIALS_FILE",
+            os.path.join(self._tmp.name, "instance_credentials.json"))
+        self._cred_patch.start()
+        self.addCleanup(self._cred_patch.stop)
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -158,6 +167,11 @@ class TestNotifyOutcomeLoggedBot(_TempTasksFile):
         logs = "\n".join(
             task_store.get_record(self.path, self.task_id).get("logs", []))
         self.assertIn("通知：Telegram 已发送，Bark 已发送", logs)
+        # The root password is saved per instance for later SSH / DD
+        # logins. 开机成功后 root 密码按实例存好，供之后 SSH / DD 登录。
+        from tgbot.instance_credentials import get_root_password
+        self.assertEqual(
+            get_root_password("ocid1.instance.oc1..aaa1"), "pw123")
 
     def test_no_task_id_does_not_write_file(self):
         with patch.object(he, "wait_for_public_ip",

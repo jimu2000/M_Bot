@@ -6,6 +6,8 @@ mock Grabber + mock 通知函数验证，不真抢机。
 """
 
 import json
+import os
+import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -84,7 +86,8 @@ class TestFmtBootSuccess(unittest.TestCase):
         self.assertIn("花费时间：4 秒", text)
         self.assertIn("开机地区：ap-seoul-1（首尔）", text)
         self.assertIn("ip：203.0.113.10", text)
-        self.assertIn("注意📢：root密码机器人不会记忆，请注意保存", text)
+        self.assertIn("注意📢：root密码机器人已保存，之后 SSH（开机后、DD 后）"
+                      "会用它登录；请你也自己保存一份", text)
 
     def test_no_password_no_line(self):
         text = notify_mod.fmt_boot_success(
@@ -230,6 +233,18 @@ class TestGrabberThreadNotify(unittest.TestCase):
     """_run_grabber_thread 的通知分支：成功后调通知，失败不调。"""
 
     def setUp(self):
+        # Redirect the instance credential store to a temp file: the
+        # thread saves the root password on success, and tests must not
+        # write it to the real data directory. 凭据库指到临时文件：
+        # 线程成功后会保存 root 密码，测试不能写真实数据目录。
+        self._cred_tmp = tempfile.TemporaryDirectory()
+        self._cred_patch = patch(
+            "tgbot.instance_credentials.CREDENTIALS_FILE",
+            os.path.join(self._cred_tmp.name,
+                         "instance_credentials.json"))
+        self._cred_patch.start()
+        self.addCleanup(self._cred_patch.stop)
+        self.addCleanup(self._cred_tmp.cleanup)
         self.tasks = TaskRegistry()
         self._tasks = patch.object(he, "TASKS", self.tasks)
         self._tasks.start()
@@ -334,6 +349,18 @@ class TestGrabberThreadCpuFilter(unittest.TestCase):
     """_run_grabber_thread 的 CPU 筛选注入：合并 keys + hook + 规则列表。"""
 
     def setUp(self):
+        # Redirect the instance credential store to a temp file: the
+        # thread saves the root password on success, and tests must not
+        # write it to the real data directory. 凭据库指到临时文件：
+        # 线程成功后会保存 root 密码，测试不能写真实数据目录。
+        self._cred_tmp = tempfile.TemporaryDirectory()
+        self._cred_patch = patch(
+            "tgbot.instance_credentials.CREDENTIALS_FILE",
+            os.path.join(self._cred_tmp.name,
+                         "instance_credentials.json"))
+        self._cred_patch.start()
+        self.addCleanup(self._cred_patch.stop)
+        self.addCleanup(self._cred_tmp.cleanup)
         self.tasks = TaskRegistry()
         self._tasks = patch.object(he, "TASKS", self.tasks)
         self._tasks.start()

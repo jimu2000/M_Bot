@@ -30,7 +30,7 @@ from starlette.websockets import WebSocketDisconnect
 import web.ssh as ssh_module
 from web.ssh import (OUTPUT_BUFFER_LINES, SSHSession, SSHSessionManager,
                      _FallbackSessionStore, build_banner, get_host,
-                     load_hosts, router)
+                     load_hosts, parse_console_connection_string, router)
 
 # Test hosts (documentation range / loopback, not real IPs). 测试用主机（文档段 / 回环，不是真实 IP）。
 TEST_HOST = "203.0.113.10"
@@ -467,6 +467,133 @@ class TestConnectInstance(_AuthPatchedTestCase):
         self.assertEqual(resp.status_code, 401)
         self.assertEqual(
             self.mock_manager.create_session.call_count, 2)  # 14422 与 22 都试过
+
+    def test_stored_password_fallback(self):
+        # No fixed password, but the instance has a stored password:
+        # one-click SSH must connect with it (server-side only, never
+        # returned to the browser). 没固定密码、实例有保存的密码时，
+        # 一键 SSH 必须用保存的密码直连（只在服务端用，绝不返回给前端）。
+        self._mock_oci()
+        self.mock_manager.create_session.return_value = "sid-9"
+        with patch.dict(os.environ, {"MBOT_FIXED_ROOT_PASSWORD": ""}), \
+                patch("tgbot.instance_credentials.get_root_password",
+                      return_value="stored-pw-test"):
+            resp = self._post()
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["session_id"], "sid-9")
+        self.assertNotIn("stored-pw-test", resp.text)
+        self.mock_manager.create_session.assert_called_once_with(
+            TEST_HOST, 14422, "root", password="stored-pw-test")
+
+    def test_fixed_password_wins_over_stored(self):
+        # Fixed password set: it wins, the stored one is never consulted.
+        # 固定密码设了就优先，保存的密码不会被取用。
+        self._mock_oci()
+        self.mock_manager.create_session.return_value = "sid-9"
+        with patch.dict(os.environ,
+                        {"MBOT_FIXED_ROOT_PASSWORD": "fixed-pw-test"}), \
+                patch("tgbot.instance_credentials.get_root_password",
+                      return_value="stored-pw-test") as mock_get:
+            resp = self._post()
+        self.assertEqual(resp.status_code, 200)
+        mock_get.assert_not_called()
+        self.mock_manager.create_session.assert_called_once_with(
+            TEST_HOST, 14422, "root", password="fixed-pw-test")
+
+
+# Serial console direct connect (POST /api/ssh/connect-console). 串行控制台直连。
+FAKE_CONSOLE_STRING = (
+    "ssh -o ProxyCommand='ssh -W %h:%p -p 443 "
+    "ocid1.instanceconsoleconnection.oc1..consoletest"
+    "@instance-console.ap-singapore-1.oci.oraclecloud.com' "
+    "ocid1.instance.oc1..consoletest")
+FAKE_CONSOLE_STRING_SIMPLE = (
+    "ssh -i /root/.ssh/id_rsa -p 443 "
+    "ocid1.instanceconsoleconnection.oc1..consoletest"
+    "@instance-console.ap-singapore-1.oci.oraclecloud.com")
+
+
+class TestParseConsoleConnectionString(unittest.TestCase):
+    """parse_console_connection_string：连接命令 -> (host, port, username)。"""
+
+    def test_proxycommand_form(self):
+        host, port, username = parse_console_connection_string(
+            FAKE_CONSOLE_STRING)
+        self.assertEqual(
+            host, "instance-console.ap-singapore-1.oci.oraclecloud.com")
+        self.assertEqual(port, 443)
+        self.assertEqual(
+            username, "ocid1.instanceconsoleconnection.oc1..consoletest")
+
+    def test_simple_form(self):
+        host, port, username = parse_console_connection_string(
+            FAKE_CONSOLE_STRING_SIMPLE)
+        self.assertEqual(
+            host, "instance-console.ap-singapore-1.oci.oraclecloud.com")
+        self.assertEqual(port, 443)
+        self.assertEqual(
+            username, "ocid1.instanceconsoleconnection.oc1..consoletest")
+
+    def test_rejects_non_console_host(self):
+        with self.assertRaises(ValueError):
+            parse_console_connection_string("ssh root@203.0.113.10")
+
+    def test_rejects_empty(self):
+        with self.assertRaises(ValueError):
+            parse_console_connection_string("")
+
+
+class TestConnectConsole(_AuthPatchedTestCase):
+    """POST /api/ssh/connect-console：串行控制台直连。"""
+
+    def _post(self, connection_string=FAKE_CONSOLE_STRING, **extra):
+        payload = {"connection_string": connection_string}
+        payload.update(extra)
+        return self.client.post("/api/ssh/connect-console", json=payload,
+                                cookies=self._auth_cookies())
+
+    def test_success(self):
+        self.mock_manager.create_session.return_value = "sid-9"
+        with patch("web.ssh._console_private_key_path",
+                   return_value=None):
+            resp = self._post()
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["session_id"], "sid-9")
+        self.assertEqual(
+            resp.json()["host"],
+            "instance-console.ap-singapore-1.oci.oraclecloud.com")
+        self.assertEqual(resp.json()["port"], 443)
+        self.mock_manager.create_session.assert_called_once_with(
+            "instance-console.ap-singapore-1.oci.oraclecloud.com", 443,
+            "ocid1.instanceconsoleconnection.oc1..consoletest",
+            key_path=None)
+
+    def test_bad_connection_string(self):
+        resp = self._post(connection_string="ssh root@203.0.113.10")
+        self.assertEqual(resp.status_code, 400)
+        self.mock_manager.create_session.assert_not_called()
+
+    def test_auth_failure(self):
+        self.mock_manager.create_session.side_effect = \
+            paramiko.AuthenticationException("nope")
+        with patch("web.ssh._console_private_key_path",
+                   return_value=None):
+            resp = self._post()
+        self.assertEqual(resp.status_code, 401)
+
+    def test_console_key_from_env(self):
+        # MBOT_CONSOLE_SSH_KEY_FILE points at a .pub: the private key is
+        # the same path without .pub. 环境变量指向 .pub 时，私钥是去掉
+        # .pub 的同路径文件。
+        with tempfile.TemporaryDirectory() as tmp:
+            pub = os.path.join(tmp, "id_rsa.pub")
+            priv = os.path.join(tmp, "id_rsa")
+            Path(pub).write_text("ssh-rsa AAAA test\n")
+            Path(priv).write_text("private\n")
+            with patch.dict(os.environ,
+                            {"MBOT_CONSOLE_SSH_KEY_FILE": pub}):
+                self.assertEqual(ssh_module._console_private_key_path(),
+                                 priv)
 
 
 class TestWebSocket(_AuthPatchedTestCase):

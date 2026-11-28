@@ -154,7 +154,9 @@ global.window = {
     language: scenario.navigatorLanguage || "zh-CN",
     clipboard: { writeText: async function (t) { global.__copied = t; } },
   },
-  location: { href: "", pathname: "/" + (scenario.page || "volumes") },
+  location: { href: "", pathname: "/" + (scenario.page || "volumes"),
+              search: scenario.locationSearch || "",
+              protocol: "http:", host: "localhost" },
   dispatchEvent: function (evt) {
     (winListeners[evt.type] || []).forEach(function (fn) {
       try { fn(evt); } catch (e) { errors.push("window " + evt.type + ": " + e.message); }
@@ -185,6 +187,41 @@ Object.defineProperty(globalThis, "navigator", {
   value: global.window.navigator,
   configurable: true,
 });
+// Bare `location` / `history` (browsers alias them to window.location /
+// window.history; page scripts such as terminal.js use the bare form).
+// 裸 location / history（浏览器里它们就是 window.location / window.history，
+// terminal.js 这类页面脚本直接用裸名）。
+global.location = global.window.location;
+global.history = {
+  length: scenario.historyLength != null ? scenario.historyLength : 1,
+  back: function () { global.__historyBackCalled = true; },
+};
+
+// Terminal page stubs (xterm.js / WebSocket are CDN / browser globals that
+// the stub DOM does not provide; only the tab/session flow is exercised,
+// so minimal no-op implementations are enough). 终端页桩（xterm.js /
+// WebSocket 是 CDN / 浏览器全局量，桩 DOM 没有；只测标签/会话流程，
+// 最小空实现即可）。
+if ((scenario.page || "") === "terminal") {
+  global.Terminal = function () {
+    this.cols = 80;
+    this.rows = 24;
+    this.loadAddon = function () {};
+    this.open = function () {};
+    this.dispose = function () {};
+    this.write = function () {};
+    this.focus = function () {};
+    this.onData = function () {};
+    this.onResize = function () {};
+  };
+  global.FitAddon = { FitAddon: function () { this.fit = function () {}; } };
+  global.WebSocket = function () {
+    this.readyState = 1;
+    this.send = function () {};
+    this.close = function () {};
+  };
+  global.WebSocket.OPEN = 1;
+}
 
 /* ---------- fetch stub ---------- */
 const fetchMap = scenario.fetch || {};
@@ -408,6 +445,14 @@ async function run() {
       }
       case "copied":
         results.push({ op: step.op, value: global.__copied || null });
+        break;
+      case "nav":
+        // Navigation state after a page script leaves the page (e.g. the
+        // terminal "close this SSH window" button): where it went, and
+        // whether it used history.back(). 离开页面后的导航状态（如终端
+        // “关闭此SSH窗口”按钮）：去了哪里、是否走了 history.back()。
+        results.push({ op: step.op, href: global.location.href,
+                       historyBack: !!global.__historyBackCalled });
         break;
       default:
         results.push({ op: step.op, error: "unknown op" });

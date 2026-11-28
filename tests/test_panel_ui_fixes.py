@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""M_Bot 面板 7 个 UI bug 修复的回归测试（2026-11-28 卸盘救机时浏览器实测发现）。
+"""M_Bot 面板 7 个 UI bug 修复的回归测试（2026-01-05 卸盘救机时浏览器实测发现）。
 
 用 tests/dom_harness.js 跑真实的 i18n.js + app.js + 页面脚本（stub
 DOM / fetch），覆盖 bug 1（停止按钮与状态码文案）、bug 2（详情立即
@@ -50,11 +50,11 @@ INSTANCES = [
     {"id": RUNNING_ID, "display-name": "TEST-AMD-01",
      "shape": "VM.Standard.E2.1.Micro", "lifecycle-state": "RUNNING",
      "shape-config": {"ocpus": 1, "memory-in-gbs": 1},
-     "time-created": "2026-11-28T00:00:00.000Z"},
+     "time-created": "2026-01-05T00:00:00.000Z"},
     {"id": STOPPED_ID, "display-name": "TEST-ARM-01",
      "shape": "VM.Standard.A1.Flex", "lifecycle-state": "STOPPED",
      "shape-config": {"ocpus": 1, "memory-in-gbs": 6},
-     "time-created": "2026-11-28T01:00:00.000Z"},
+     "time-created": "2026-01-05T01:00:00.000Z"},
 ]
 
 # The volume record carries ONLY volumeId (no dual-written id): that is
@@ -69,7 +69,7 @@ VOLUME = {"volumeId": VOLUME_ID, "displayName": "TEST-VOL-01",
 BACKUP = {"backupId": BACKUP_ID, "displayName": "TEST-BACKUP-01",
           "bootVolumeId": VOLUME_ID, "sizeInGBs": 50,
           "lifecycleState": "AVAILABLE", "type": "FULL",
-          "timeCreated": "2026-11-28T04:00:00.000Z"}
+          "timeCreated": "2026-01-05T04:00:00.000Z"}
 
 INSTANCE_DETAIL = {
     "instance": {"id": RUNNING_ID, "display-name": "TEST-AMD-01",
@@ -77,7 +77,7 @@ INSTANCE_DETAIL = {
                  "lifecycle-state": "RUNNING",
                  "shape-config": {"ocpus": 1, "memory-in-gbs": 1},
                  "availability-domain": "AD-1",
-                 "time-created": "2026-11-28T00:00:00.000Z"},
+                 "time-created": "2026-01-05T00:00:00.000Z"},
     "cpu_model": None,
     "public_ip": "203.0.113.10",
     "private_ip": "10.0.0.5",
@@ -394,6 +394,106 @@ class TestBug7LoadingSpeed(unittest.TestCase):
                             and "/api/instances" in c["url"]
                             and "cpu-models" not in c["url"]]
         self.assertEqual(len(list_calls_after), 1)
+        self.assertEqual(op_value(run, "errors"), [])
+
+
+class TestNormKeepsCpuModel(unittest.TestCase):
+    """norm() 必须保留 cpuModel：API 返回真实型号时卡片显示它，而不是 E2 回落的 7J13。"""
+
+    def test_card_shows_real_model_and_fallback_once(self):
+        fetch = {
+            "GET /api/profiles": PROFILES,
+            "GET /api/instances": {"instances": [
+                {"id": RUNNING_ID, "name": "TEST-AMD-7551",
+                 "shape": "VM.Standard.E2.1.Micro", "state": "RUNNING",
+                 "ocpus": 1, "memoryInGBs": 1, "publicIp": "203.0.113.10",
+                 "timeCreated": "2026-01-05T00:00:00.000Z",
+                 "cpuModel": "AMD EPYC 7551"},
+                {"id": STOPPED_ID, "name": "TEST-AMD-UNKNOWN",
+                 "shape": "VM.Standard.E2.1.Micro", "state": "STOPPED",
+                 "ocpus": 1, "memoryInGBs": 1, "publicIp": None,
+                 "timeCreated": "2026-01-05T01:00:00.000Z"},
+            ]},
+            "GET /api/volumes": {"volumes": []},
+        }
+        run = run_scenario({
+            "page": "instances",
+            "fetch": fetch,
+            "steps": [{"op": "domContentLoaded"},
+                      {"op": "wait", "ms": 100},
+                      {"op": "read", "id": "instance-grid",
+                       "prop": "innerHTML"},
+                      {"op": "errors"}],
+        })
+        grid = op_value(run, "read")
+        self.assertIn("AMD EPYC 7551", grid)
+        # Only the instance without cpuModel falls back to 7J13. 没型号的那台才回落 7J13。
+        self.assertEqual(grid.count("AMD EPYC 7J13"), 1)
+        self.assertEqual(op_value(run, "errors"), [])
+
+
+class TestTerminalCloseButton(unittest.TestCase):
+    """终端页“关闭此SSH窗口”：关当前会话并离开终端页；没有会话时也要离开。"""
+
+    def _run(self, **extra):
+        scenario = {
+            "page": "terminal",
+            "fetch": {},
+            "steps": [{"op": "domContentLoaded"},
+                      {"op": "wait", "ms": 50},
+                      {"op": "fireClick", "id": "btn-close-tab"},
+                      {"op": "wait", "ms": 100},
+                      {"op": "nav"},
+                      {"op": "errors"}],
+        }
+        scenario.update(extra)
+        return run_scenario(scenario)
+
+    def test_no_session_direct_open_goes_to_instances(self):
+        # Directly opened (no history): fall back to the instance list.
+        # 直接打开（没有上一页）：回实例列表。
+        run = self._run(historyLength=1)
+        nav = op_results(run, "nav")[0]
+        self.assertEqual(nav["href"], "/instances")
+        self.assertFalse(nav["historyBack"])
+        self.assertEqual(op_value(run, "errors"), [])
+
+    def test_no_session_with_history_goes_back(self):
+        # Came from the instance list: history.back(). 从实例列表来的：回上一页。
+        run = self._run(historyLength=2)
+        nav = op_results(run, "nav")[0]
+        self.assertEqual(nav["href"], "")
+        self.assertTrue(nav["historyBack"])
+        self.assertEqual(op_value(run, "errors"), [])
+
+    def test_with_session_closes_it_then_leaves(self):
+        # One-click SSH opened a session; closing ends it server-side
+        # (DELETE /api/ssh/sessions/<id>) and then leaves the page.
+        # 一键 SSH 已开会话；关闭时先调接口关掉服务端会话，再离开页面。
+        run = run_scenario({
+            "page": "terminal",
+            "historyLength": 1,
+            "locationSearch": "?instance=" + RUNNING_ID +
+                              "&profile=DEFAULT&region=ap-singapore-1"
+                              "&host=203.0.113.10",
+            "fetch": {"POST /api/ssh/connect-instance":
+                      {"session_id": "sid-9", "username": "root",
+                       "host": "203.0.113.10"}},
+            "steps": [{"op": "domContentLoaded"},
+                      {"op": "wait", "ms": 100},
+                      {"op": "fireClick", "id": "btn-close-tab"},
+                      {"op": "wait", "ms": 100},
+                      {"op": "nav"},
+                      {"op": "fetchCalls"},
+                      {"op": "errors"}],
+        })
+        nav = op_results(run, "nav")[0]
+        self.assertEqual(nav["href"], "/instances")
+        self.assertFalse(nav["historyBack"])
+        deletes = [c for c in op_value(run, "fetchCalls")
+                   if c["method"] == "DELETE"
+                   and "/api/ssh/sessions/sid-9" in c["url"]]
+        self.assertEqual(len(deletes), 1)
         self.assertEqual(op_value(run, "errors"), [])
 
 

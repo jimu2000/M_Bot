@@ -9,6 +9,18 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [2.23.0] - 2026-11-28
+- Per-instance root password storage (user decision, replacing the old "passwords never touch disk" rule): after a successful boot, both the bot and the web side save the root password keyed by instance OCID into the server-side credential store `tgbot/data/instance_credentials.json` (file mode 0600, read only by the bot/web server processes on .160). Passwords are never sent to the browser, never logged, and never included in notifications or task exports. The entry is deleted when its instance is terminated.
+- One-click SSH falls back to the stored password: when the fixed password `MBOT_FIXED_ROOT_PASSWORD` is not set, the instance card SSH connect now uses the password saved at creation for that instance (the fixed password still wins when set); with no stored password it still falls back to the manual connect form. Post-DD init does the same: when the notification has no password, it reads the credential store by instance OCID (a resumed run after restart no longer skips DD init for lack of a password).
+- Boot-success notification wording changed: it no longer says the bot will not remember the password; it now says the bot has saved the root password and will use it for later SSH logins (after boot and after DD), and asks the user to keep a copy too (bot and web consistent, bilingual).
+- The terminal page "Close this SSH window" button is fixed: it used to do nothing with no session, and with a session it only closed the tab without leaving the page. It now closes the current session (DELETE the server-side session) and then leaves the terminal page — back to the previous page when there is one, or to the instance list when opened directly.
+- The serial console dialog has a "Direct connect" button: the backend parses the OCI console host from the displayed connection command (port 443, username is the connection OCID) and connects directly with the server-side RSA key, opening a tab in the terminal page. Copy command and Close stay as they are.
+- Instance card CPU model display fixed: `norm()` dropped `cpuModel` while normalizing, so cards always showed the E2 fallback "AMD EPYC 7J13". The real model returned by the backend (e.g. AMD EPYC 7551) is now kept; only undetected machines fall back to 7J13.
+
+## [2.22.0] - 2026-11-28
+- The create form's "Target CPU" is now a dropdown matching the bot side: it was a free-text field, now it offers "Only 7J13" / "Any CPU is fine", defaulting to Only 7J13; choosing "Any CPU is fine" disables CPU filtering and keeps whatever is grabbed. The backend converts "any" to no filtering (the E2 default fill no longer overwrites an explicit "any" back to 7J13).
+- The default SSH public key file path is now /root/admin_ssh_keys.pub (was /opt/rbot-clone/web/data/ssh_keys.pub): the deployment config on .160 has been updated, the key file created, and the form auto-fills the new path.
+
 ## [2.21.0] - 2026-11-28
 - Web create form now has a DD switch: a "DD reinstall (Debian13)" toggle was added under the startup script in the advanced options, on by default, matching the bot side; the web form previously had no such option. The DD switch and password are the same all the way through: the form's random password goes unchanged into the InstallNET `-pwd` flag, the post-DD init SSH login, the success notification and the frontend popup.
 - Fixed a bug where task restore dropped DD: the `GRAB_PARAM_KEYS` allowlist was missing `dd` and `init_script`, so although create params contained both, they were filtered out when written to disk and a resumed run after restart lost DD; both keys are now included, and the bot side benefits too since it shares the same allowlist.

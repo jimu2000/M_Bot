@@ -7,18 +7,32 @@
 
 import os
 import sys
+import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from oci.grabber import GrabResult
+from tgbot.instance_credentials import get_root_password
 from web import tasks as web_tasks
 
 
 class TestNotifyGrabSuccess(unittest.TestCase):
 
     def setUp(self):
+        # Redirect the instance credential store to a temp file: the
+        # notify path saves the root password on success, and tests must
+        # not write it to the real data directory. 凭据库指到临时文件：
+        # 通知成功后会保存 root 密码，测试不能写真实数据目录。
+        self._cred_tmp = tempfile.TemporaryDirectory()
+        self._cred_patch = patch(
+            "tgbot.instance_credentials.CREDENTIALS_FILE",
+            os.path.join(self._cred_tmp.name,
+                         "instance_credentials.json"))
+        self._cred_patch.start()
+        self.addCleanup(self._cred_patch.stop)
+        self.addCleanup(self._cred_tmp.cleanup)
         self.params = {"display_name": "AMD_2026-01-02",
                        "shape": "VM.Standard.E2.1.Micro",
                        "ocpus": 1, "memory_gb": 1,
@@ -48,6 +62,10 @@ class TestNotifyGrabSuccess(unittest.TestCase):
         followup.assert_not_called()
         instances = notify_fn.call_args[0][8]
         self.assertEqual(instances[0]["public_ip"], "203.0.113.10")
+        # The root password is saved per instance for later SSH / DD
+        # logins. 开机成功后 root 密码按实例存好，供之后 SSH / DD 登录。
+        self.assertEqual(
+            get_root_password("ocid1.instance.oc1..aaa1"), "pw123")
 
     def test_ip_missing_starts_followup(self):
         with patch.object(web_tasks, "wait_for_public_ip",

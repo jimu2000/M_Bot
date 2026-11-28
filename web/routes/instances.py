@@ -106,6 +106,7 @@ from tgbot.cpu_model import (
     host_for_ip,
     load_cpu_models,
 )
+from tgbot.instance_credentials import delete_credential
 from tgbot.handlers_client import (
     RemoteCommandError,
     put_remote_file,
@@ -546,6 +547,7 @@ def batch(body: BatchBody,
         clear_volumes_cache(profile or config.DEFAULT_PROFILE)
         for instance_id in result["succeeded"]:
             delete_cpu_model(instance_id)
+            delete_credential(instance_id)
     return {"ok": True, "action": body.action,
             "succeeded": result["succeeded"], "failed": result["failed"]}
 
@@ -635,6 +637,7 @@ def _action(instance_id, profile, func, action_name, region=None):
     clear_quota_cache(profile or config.DEFAULT_PROFILE)
     if action_name == "terminate":
         delete_cpu_model(instance_id)
+        delete_credential(instance_id)
     return {"ok": True, "instance_id": instance_id, "action": action_name}
 
 
@@ -797,6 +800,8 @@ def terminate(instance_id: str,
     clear_volumes_cache(profile or config.DEFAULT_PROFILE)
     clear_cloud_report_cache()
     clear_quota_cache(profile or config.DEFAULT_PROFILE)
+    delete_cpu_model(instance_id)
+    delete_credential(instance_id)
     return {"ok": True, "instance_id": instance_id, "action": "terminate",
             "preserve_boot_volume": body.preserve_boot_volume}
 

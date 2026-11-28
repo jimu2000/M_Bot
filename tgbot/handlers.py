@@ -37,6 +37,7 @@ from tgbot import i18n as bot_i18n
 from tgbot import menu_tracker
 from tgbot.cpu_model import (cached_cpu_model, delete_cpu_model,
                              get_cpu_model, host_for_ip)
+from tgbot.instance_credentials import delete_credential
 from tgbot.handlers_client import run_remote_command
 from tgbot.i18n import lang_of, set_lang_context, toggle_user_lang
 from tgbot.keyboards import (ORACLE_MENU_ITEMS, back_to_oracle_keyboard,
@@ -767,6 +768,7 @@ async def confirm_callback(update: Update,
     clear_instance_detail_cache(instance_id)
     if action == "terminate":
         delete_cpu_model(instance_id)
+        delete_credential(instance_id)
         text = bot_i18n.t(lang, "instances.done_terminate", name=name)
     else:
         text = bot_i18n.t(lang, f"instances.done_{action}", name=name)

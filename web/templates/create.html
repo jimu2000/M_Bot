@@ -150,9 +150,12 @@
           </div>
         </div>
         <div class="form-group">
-          <label for="target-cpu">目标 CPU（可选）</label>
-          <input type="text" id="target-cpu" placeholder="例如：7J13，留空默认只留 7J13">
-          <p class="hint">抢到实例后会先核对 CPU 型号，不符合的自动释放并继续抢。</p>
+          <label for="target-cpu" data-i18n="create.target_cpu">目标 CPU（可选）</label>
+          <select id="target-cpu">
+            <option value="7J13" selected data-i18n="create.target_cpu_only">只抢 7J13</option>
+            <option value="any" data-i18n="create.target_cpu_any">什么 CPU 都可以</option>
+          </select>
+          <p class="hint" data-i18n="create.target_cpu_hint">只抢 7J13：抢到后先核对 CPU 型号，不符合的自动释放并继续抢；什么 CPU 都可以：抢到就留。</p>
         </div>
         <div class="form-group">
           <label for="startup-script">启动脚本</label>

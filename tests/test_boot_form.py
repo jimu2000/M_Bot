@@ -82,7 +82,7 @@ class TestNewForm(unittest.TestCase):
         self.assertIsNone(form["script"])
 
     def test_user_form_defaults(self):
-        """用户偏好默认值（2026-11-28 定）：交互式开机表单与一键开机
+        """用户偏好默认值（2026-01-05 定）：交互式开机表单与一键开机
         用 new_user_form()，延迟 20 秒、IPv6 开、DD 重装开；new_form()
         本身保持中性，不影响预设与抢机。"""
         form = bf.new_user_form()
@@ -508,9 +508,9 @@ class TestBuildPreset(unittest.TestCase):
         # Free instance: type + Beijing-time date (17:00 UTC is already 01:00 next day). 免费实例：类型 + 北京时间日期（UTC 17:00 已是次日凌晨 1 点）。
         now = datetime(2026, 11, 24, 17, 0, tzinfo=timezone.utc)
         name = bf.generate_display_name("VM.Standard.A1.Flex", 1, 6, now=now)
-        self.assertEqual(name, "ARM_2026-11-25")
+        self.assertEqual(name, "ARM_2026-01-02")
         name = bf.generate_display_name("VM.Standard.E2.1.Micro", 1, 1, now=now)
-        self.assertEqual(name, "AMD_2026-11-25")
+        self.assertEqual(name, "AMD_2026-01-02")
         name = bf.generate_display_name("VM.Standard.E3.Flex", 2, 16)
         self.assertRegex(name, r"^bot-e3-flex-2c16g-\d{8}-\d{6}$")
 
@@ -741,7 +741,7 @@ class TestFmtAndKeyboard(unittest.TestCase):
     def test_fmt_summary_shows_password_when_present(self):
         preset = {
             "shape": "VM.Standard.A1.Flex", "ocpus": 1, "memory_gb": 6,
-            "display_name": "ARM_2026-11-24",
+            "display_name": "ARM_2026-01-01",
             "image_id": FAKE_IMAGE_AARCH64, "count": 1,
             "ssh_keys_file": "/opt/x/keys.pub", "root_login": True,
             "root_password": "0123456789abcdef0123456789abcdef",
@@ -751,7 +751,8 @@ class TestFmtAndKeyboard(unittest.TestCase):
         self.assertIn("root登录：开启", text)
         self.assertIn("root密码：", text)
         self.assertIn("0123456789abcdef0123456789abcdef", text)
-        self.assertIn("注意📢：root密码机器人不会记忆，请注意保存", text)
+        self.assertIn("注意📢：root密码机器人已保存，之后 SSH（开机后、DD 后）"
+                      "会用它登录；请你也自己保存一份", text)
 
     def test_fmt_summary_old_preset_no_new_keys(self):
         preset = {

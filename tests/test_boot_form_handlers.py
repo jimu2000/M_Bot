@@ -146,6 +146,18 @@ class BootFormHandlersTestCase(unittest.IsolatedAsyncioTestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
 
+        # Redirect the instance credential store to a temp file: the
+        # boot-go thread saves the root password on success, and tests
+        # must not write it to the real data directory (same reason as
+        # the PRESETS_FILE patch above). 凭据库指到临时文件：开机线程
+        # 成功后会保存 root 密码，测试不能写真实数据目录（与上面
+        # PRESETS_FILE 的 patch 同理）。
+        self._cred_patch = patch(
+            "tgbot.instance_credentials.CREDENTIALS_FILE",
+            os.path.join(self._tmp.name, "instance_credentials.json"))
+        self._cred_patch.start()
+        self.addCleanup(self._cred_patch.stop)
+
     def tmp_path(self, name):
         return os.path.join(self._tmp.name, name)
 
@@ -609,7 +621,7 @@ class TestBootPresetLoad(BootFormHandlersTestCase):
         presets_file = self.tmp_path("presets.json")
         first = bf.build_preset(filled_form(), FAKE_DEPLOY)
         second = bf.build_preset(filled_form(memory_gb=12), FAKE_DEPLOY)
-        second["display_name"] = "ARM_2026-11-24-keep"
+        second["display_name"] = "ARM_2026-01-01-keep"
         self._write_presets(presets_file, [first, second])
         with patch.object(bot_config, "PRESETS_FILE", presets_file):
             update = make_update(callback_data="b:delok:0")
@@ -618,10 +630,10 @@ class TestBootPresetLoad(BootFormHandlersTestCase):
         with open(presets_file, encoding="utf-8") as fh:
             saved = json.load(fh)
         self.assertEqual(len(saved), 1)
-        self.assertEqual(saved[0]["display_name"], "ARM_2026-11-24-keep")
+        self.assertEqual(saved[0]["display_name"], "ARM_2026-01-01-keep")
         text = reply_text_of(update)
         self.assertIn("已删除", text)
-        self.assertIn("ARM_2026-11-24-keep", text)
+        self.assertIn("ARM_2026-01-01-keep", text)
         self.assertIn("快捷开机配置（1 条）", text)
         callbacks = callbacks_of(reply_markup_of(update))
         self.assertIn("b:load:0", callbacks)
@@ -725,8 +737,8 @@ class TestBootGoWithRoot(BootFormHandlersTestCase):
 
     async def test_start_reply_escapes_underscore_in_name(self):
         """v1.40.1：有 root 密码时启动回复走 Markdown，实例名里的
-        下划线（ARM_2026-11-24）必须转义，否则 Telegram 报
-        Can't parse entities、整条消息发不出去（2026-11-24 真实报错）。
+        下划线（ARM_2026-01-01）必须转义，否则 Telegram 报
+        Can't parse entities、整条消息发不出去（2026-01-01 真实报错）。
         """
         preset = bf.build_preset(
             filled_form(ssh_key="none", root_login=True), FAKE_DEPLOY)

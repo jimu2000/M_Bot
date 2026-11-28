@@ -1040,7 +1040,7 @@ let sftpPanel = null;
 let favPanel = null;
 
 // ---------- 实例卡片 SSH 一键直连 ----------
-// Instance card SSH one-click login: POST /api/ssh/connect-instance auto-logs in as root with the fixed password; on failure, fall back to the manual connect form (host prefilled when known). 实例卡片 SSH 一键直连：调 /api/ssh/connect-instance 用固定密码自动登录 root；失败回落手动连接表单（知道主机就预填）。
+// Instance card SSH one-click login: POST /api/ssh/connect-instance auto-logs in as root (fixed password first, else the per-instance password saved at creation); on failure, fall back to the manual connect form (host prefilled when known). 实例卡片 SSH 一键直连：调 /api/ssh/connect-instance 自动登录 root（固定密码优先，没有时用开机时按实例存的那份）；失败回落手动连接表单（知道主机就预填）。
 async function autoConnectInstance(mgr, { instanceId, profile, region, host }) {
   try {
     const resp = await fetch('/api/ssh/connect-instance', {
@@ -1142,8 +1142,15 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  $('btn-close-tab').addEventListener('click', () => {
-    if (mgr.activeId) mgr.closeTab(mgr.activeId);
+  $('btn-close-tab').addEventListener('click', async () => {
+    // Close this SSH window: close the current session (if any), then
+    // leave the terminal page — back to where we came from, or the
+    // instance list when the page was opened directly (no history).
+    // 关闭此 SSH 窗口：先关当前会话（如果有），再离开终端页——回到来处；
+    // 直接打开的页面没有上一页，回实例列表。
+    if (mgr.activeId) await mgr.closeTab(mgr.activeId);
+    if (history.length > 1) history.back();
+    else location.href = '/instances';
   });
 
   // Instance card SSH one-click login: /terminal?instance=<id>&profile=&region=&host=
@@ -1157,5 +1164,12 @@ document.addEventListener('DOMContentLoaded', () => {
       region: _params.get('region') || null,
       host: _params.get('host') || null,
     });
+  }
+  // Serial console direct connect: /terminal?session=<id>&label=...
+  // (the session was already created by POST /api/ssh/connect-console,
+  // so just open its tab). 串行控制台直连：会话已由后端建好，直接开标签。
+  const _sessionId = _params.get('session');
+  if (_sessionId) {
+    mgr.openTab(_sessionId, _params.get('label') || '串行控制台');
   }
 });

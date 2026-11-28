@@ -62,13 +62,16 @@ def send_telegram_message(token, chat_id, text, parse_mode=None):
 
 
 def start_ip_followup(get_ip, instance_name, token, chat_id,
-                      timeout_seconds=None, interval_seconds=None):
+                      timeout_seconds=None, interval_seconds=None,
+                      on_ip=None):
     """IP 跟进线程：开机通知已发但 IP 还没分配时，后台继续等。
 
     get_ip 是无参回调（调用方传 lambda: get_public_ip(cli, id)）；
     每隔 interval 查一次，查到 IP 就补发一条 Telegram 消息即停；
     超时还没 IP 就静默放弃。daemon 线程，绝不抛异常。
     token / chat_id / get_ip 缺失时不启动，返回 None。
+    on_ip 是可选回调：IP 查到时调用 on_ip(ip)，调用方用它把后到的
+    IP 补记进实例凭据库；回调异常不影响跟进线程。
     返回启动的 Thread（测试用 join 等它结束），未启动返回 None。
     """
     if not callable(get_ip) or not token or chat_id is None:
@@ -90,6 +93,11 @@ def start_ip_followup(get_ip, instance_name, token, chat_id,
                     send_telegram_message(
                         token, chat_id,
                         f"🌐 实例「{instance_name}」的公网 IP 已分配：{ip}")
+                    if callable(on_ip):
+                        try:
+                            on_ip(ip)
+                        except Exception:  # noqa: BLE001 - 回调异常不影响跟进
+                            pass
                     return
                 if time.monotonic() >= deadline:
                     return
@@ -103,7 +111,7 @@ def start_ip_followup(get_ip, instance_name, token, chat_id,
 
 
 def pin_telegram_message(token, chat_id, message_id):
-    """置顶一条已发送的消息（1:1 私聊实测可用，2026-11-24）。
+    """置顶一条已发送的消息（1:1 私聊实测可用，2026-01-01）。
 
     返回 (ok, error)。置顶失败不影响消息本身（调用方只记日志）。
     """
@@ -190,7 +198,8 @@ def fmt_boot_success(profile_label, region_label, shape, ocpus,
     if cpu_unverified:
         lines.append("⚠️ CPU 未验明，请人工核对")
     if root_password:
-        lines.append("注意📢：root密码机器人不会记忆，请注意保存")
+        lines.append("注意📢：root密码机器人已保存，之后 SSH（开机后、DD 后）"
+                     "会用它登录；请你也自己保存一份")
     return "\n".join(lines)
 
 

@@ -26,6 +26,7 @@
   var detailLoadSeq = 0;  // Detail-load sequence: guards against out-of-order responses when the user opens another instance's detail while one is still loading. 详情加载序号：用户快速连点两个实例时，旧请求的回包不再覆盖新弹窗。
   var cpuRefreshTimer = null;  // Timer for the delayed CPU-model refetch (at most one refetch per load round). CPU 型号延迟补拉的定时器（每轮只补拉一次）。
   var consoleCommand = "";
+  var consoleTarget = null;
 
   // Short i18n lookup with a Chinese fallback (used for card buttons and action toasts, which are built in JS and must follow the language switch). 简短 i18n 取值（中文兜底；卡片按钮与操作提示在 JS 里拼，必须跟随语言切换）。
   function tr(key, fallback) {
@@ -55,6 +56,7 @@
         : (inst["shape-config"] && inst["shape-config"]["memory-in-gbs"])),
       public_ip: inst.publicIp || inst["public-ip"] || inst.public_ip || null,
       created: inst.timeCreated || inst["time-created"] || inst.time_created || null,
+      cpuModel: inst.cpuModel || inst.cpu_model || inst["cpu-model"] || null,
     };
   }
 
@@ -871,7 +873,7 @@
       else if (act === "restart") instanceAction(instId, "restart", tr("instances.restart", "重启"));
       else if (act === "detail") showDetail(inst);
       else if (act === "ssh") {
-        // Instance card SSH one-click login: the terminal page auto-connects as root with the fixed password (see /api/ssh/connect-instance); on failure it falls back to the manual form with the host prefilled. 实例卡片 SSH 一键直连：终端页用固定密码自动登录 root（见 /api/ssh/connect-instance），失败回落手动表单（预填主机）。
+        // Instance card SSH one-click login: the terminal page auto-connects as root (fixed password first, else the per-instance password saved at creation; see /api/ssh/connect-instance); on failure it falls back to the manual form with the host prefilled. 实例卡片 SSH 一键直连：终端页自动登录 root（固定密码优先，没有时用开机时按实例存的那份，见 /api/ssh/connect-instance），失败回落手动表单（预填主机）。
         var n = norm(inst);
         var q = "instance=" + encodeURIComponent(instId) +
           "&profile=" + encodeURIComponent(currentProfile || "") +
@@ -908,6 +910,7 @@
             var res = await MBot.api(MBot.withProfile("/api/instances/" + encodeURIComponent(instId) + "/console", currentProfile, currentRegion));
             var conn = res.console || {};
             consoleCommand = conn["connection-string"] || "";
+            consoleTarget = inst;
             document.getElementById("console-name").textContent = norm(inst).name;
             document.getElementById("console-state").textContent =
               conn["lifecycle-state"] ? "（" + conn["lifecycle-state"] + "）" : "";
@@ -915,6 +918,8 @@
               consoleCommand || "未返回连接命令";
             document.getElementById("console-fingerprint").textContent =
               conn.fingerprint ? "指纹：" + conn.fingerprint : "";
+            // Direct connect needs a real connection command (demo mode has none). 直接连接要有真实连接命令（演示模式没有）。
+            document.getElementById("btn-connect-console").disabled = !consoleCommand;
             MBot.openModal("console-modal");
           } catch (err) {
             MBot.toast("获取串行控制台失败：" + err.message, "error");
@@ -1171,6 +1176,33 @@
 
     document.getElementById("btn-copy-console").addEventListener("click", function () {
       if (consoleCommand) MBot.copyText(consoleCommand, "连接命令");
+    });
+
+    // Serial console direct connect: the backend dials the OCI console
+    // host from the displayed connection command and returns a session;
+    // open it straight in the terminal page (same as the card SSH button,
+    // no copy-paste needed). 串行控制台直接连接：后端按弹窗里的连接命令
+    // 直连 OCI 控制台主机，拿到会话后直接在终端页打开（与卡片 SSH 按钮
+    // 一样，不用复制命令再去别处跑）。
+    document.getElementById("btn-connect-console").addEventListener("click", async function () {
+      if (!consoleCommand) return;
+      var label = "串行控制台" + (consoleTarget ? "：" + norm(consoleTarget).name : "");
+      try {
+        var res = await MBot.api("/api/ssh/connect-console", {
+          method: "POST",
+          // noRedirect: a 401 here means console key auth failed, not a
+          // login failure — show the error instead of bouncing to /login.
+          // noRedirect：这里的 401 是控制台密钥认证失败，不是没登录，
+          // 要显示报错而不是跳回登录页。
+          noRedirect: true,
+          body: { connection_string: consoleCommand, label: label },
+        });
+        MBot.closeModal("console-modal");
+        window.location.href = "/terminal?session=" + encodeURIComponent(res.session_id) +
+          "&label=" + encodeURIComponent(label);
+      } catch (err) {
+        MBot.toast("串行控制台直连失败：" + err.message, "error");
+      }
     });
   });
 })();

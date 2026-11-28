@@ -27,6 +27,7 @@ import base64
 import json
 import logging
 import os
+import re
 import socket
 import threading
 import time
@@ -579,19 +580,28 @@ class ConnectInstanceRequest(BaseModel):
 @router.post("/api/ssh/connect-instance")
 def api_ssh_connect_instance(body: ConnectInstanceRequest,
                              _session=Depends(require_auth)):
-    """实例卡片 SSH 一键直连：查实例公网 IP，用固定 root 密码自动登录 root。
+    """实例卡片 SSH 一键直连：查实例公网 IP，用 root 密码自动登录 root。
 
-    密码只在服务端内存里用（环境变量 MBOT_FIXED_ROOT_PASSWORD），绝不
-    返回给前端、不记日志。未设固定密码、实例无公网 IP、或自动登录失败
-    时返回明确错误，前端回落到手动连接表单（预填主机）。
+    密码优先级：环境变量固定密码（MBOT_FIXED_ROOT_PASSWORD）优先，
+    没设时回落到开机时按实例存进凭据库的那份。密码只在服务端内存里
+    用，绝不返回给前端、不记日志。两种密码都没有、实例无公网 IP、
+    或自动登录失败时返回明确错误，前端回落到手动连接表单（预填主机）。
     端口先试 14422（DD / 加固脚本改的端口），再试 22（OCI 默认）。
     """
-    fixed_password = os.environ.get("MBOT_FIXED_ROOT_PASSWORD", "").strip()
-    if not fixed_password:
+    password = os.environ.get("MBOT_FIXED_ROOT_PASSWORD", "").strip()
+    if not password:
+        # Fall back to the per-instance password saved at creation time. 没设固定密码时，回落到开机时按实例存的那份。
+        try:
+            from tgbot.instance_credentials import get_root_password
+            password = get_root_password(body.instance_id) or ""
+        except Exception:
+            password = ""
+    if not password:
         raise HTTPException(
             status_code=400,
             detail="未设置固定 root 密码（MBOT_FIXED_ROOT_PASSWORD），"
-                   "无法自动登录；请在连接表单里手动输入密码")
+                   "且该实例没有保存的 root 密码，无法自动登录；"
+                   "请在连接表单里手动输入密码")
     try:
         # Lazy imports: web.deps pulls in oci + tgbot config; importing at
         # module top would risk a cycle with the app wiring. 延迟导入：
@@ -615,10 +625,10 @@ def api_ssh_connect_instance(body: ConnectInstanceRequest,
     for port in INSTANCE_SSH_PORTS:
         try:
             session_id = manager.create_session(
-                host, port, "root", password=fixed_password)
+                host, port, "root", password=password)
         except paramiko.AuthenticationException:
             auth_failed = True
-            last_error = "SSH 认证失败：固定 root 密码不正确"
+            last_error = "SSH 认证失败：root 密码不正确"
             continue
         except (paramiko.SSHException, OSError, socket.timeout) as exc:
             last_error = f"SSH 连接失败：{exc}"
@@ -629,6 +639,106 @@ def api_ssh_connect_instance(body: ConnectInstanceRequest,
     if auth_failed:
         raise HTTPException(status_code=401, detail=last_error or "SSH 认证失败")
     raise HTTPException(status_code=502, detail=last_error or "SSH 连接失败")
+
+
+# OCI 串行控制台的连接串（oci/instance.py 的 get_serial_console 返回的
+# connection-string），实测格式（见 docs/rescue-feature-v2.md）：
+#   ssh -o ProxyCommand='ssh -W %h:%p -p 443 <connection-ocid>@instance-console.<region>.oci.oraclecloud.com' <instance-ocid>
+# 外层 ssh 的目标是实例 OCID（只作 %h 传给 ProxyCommand），真正要连的
+# 是 ProxyCommand 里的控制台主机：用户名是连接 OCID，端口 443，密钥用
+# 注册连接时那把 RSA 公钥对应的私钥。
+# OCI serial console connection strings (the connection-string returned by
+# oci/instance.py get_serial_console), verified format (see
+# docs/rescue-feature-v2.md): the outer ssh target is the instance OCID
+# (only passed as %h to the ProxyCommand); the real endpoint is the
+# console host inside the ProxyCommand, username = connection OCID,
+# port 443, keyed by the private key matching the registered RSA key.
+_CONSOLE_HOST_RE = re.compile(
+    r"^instance-console\.[a-z0-9-]+\.oci\.oraclecloud\.com$")
+_CONSOLE_USER_HOST_RE = re.compile(r"(\S+)@(\S+)")
+
+
+def parse_console_connection_string(connection_string):
+    """解析串行控制台连接串，返回 (host, port, username)。
+
+    先认 ProxyCommand 形式（OCI 实测格式），再认简单形式
+    ssh [-i key] [-p port] user@host；host 必须是 OCI 控制台主机
+    （instance-console.<region>.oci.oraclecloud.com），否则报
+    ValueError（本接口只连 OCI 控制台，任意主机走手动连接表单）。
+    """
+    text = (connection_string or "").strip()
+    if not text:
+        raise ValueError("串行控制台连接命令为空")
+    # ProxyCommand 形式：取引号里的内层 ssh 命令。
+    proxy = re.search(r"ProxyCommand='([^']+)'", text)
+    inner = proxy.group(1) if proxy else text
+    port_match = re.search(r"-p\s+(\d+)", inner)
+    port = int(port_match.group(1)) if port_match else 443
+    user_host = _CONSOLE_USER_HOST_RE.search(inner)
+    if not user_host:
+        raise ValueError(f"无法解析串行控制台连接命令：{text[:80]}")
+    username, host = user_host.group(1), user_host.group(2)
+    if not _CONSOLE_HOST_RE.match(host):
+        raise ValueError(f"不是 OCI 串行控制台主机：{host}")
+    return host, port, username
+
+
+def _console_private_key_path():
+    """串行控制台登录用的私钥路径（服务端文件）。
+
+    注册连接时用的公钥由环境变量 MBOT_CONSOLE_SSH_KEY_FILE 指定，
+    没设时走 ~/.ssh/id_ed25519.pub（与 oci/instance.py 的
+    get_serial_console 同一套解析）；私钥是公钥路径去掉 .pub 后缀。
+    文件不存在时返回 None——此时 paramiko 走默认查找（ssh-agent 与
+    ~/.ssh/id_rsa、id_ed25519 等），与直接跑连接命令的行为一致。
+    """
+    pub = os.environ.get("MBOT_CONSOLE_SSH_KEY_FILE") or \
+        os.path.expanduser("~/.ssh/id_ed25519.pub")
+    private = pub[:-4] if pub.endswith(".pub") else pub
+    return private if os.path.isfile(private) else None
+
+
+class ConnectConsoleRequest(BaseModel):
+    """POST /api/ssh/connect-console 的请求体。
+
+    connection_string 是串行控制台弹窗里显示的那条连接命令（服务端
+    据此解析出控制台主机/端口/连接 OCID 并直连）；label 是终端标签。
+    """
+
+    connection_string: str
+    label: Optional[str] = None
+
+
+@router.post("/api/ssh/connect-console")
+def api_ssh_connect_console(body: ConnectConsoleRequest,
+                            _session=Depends(require_auth)):
+    """串行控制台直连：用连接命令解析出的控制台主机建 SSH 会话。
+
+    救机入口（实例自身 SSH 不通时用）：后端直接连 OCI 串行控制台主机
+    （443 端口，用户名是连接 OCID，密钥认证），返回 session_id，前端
+    据此在终端页开标签。密钥只在服务端用，绝不返回给前端、不记日志。
+    解析失败报 400；密钥认证失败报 401；连不上报 502。
+    """
+    try:
+        host, port, username = parse_console_connection_string(
+            body.connection_string)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    try:
+        session_id = manager.create_session(
+            host, port, username, key_path=_console_private_key_path())
+    except paramiko.AuthenticationException:
+        raise HTTPException(
+            status_code=401,
+            detail="串行控制台认证失败：服务端没有注册连接时那把 RSA 密钥"
+                   "对应的私钥（MBOT_CONSOLE_SSH_KEY_FILE 或 ~/.ssh/"
+                   "id_ed25519），请检查后重试")
+    except (paramiko.SSHException, OSError, socket.timeout) as exc:
+        raise HTTPException(status_code=502, detail=f"串行控制台连接失败：{exc}")
+    logger.info("串行控制台直连成功：%s@%s:%s -> %s",
+                username, host, port, session_id)
+    return {"session_id": session_id, "host": host,
+            "username": username, "port": port}
 
 
 @router.get("/api/ssh/sessions")

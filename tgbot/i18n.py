@@ -525,11 +525,14 @@ STRINGS = {
     "boot.summary_os_image": {"zh": "镜像 …{tail}", "en": "Image …{tail}"},
     "boot.summary_root_password": {"zh": "root密码：",
                                    "en": "Root password:"},
-    "boot.summary_root_password_note": {"zh": "注意📢：root密码机器人不会记忆，"
-                                             "请注意保存",
-                                        "en": "Note 📢: the bot does not "
-                                              "remember the root password — "
-                                              "please save it now"},
+    "boot.summary_root_password_note": {"zh": "注意📢：root密码机器人已保存，"
+                                             "之后 SSH（开机后、DD 后）会用它登录；"
+                                             "请你也自己保存一份",
+                                        "en": "Note 📢: the bot has saved the "
+                                              "root password and will use it for "
+                                              "later SSH logins (after boot and "
+                                              "after DD); please keep a copy "
+                                              "yourself too"},
     "boot.summary_target_cpu_only": {"zh": "目标 CPU：只留 {models}，"
                                            "不符就释放继续抢",
                                      "en": "Target CPU: only keep {models}; "

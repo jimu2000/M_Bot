@@ -183,7 +183,11 @@
     "create.quick_boot": { zh: "⚡ 快捷开机", en: "⚡ Quick Boot" },
     "create.submit": { zh: "开始创建", en: "Create" },
     "create.dd": { zh: "DD重装（开 Debian13）", en: "DD reinstall (On Debian13)" },
-    "create.dd_hint": { zh: "开启后实例重装为 Debian 13，装完执行上方启动脚本（DD 初始化脚本）；关闭时启动脚本作 cloud-init 开机脚本。", en: "When on, the instance is reinstalled to Debian 13 and the startup script above runs after DD (DD init script); when off, the script runs as a cloud-init boot script." }
+    "create.dd_hint": { zh: "开启后实例重装为 Debian 13，装完执行上方启动脚本（DD 初始化脚本）；关闭时启动脚本作 cloud-init 开机脚本。", en: "When on, the instance is reinstalled to Debian 13 and the startup script above runs after DD (DD init script); when off, the script runs as a cloud-init boot script." },
+    "create.target_cpu": { zh: "目标 CPU（可选）", en: "Target CPU (optional)" },
+    "create.target_cpu_only": { zh: "只抢 7J13", en: "Only 7J13" },
+    "create.target_cpu_any": { zh: "什么 CPU 都可以", en: "Any CPU is fine" },
+    "create.target_cpu_hint": { zh: "只抢 7J13：抢到后先核对 CPU 型号，不符合的自动释放并继续抢；什么 CPU 都可以：抢到就留。", en: "Only 7J13: after grabbing, verify the CPU model first; release and keep grabbing on mismatch. Any CPU: keep whatever is grabbed." }
   };
 
   /* 实例状态中文映射（v2.01 A1）：只在中文模式下用；英文模式与

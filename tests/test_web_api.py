@@ -119,6 +119,17 @@ class WebApiTestCase(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self._data_dir_patcher = patch("web.config.DATA_DIR", self._tmp.name)
         self._data_dir_patcher.start()
+        # Redirect the instance credential store to the same temp dir:
+        # the create/terminate API tests run the real grabber thread
+        # (which saves the root password on success) and the real
+        # terminate path (which deletes it); both must stay in the temp
+        # dir, not the real data directory. 凭据库指到同一临时目录：
+        # 创建/终止接口测试跑真实抢机线程（成功后保存 root 密码）与真实
+        # 终止路径（删凭据），都不能写真实数据目录。
+        self._cred_patcher = patch(
+            "tgbot.instance_credentials.CREDENTIALS_FILE",
+            os.path.join(self._tmp.name, "instance_credentials.json"))
+        self._cred_patcher.start()
         # Clear the server cache (instance list / cloud report) so cached data does not leak across tests. 清服务端缓存（实例列表 / 云报告），避免缓存跨测试串数据。
         clear_instance_list_cache()
         clear_oci_cache()
@@ -143,6 +154,7 @@ class WebApiTestCase(unittest.TestCase):
             if getattr(thread, "_target", None) is _run_grabber:
                 thread.join(timeout=5.0)
         self._data_dir_patcher.stop()
+        self._cred_patcher.stop()
         self._tmp.cleanup()
 
     def _login(self, username="admin", password=TEST_PASSWORD):
@@ -1550,6 +1562,18 @@ class TestNotifyGrabSuccess(unittest.TestCase):
     """_notify_grab_success：网页抢机成功后的双通道推送（v1.11.0）。"""
 
     def setUp(self):
+        # Redirect the instance credential store to a temp file: the
+        # notify path saves the root password on success, and tests must
+        # not write it to the real data directory. 凭据库指到临时文件：
+        # 通知成功后会保存 root 密码，测试不能写真实数据目录。
+        self._cred_tmp = tempfile.TemporaryDirectory()
+        self._cred_patch = patch(
+            "tgbot.instance_credentials.CREDENTIALS_FILE",
+            os.path.join(self._cred_tmp.name,
+                         "instance_credentials.json"))
+        self._cred_patch.start()
+        self.addCleanup(self._cred_patch.stop)
+        self.addCleanup(self._cred_tmp.cleanup)
         self.registry = MagicMock()
         self.params = {
             "display_name": "ARM_2026-01-01",

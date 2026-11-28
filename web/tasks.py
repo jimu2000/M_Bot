@@ -33,6 +33,9 @@ from tgbot.billing import FREE_SHAPES
 from tgbot.cpu_policy import (combined_boot_keys,
                               get_allowed_cpu_models, make_cpu_check_hook)
 from tgbot.handlers_client import run_remote_command
+from tgbot.instance_credentials import (resolve_root_password,
+                                       save_credential,
+                                       update_credential_ip)
 from tgbot.notify import (
     fmt_notify_outcome,
     fmt_paid_instance_alert,
@@ -116,7 +119,7 @@ class TaskRegistry:
         """注册一个任务，返回 ID（如抢机任务 "web-g1"）。初始状态 pending。
 
         label 是显示用的任务说明（如 "E2.1.Micro（新加坡）·
-        AMD_2026-11-24"），任务页用它当第一列，不再直接暴露
+        AMD_2026-01-01"），任务页用它当第一列，不再直接暴露
         grab 这类内部类型；旧任务没有 label 时前端退回 kind。
         """
         with self._lock:
@@ -255,7 +258,20 @@ def _notify_grab_success(registry, task_id, cli, params, result, notify):
             start_ip_followup(
                 lambda: get_public_ip(cli, result.instance_id),
                 params.get("display_name") or "?",
-                notify.get("token"), notify.get("chat_id"))
+                notify.get("token"), notify.get("chat_id"),
+                on_ip=lambda ip: update_credential_ip(
+                    result.instance_id, ip))
+        # 开机成功先把 root 密码按实例存进凭据库（之后 SSH、DD 后登录、
+        # DD 后追加 SSH 公钥都靠它；用通知里那份密码，不另生成）。
+        # 存失败只记任务日志，不拖垮通知。
+        if notify.get("root_password") and result.instance_id:
+            try:
+                save_credential(
+                    result.instance_id, notify["root_password"],
+                    ip=public_ip,
+                    instance_name=params.get("display_name"))
+            except Exception as exc:  # noqa: BLE001 - 存失败不拖垮通知
+                registry.append_log(task_id, f"root 密码保存失败：{exc}")
         shape = params.get("shape") or ""
         ocpus = params.get("ocpus") or 1
         memory_gb = params.get("memory_gb")
@@ -301,7 +317,10 @@ def _notify_grab_success(registry, task_id, cli, params, result, notify):
                     "付费实例提醒部分失败：" + "; ".join(paid["errors"]))
         # DD 重装开时：开机成功通知已发，接着起 DD 初始化后台任务
         # （等 DD 完成再经 SSH 跑初始化脚本；没脚本也跟踪 DD 完成并通知）。
-        if params.get("dd") and notify.get("root_password") and public_ip:
+        # 密码先用通知里那份，没有时按实例 OCID 读凭据库里开机时存的那份。
+        _dd_password = notify.get("root_password") or \
+            resolve_root_password(result.instance_id)
+        if params.get("dd") and _dd_password and public_ip:
             name = params.get("display_name") or "?"
             token = notify.get("token")
             chat_id = notify.get("chat_id")
@@ -320,7 +339,7 @@ def _notify_grab_success(registry, task_id, cli, params, result, notify):
                                 f"实例 {_name}（{_ip}）{message}")
                 registry.append_log(task_id, message)
 
-            start_dd_init(public_ip, notify["root_password"],
+            start_dd_init(public_ip, _dd_password,
                           params.get("init_script"), instance_name=name,
                           port=DD_SSH_PORT, on_event=_on_event)
             registry.append_log(task_id, f"已起 DD 初始化任务：{name}（{public_ip}）")
@@ -359,6 +378,17 @@ def _run_grabber(registry, task_id, cli, compartment_id, params,
             and params.get("shape") == "VM.Standard.E2.1.Micro"):
         params = dict(params)
         params["target_cpu"] = get_allowed_cpu_models()
+
+    # "any" is the caller's explicit no-filter choice (the panel CPU
+    # dropdown's "什么 CPU 都可以", same as the bot's b:cpu:any).
+    # Convert after the E2 default-fill above so the fill doesn't
+    # re-apply to an explicit "any".
+    # “any”是调用方明确不要筛 CPU（面板 CPU 下拉的“什么 CPU 都可以”，
+    # 与机器人 b:cpu:any 一致）。放在 E2 默认补全之后转，避免补全
+    # 把明确的 any 又盖回去。
+    if params.get("target_cpu") == "any":
+        params = dict(params)
+        params["target_cpu"] = None
 
     # Grab spec written to disk (on recovery startup, reuse the spec passed in, do not rebuild it). 抢机规格写盘（恢复启动时沿用传进来的那份，不重建）。
     if resume_spec is not None:
