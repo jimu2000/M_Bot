@@ -60,6 +60,7 @@ from oci.boot_backup import (
     create_boot_volume_backup,
     get_boot_volume_backup,
     list_boot_volume_backups,
+    validate_backup_type,
 )
 from oci.boot_swap import (
     check_boot_volume_space,
@@ -271,6 +272,17 @@ class RestoreBootVolumeBody(BaseModel):
 
     backup_id: str = ""
     confirm: bool = False
+
+
+class CreateInstanceBootBackupBody(BaseModel):
+    """实例启动盘备份请求体（详情弹窗的创建备份确认框用）。
+
+    display_name 不传时后端按“<卷名>-backup-YYYYMMDD-HHMM”自动
+    生成；type 为 FULL（默认）或 INCREMENTAL。
+    """
+
+    display_name: str = None
+    type: str = "FULL"
 
 
 def _notify_chat_id():
@@ -536,6 +548,22 @@ def batch(body: BatchBody,
             delete_cpu_model(instance_id)
     return {"ok": True, "action": body.action,
             "succeeded": result["succeeded"], "failed": result["failed"]}
+
+
+@router.get("/api/instances/cpu-models")
+def cpu_models(username: str = Depends(get_current_user)):
+    """只读 CPU 型号缓存（轻量，不调 OCI）。
+
+    实例页 5 秒后的延迟补拉用这个接口，不再重拉整个实例列表
+    （原来带 refresh=1 的全量重拉要再跑一遍 OCI 查询，3–5 秒）。
+    返回 {instance_id: model}，无缓存的实例不在其中，前端按
+    “未检测”显示。缓存是按实例 OCID 存的全局文件，与账号无关。
+    """
+    models = load_cpu_models()
+    return {"ok": True,
+            "cpu_models": {iid: (entry or {}).get("model")
+                           for iid, entry in models.items()
+                           if (entry or {}).get("model")}}
 
 
 @router.get("/api/instances/{instance_id}")
@@ -1057,15 +1085,24 @@ def boot_backups(instance_id: str,
 
 @router.post("/api/instances/{instance_id}/boot-backups")
 def create_boot_backup(instance_id: str,
+                       body: CreateInstanceBootBackupBody = None,
                        profile: str = Query(default=None),
                        region: str = Query(default=None),
                        username: str = Depends(get_current_user)):
-    """给该实例当前启动盘做 FULL 全量备份。
+    """给该实例当前启动盘做备份（默认 FULL 全量）。
 
+    body 可带 display_name（不传时后端按“<卷名>-backup-YYYYMMDD-HHMM”
+    自动生成）与 type（FULL 或 INCREMENTAL，默认 FULL）。
     付费账号直接创建；免费账号满 5 个时返回 409（不自动删最早备份，
     提示先删除再创建，前端弹出删除历史备份弹窗），响应里带
     full/count/limit；未满直接创建。
     """
+    try:
+        backup_type = validate_backup_type(
+            (body.type if body else None) or "FULL")
+    except ValueError as exc:
+        return error_response(str(exc), status_code=400)
+    display_name = (body.display_name if body else None) or None
     if demo_data.is_demo():
         # Demo mode: fake success with a fake backup record.
         # 演示模式：假成功，返回一条假备份记录。
@@ -1073,18 +1110,19 @@ def create_boot_backup(instance_id: str,
         if detail is None:
             return error_response(f"找不到实例：{instance_id}",
                                   status_code=404)
+        fake_name = display_name or "DEMO-backup-20261125-1200"
         fake_backup = {
             "backupId": "ocid1.bootvolumebackup.oc1..demobackup0099",
-            "displayName": "DEMO-backup-20261125-1200",
+            "displayName": fake_name,
             "bootVolumeId": detail.get("boot_volume_id"),
             "sizeInGBs": detail.get("boot_volume_size_gbs"),
             "lifecycleState": "CREATING",
             "sourceType": "MANUAL",
-            "type": "FULL",
+            "type": backup_type,
             "timeCreated": "2026-01-02T12:00:00.000000+00:00",
             "imageId": None,
             "id": "ocid1.bootvolumebackup.oc1..demobackup0099",
-            "display-name": "DEMO-backup-20261125-1200",
+            "display-name": fake_name,
             "boot-volume-id": detail.get("boot_volume_id"),
             "size-in-gbs": detail.get("boot_volume_size_gbs"),
             "lifecycle-state": "CREATING",
@@ -1115,7 +1153,8 @@ def create_boot_backup(instance_id: str,
                     status_code=409,
                     extra={"full": True, "count": count, "limit": limit})
         backup = create_boot_volume_backup(
-            cli, attachment.get("boot-volume-id"))
+            cli, attachment.get("boot-volume-id"), display_name,
+            backup_type)
     except ValueError as exc:
         return error_response(str(exc), status_code=400)
     except OCIError as exc:

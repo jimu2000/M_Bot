@@ -41,8 +41,10 @@ GRAB_PARAM_KEYS = (
     "availability_domain", "shape", "image_id", "subnet_id",
     "display_name", "ssh_keys_file", "target_cpu", "ocpus",
     "memory_gb", "boot_volume_size_gbs", "assign_public_ip",
-    "assign_ipv6", "user_data", "min_delay", "max_delay", "count",
+    "assign_ipv6", "user_data", "dd", "init_script", "min_delay",
+    "max_delay", "count",
 )
+# dd / init_script must persist too: on restart resume the relaunched grab reads params from the spec, and _notify_grab_success needs them to start DD init. dd 与 init_script 也要存：重启恢复时重跑的抢机从规格里读 params，_notify_grab_success 靠它们起 DD 初始化；不存则重启后 DD 丢了。
 # Notification-field allowlist to store in grab_spec (tokens never hit disk; they are read from env at recovery time). grab_spec 里要存的通知字段白名单（token 绝不落盘，恢复时从 env 现读）。
 GRAB_NOTIFY_KEYS = (
     "chat_id", "profile_label", "region_label", "region_code",

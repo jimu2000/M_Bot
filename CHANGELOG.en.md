@@ -9,6 +9,19 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [2.21.0] - 2026-11-28
+- Web create form now has a DD switch: a "DD reinstall (Debian13)" toggle was added under the startup script in the advanced options, on by default, matching the bot side; the web form previously had no such option. The DD switch and password are the same all the way through: the form's random password goes unchanged into the InstallNET `-pwd` flag, the post-DD init SSH login, the success notification and the frontend popup.
+- Fixed a bug where task restore dropped DD: the `GRAB_PARAM_KEYS` allowlist was missing `dd` and `init_script`, so although create params contained both, they were filtered out when written to disk and a resumed run after restart lost DD; both keys are now included, and the bot side benefits too since it shares the same allowlist.
+- Seven rescue-panel issues fixed (found while testing the .88 disk-detach rescue in the panel):
+  - The stop button now reads Stop instead of "关机", and the status badge shows the raw OCI status code (STOPPED/STOPPING/RUNNING).
+  - Clicking an instance name now opens the detail dialog immediately (name plus a "loading…" placeholder), instead of waiting for the API to return before giving any feedback.
+  - Boot volume backup now shows a confirmation dialog (backup name input, FULL/incremental choice), and the button uses the primary style instead of looking disabled and creating a backup on click with no confirmation.
+  - The volume list "Backup" button no longer does nothing (findVolume now matches on volumeId||id and shows a toast error when nothing matches).
+  - The backup list has a "Backup ID" column (truncated to 12 chars); clicking a backup name or ID copies the full OCID.
+  - Defensive fix for clicking account-switch dropdown options directly.
+  - Faster loading: new GET /api/instances/cpu-models (read-only cache, no OCI calls, local median 6.5ms), and the boot volume page now loads its three lists in parallel, each rendering on its own.
+- Backend backup type passthrough: `BACKUP_TYPES` + `validate_backup_type`, `CreateBackupBody.type`; an invalid value returns 400, and an incremental backup when the free backup quota is full returns 400 without deleting any existing backup.
+
 ## [2.20.0] - 2026-11-28
 - DD completion is now tracked and notified even without a startup script: DD init tracking used to start only when a startup script was provided; without one it never tracked the DD and never sent a DD-done notification (the user's new ARM_2026-11-28 got no DD-done Bark for this reason). Now tracking starts whenever DD is on and a root password is available: after the DD finishes, no script runs — M_Bot only verifies the system is ready (root password login works, sshd running) and still sends the DD-done and init-done dual-channel notifications. The DD-done wording differs by whether a script exists ("starting init script" vs "no init script"). The DD gate on the bot and web boot/grab success paths is relaxed the same way.
 

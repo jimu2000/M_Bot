@@ -26,6 +26,7 @@ from fastapi.testclient import TestClient
 from oci.client import NotFoundError, RateLimitError
 from oci.grabber import GrabResult
 from oci.instance import slim_instances
+from tgbot import task_store
 from tgbot.cpu_policy import BootKeys
 from web import config
 from web import deps as deps_mod
@@ -670,6 +671,30 @@ class TestCpuModelApi(WebApiTestCase):
         self.assertEqual(r.status_code, 200)
         self.assertIsNone(r.json()["cpu_model"])
 
+    @patch("web.routes.instances.load_cpu_models",
+           return_value={FAKE_INSTANCE: {"model": "AMD EPYC 7J13",
+                                         "checked_at": "2026-01-05T00:00:00+00:00"},
+                         FAKE_INSTANCE_2: {"model": None},
+                         "ocid1.instance.oc1..testzzzz": {}})
+    def test_cpu_models_endpoint_reads_cache_only(self, mock_load):
+        # The delayed CPU-model refetch on the instances page uses this lightweight endpoint: it only reads the cache file, never calls OCI, and only returns instances that actually have a model. 实例页延迟补拉用的轻量接口：只读缓存文件、不调 OCI，只返回确实有型号的实例。
+        r = self.client.get("/api/instances/cpu-models")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json(),
+                         {"ok": True,
+                          "cpu_models": {FAKE_INSTANCE: "AMD EPYC 7J13"}})
+        mock_load.assert_called_once_with()
+
+    @patch("web.routes.instances.load_cpu_models", return_value={})
+    def test_cpu_models_endpoint_empty_cache(self, mock_load):
+        r = self.client.get("/api/instances/cpu-models")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json(), {"ok": True, "cpu_models": {}})
+
+    def test_cpu_models_endpoint_requires_login(self):
+        r = self.anon.get("/api/instances/cpu-models")
+        self.assertEqual(r.status_code, 401)
+
 
 class TestVolumesApi(WebApiTestCase):
     """磁盘列表 / 详情 / 扩容 / 删除 / 孤儿盘。"""
@@ -950,6 +975,68 @@ class TestCreateAndTasksApi(WebApiTestCase):
         args = mock_grabber_cls.call_args.args
         self.assertEqual(args[3], "VM.Standard.A1.Flex")
         self.assertEqual(args[7], "/tmp/combined.pub")
+
+    @patch("web.tasks.start_dd_init")
+    @patch("web.tasks.notify_boot_success",
+            return_value={"telegram": True, "bark": False, "errors": []})
+    @patch("web.tasks.wait_for_public_ip", return_value="203.0.113.10")
+    @patch("web.tasks.Grabber")
+    @patch("web.routes.create.can_launch", return_value=(True, "可以创建"))
+    def test_create_dd_true_persists_dd_and_init_script(
+            self, mock_can, mock_grabber_cls, mock_ip, mock_notify,
+            mock_dd_init):
+        """DD 开时任务规格里存 dd 与 init_script，Grabber 拿到 DD 脚本。
+
+        前端 DD 开关默认勾选（与机器人端一致）：dd=true 时 user-data
+        是 InstallNET 重装脚本，启动脚本原文改作 DD 后的初始化脚本，
+        两者都写进 grab_spec，服务重启恢复后仍能继续 DD。
+        """
+        mock_grabber_cls.return_value.run.return_value = GrabResult(
+            instance_id=FAKE_INSTANCE, attempts=1, releases=0,
+            elapsed_seconds=5.0)
+        # The DD password must be the same one the form set (here the
+        # frontend-prefilled random UUID, sent as root_password). DD 密码
+        # 必须与开机表单设的随机密码是同一份（这里模拟前端预填的 UUID）。
+        form_password = "0123456789abcdef" * 2
+        body = dict(CREATE_BODY)
+        body.update({
+            "dd": True,
+            "user_data": "#!/bin/bash\necho hi\n",
+            "root_password": form_password,
+        })
+        r = self.client.post("/api/create", json=body)
+        self.assertEqual(r.status_code, 200)
+        # The response returns the same password (shown once in the
+        # frontend modal). 响应带回同一份密码（前端弹窗只显示这一次）。
+        self.assertEqual(r.json()["root_password"], form_password)
+        task_id = r.json()["task_id"]
+        self._wait_task_status(task_id, ("done", "failed"))
+        # The persisted grab spec carries dd + init_script (restart resume needs them). 持久化的抢机规格里带 dd 与 init_script（重启恢复要靠它们继续 DD）。
+        record = task_store.get_record(TASKS.tasks_file, task_id)
+        spec = record.get("grab_spec") or {}
+        params = spec.get("params") or {}
+        self.assertTrue(params.get("dd"))
+        self.assertEqual(params.get("init_script"), "#!/bin/bash\necho hi\n")
+        # The Grabber gets the DD (InstallNET) user-data, not the raw script. Grabber 拿到的是 DD（InstallNET）user-data，不是脚本原文。
+        kwargs = mock_grabber_cls.call_args.kwargs
+        self.assertIn("InstallNET.sh", kwargs["user_data"])
+        self.assertNotIn("echo hi", kwargs["user_data"])
+        # The DD reinstall script embeds the SAME password the form set
+        # (InstallNET -pwd), so the DD-reinstalled system logs in with
+        # the password the user saw. DD 重装脚本里嵌的是同一份表单密码
+        # （InstallNET -pwd），DD 后的系统就用这个密码登录。
+        self.assertIn("-pwd '" + form_password + "'",
+                      kwargs["user_data"])
+        # DD init is started with the script (mocked: no real SSH wait thread). DD 初始化被启动，传的是脚本原文（已 mock，不起真等 DD 的线程）。
+        deadline = time.time() + 2.0
+        while not mock_dd_init.called and time.time() < deadline:
+            time.sleep(0.05)
+        self.assertTrue(mock_dd_init.called, "DD 开时应起 DD 初始化")
+        self.assertEqual(mock_dd_init.call_args.args[2],
+                         "#!/bin/bash\necho hi\n")
+        # DD init SSH logs in with the same form password. DD 初始化
+        # SSH 登录用的也是同一份表单密码。
+        self.assertEqual(mock_dd_init.call_args.args[1], form_password)
 
     @patch("web.tasks.notify_boot_success",
             return_value={"telegram": True, "bark": False, "errors": []})

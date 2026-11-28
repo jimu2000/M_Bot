@@ -8,11 +8,13 @@ M_Bot 独有功能。
     返回 paid=true、limit=null、full=false。创建备份前前端先调它。
   - GET /api/boot-backups：备份列表（camelCase 字段，
     同时双写 kebab-case 旧字段）。
-  - POST /api/boot-backups：创建 FULL 全量备份，body
-    {boot_volume_id, display_name?, delete_oldest?}。付费账号直接
-    创建；免费账号满了自动删最早备份再创建（用户要求 2026-11-24：
+  - POST /api/boot-backups：创建备份，body
+    {boot_volume_id, display_name?, type?, delete_oldest?}。
+    type 为 FULL（默认）或 INCREMENTAL；付费账号直接创建；
+    免费账号满了自动删最早备份再创建（用户要求 2026-11-24：
     不用等确认），响应里带 deleted_oldest；delete_oldest 参数仅
-    保留兼容，不再需要。
+    保留兼容，不再需要。增量备份满了时不自动删最早备份（会断链），
+    直接报 400 让用户先手动清理。
   - POST /api/boot-backups/paid：设置当前账号付费/免费，body
     {paid: bool}，与机器人端共用 tgbot/data/paid_profiles.json。
   - POST /api/boot-backups/delete-batch：批量删除备份，body
@@ -47,6 +49,7 @@ from oci.boot_backup import (
     get_source_instance_shape,
     list_boot_volume_backups,
     restore_boot_volume_backup,
+    validate_backup_type,
 )
 from oci.client import OCIError
 from oci.quota import (
@@ -178,6 +181,9 @@ class CreateBackupBody(BaseModel):
 
     boot_volume_id: str
     display_name: str = None
+    # 备份类型：FULL（默认）或 INCREMENTAL。增量依赖之前的备份链，
+    # 免费额度满了时不自动删最早备份（会断链），路由直接报 400。
+    type: str = "FULL"
     # Kept for compatibility only: when a free account is full, the server deletes the oldest backup and creates a new one automatically; the frontend no longer needs to send delete_oldest. 仅保留兼容：免费账号满了服务端自动删最早备份再创建，不再需要前端传 delete_oldest。
     delete_oldest: bool = False
 
@@ -367,11 +373,17 @@ def create(body: CreateBackupBody,
            profile: str = Query(default=None),
            region: str = Query(default=None),
            username: str = Depends(get_current_user)):
-    """创建 FULL 全量备份。
+    """创建备份（默认 FULL 全量）。
 
     付费账号直接创建；免费账号满了自动删最早备份再创建（用户要求
-    2026-11-24：不用等确认），响应里带 deleted_oldest。
+    2026-11-24：不用等确认），响应里带 deleted_oldest。增量备份
+    （INCREMENTAL）满了时不自动删最早备份——删了可能断链，直接
+    报 400，让用户先手动清理。
     """
+    try:
+        backup_type = validate_backup_type(body.type)
+    except ValueError as exc:
+        return error_response(str(exc), status_code=400)
     if demo_data.is_demo():
         # Demo mode: fake success with a fake backup record.
         # 演示模式：假成功，返回一条假备份记录。
@@ -382,7 +394,7 @@ def create(body: CreateBackupBody,
             "sizeInGBs": 47,
             "lifecycleState": "CREATING",
             "sourceType": "MANUAL",
-            "type": "FULL",
+            "type": backup_type,
             "timeCreated": "2026-11-25T12:00:00.000000+00:00",
             "imageId": None,
             "id": "ocid1.bootvolumebackup.oc1..demobackup0099",
@@ -402,11 +414,18 @@ def create(body: CreateBackupBody,
         deleted_oldest = None
         if paid:
             backup = create_boot_volume_backup(cli, body.boot_volume_id,
-                                               body.display_name)
+                                               body.display_name,
+                                               backup_type)
         else:
             count, limit, full, oldest = check_backup_quota(
                 cli, compartment_id)
             if full:
+                if backup_type != "FULL":
+                    return error_response(
+                        "免费备份已满 %d/%d 个，增量备份不能自动删最早"
+                        "备份（会断链），请先手动删除不用的备份再创建。"
+                        % (count, limit),
+                        status_code=400)
                 if oldest is None:
                     return error_response(
                         "免费备份已满，但未找到可删除的最早备份，"
@@ -417,10 +436,12 @@ def create(body: CreateBackupBody,
                                   "name": oldest.get("display-name")}
                 # Creating immediately after deleting may hit OCI's quota sync delay (LimitExceeded), so use the retrying create. 删完立即创建可能撞上 OCI 配额同步延迟（LimitExceeded），用带重试的创建。
                 backup = create_boot_volume_backup_with_limit_retry(
-                    cli, body.boot_volume_id, body.display_name)
+                    cli, body.boot_volume_id, body.display_name,
+                    backup_type)
             else:
                 backup = create_boot_volume_backup(cli, body.boot_volume_id,
-                                                   body.display_name)
+                                                   body.display_name,
+                                                   backup_type)
     except ValueError as exc:
         return error_response(str(exc), status_code=400)
     except OCIError as exc:

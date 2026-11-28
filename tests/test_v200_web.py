@@ -91,22 +91,27 @@ class TestCloudReportChineseStates(unittest.TestCase):
                     "cloud.th_a1", "cloud.th_e2"):
             self.assertIn('tr("%s")' % key, self.js)
 
-    def test_instances_state_badge_uses_i18n(self):
-        """实例页状态徽标同步走同一套映射。"""
+    def test_instances_state_badge_shows_raw_oci_code(self):
+        """实例页状态徽标显示 OCI 原始状态码（STOPPED/STOPPING/RUNNING…），
+        不再走中文映射（v2.21 救机实测 bug 1：中文“停止中/已停止”与面板
+        其他英文状态不一致）。云报告仍走中文映射（v2.0 决定，见 overview.js）。"""
         inst = read("web/static/js/instances.js")
-        self.assertIn("instanceStateLabel(state)", inst)
-        self.assertIn("MBotI18n", inst)
+        self.assertNotIn("instanceStateLabel(state)", inst)
+        self.assertIn('var label = s || "—";', inst)
+        overview = read("web/static/js/overview.js")
+        self.assertIn("instanceStateLabel(state)", overview)
 
     def test_cpu_model_label_a1_free_tier_and_e2_full_model(self):
         """CPU 型号显示：A1 一律显示“A1配额内免费”，E2 未检测到时回落到
         完整型号 "AMD EPYC 7J13"，不再出现光秃秃的 "AMD"；补拉与详情
-        重测两处都走同一 cpuModelLabel，不绕过它直接写原始值。"""
+        重测两处都走同一 cpuModelLabel，不绕过它直接写原始值（补拉现
+        在调轻量接口 /api/instances/cpu-models 取型号字典，不再重拉列表）。"""
         inst = read("web/static/js/instances.js")
         self.assertIn("instances.cpu_a1_free", inst)
         self.assertIn('"AMD EPYC 7J13"', inst)
         self.assertNotIn('return "AMD";', inst)
         self.assertNotIn('return "ARM";', inst)
-        self.assertIn("cell.textContent = cpuModelLabel(fresh.cpuModel, fresh.shape)",
+        self.assertIn("cell.textContent = cpuModelLabel(model, fresh ? fresh.shape : \"\");",
                       inst)
         self.assertIn("cell.textContent = cpuModelLabel(res.cpu_model, detailTarget.shape)",
                       inst)
@@ -119,11 +124,16 @@ class TestCloudReportChineseStates(unittest.TestCase):
 
         2.02 Bug 1：后端 state=all 早就支持，但前端一直调默认
         state=running，停掉的实例从列表消失、没法从面板再启动。
+        只有列表加载带 state=all；CPU 型号补拉改走轻量接口
+        /api/instances/cpu-models，不再带 state=all 重拉列表。
+        启停按钮文案走 i18n（v2.21 bug 1：“关机”→“停止/Stop”）。
         """
         inst = read("web/static/js/instances.js")
-        self.assertEqual(inst.count("state=all"), 2,
-                         "列表加载与 CPU 型号补拉都要带 state=all")
-        self.assertIn('data-act="start">启动</button>', inst)
+        self.assertEqual(inst.count("state=all"), 1,
+                         "只有列表加载带 state=all；CPU 补拉走轻量接口，不重拉列表")
+        self.assertIn('data-act="start"', inst)
+        self.assertIn('"instances.start"', inst)
+        self.assertIn('"instances.stop"', inst)
         self.assertIn('var stopped = state === "STOPPED"', inst)
 
     def test_create_form_checks_image_arch(self):
@@ -138,6 +148,31 @@ class TestCloudReportChineseStates(unittest.TestCase):
         self.assertIn('payload.shape === SHAPE_E2 ? "x86_64" : "aarch64"',
                       create_js)
         self.assertIn("镜像架构与形状不匹配", create_js)
+
+    def test_create_form_has_dd_toggle(self):
+        """创建表单有 DD 重装开关（与机器人开机表单同步）。
+
+        开关默认勾选（用户偏好 DD 默认开）；collectPayload 把开关
+        状态发给后端（dd 字段）；开关标签与说明进中英文字典
+        （字典覆盖测试会校验模板里每个 data-i18n 键都在字典里）。
+        """
+        html = read("web/templates/create.html")
+        self.assertIn('id="dd"', html)
+        self.assertIn('data-i18n="create.dd"', html)
+        self.assertIn('data-i18n="create.dd_hint"', html)
+        create_js = read("web/static/js/create.js")
+        self.assertIn('dd: $("dd").checked', create_js)
+        i18n = read("web/static/js/i18n.js")
+        self.assertIn(
+            '"create.dd": { zh: "DD重装（开 Debian13）", '
+            'en: "DD reinstall (On Debian13)" }', i18n)
+        self.assertIn('"create.dd_hint": { zh: "开启后实例重装为 Debian 13，'
+                      '装完执行上方启动脚本（DD 初始化脚本）；'
+                      '关闭时启动脚本作 cloud-init 开机脚本。", '
+                      'en: "When on, the instance is reinstalled to Debian 13 '
+                      'and the startup script above runs after DD '
+                      '(DD init script); when off, the script runs as a '
+                      'cloud-init boot script." }', i18n)
 
 
 
@@ -517,11 +552,11 @@ class TestVersion200(unittest.TestCase):
     """A4：版本号 2.10。"""
 
     def test_version_file(self):
-        self.assertEqual(read("VERSION").strip(), "2.20.0")
+        self.assertEqual(read("VERSION").strip(), "2.21.0")
 
     def test_readme_top_version(self):
         readme = read("README.md")
-        self.assertIn("**当前版本：v2.20.0**", readme)
+        self.assertIn("**当前版本：v2.21.0**", readme)
 
     def test_changelogs_cover_v200(self):
         for rel, needles in (

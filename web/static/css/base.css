@@ -195,6 +195,10 @@ code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monosp
 .btn-sm { padding: 4px 10px; font-size: 13px; border-radius: 6px; }
 .btn:disabled { opacity: 0.55; cursor: not-allowed; }
 
+/* Clickable ID / name in the backup table: looks like plain text, clicks copy the full OCID. 备份表里的可点 ID/名：看起来像普通文字，点后复制完整 OCID。 */
+.copy-id { padding: 0; border: 0; background: none; cursor: pointer; color: inherit; font: inherit; text-align: left; }
+.copy-id:hover { color: var(--accent); text-decoration: underline; }
+
 .card {
   background: var(--surface);
   border: 1px solid var(--border);

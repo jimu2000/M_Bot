@@ -204,7 +204,7 @@ class TestCreateWithLimitRetry(unittest.TestCase):
             result = create_boot_volume_backup_with_limit_retry(
                 cli, FAKE_BV, "b1")
         self.assertEqual(result, expected)
-        mock_create.assert_called_once_with(cli, FAKE_BV, "b1")
+        mock_create.assert_called_once_with(cli, FAKE_BV, "b1", None)
 
     def test_limit_exceeded_then_success(self):
         cli = MagicMock()

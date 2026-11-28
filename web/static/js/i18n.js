@@ -128,8 +128,18 @@
     "instances.loading": { zh: "加载中…", en: "Loading…" },
     "instances.empty": { zh: "该 Profile 下没有实例", en: "No instances under this profile" },
     "instances.batch_start": { zh: "▶️ 批量开机", en: "▶️ Batch Start" },
-    "instances.batch_stop": { zh: "⏹️ 批量关机", en: "⏹️ Batch Stop" },
+    "instances.batch_stop": { zh: "⏹️ 批量停止", en: "⏹️ Batch Stop" },
     "instances.batch_restart": { zh: "🔄 批量重启", en: "🔄 Batch Restart" },
+    "instances.start": { zh: "启动", en: "Start" },
+    "instances.stop": { zh: "停止", en: "Stop" },
+    "instances.restart": { zh: "重启", en: "Restart" },
+    "instances.create_backup": { zh: "创建备份", en: "Create Backup" },
+    "instances.create_backup_name": { zh: "备份名", en: "Backup name" },
+    "instances.create_backup_type": { zh: "备份类型", en: "Backup type" },
+    "instances.create_backup_type_full": { zh: "全量（FULL，独立备份，可单独删除）", en: "Full (FULL, standalone, can be deleted individually)" },
+    "instances.create_backup_type_incr": { zh: "增量（INCREMENTAL，只存变化，恢复要整条链都在）", en: "Incremental (INCREMENTAL, stores only changes; restore needs the whole chain)" },
+    "instances.create_backup_hint": { zh: "名字留空时后端自动生成。增量备份依赖之前的备份链，删除链上早期备份会让它无法恢复；不确定就选全量。", en: "Leave the name empty to let the server generate one. Incremental backups depend on the earlier backup chain; deleting an early backup in the chain breaks restore. Pick Full when unsure." },
+    "instances.create_backup_confirm": { zh: "确认创建", en: "Create" },
     "instances.batch_terminate": { zh: "🗑️ 批量删除", en: "🗑️ Batch Delete" },
     "instances.terminate": { zh: "终止实例", en: "Terminate Instance" },
     "instances.terminate_preserve": { zh: "终止实例（保留启动盘）", en: "Terminate Instance (Keep Boot Volume)" },
@@ -171,7 +181,9 @@
     "create.network": { zh: "🛡️ 网络与安全", en: "🛡️ Network & Security" },
     "create.advanced": { zh: "⌨️ 高级选项", en: "⌨️ Advanced Options" },
     "create.quick_boot": { zh: "⚡ 快捷开机", en: "⚡ Quick Boot" },
-    "create.submit": { zh: "开始创建", en: "Create" }
+    "create.submit": { zh: "开始创建", en: "Create" },
+    "create.dd": { zh: "DD重装（开 Debian13）", en: "DD reinstall (On Debian13)" },
+    "create.dd_hint": { zh: "开启后实例重装为 Debian 13，装完执行上方启动脚本（DD 初始化脚本）；关闭时启动脚本作 cloud-init 开机脚本。", en: "When on, the instance is reinstalled to Debian 13 and the startup script above runs after DD (DD init script); when off, the script runs as a cloud-init boot script." }
   };
 
   /* 实例状态中文映射（v2.01 A1）：只在中文模式下用；英文模式与

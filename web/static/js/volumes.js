@@ -117,12 +117,17 @@
     var b = normBackup(raw);
     var canRestore = (b.state || "").toUpperCase() === "AVAILABLE";
     var checked = selectedBackups[b.id] ? " checked" : "";
+    // Backup OCID column: truncated to the last 12 chars, full ID in the title, click to copy (handled in the backup-tbody click handler). The name is also a click target that copies the ID, so clicking a backup always does something. 备份 ID 列：只显示后 12 位，完整 ID 放 title 里，点击复制（backup-tbody 的点击处理里接）；备份名也是可点按钮，点后复制 ID，点备份总有反应。
+    var idCell = b.id
+      ? '<td><button type="button" class="mono copy-id" data-copy-id="' + esc(b.id) + '" title="点击复制完整 ID：' + esc(b.id) + '">…' + esc(b.id.slice(-12)) + "</button></td>"
+      : "<td>—</td>";
     return (
       "<tr data-backup-id=\"" + esc(b.id) + "\">" +
         "<td><input type=\"checkbox\" class=\"backup-check\" data-backup-id=\"" +
           esc(b.id) + "\"" + checked + " aria-label=\"选择备份 " + esc(b.name) + "\"></td>" +
-        "<td><b>" + esc(b.name) + "</b>" +
+        '<td><button type="button" class="copy-id" data-copy-id="' + esc(b.id) + '" title="点击复制备份 ID">' + "<b>" + esc(b.name) + "</b></button>" +
           (b.type ? '<br><span style="color: var(--text-faint); font-size: 12px;">' + esc(b.type) + "</span>" : "") + "</td>" +
+        idCell +
         "<td><span class=\"mono\" title=\"" + esc(b.boot_volume_id || "") + "\">" + esc(sourceVolumeName(b.boot_volume_id)) + "</span></td>" +
         "<td>" + esc(b.size) + " GB</td>" +
         "<td>" + backupStateBadge(b.state) + "</td>" +
@@ -156,7 +161,7 @@
   function renderBackups() {
     var tbody = document.getElementById("backup-tbody");
     if (backups.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: var(--text-muted);">暂无备份</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; color: var(--text-muted);">暂无备份</td></tr>';
     } else {
       tbody.innerHTML = backups.map(backupRow).join("");
     }
@@ -197,7 +202,7 @@
     document.getElementById("orphan-tbody").innerHTML =
       '<tr><td colspan="4" style="text-align: center; color: var(--text-muted);">加载中…</td></tr>';
     document.getElementById("backup-tbody").innerHTML =
-      '<tr><td colspan="7" style="text-align: center; color: var(--text-muted);">加载中…</td></tr>';
+      '<tr><td colspan="8" style="text-align: center; color: var(--text-muted);">加载中…</td></tr>';
     var q = document.getElementById("backup-quota");
     q.textContent = "免费额度：加载中…";
     q.style.color = "";
@@ -222,7 +227,7 @@
     } catch (err) {
       if (gen !== loadGen) return;
       document.getElementById("backup-tbody").innerHTML =
-        '<tr><td colspan="7" style="text-align: center; color: var(--danger);">加载失败：' +
+        '<tr><td colspan="8" style="text-align: center; color: var(--danger);">加载失败：' +
         MBot.escapeHtml(err.message) + "</td></tr>";
       backups = [];
     }
@@ -263,6 +268,8 @@
     var orphPromise = MBot.cachedApi("vol:orphans:" + prof, orphUrl, !!force);
     volPromise.catch(function () {});
     orphPromise.catch(function () {});
+    // The backup list no longer waits for the volume list: all three lists are fetched in parallel and each renders when it arrives (the backup table re-renders once volumes are in, so source-volume names fill in). Previously loadBackups only started after the volume list returned, so the backup table always waited for the slowest list. 备份列表不再等卷列表：三路并行拉，各自回来各自渲染（备份表在卷列表回来后会再渲染一次，来源卷名随之补全）；以前是等卷列表回来才拉备份，备份表总要等最慢的那路。
+    var backupsPromise = loadBackups(force);
     try {
       var data = await volPromise;
       if (gen !== loadGen) return;
@@ -285,12 +292,14 @@
     }
     if (gen !== loadGen) return;
     render();
-    // The backup list needs the volume list for the source-volume name mapping, so fetch it only after volumes have loaded. 备份列表依赖卷列表做来源卷名映射，所以在卷加载完之后再拉。
-    await loadBackups(force);
+    await backupsPromise;
   }
 
+  // Find a volume by the id the table row carries: rows use the normalised id (v.volumeId || v.id), so the lookup must accept both — records that only carry volumeId used to miss the lookup and the backup button silently did nothing (the caller returned early with no toast, no POST, no error). 按表格行携带的 id 找卷：行用归一化 id（v.volumeId || v.id），查找必须同时接受两者——只有 volumeId、没有 id 的记录以前查不到，备份按钮静默无反应（调用方直接 return，无提示、无请求、无报错）。
   function findVolume(id) {
-    return volumes.concat(orphans).find(function (v) { return String(v.id) === id; });
+    return volumes.concat(orphans).find(function (v) {
+      return String(v.volumeId || v.id || "") === String(id);
+    });
   }
 
   function findBackup(id) {
@@ -341,7 +350,10 @@
         if (!btn) return;
         var row = btn.closest("[data-volume-id]");
         var vol = findVolume(row.getAttribute("data-volume-id"));
-        if (!vol) return;
+        if (!vol) {
+          MBot.toast("找不到启动卷（ID：" + row.getAttribute("data-volume-id") + "），请刷新页面重试。", "error");
+          return;
+        }
         var act = btn.getAttribute("data-act");
         if (act === "resize") {
           resizeTarget = norm(vol);
@@ -360,9 +372,16 @@
             vpusTarget.vpus != null ? String(vpusTarget.vpus) : "10";
           MBot.openModal("vpus-modal");
         } else if (act === "backup") {
+          // Ask for a name (default "<volume>-backup-YYYYMMDD-HHMM", empty = server-generated) and a type (FULL / INCREMENTAL) first, then create through the shared flow; refresh the backup list on success. 先弹确认框让用户填名字（默认“<卷名>-backup-年月日-时分”，留空后端自动生成）与类型（全量/增量），再走共用备份流程；成功后刷新备份列表。
           var bv = norm(vol);
-          MBot.backupBootVolume(bv.id, currentProfile).then(function (created) {
-            if (created) loadBackups(true);
+          MBot.createBackupDialog(MBot.defaultBackupName(bv.name)).then(function (picked) {
+            if (!picked) return;
+            MBot.backupBootVolume(bv.id, currentProfile, {
+              display_name: picked.name || undefined,
+              type: picked.type || "FULL",
+            }).then(function (created) {
+              if (created) loadBackups(true);
+            });
           });
         } else if (act === "delete") {
           deleteTarget = norm(vol);
@@ -373,6 +392,12 @@
     });
 
     document.getElementById("backup-tbody").addEventListener("click", function (e) {
+      // Clicking a backup name or its truncated ID copies the full backup OCID. 点备份名或截断的 ID 复制完整备份 OCID。
+      var copyBtn = e.target.closest("[data-copy-id]");
+      if (copyBtn) {
+        MBot.copyText(copyBtn.getAttribute("data-copy-id"), "备份 ID");
+        return;
+      }
       var btn = e.target.closest("[data-act]");
       if (!btn || btn.disabled) return;
       var row = btn.closest("[data-backup-id]");

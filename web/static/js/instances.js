@@ -23,15 +23,22 @@
   var bootswapTarget = null;
   var bootswapSelected = null;
   var bootBackupDelTarget = null;
+  var detailLoadSeq = 0;  // Detail-load sequence: guards against out-of-order responses when the user opens another instance's detail while one is still loading. 详情加载序号：用户快速连点两个实例时，旧请求的回包不再覆盖新弹窗。
   var cpuRefreshTimer = null;  // Timer for the delayed CPU-model refetch (at most one refetch per load round). CPU 型号延迟补拉的定时器（每轮只补拉一次）。
   var consoleCommand = "";
 
-  var BATCH_LABEL = {
-    start: "批量开机",
-    stop: "批量关机",
-    restart: "批量重启",
-    terminate: "批量删除",
-  };
+  // Short i18n lookup with a Chinese fallback (used for card buttons and action toasts, which are built in JS and must follow the language switch). 简短 i18n 取值（中文兜底；卡片按钮与操作提示在 JS 里拼，必须跟随语言切换）。
+  function tr(key, fallback) {
+    return window.MBotI18n ? window.MBotI18n.t(key) : fallback;
+  }
+
+  function batchLabel(action) {
+    if (action === "start") return tr("instances.batch_start", "▶️ 批量开机");
+    if (action === "stop") return tr("instances.batch_stop", "⏹️ 批量停止");
+    if (action === "restart") return tr("instances.batch_restart", "🔄 批量重启");
+    if (action === "terminate") return tr("instances.batch_terminate", "🗑️ 批量删除");
+    return action;
+  }
 
   // Field normalization: the backend returns panel shapes (camelCase) {id, name, publicIp, shape, state, ocpus, memoryInGBs, region, timeCreated}; during the transition both old and new fields are written, and new fields win here with old ones as fallback. 字段归一化：后端返回面板形状（camelCase）{id, name, publicIp, shape, state, ocpus, memoryInGBs, region, timeCreated}，过渡期同时双写旧字段，这里优先认新字段，旧字段作兜底。
   // Note: the list only contains RUNNING instances. 注意：列表只含 RUNNING 实例。
@@ -51,10 +58,10 @@
     };
   }
 
-  // State badge: Chinese mode shows Chinese (RUNNING -> 运行中、TERMINATED -> 已终止、STOPPED -> 已停止, etc.; the map is INSTANCE_STATE_ZH in i18n.js); English mode and unknown states show the OCI original. 状态徽标：中文模式显示中文（RUNNING→运行中、TERMINATED→已终止、STOPPED→已停止等，映射表在 i18n.js 的 INSTANCE_STATE_ZH），英文模式与未知状态显示 OCI 原文。
+  // State badge: always the OCI state code (STOPPED / STOPPING / RUNNING …) in both languages, so the card matches the OCI-style states shown elsewhere on the panel. The cloud report keeps its Chinese labels (v2.0 decision); only the instance cards use raw codes. 状态徽标：中英文都显示 OCI 原始状态码（STOPPED / STOPPING / RUNNING…），与面板其他英文状态一致；云报告仍用中文（v2.0 决定），只有实例卡片用原始码。
   function stateBadge(state) {
     var s = (state || "").toUpperCase();
-    var label = window.MBotI18n ? window.MBotI18n.instanceStateLabel(state) : (state || "—");
+    var label = s || "—";
     if (s === "RUNNING") return '<span class="badge badge-green">' + MBot.escapeHtml(label) + "</span>";
     if (s === "STOPPED") return '<span class="badge badge-gray">' + MBot.escapeHtml(label) + "</span>";
     if (s === "TERMINATED") return '<span class="badge badge-red">' + MBot.escapeHtml(label) + "</span>";
@@ -156,13 +163,13 @@
       var spec = (inst.ocpus != null && inst.memory_gb != null)
         ? inst.ocpus + " OCPU / " + inst.memory_gb + " GB" : "—";
       var created = inst.created ? esc(MBot.formatTime(inst.created)) : "—";
-      // Button matrix (fixed order): power off/on, restart, serial console, rename, resize, repair, reset image, IP management, boot volume, delete, delete (keep boot volume). 按钮矩阵（固定顺序）：关机/启动、重启、串行控制台、重命名、升降级、修复、重置镜像、IP 管理、启动盘、删除、删除（保留启动盘）。
+      // Button matrix (fixed order): power off/on, restart, serial console, rename, resize, repair, reset image, IP management, boot volume, delete, delete (keep boot volume). 按钮矩阵（固定顺序）：停止/启动、重启、串行控制台、重命名、升降级、修复、重置镜像、IP 管理、启动盘、删除、删除（保留启动盘）。
       // Power/restart follow the instance state; resize only shows for A1.Flex. 启停/重启按状态显示；升降级只对 A1.Flex 显示。
       var actions = "";
-      if (stopped) actions += '<button type="button" class="btn btn-sm btn-primary" data-act="start">启动</button>';
+      if (stopped) actions += '<button type="button" class="btn btn-sm btn-primary" data-act="start">' + esc(tr("instances.start", "启动")) + "</button>";
       if (running) {
-        actions += '<button type="button" class="btn btn-sm" data-act="stop">关机</button>';
-        actions += '<button type="button" class="btn btn-sm" data-act="restart">重启</button>';
+        actions += '<button type="button" class="btn btn-sm" data-act="stop">' + esc(tr("instances.stop", "停止")) + "</button>";
+        actions += '<button type="button" class="btn btn-sm" data-act="restart">' + esc(tr("instances.restart", "重启")) + "</button>";
       }
       actions += '<button type="button" class="btn btn-sm" data-act="console">串行控制台</button>';
       actions += '<button type="button" class="btn btn-sm" data-act="rename">重命名</button>';
@@ -252,7 +259,7 @@
     }
   }
 
-  // Delayed CPU-model refetch: the backend only starts CPU detection (SSH /proc/cpuinfo, 1-3s) when it receives the first list request, so cpuModel is still empty then; refetch after 5s with refresh=1 (bypassing the 30s server cache) and update only the CPU text on cards, without a full re-render. At most one refetch per load round (undetectable machines are not re-polled), and the old timer is cleared in loadInstances when switching account/region. CPU 型号延迟补拉：后端收到第一次列表请求时才触发 CPU 检测（SSH 查 /proc/cpuinfo，要 1-3 秒），当时返回的 cpuModel 还是空；5 秒后带 refresh=1 重新拉一次（绕过 30 秒服务端缓存），只更新卡片上的 CPU 型号文字，不整页重绘。每轮列表加载只补拉一次（检测不到的机器不再反复刷），切账号/区域后旧定时器在 loadInstances 里清掉。
+  // Delayed CPU-model refetch: the backend only starts CPU detection (SSH /proc/cpuinfo, 1-3s) when it receives the first list request, so cpuModel is still empty then; refetch after 5s from the lightweight cache-only endpoint GET /api/instances/cpu-models (no OCI calls, <100ms) and update only the CPU text on cards, without a full re-render. Previously this re-fetched the whole instance list with refresh=1 (another full OCI round trip, 3-5s) on every page load. At most one refetch per load round (undetectable machines are not re-polled), and the old timer is cleared in loadInstances when switching account/region. CPU 型号延迟补拉：后端收到第一次列表请求时才触发 CPU 检测（SSH 查 /proc/cpuinfo，要 1-3 秒），当时返回的 cpuModel 还是空；5 秒后调轻量接口 GET /api/instances/cpu-models（只读缓存，不调 OCI，百毫秒内）补拉，只更新卡片上的 CPU 型号文字，不整页重绘。以前是带 refresh=1 重拉整个实例列表（又一轮 OCI 查询，3–5 秒），每进一次页面就多一次。每轮列表加载只补拉一次（检测不到的机器不再反复刷），切账号/区域后旧定时器在 loadInstances 里清掉。
   function scheduleCpuRefresh() {
     if (cpuRefreshTimer) return;
     var missing = instances.some(function (inst) { return !inst.cpuModel; });
@@ -267,19 +274,22 @@
     var profileAtStart = currentProfile;
     var regionAtStart = currentRegion;
     try {
-      var url = MBot.withProfile("/api/instances", currentProfile, currentRegion);
-      url += (url.indexOf("?") === -1 ? "?" : "&") + "state=all&refresh=1";
-      var data = await MBot.api(url);
+      var data = await MBot.api(MBot.withProfile("/api/instances/cpu-models", currentProfile, currentRegion));
       if (profileAtStart !== currentProfile || regionAtStart !== currentRegion) return;
-      (data.instances || []).forEach(function (fresh) {
-        if (!fresh.cpuModel) return;
+      var models = data.cpu_models || {};
+      Object.keys(models).forEach(function (id) {
+        var model = models[id];
+        if (!model) return;
         instances.forEach(function (inst) {
-          if (String(inst.id) === String(fresh.id)) inst.cpuModel = fresh.cpuModel;
+          if (String(inst.id) === String(id)) inst.cpuModel = model;
         });
-        var card = document.querySelector('[data-instance-id="' + fresh.id + '"]');
+        var card = document.querySelector('[data-instance-id="' + id + '"]');
         if (!card) return;
         var cell = card.querySelector("[data-cpu-model]");
-        if (cell) cell.textContent = cpuModelLabel(fresh.cpuModel, fresh.shape);
+        if (cell) {
+          var fresh = instances.find(function (x) { return String(x.id) === String(id); });
+          cell.textContent = cpuModelLabel(model, fresh ? fresh.shape : "");
+        }
       });
     } catch (err) {
     }
@@ -296,23 +306,53 @@
     }
   }
 
-  async function showDetail(instId) {
+  async function showDetail(inst) {
+    var instId = inst.id;
+    var seq = ++detailLoadSeq;  // Guard against out-of-order responses when the user opens another instance's detail while this one is still loading. 详情加载序号：用户快速连点两个实例时，旧请求的回包不再覆盖新弹窗。
+    // Immediate feedback: open the modal at once with loading placeholders, then fill it when the detail API returns — previously the modal only opened after the (slow) fetch, so the first click looked dead. 点开立即给反馈：先打开弹窗填“加载中…”，等详情接口回来再填数——以前要等接口回来才开弹窗，第一次点看起来像没反应。
+    var loadingText = tr("instances.loading", "加载中…");
+    detailTarget = {
+      id: instId,
+      name: norm(inst).name,
+      state: "",
+    };
+    document.getElementById("detail-name").textContent = detailTarget.name;
+    document.getElementById("detail-shape").textContent = loadingText;
+    document.getElementById("detail-cpu-model").textContent = loadingText;
+    document.getElementById("detail-spec").textContent = loadingText;
+    document.getElementById("detail-state").textContent = loadingText;
+    document.getElementById("detail-public-ip").textContent = loadingText;
+    document.getElementById("detail-private-ip").textContent = loadingText;
+    document.getElementById("detail-ipv6").textContent = loadingText;
+    document.getElementById("detail-ad").textContent = loadingText;
+    document.getElementById("detail-boot-volume").textContent = loadingText;
+    document.getElementById("detail-created").textContent = loadingText;
+    document.getElementById("detail-watchdog").textContent = loadingText;
+    document.getElementById("detail-modal").dataset.instanceId = instId;
+    document.getElementById("detail-bind-domain-btn").hidden = true;
+    document.getElementById("detail-bootbackup-btn").hidden = true;
+    document.getElementById("detail-bootswap-btn").hidden = true;
+    document.getElementById("detail-bootbackup-del-btn").hidden = true;
+    document.getElementById("detail-watchdog-btn").hidden = true;
+    document.getElementById("detail-cpu-btn").hidden = true;
+    MBot.openModal("detail-modal");
     try {
       var res = await MBot.api(MBot.withProfile("/api/instances/" + encodeURIComponent(instId), currentProfile, currentRegion));
-      var inst = res.instance || {};
-      var cfg = inst["shape-config"] || {};
-      document.getElementById("detail-name").textContent = inst["display-name"] || "—";
-      document.getElementById("detail-shape").textContent = fmtShape(inst.shape) || "—";
-      document.getElementById("detail-cpu-model").textContent = cpuModelLabel(res.cpu_model, inst.shape);
+      if (seq !== detailLoadSeq) return;  // A newer detail load started; discard this stale result. 已有更新的详情请求，丢弃这份旧回包。
+      var inst2 = res.instance || {};
+      var cfg = inst2["shape-config"] || {};
+      document.getElementById("detail-name").textContent = inst2["display-name"] || "—";
+      document.getElementById("detail-shape").textContent = fmtShape(inst2.shape) || "—";
+      document.getElementById("detail-cpu-model").textContent = cpuModelLabel(res.cpu_model, inst2.shape);
       document.getElementById("detail-spec").textContent =
         (cfg.ocpus != null ? cfg.ocpus + " OCPU / " + cfg["memory-in-gbs"] + " GB" : "—");
-      document.getElementById("detail-state").innerHTML = stateBadge(inst["lifecycle-state"]);
+      document.getElementById("detail-state").innerHTML = stateBadge(inst2["lifecycle-state"]);
       document.getElementById("detail-public-ip").textContent = res.public_ip || "—";
       document.getElementById("detail-private-ip").textContent = res.private_ip || "—";
       var ipv6 = res.ipv6_addresses;
       document.getElementById("detail-ipv6").textContent =
         (ipv6 && ipv6.length ? ipv6.join(", ") : "无");
-      document.getElementById("detail-ad").textContent = inst["availability-domain"] || "—";
+      document.getElementById("detail-ad").textContent = inst2["availability-domain"] || "—";
       var bootText = "—";
       if (res.boot_volume_size_gbs != null) {
         bootText = res.boot_volume_size_gbs + " GB";
@@ -322,13 +362,12 @@
       }
       document.getElementById("detail-boot-volume").textContent = bootText;
       document.getElementById("detail-created").textContent =
-        inst["time-created"] ? MBot.formatTime(inst["time-created"]) : "—";
+        inst2["time-created"] ? MBot.formatTime(inst2["time-created"]) : "—";
       detailTarget = {
         id: instId,
-        name: inst["display-name"] || "—",
-        state: inst["lifecycle-state"] || "",
+        name: inst2["display-name"] || "—",
+        state: inst2["lifecycle-state"] || "",
       };
-      document.getElementById("detail-modal").dataset.instanceId = instId;
       document.getElementById("detail-bind-domain-btn").hidden =
         !res.public_ip;
       // Boot-volume backup / restore / delete-old-backups are only available for RUNNING / STOPPED instances. 引导卷备份 / 恢复 / 删除历史备份只对运行中 / 已停止的实例可用。
@@ -342,9 +381,10 @@
       document.getElementById("detail-watchdog-btn").hidden = true;
       // CPU re-detection is only available for RUNNING instances. CPU 重新检测也只对运行中的实例可用。
       document.getElementById("detail-cpu-btn").hidden = !watchdogOn;
-      MBot.openModal("detail-modal");
       if (watchdogOn) refreshWatchdog();
     } catch (err) {
+      if (seq !== detailLoadSeq) return;
+      MBot.closeModal("detail-modal");
       MBot.toast("加载实例详情失败：" + err.message, "error");
     }
   }
@@ -467,15 +507,24 @@
     }
   }
 
-  // Boot-volume backup: make a FULL backup for the instance in the detail modal; when the free quota is full (409 + full), open the delete-old-backups modal instead so the user deletes first, then creates. 引导卷备份：给详情里的实例做 FULL 备份；免费额度满了（409 + full）时改弹删除历史备份弹窗，让用户先删再建。
+  // Boot-volume backup: ask for a name (default "<instance>-backup-YYYYMMDD-HHMM", empty = server-generated) and a type (FULL / INCREMENTAL) first; when the free quota is full (409 + full), open the delete-old-backups modal instead so the user deletes first, then creates. 引导卷备份：先弹确认框让用户填名字（默认“<实例名>-backup-年月日-时分”，留空后端自动生成）与类型（全量/增量）；免费额度满了（409 + full）时改弹删除历史备份弹窗，让用户先删再建。
   async function createBootBackup() {
     if (!detailTarget) return;
+    var picked = await MBot.createBackupDialog(
+      MBot.defaultBackupName(detailTarget.name));
+    if (!picked) return;
     var btn = document.getElementById("detail-bootbackup-btn");
     btn.disabled = true;
     try {
       var res = await MBot.api(MBot.withProfile(
         "/api/instances/" + encodeURIComponent(detailTarget.id) + "/boot-backups",
-        currentProfile, currentRegion), { method: "POST" });
+        currentProfile, currentRegion), {
+        method: "POST",
+        body: {
+          display_name: picked.name || undefined,
+          type: picked.type || "FULL",
+        },
+      });
       var name = (res.backup && res.backup["display-name"]) || "备份";
       var quota = (res.count != null && res.limit != null)
         ? "（免费额度 " + res.count + "/" + res.limit + "）" : "";
@@ -776,7 +825,7 @@
     document.querySelectorAll("[data-batch]").forEach(function (btn) {
       btn.addEventListener("click", async function () {
         var action = btn.getAttribute("data-batch");
-        var label = BATCH_LABEL[action] || action;
+        var label = batchLabel(action);
         var targets = selectedInstances();
         if (targets.length === 0) return;
         if (action === "terminate") {
@@ -817,10 +866,10 @@
       var inst = instances.find(function (x) { return String(x.id) === instId; });
       if (!inst) return;
       var act = btn.getAttribute("data-act");
-      if (act === "start") instanceAction(instId, "start", "启动");
-      else if (act === "stop") instanceAction(instId, "stop", "停止");
-      else if (act === "restart") instanceAction(instId, "restart", "重启");
-      else if (act === "detail") showDetail(instId);
+      if (act === "start") instanceAction(instId, "start", tr("instances.start", "启动"));
+      else if (act === "stop") instanceAction(instId, "stop", tr("instances.stop", "停止"));
+      else if (act === "restart") instanceAction(instId, "restart", tr("instances.restart", "重启"));
+      else if (act === "detail") showDetail(inst);
       else if (act === "ssh") {
         // Instance card SSH one-click login: the terminal page auto-connects as root with the fixed password (see /api/ssh/connect-instance); on failure it falls back to the manual form with the host prefilled. 实例卡片 SSH 一键直连：终端页用固定密码自动登录 root（见 /api/ssh/connect-instance），失败回落手动表单（预填主机）。
         var n = norm(inst);
@@ -1072,7 +1121,7 @@
 
     document.getElementById("btn-confirm-batch-terminate").addEventListener("click", async function () {
       MBot.closeModal("batch-terminate-modal");
-      await batchAction("terminate", "批量删除", true);
+      await batchAction("terminate", batchLabel("terminate"), true);
     });
 
     document.getElementById("rename-form").addEventListener("submit", async function (e) {

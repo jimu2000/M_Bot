@@ -116,6 +116,8 @@
       max_delay: parseInt($("max-delay").value, 10) || 0,
       target_cpu: $("target-cpu").value.trim(),
       user_data: $("startup-script").value,
+      // DD reinstall: on, the instance is reinstalled to Debian 13 and the startup script runs after DD as the init script; off, the script runs as a cloud-init boot script. DD 重装：开时实例重装为 Debian 13，启动脚本在 DD 后作初始化脚本执行；关时脚本作 cloud-init 开机脚本。
+      dd: $("dd").checked,
       // Root login: on by default; the frontend prefills a UUID password, and the backend generates one when left empty. root 登录：默认开启；密码前端预填 UUID，留空由后端生成。
       root_login: $("root-login").checked,
       root_password: $("root-login").checked

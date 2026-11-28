@@ -128,7 +128,39 @@
       selectEl.value = selected;
       setProfile(selected);
     }
+    bindSelectOptionClick(selectEl);
     return selected;
+  }
+
+  // Option clicks on native selects: a real user click already updates select.value before this handler runs, and the native change event then does the switch — so this handler only acts when the browser did NOT apply the click (synthetic / automation clicks that dispatch a click on the <option> without a following change event). It sets the value and dispatches change itself; the guard (select.value !== option value) is false once the browser applied the click, so a real click is never handled twice. 下拉选项点击处理：真实用户点击时浏览器已先更新 select.value，随后的原生 change 事件会处理切换；只有浏览器未应用点击（合成/自动化点击，只派发 option 上的 click、没有随后的 change）时才自己设值并派发 change。守卫条件（select.value 与选项值不同）保证浏览器已应用时不重复触发。
+  // Default backup name "<base>-backup-YYYYMMDD-HHMM" (local time), mirroring the backend default (which uses Beijing time). The dialog passes this as the pre-filled name; an empty name still lets the server generate one. 默认备份名“<名字>-backup-年月日-时分”（本地时间，与后端默认名同格式，后端用北京时间）；确认框里预填这个，留空仍由后端自动生成。
+  function defaultBackupName(base) {
+    var d = new Date();
+    function p(n) { return (n < 10 ? "0" : "") + n; }
+    var stamp = d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + "-" + p(d.getHours()) + p(d.getMinutes());
+    return ((base || "").trim() || "boot-volume") + "-backup-" + stamp;
+  }
+
+  function bindSelectOptionClick(selectEl) {
+    if (!selectEl || selectEl._mbotOptionClickBound) return;
+    selectEl._mbotOptionClickBound = true;
+    selectEl.addEventListener("click", function (e) {
+      var t = e.target;
+      if (!t || (t.tagName || "").toUpperCase() !== "OPTION") return;
+      var value = t.value;
+      if (value == null || value === "") return;
+      if (selectEl.value !== value) {
+        selectEl.value = value;
+        var evt;
+        try {
+          evt = new Event("change", { bubbles: true });
+        } catch (err) {
+          evt = document.createEvent("Event");
+          evt.initEvent("change", true, true);
+        }
+        selectEl.dispatchEvent(evt);
+      }
+    });
   }
 
   // Append ?profile= and ?region= to a URL (using & when a query string already exists). 给 URL 拼 ?profile= 与 ?region= 参数（已有查询串时用 & 拼接）。
@@ -177,6 +209,8 @@
 
   // Fill the region dropdown: multi-region accounts show the dropdown and restore the saved choice (falling back to the home region when it is outside the subscription list); single-region accounts hide the dropdown (the select and its #region-wrap wrapper hide together). Return the selected region code (null when the subscription list is unknown; the caller treats it as the home region). 填充区域下拉：多区账号显示下拉并恢复保存的选择（不在订阅列表里时回落主区），单区账号隐藏下拉（select 与 #region-wrap 包裹层一起隐藏）。返回选中的区域代码（订阅列表未知时返回 null，调用方按主区处理）。
   function fillRegionSelect(selectEl, profile) {
+    // No region dropdown on this page (or the element is missing): return null and let the caller use the home region instead of throwing on selectEl.closest. 页面没有区域下拉（或元素缺失）时直接返回 null，调用方按主区处理，不要在 selectEl.closest 上抛错。
+    if (!selectEl) return null;
     var regions = profileRegions(profile);
     var wrap = selectEl.closest ? selectEl.closest("#region-wrap") : null;
     var show = !!(regions && regions.length > 1);
@@ -190,6 +224,7 @@
       opt.textContent = r.label + (r.isHome ? "（主区）" : "");
       selectEl.appendChild(opt);
     });
+    bindSelectOptionClick(selectEl);
     var home = null;
     regions.forEach(function (r) { if (r.isHome) home = r.code; });
     if (!home) home = regions[0].code;
@@ -315,21 +350,65 @@
     });
   }
 
+  /* ---------- 创建备份确认框（实例详情与启动盘页共用） ---------- */
+  // Shared create-backup dialog (instance detail + volumes page): name input (empty = the server generates "<volume>-backup-YYYYMMDD-HHMM") + type select (FULL / INCREMENTAL); resolves {name, type} on confirm, null on cancel / close / overlay click. 创建备份确认框（实例详情与启动盘页共用）：名字输入（留空后端自动生成）+ 类型选择（FULL/增量）；确认返回 {name, type}，取消/关闭/点遮罩返回 null。
+  function createBackupDialog(defaultName) {
+    return new Promise(function (resolve) {
+      var root = document.getElementById("modal-root");
+      var overlay = document.createElement("div");
+      overlay.className = "modal-overlay";
+      var t = window.MBotI18n ? window.MBotI18n.t : function (k) { return k; };
+      overlay.innerHTML =
+        '<div class="modal-box">' +
+          '<div class="modal-head"><span>' + escapeHtml(t("instances.create_backup")) + '</span>' +
+          '<button type="button" class="modal-close" aria-label="关闭">×</button></div>' +
+          '<div class="modal-body">' +
+            '<div class="form-group"><label>' + escapeHtml(t("instances.create_backup_name")) + '</label>' +
+            '<input type="text" class="backup-name-input" value="' + escapeHtml(defaultName || "") + '"></div>' +
+            '<div class="form-group"><label>' + escapeHtml(t("instances.create_backup_type")) + '</label>' +
+            '<select class="backup-type-select">' +
+            '<option value="FULL">' + escapeHtml(t("instances.create_backup_type_full")) + '</option>' +
+            '<option value="INCREMENTAL">' + escapeHtml(t("instances.create_backup_type_incr")) + '</option>' +
+            '</select></div>' +
+            '<p class="hint">' + escapeHtml(t("instances.create_backup_hint")) + '</p>' +
+          '</div>' +
+          '<div class="modal-foot">' +
+            '<button type="button" class="btn" data-act="cancel">' + escapeHtml(t("common.cancel")) + '</button>' +
+            '<button type="button" class="btn btn-primary" data-act="ok">' + escapeHtml(t("instances.create_backup_confirm")) + '</button>' +
+          '</div></div>';
+      root.appendChild(overlay);
+      function done(value) { overlay.remove(); resolve(value); }
+      overlay.querySelector('[data-act="cancel"]').addEventListener("click", function () { done(null); });
+      overlay.querySelector('[data-act="ok"]').addEventListener("click", function () {
+        var nameInput = overlay.querySelector(".backup-name-input");
+        var typeSelect = overlay.querySelector(".backup-type-select");
+        done({
+          name: nameInput ? nameInput.value.trim() : "",
+          type: typeSelect ? typeSelect.value : "FULL",
+        });
+      });
+      overlay.querySelector(".modal-close").addEventListener("click", function () { done(null); });
+      overlay.addEventListener("click", function (e) { if (e.target === overlay) done(null); });
+    });
+  }
+
   /* ---------- 启动卷备份（启动盘页与实例卡片弹窗共用） ---------- */
   // Create-backup flow (a core user requirement): 创建备份流程（核心用户要求）：
   //   1. Check the quota API first; create directly when not full. 1. 先调配额接口；未满直接创建。
   //   2. When full, pop a dialog showing the earliest backup; "delete earliest and continue" makes the backend delete the earliest backup first, then create; cancel does nothing. 2. 已满则弹窗提示最早备份，点“删除最早备份并继续”时后端先删最早备份再创建；点取消什么都不做。
   // Returns the backup object on success, null on failure/cancel; the caller refreshes the list after a success. 成功返回备份对象，失败/取消返回 null；调用方成功后自行刷新列表。
-  async function backupBootVolume(volumeId, profile) {
+  // opts: {display_name?, type?} — the create-backup dialog's answers (name empty = server-generated, type FULL/INCREMENTAL); callers open createBackupDialog first and pass its result here. opts：{display_name?, type?}——创建备份确认框的答案（名字留空后端自动生成，类型 FULL/增量）；调用方先弹确认框再把结果传进来。
+  async function backupBootVolume(volumeId, profile, opts) {
     // Paid accounts have no 5-backup cap: create directly; on a free account the server auto-deletes the earliest backup and creates (no confirmation wait), and the response carries deleted_oldest saying which was deleted. The frontend no longer pre-checks the quota or pops a confirm dialog. 付费账号不限 5 个，直接创建；免费账号满了服务端自动删最早备份再建（不用等确认），响应里带 deleted_oldest 说明删了哪个。前端不再预查配额、不再弹窗确认。
     var prof = profile || getProfile();
+    var o = opts || {};
+    var body = { boot_volume_id: volumeId, delete_oldest: true };
+    if (o.display_name) body.display_name = o.display_name;
+    if (o.type) body.type = o.type;
     try {
       var res = await api(withProfile("/api/boot-backups", prof), {
         method: "POST",
-        body: {
-          boot_volume_id: volumeId,
-          delete_oldest: true,
-        },
+        body: body,
       });
       var name = (res.backup && (res.backup.displayName || res.backup["display-name"])) || "";
       var deleted = res.deleted_oldest;
@@ -535,6 +614,8 @@
     openModal: openModal,
     closeModal: closeModal,
     confirmDialog: confirmDialog,
+    createBackupDialog: createBackupDialog,
+    defaultBackupName: defaultBackupName,
     backupBootVolume: backupBootVolume,
     logout: logout,
     // 前端缓存（Map + TTL + 按前缀清除）

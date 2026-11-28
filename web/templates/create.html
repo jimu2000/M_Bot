@@ -158,6 +158,13 @@
           <label for="startup-script">启动脚本</label>
           <textarea id="startup-script" rows="4" placeholder="可选：实例首次启动时执行的 cloud-init 脚本（bash）"></textarea>
         </div>
+        <div class="form-row" style="margin-bottom: 14px;">
+          <label class="switch" data-i18n="create.dd">
+            <input type="checkbox" id="dd" checked>
+            <span class="switch-track"></span> DD重装（开 Debian13）
+          </label>
+        </div>
+        <p class="hint" data-i18n="create.dd_hint">开启后实例重装为 Debian 13，装完执行上方启动脚本（DD 初始化脚本）；关闭时启动脚本作 cloud-init 开机脚本。</p>
       </div>
     </section>
   </div>

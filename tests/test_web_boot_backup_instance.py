@@ -167,6 +167,43 @@ class TestCreateBootBackup(BootBackupInstanceWebTestCase):
         self.assertEqual(mock_watch.call_args[0][3], "new-backup")
         self.assertEqual(mock_watch.call_args[0][5], 123)
 
+    @patch("web.routes.instances.create_boot_volume_backup",
+           return_value={"id": FAKE_BACKUP, "display-name": "inst-backup",
+                         "lifecycle-state": "CREATING"})
+    @patch("web.routes.instances.check_backup_quota",
+           return_value=(3, 5, False, None))
+    @patch("web.routes.instances.is_paid_profile", return_value=False)
+    @patch("web.routes.instances.get_boot_volume_attachment",
+           return_value=FAKE_ATTACHMENT)
+    @patch("web.routes.instances.resolve_profile",
+           return_value=(MagicMock(), "ocid1.compartment.oc1..testxxxx"))
+    @patch("web.routes.instances._notify_chat_id", return_value=None)
+    def test_create_with_name_and_incremental(
+            self, _mock_chat, _mock_resolve, _mock_att, _mock_paid,
+            _mock_quota, mock_create):
+        # The instance-detail dialog's name + type must reach the OCI create call (name, type as 3rd/4th args). 实例详情确认框填的名字与类型必须传到 OCI 创建调用（第 3/4 个参数）。
+        r = self.client.post(
+            f"/api/instances/{FAKE_INSTANCE}/boot-backups",
+            json={"display_name": "inst-backup", "type": "INCREMENTAL"})
+        self.assertEqual(r.status_code, 200)
+        mock_create.assert_called_once()
+        self.assertEqual(mock_create.call_args.args[1], FAKE_BV)
+        self.assertEqual(mock_create.call_args.args[2], "inst-backup")
+        self.assertEqual(mock_create.call_args.args[3], "INCREMENTAL")
+
+    @patch("web.routes.instances.create_boot_volume_backup")
+    @patch("web.routes.instances.get_boot_volume_attachment",
+           return_value=FAKE_ATTACHMENT)
+    @patch("web.routes.instances.resolve_profile",
+           return_value=(MagicMock(), "ocid1.compartment.oc1..testxxxx"))
+    def test_create_invalid_type_400(self, _mock_resolve, _mock_att,
+                                     mock_create):
+        r = self.client.post(
+            f"/api/instances/{FAKE_INSTANCE}/boot-backups",
+            json={"type": "BOGUS"})
+        self.assertEqual(r.status_code, 400)
+        mock_create.assert_not_called()
+
     @patch("web.routes.instances.create_boot_volume_backup")
     @patch("web.routes.instances.check_backup_quota",
            return_value=(5, 5, True, FAKE_BACKUPS[0]))

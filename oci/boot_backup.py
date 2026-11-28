@@ -63,8 +63,10 @@ DEFAULT_COMPARTMENT_ID = "ocid1.tenancy.oc1..xxxxxxxx"
 DEFAULT_REGION = "ap-singapore-1"
 # Free tier: an Always Free tenancy holds at most 5 volume backups (boot-volume backups share this quota with block-volume backups; this module only counts boot-volume backups). 免费额度：Always Free 账号每个租户最多 5 个卷备份（启动卷备份与块存储卷备份共用这个额度；本模块只数启动卷备份）。
 FREE_BACKUP_LIMIT = 5
-# Backup type: FULL only (INCREMENTAL depends on a backup chain, and restore needs the whole chain present, so deleting the earliest backup breaks the chain; full backups are independent and can be deleted individually). 备份类型：只做 FULL 全量（INCREMENTAL 增量依赖链式备份，恢复时必须整条链都在，删最早备份会断链；全量备份各自独立，可单独删除）。
+# Backup type: FULL by default (INCREMENTAL depends on a backup chain, and restore needs the whole chain present, so deleting the earliest backup breaks the chain; full backups are independent and can be deleted individually). The panel offers INCREMENTAL as a choice, but a free account that is full never auto-deletes the earliest backup for an incremental create (the route refuses instead) — deleting it could break the chain. 备份类型：默认 FULL 全量（INCREMENTAL 增量依赖链式备份，恢复时必须整条链都在，删最早备份会断链；全量备份各自独立，可单独删除）。面板提供增量选项，但免费账号满了时增量创建不自动删最早备份（路由直接拒绝），删了可能断链。
 BACKUP_TYPE = "FULL"
+# Allowed backup types for the panel's create-backup dialog. 面板创建备份弹窗允许的备份类型。
+BACKUP_TYPES = ("FULL", "INCREMENTAL")
 # Default shape when the restore cannot find the source shape: A1.Flex 1 OCPU / 6 GB (the smallest free-tier tier). 恢复时形状查不到的默认值：A1.Flex 1 核 / 6GB（免费额度内最小档）。
 DEFAULT_RESTORE_SHAPE = "VM.Standard.A1.Flex"
 DEFAULT_RESTORE_OCPUS = 1
@@ -206,20 +208,39 @@ def wait_for_backup_available(cli, backup_id, timeout_seconds=None,
         time.sleep(interval)
 
 
-def create_boot_volume_backup(cli, boot_volume_id, display_name=None):
-    """给指定启动卷做一次 FULL 全量备份。
+def validate_backup_type(backup_type):
+    """校验备份类型：只接受 FULL / INCREMENTAL，其他值抛 ValueError。
+
+    Validate the backup type: only FULL / INCREMENTAL, anything else
+    raises ValueError.
+    """
+    t = (backup_type or "").upper()
+    if t not in BACKUP_TYPES:
+        raise ValueError(
+            "备份类型只能是 FULL 或 INCREMENTAL，收到：%s" % (backup_type,))
+    return t
+
+
+def create_boot_volume_backup(cli, boot_volume_id, display_name=None,
+                              backup_type=None):
+    """给指定启动卷做一次备份（默认 FULL 全量）。
 
     对应命令：oci bv boot-volume-backup create --boot-volume-id <OCID>
-              --type FULL --display-name <名字>
+              --type <FULL|INCREMENTAL> --display-name <名字>
 
     display_name 不传时先查启动卷的显示名，再按
     default_backup_name() 生成“<卷名>-backup-YYYYMMDD-HHMM”；
     卷名查不到时用 "boot-volume" 兜底。
 
+    backup_type 为 INCREMENTAL 时，备份只存相对上一次备份的变化，
+    恢复时必须整条链都在；调用方不要在增量创建前自动删最早备份
+    （可能断链）。
+
     注意：备份刚创建时状态是 REQUEST_RECEIVED / CREATING，需要几分钟
     才到 AVAILABLE；本函数不等待，调用方可用 get 查状态。
     返回新建备份的精简字典。
     """
+    backup_type = validate_backup_type(backup_type or BACKUP_TYPE)
     if not display_name:
         name = None
         try:
@@ -231,13 +252,14 @@ def create_boot_volume_backup(cli, boot_volume_id, display_name=None):
         display_name = default_backup_name(name)
     result = cli.run(["bv", "boot-volume-backup", "create",
                       "--boot-volume-id", boot_volume_id,
-                      "--type", BACKUP_TYPE,
+                      "--type", backup_type,
                       "--display-name", display_name])
     return _simplify_backup(_extract_data(result) or {})
 
 
 def create_boot_volume_backup_with_limit_retry(cli, boot_volume_id,
-                                               display_name=None):
+                                               display_name=None,
+                                               backup_type=None):
     """创建备份；遇 LimitExceeded 时重试（删最早备份后专用）。
 
     删最早备份后立即创建，OCI 侧配额计数可能还没同步（实测
@@ -256,7 +278,7 @@ def create_boot_volume_backup_with_limit_retry(cli, boot_volume_id,
     for attempt in range(CREATE_LIMIT_RETRY_ATTEMPTS):
         try:
             return create_boot_volume_backup(cli, boot_volume_id,
-                                             display_name)
+                                             display_name, backup_type)
         except Exception as exc:  # noqa: BLE001 - 只重试限流，其他立即抛
             text = str(exc) + getattr(exc, "raw_output", "")
             if "LimitExceeded" not in text:

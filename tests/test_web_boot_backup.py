@@ -242,7 +242,7 @@ class TestCreateApi(BootBackupTestCase):
         self.assertTrue(body["ok"])
         self.assertEqual(body["backup"]["backupId"], FAKE_BACKUP)
         self.assertNotIn("deleted_oldest", body)
-        mock_create.assert_called_once_with(ANY, FAKE_BV, None)
+        mock_create.assert_called_once_with(ANY, FAKE_BV, None, "FULL")
 
     @patch("web.routes.boot_backups.is_paid_profile",
            return_value=False)
@@ -262,7 +262,7 @@ class TestCreateApi(BootBackupTestCase):
         self.assertEqual(body["deleted_oldest"]["id"], FAKE_OLD_BACKUP)
         self.assertEqual(body["deleted_oldest"]["name"], "old-backup")
         mock_delete.assert_called_once_with(ANY, FAKE_OLD_BACKUP)
-        mock_create.assert_called_once_with(ANY, FAKE_BV, None)
+        mock_create.assert_called_once_with(ANY, FAKE_BV, None, "FULL")
 
     @patch("web.routes.boot_backups.is_paid_profile",
            return_value=True)
@@ -275,7 +275,7 @@ class TestCreateApi(BootBackupTestCase):
                              json={"boot_volume_id": FAKE_BV})
         self.assertEqual(r.status_code, 200)
         mock_quota.assert_not_called()
-        mock_create.assert_called_once_with(ANY, FAKE_BV, None)
+        mock_create.assert_called_once_with(ANY, FAKE_BV, None, "FULL")
 
     @patch("web.routes.boot_backups.is_paid_profile",
            return_value=False)
@@ -301,7 +301,7 @@ class TestCreateApi(BootBackupTestCase):
         self.assertEqual(
             manager.mock_calls,
             [call.delete(ANY, FAKE_OLD_BACKUP),
-             call.create(ANY, FAKE_BV, None)])
+             call.create(ANY, FAKE_BV, None, "FULL")])
 
     @patch("web.routes.boot_backups.is_paid_profile",
            return_value=False)
@@ -315,7 +315,68 @@ class TestCreateApi(BootBackupTestCase):
                              json={"boot_volume_id": FAKE_BV,
                                    "display_name": "my-backup"})
         self.assertEqual(r.status_code, 200)
-        mock_create.assert_called_once_with(ANY, FAKE_BV, "my-backup")
+        mock_create.assert_called_once_with(ANY, FAKE_BV, "my-backup", "FULL")
+
+    @patch("web.routes.boot_backups.is_paid_profile",
+           return_value=False)
+    @patch("web.routes.boot_backups.create_boot_volume_backup",
+           return_value=FAKE_BACKUPS[1])
+    @patch("web.routes.boot_backups.check_backup_quota",
+           return_value=(2, 5, False, FAKE_BACKUPS[0]))
+    def test_create_incremental_passes_type(self, mock_quota, mock_create,
+                                            _mock_paid):
+        # The create-backup dialog's type choice (FULL / INCREMENTAL) must reach the OCI create call as the 4th argument. 确认框选的备份类型（FULL/增量）必须作为第 4 个参数传到 OCI 创建调用。
+        r = self.client.post("/api/boot-backups",
+                             json={"boot_volume_id": FAKE_BV,
+                                   "type": "INCREMENTAL"})
+        self.assertEqual(r.status_code, 200)
+        mock_create.assert_called_once_with(ANY, FAKE_BV, None, "INCREMENTAL")
+
+    @patch("web.routes.boot_backups.is_paid_profile",
+           return_value=False)
+    @patch("web.routes.boot_backups.create_boot_volume_backup",
+           return_value=FAKE_BACKUPS[1])
+    @patch("web.routes.boot_backups.check_backup_quota",
+           return_value=(2, 5, False, FAKE_BACKUPS[0]))
+    def test_create_name_and_incremental_together(
+            self, mock_quota, mock_create, _mock_paid):
+        r = self.client.post("/api/boot-backups",
+                             json={"boot_volume_id": FAKE_BV,
+                                   "display_name": "my-backup",
+                                   "type": "INCREMENTAL"})
+        self.assertEqual(r.status_code, 200)
+        mock_create.assert_called_once_with(ANY, FAKE_BV, "my-backup",
+                                            "INCREMENTAL")
+
+    @patch("web.routes.boot_backups.is_paid_profile",
+           return_value=False)
+    @patch("web.routes.boot_backups.create_boot_volume_backup")
+    @patch("web.routes.boot_backups.check_backup_quota",
+           return_value=(2, 5, False, FAKE_BACKUPS[0]))
+    def test_create_invalid_type_400(self, mock_quota, mock_create,
+                                     _mock_paid):
+        r = self.client.post("/api/boot-backups",
+                             json={"boot_volume_id": FAKE_BV,
+                                   "type": "BOGUS"})
+        self.assertEqual(r.status_code, 400)
+        mock_create.assert_not_called()
+
+    @patch("web.routes.boot_backups.is_paid_profile",
+           return_value=False)
+    @patch("web.routes.boot_backups.create_boot_volume_backup_with_limit_retry")
+    @patch("web.routes.boot_backups.delete_boot_volume_backup")
+    @patch("web.routes.boot_backups.check_backup_quota",
+           return_value=(5, 5, True, FAKE_BACKUPS[0]))
+    def test_create_incremental_when_full_400_no_delete(
+            self, mock_quota, mock_delete, mock_create, _mock_paid):
+        # Incremental backups depend on the earlier backup chain, so a full free quota must NOT auto-delete the earliest backup (that would break the chain): 400, nothing deleted, nothing created. 增量备份依赖之前的备份链，免费额度满了时不能自动删最早备份（会断链）：报 400，什么都不删、什么都不建。
+        r = self.client.post("/api/boot-backups",
+                             json={"boot_volume_id": FAKE_BV,
+                                   "type": "INCREMENTAL"})
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("断链", r.json()["error"])
+        mock_delete.assert_not_called()
+        mock_create.assert_not_called()
 
 
 class TestDeleteApi(BootBackupTestCase):
