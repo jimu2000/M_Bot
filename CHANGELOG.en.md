@@ -9,6 +9,9 @@ Versioning: semantic versioning (major.minor.patch).
 
 ## [Unreleased]
 
+## [2.25.3] - 2026-11-28
+- Instance card blue bar and serial console swapped: the blue bar is now the serial console, renamed "ssh串行控制台", keeping its blue style; the grid button that was "serial console" is now SSH.
+
 ## [2.25.2] - 2026-11-28
 - Top bar pinned: static asset links now carry a version query (`?v=`), so the browser fetches fresh CSS on each release instead of scrolling the top bar away with a stale cached copy.
 - Instance card "initial boot password" is now a single line: the label column widened from 64px to 84px with no wrapping.

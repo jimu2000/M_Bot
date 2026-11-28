@@ -176,7 +176,7 @@
       var spec = (inst.ocpus != null && inst.memory_gb != null)
         ? inst.ocpus + " OCPU / " + inst.memory_gb + " GB" : "—";
       var created = inst.created ? esc(MBot.formatTime(inst.created)) : "—";
-      // Button matrix (fixed order): power off/on, restart, serial console, rename, resize, repair, reset image, IP management, boot volume, delete, delete (keep boot volume). 按钮矩阵（固定顺序）：停止/启动、重启、串行控制台、重命名、升降级、修复、重置镜像、IP 管理、启动盘、删除、删除（保留启动盘）。
+      // Button matrix (fixed order): power off/on, restart, SSH, rename, resize, repair, reset image, IP management, boot volume, delete, delete (keep boot volume). 按钮矩阵（固定顺序）：停止/启动、重启、SSH、重命名、升降级、修复、重置镜像、IP 管理、启动盘、删除、删除（保留启动盘）。串行控制台已挪到卡片顶部蓝条（ssh串行控制台），见下面的 instance-ssh 按钮。
       // Power/restart follow the instance state; resize only shows for A1.Flex. 启停/重启按状态显示；升降级只对 A1.Flex 显示。
       var actions = "";
       if (stopped) actions += '<button type="button" class="btn btn-sm btn-primary" data-act="start">' + esc(tr("instances.start", "启动")) + "</button>";
@@ -184,7 +184,7 @@
         actions += '<button type="button" class="btn btn-sm" data-act="stop">' + esc(tr("instances.stop", "停止")) + "</button>";
         actions += '<button type="button" class="btn btn-sm" data-act="restart">' + esc(tr("instances.restart", "重启")) + "</button>";
       }
-      actions += '<button type="button" class="btn btn-sm" data-act="console">串行控制台</button>';
+      actions += '<button type="button" class="btn btn-sm" data-act="ssh">SSH</button>';
       actions += '<button type="button" class="btn btn-sm" data-act="rename">重命名</button>';
       if (inst.shape === "VM.Standard.A1.Flex") {
         actions += '<button type="button" class="btn btn-sm" data-act="resize">升降级</button>';
@@ -215,7 +215,7 @@
             '<div class="instance-meta-row"><span class="instance-meta-label">启动盘</span><span class="instance-meta-value">' + bootVolumeCell(inst) + "</span></div>" +
             '<div class="instance-meta-row"><span class="instance-meta-label">创建时间</span><span class="instance-meta-value">' + created + "</span></div>" +
           "</div>" +
-          '<button type="button" class="btn btn-primary instance-ssh" data-act="ssh">⌨️ SSH</button>' +
+          '<button type="button" class="btn btn-primary instance-ssh" data-act="console">⌨️ ssh串行控制台</button>' +
           '<div class="instance-actions">' + actions + "</div>" +
         "</article>"
       );

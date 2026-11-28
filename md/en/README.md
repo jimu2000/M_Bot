@@ -1,6 +1,6 @@
 # M_Bot Oracle Cloud Open-Source Management Panel
 
-> **Current version: v2.25.2** · See [CHANGELOG.en.md](../../CHANGELOG.en.md) for changes
+> **Current version: v2.25.3** · See [CHANGELOG.en.md](../../CHANGELOG.en.md) for changes
 
 [简体中文](../../README.md) | English
 
